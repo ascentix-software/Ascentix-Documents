@@ -1,0 +1,12 @@
+<customapirequestparameter uniquename="Request">
+  <description default="Owned by standalone Ascentix Documents development setup v1">
+    <label description="Owned by standalone Ascentix Documents development setup v1" languagecode="1033" />
+  </description>
+  <displayname default="Request">
+    <label description="Request" languagecode="1033" />
+  </displayname>
+  <iscustomizable>1</iscustomizable>
+  <isoptional>0</isoptional>
+  <name>Request</name>
+  <type>10</type>
+</customapirequestparameter>

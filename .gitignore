@@ -1,0 +1,16 @@
+**/bin/
+**/obj/
+artifacts/
+TestResults/
+*.user
+*.snk
+.env
+node_modules/
+.local/
+*.pfx
+*.p12
+*.pem
+.env.*
+.vs/
+
+solution/**/PluginAssemblies/**/*.dll

@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Ascentix Documents</title>
+    <link rel="stylesheet" href="admin.css?v=ui20260909labels4" />
+  </head>
+  <body>
+    <main class="app">
+      <div class="row between top">
+        <div class="brand">
+          <span class="logo"
+            ><svg class="folder-icon" aria-hidden="true" viewBox="0 0 24 24">
+              <path fill="#e8b84d" stroke="#ad7b16" stroke-width="1.2" d="M2 5.5h7l2 2h11v12H2z" />
+              <path
+                fill="#f8d77e"
+                stroke="#ad7b16"
+                stroke-width="1.2"
+                d="M2 9h20l-2 10.5H2z"
+              /></svg></span
+          >Ascentix <span style="font-weight: 450">Documents</span>
+        </div>
+        <div id="templateActions" class="row wrap" hidden>
+          <details class="header-availability">
+            <summary>Availability</summary>
+            <div class="availability-body">
+              <label class="inline-check"
+                ><input id="templateActive" type="checkbox" checked />Active</label
+              ><label class="inline-check"
+                ><input id="useSchedule" type="checkbox" />Set start or end dates</label
+              >
+              <div id="scheduleFields" hidden>
+                <label
+                  >Start (your local time, optional)<input
+                    id="templateStart"
+                    type="datetime-local" /></label
+                ><label
+                  >End (your local time, optional)<input id="templateEnd" type="datetime-local"
+                /></label>
+              </div>
+              <button id="saveAvailability" disabled>Save availability</button>
+              <p id="templateAvailability" role="status">Save a template first.</p>
+            </div>
+          </details>
+          <button id="save" class="primary" disabled>Save draft</button
+          ><button id="publish" disabled>Publish saved revision</button
+          ><button id="deleteTemplate" class="danger" disabled>Delete template</button>
+        </div>
+      </div>
+
+      <section class="shell">
+        <nav class="tabs" aria-label="Workspace">
+          <button class="tab active" data-view="author" aria-pressed="true">Folder templates</button
+          ><button class="tab" data-view="access" aria-pressed="false">Sites &amp; access</button
+          ><button class="tab" data-view="administration" aria-pressed="false">
+            Administration
+          </button>
+        </nav>
+        <div id="status" role="status" aria-live="polite">Connecting to Dataverse…</div>
+        <div id="author-view">
+          <div class="template-layout">
+            <aside class="template-nav" aria-label="Tables and templates">
+              <div class="row between">
+                <h3>Tables</h3>
+                <button id="addTable" type="button">＋ Add table</button>
+              </div>
+              <div id="tablePicker" hidden>
+                <label
+                  >Document-enabled table<select id="table" disabled>
+                    <option>Loading metadata…</option>
+                  </select></label
+                >
+              </div>
+              <div id="templateTree"></div>
+            </aside>
+            <div class="template-main">
+              <section class="table-bar">
+                <label
+                  >Template name<input
+                    id="templateName"
+                    maxlength="200"
+                    placeholder="For example, Account onboarding" /></label
+                ><button id="newTemplate" type="button" disabled>＋ New template</button>
+                <div id="revisionControls" class="revision-inline" hidden>
+                  <label
+                    >Saved revision<select id="savedRevision">
+                      <option value="">Select a table first</option>
+                    </select></label
+                  ><button
+                    id="loadRevision"
+                    disabled
+                    title="Load this revision and replace unsaved edits"
+                  >
+                    Load revision
+                  </button>
+                </div>
+              </section>
+              <p id="tablePrompt" class="empty">
+                Choose a table to load saved revisions or build a folder template.
+              </p>
+              <div id="authorWorkspace" hidden>
+                <div class="toolbar row between">
+                  <div>
+                    <div class="row">
+                      <h2>Folder templates</h2>
+                      <span class="badge" id="destinationCount">0 destinations</span>
+                    </div>
+                    <p class="small muted" style="margin-top: 6px">
+                      Each destination has its own tree and inherits its library’s access.
+                    </p>
+                  </div>
+                </div>
+                <div class="editor">
+                  <section class="pane tree-pane">
+                    <div class="eyebrow">01 / Destinations &amp; structure</div>
+                    <div id="destinations" class="stack"></div>
+                    <button id="addDestination" class="wide" disabled>
+                      ＋ Add destination section
+                    </button>
+                    <p class="hint">
+                      Each section runs for the same record. Select a folder to edit its name and
+                      conditions.
+                    </p>
+                  </section>
+                  <section class="pane">
+                    <div class="eyebrow">02 / Edit selected section</div>
+                    <div id="folderEditor">
+                      <div class="empty">
+                        Select a business table, then add an approved destination to start shaping
+                        its folders.
+                      </div>
+                    </div>
+                  </section>
+                  <section class="pane preview-pane">
+                    <div class="row between">
+                      <div class="eyebrow">03 / All destinations</div>
+                      <span class="badge gray">Record preview</span>
+                    </div>
+                    <h2 style="margin-top: 8px">One record, multiple trees</h2>
+                    <label
+                      >Record for preview<select id="record" disabled>
+                        <option>Select a table first</option>
+                      </select></label
+                    >
+                    <div class="row wrap">
+                      <button id="chooseRecord" disabled>Choose another record</button
+                      ><button id="preview" disabled>Preview saved revision</button>
+                    </div>
+                    <p id="revision" class="hint">No revision saved in this session.</p>
+                    <div id="previewTrees" aria-live="polite">
+                      <div class="callout">
+                        Save a draft and choose a record to preview folder names using your access.
+                      </div>
+                    </div>
+                    <p class="hint">
+                      Preview checks names and conditions. Existing physical folders and collisions
+                      are checked when provisioning runs. Placement never grants access.
+                    </p>
+                  </section>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <section id="access" hidden>
+          <div class="ad-layout">
+            <aside aria-label="Sites">
+              <div class="ad-row ad-between">
+                <h3>Sites</h3>
+                <button id="ad-add-site" type="button">＋ Add site</button>
+              </div>
+              <label id="ad-filter"
+                ><span class="ad-muted">Find a site</span
+                ><input id="ad-search" type="search" placeholder="Search sites"
+              /></label>
+              <div id="ad-sites"></div>
+              <button id="ad-more-sites" hidden>More sites</button>
+            </aside>
+            <main>
+              <section id="ad-site-form" class="ad-box" hidden aria-label="Add a registered site">
+                <div class="ad-row ad-between">
+                  <h3>Add site</h3>
+                  <button id="ad-cancel-site" type="button">Cancel</button>
+                </div>
+                <label>Find registered site<input id="ad-native-search" type="search" /></label
+                ><label
+                  >Registered SharePoint site<select
+                    id="ad-native"
+                    aria-label="Registered SharePoint site"
+                  >
+                    <option value="">Select a registered site</option>
+                  </select></label
+                ><button id="ad-validate" class="ad-primary" type="button">
+                  Add and check site
+                </button>
+                <p id="ad-site-progress" class="ad-topgap" role="status"></p>
+              </section>
+              <div class="ad-row ad-between">
+                <div>
+                  <h2 id="ad-site-title">Select or add a site</h2>
+                  <span id="ad-site-health" class="ad-status">Ready</span>
+                </div>
+                <button id="ad-existing" type="button">Add existing library</button
+                ><button id="ad-create" class="ad-primary" type="button">＋ Create library</button>
+              </div>
+              <section id="ad-site-error" class="ad-box" hidden>
+                <h3>Site access needs attention</h3>
+                <p class="ad-topgap">
+                  The shared application cannot access this site. An administrator needs to grant it
+                  access before this site can be used.
+                </p>
+                <button id="ad-recheck" type="button" class="ad-topgap">Check again</button>
+              </section>
+              <section id="ad-existing-form" class="ad-box" hidden aria-label="Existing libraries">
+                <div class="ad-row ad-between">
+                  <h3>Existing libraries</h3>
+                  <button id="ad-existing-cancel" type="button">Close</button>
+                </div>
+                <p class="ad-muted">
+                  The library must already have its own permissions. Adding it validates access and
+                  creates its navigation entry.
+                </p>
+                <div id="ad-existing-choices" class="ad-row"></div>
+                <button id="ad-existing-more" type="button" hidden>More libraries</button>
+              </section>
+              <section id="ad-library-form" class="ad-box" hidden aria-label="Create library">
+                <div class="ad-row ad-between">
+                  <h3>Create library</h3>
+                  <button id="ad-cancel-library" type="button">Cancel</button>
+                </div>
+                <label
+                  >Library name<input
+                    id="ad-library-name"
+                    maxlength="80"
+                    placeholder="For example, Project documents"
+                /></label>
+                <div class="ad-row">
+                  <label
+                    >Initial team<select id="ad-initial-team" aria-label="Initial team">
+                      <option value="">No additional teams</option>
+                    </select></label
+                  ><label
+                    >Access<select id="ad-initial-access" aria-label="Initial access">
+                      <option>Read</option>
+                      <option>Contribute</option>
+                    </select></label
+                  >
+                </div>
+                <p class="ad-muted">
+                  Site owners retain administrative access. Only the teams you select receive
+                  additional library access.
+                </p>
+                <div class="ad-row ad-topgap">
+                  <button id="ad-provision" class="ad-primary" type="button">Create library</button
+                  ><span id="ad-create-error" role="alert" class="ad-issue"></span>
+                </div>
+              </section>
+              <button id="ad-more-activity" hidden>More setup activity</button>
+              <p id="ad-poll-status" class="ad-muted" role="status" hidden></p>
+              <div
+                id="ad-provision-progress"
+                hidden
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              ></div>
+              <div id="ad-libraries" class="ad-libraries" aria-label="Libraries"></div>
+              <button id="ad-more-libraries" hidden>More libraries</button>
+              <section id="ad-library-detail">
+                <div class="ad-row ad-between">
+                  <h3 id="ad-library-title">Library access</h3>
+                  <span id="ad-library-status" class="ad-status">Ready for folder templates</span>
+                </div>
+                <p class="ad-muted ad-topgap">All folders inherit this library’s access.</p>
+
+                <div id="ad-access">
+                  <table aria-label="Library team access">
+                    <thead>
+                      <tr>
+                        <th>Team</th>
+                        <th>Access</th>
+                        <th>In SharePoint</th>
+                      </tr>
+                    </thead>
+                    <tbody id="ad-teams"></tbody>
+                  </table>
+                  <button id="ad-add-team" type="button">＋ Add team</button>
+                  <div id="ad-team-form" class="ad-box" hidden>
+                    <div class="ad-row">
+                      <label
+                        >Team<select id="ad-team-choice" aria-label="Team">
+                          <option value="">Select a team</option>
+                        </select></label
+                      ><label
+                        >Access<select id="ad-team-access" aria-label="Team access">
+                          <option>Read</option>
+                          <option>Contribute</option>
+                        </select></label
+                      ><button id="ad-stage-team" type="button">Add</button
+                      ><button id="ad-cancel-team" type="button">Cancel</button>
+                    </div>
+                  </div>
+                  <div class="ad-row ad-between ad-access-footer">
+                    <p id="ad-change-status" class="ad-muted">Access is up to date.</p>
+                    <button id="ad-apply" class="ad-primary" disabled type="button">
+                      Apply access changes
+                    </button>
+                  </div>
+                  <p class="ad-muted ad-topgap">
+                    Removing a team removes this app’s grant. Other sharing may still provide
+                    access.
+                  </p>
+                </div>
+              </section>
+              <p id="ad-empty" class="ad-empty" hidden>
+                No libraries yet. Create the first library for this site.
+              </p>
+              <div id="ad-message" role="status" aria-live="polite"></div>
+              <details>
+                <summary>Shared connection</summary>
+                <p>One application connection is used across authorized sites.</p>
+                <button id="ad-manage-connection" type="button">Manage in Power Platform</button>
+              </details>
+            </main>
+          </div>
+        </section>
+        <details id="recordTools" class="card" hidden>
+          <summary>Record results and replanning</summary>
+          <p id="maintenanceContext"></p>
+          <div class="row wrap">
+            <button id="inspectRecord">Inspect record results</button
+            ><button id="replanRecord">Replan published template for record</button
+            ><button id="previewBatch">Review batch replan</button
+            ><button id="queueBatch" disabled>Queue reviewed batch</button>
+          </div>
+          <pre id="result">No inspection yet.</pre>
+          <pre id="batchReview">
+Select up to five records for a published-revision impact review.</pre>
+        </details>
+        <details id="runtime" class="card">
+          <summary>Runtime administration</summary>
+          <p>
+            Configuration is separate from flow activation and role assignment. Finish active work
+            before changing runtime identity or scope.
+          </p>
+          <button id="loadRuntime" class="secondary">Load runtime profile</button>
+          <div class="row">
+            <label>Dataverse worker user ID<input id="runtimeWorker" /></label
+            ><label
+              >Allowed source tables<input
+                id="runtimeTables"
+                placeholder="account,contact" /></label
+            ><label
+              >SharePoint tenant hosts<input
+                id="runtimeSites"
+                placeholder="tenant.sharepoint.com" /></label
+            ><label>Runtime enabled<input id="runtimeEnabled" type="checkbox" /></label
+            ><label
+              >Apply folder templates when record data changes<input
+                id="runtimeRecordUpdates"
+                type="checkbox" /></label
+            ><button id="saveRuntime">Save runtime profile</button>
+          </div>
+          <p class="hint">
+            Applies system-wide to all configured source tables. Off disables record-update
+            monitoring; creation still works. Turning it on processes future updates only. Existing
+            queued work can finish. Saving this setting requires permission to manage plug-in steps.
+          </p>
+          <p id="runtimeStatus" class="hint">No profile loaded.</p>
+        </details>
+        <details id="operations" class="card">
+          <summary>Operations and recovery</summary>
+          <button id="loadOperations" class="secondary">Load latest 50 operations</button
+          ><label
+            >Operation<select id="operation">
+              <option value="">Load operations first</option>
+            </select></label
+          >
+          <pre id="operationStatus">Select an operation.</pre>
+          <div class="row">
+            <button id="retryOperation" class="secondary">Retry after repair</button
+            ><button id="cancelOperation" class="secondary">Cancel unstarted work</button>
+          </div>
+          <details>
+            <summary>Expired writer recovery</summary>
+            <p>
+              Verify the prior flow run has terminated and outstanding calls have resolved before
+              permitting recovery. Expiry alone is insufficient.
+            </p>
+            <label>Exact prior run identity<input id="recoveryRun" /></label
+            ><label>Exact prior claim token<input id="recoveryToken" /></label
+            ><label
+              >Termination and outstanding-call evidence<input
+                id="recoveryEvidence"
+                maxlength="500" /></label
+            ><label
+              >Original successful library-create response (only for an unknown new-library
+              result)<textarea
+                id="recoveryResponse"
+                maxlength="16000"
+                placeholder="Copy the successful HTTP response body from the exact prior run. Do not substitute a library found by name."
+              ></textarea></label
+            ><button id="recoverOperation">Record recovery permit</button>
+          </details>
+        </details>
+
+        <footer class="footer">
+          <span>Background provisioning requires an enabled runtime and active dispatcher.</span
+          ><span>Publishing saves configuration; it does not create folders.</span>
+        </footer>
+      </section>
+    </main>
+    <script src="admin.js?v=ui20260909labels4"></script>
+    <script src="sites-access.js?v=ui20260909labels4"></script>
+  </body>
+</html>

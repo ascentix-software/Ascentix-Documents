@@ -1,0 +1,257 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Json;
+using System.Text;
+using System.Xml;
+using Ascentix.Documents.Conditions;
+using Ascentix.Documents.Domain;
+
+namespace Ascentix.Documents.Dataverse;
+
+public static class JsonWire
+{
+    public static T Read<T>(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json) || json.Length > 500000)
+            throw new EvaluationBlockedException("JSON input missing or too large.");
+        using (
+            var reader = JsonReaderWriterFactory.CreateJsonReader(
+                Encoding.UTF8.GetBytes(json),
+                new XmlDictionaryReaderQuotas
+                {
+                    MaxDepth = 32,
+                    MaxStringContentLength = 500000,
+                    MaxArrayLength = 20000,
+                    MaxBytesPerRead = 4096,
+                    MaxNameTableCharCount = 20000,
+                }
+            )
+        )
+            return (T)
+                new DataContractJsonSerializer(
+                    typeof(T),
+                    new DataContractJsonSerializerSettings { MaxItemsInObjectGraph = 20000 }
+                ).ReadObject(reader)!;
+    }
+
+    public static string Write<T>(T value)
+    {
+        using (var stream = new MemoryStream())
+        {
+            new DataContractJsonSerializer(typeof(T)).WriteObject(stream, value);
+            return Encoding.UTF8.GetString(stream.ToArray());
+        }
+    }
+}
+
+[DataContract]
+public sealed class SourceDto
+{
+    [DataMember]
+    public string Alias { get; set; } = "root";
+
+    [DataMember]
+    public string Table { get; set; } = "";
+
+    [DataMember]
+    public string? Lookup { get; set; }
+
+    [DataMember]
+    public ColumnDto[] Columns { get; set; } = Array.Empty<ColumnDto>();
+
+    public ValueSource ToModel() =>
+        new ValueSource
+        {
+            Alias = Alias,
+            Table = Table,
+            RootLookupColumn = Lookup,
+            Columns = Columns.ToDictionary(
+                c => c.Name,
+                c => ParseEnum<ValueKind>(c.Kind),
+                StringComparer.Ordinal
+            ),
+        };
+
+    internal static T ParseEnum<T>(string value)
+        where T : struct
+    {
+        if (
+            !Enum.TryParse<T>(value, false, out var result)
+            || !Enum.IsDefined(typeof(T), result)
+            || Enum.GetName(typeof(T), result) != value
+        )
+            throw new EvaluationBlockedException("Invalid named enum value.");
+        return result;
+    }
+}
+
+[DataContract]
+public sealed class ColumnDto
+{
+    [DataMember]
+    public string Name { get; set; } = "";
+
+    [DataMember]
+    public string Kind { get; set; } = "";
+}
+
+[DataContract]
+public sealed class ConditionDto
+{
+    [DataMember]
+    public string Source { get; set; } = "root";
+
+    [DataMember]
+    public string Column { get; set; } = "";
+
+    [DataMember]
+    public string Operator { get; set; } = "";
+
+    [DataMember]
+    public string? LiteralKind { get; set; }
+
+    [DataMember]
+    public string? Literal { get; set; }
+
+    [DataMember]
+    public string? RightSource { get; set; }
+
+    [DataMember]
+    public string? RightColumn { get; set; }
+
+    public Condition ToModel()
+    {
+        Value? value = null;
+        if (LiteralKind != null)
+        {
+            var kind = SourceDto.ParseEnum<ValueKind>(LiteralKind);
+            if (Literal == null)
+                throw new EvaluationBlockedException("Literal is required.");
+            switch (kind)
+            {
+                case ValueKind.Text:
+                    value = Value.Text(Literal);
+                    break;
+                case ValueKind.Number:
+                    value = Value.Number(
+                        decimal.Parse(
+                            Literal,
+                            NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint,
+                            CultureInfo.InvariantCulture
+                        )
+                    );
+                    break;
+                case ValueKind.Boolean:
+                    value = Value.Boolean(bool.Parse(Literal));
+                    break;
+                case ValueKind.Choice:
+                    value = Value.Choice(int.Parse(Literal, CultureInfo.InvariantCulture));
+                    break;
+                case ValueKind.Lookup:
+                    value = Value.Lookup(Guid.Parse(Literal));
+                    break;
+                case ValueKind.DateOnly:
+                    value = Value.DateOnly(
+                        DateTime.ParseExact(Literal, "yyyy-MM-dd", CultureInfo.InvariantCulture)
+                    );
+                    break;
+                case ValueKind.DateTime:
+                    if (
+                        !(
+                            Literal.EndsWith("Z", StringComparison.Ordinal)
+                            || System.Text.RegularExpressions.Regex.IsMatch(
+                                Literal,
+                                @"[+-]\d{2}:\d{2}$"
+                            )
+                        )
+                    )
+                        throw new EvaluationBlockedException(
+                            "Timestamp requires an explicit offset."
+                        );
+                    value = Value.Instant(
+                        DateTimeOffset.Parse(Literal, CultureInfo.InvariantCulture)
+                    );
+                    break;
+                case ValueKind.MultiChoice:
+                    value = Value.MultiChoice(
+                        Literal.Split(',').Select(v => int.Parse(v, CultureInfo.InvariantCulture))
+                    );
+                    break;
+            }
+        }
+        if ((RightSource == null) != (RightColumn == null))
+            throw new EvaluationBlockedException("Right field reference is incomplete.");
+        return new Condition(
+            new FieldReference(Source, Column),
+            SourceDto.ParseEnum<Comparison>(Operator),
+            value,
+            RightSource == null ? null : new FieldReference(RightSource, RightColumn!)
+        );
+    }
+}
+
+[DataContract]
+public sealed class PreviewRequest
+{
+    [DataMember]
+    public string RevisionId { get; set; } = "";
+
+    [DataMember]
+    public string RecordId { get; set; } = "";
+}
+
+[DataContract]
+public sealed class PlanDto
+{
+    [DataMember]
+    public string Status { get; set; } = "PreviewOnly";
+
+    [DataMember]
+    public IntentDto[] Folders { get; set; } = Array.Empty<IntentDto>();
+
+    public static PlanDto From(IReadOnlyList<FolderIntent> intents) =>
+        new PlanDto
+        {
+            Folders = intents
+                .Select(i => new IntentDto
+                {
+                    Section = i.Section,
+                    Node = i.Node,
+                    Parent = i.Parent,
+                    Name = i.Name,
+                    RelativePath = i.RelativePath,
+                    BindingKey = i.BindingKey,
+                    LibraryApprovalId = i.LibraryApprovalId.ToString("D"),
+                })
+                .ToArray(),
+        };
+}
+
+[DataContract]
+public sealed class IntentDto
+{
+    [DataMember]
+    public string Section { get; set; } = "";
+
+    [DataMember]
+    public string Node { get; set; } = "";
+
+    [DataMember]
+    public string? Parent { get; set; }
+
+    [DataMember]
+    public string Name { get; set; } = "";
+
+    [DataMember]
+    public string RelativePath { get; set; } = "";
+
+    [DataMember]
+    public string BindingKey { get; set; } = "";
+
+    [DataMember]
+    public string LibraryApprovalId { get; set; } = "";
+}

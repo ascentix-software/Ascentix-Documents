@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<WebResource xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <WebResourceId>{d59f70ce-dbac-f111-aaab-002248af9c7f}</WebResourceId>
+  <Name>asx_admin/folder.svg</Name>
+  <DisplayName>asx_admin/folder.svg</DisplayName>
+  <Description>Owned by standalone Ascentix Documents development setup v1</Description>
+  <WebResourceType>11</WebResourceType>
+  <IntroducedVersion>1.0</IntroducedVersion>
+  <IsEnabledForMobileClient>0</IsEnabledForMobileClient>
+  <IsAvailableForMobileOffline>0</IsAvailableForMobileOffline>
+  <IsCustomizable>1</IsCustomizable>
+  <CanBeDeleted>1</CanBeDeleted>
+  <IsHidden>0</IsHidden>
+  <FileName>/WebResources/asx_adminfoldersvgD59F70CE-DBAC-F111-AAAB-002248AF9C7F</FileName>
+</WebResource>

@@ -1,0 +1,39 @@
+name: documents-plugins-official-$(Date:yyyyMMdd)-$(Rev:r)
+trigger: none
+pr: none
+parameters:
+  - name: signingKeySecureFile
+    type: string
+    default: documents-plugin.snk
+  - name: expectedPublicKeyToken
+    displayName: Approved public key token for official plugin builds
+    type: string
+    default: 50214c64469649b5
+pool:
+  vmImage: windows-latest
+steps:
+  - checkout: self
+    persistCredentials: false
+  - task: UseDotNet@2
+    inputs:
+      packageType: sdk
+      version: 10.0.302
+  - task: DownloadSecureFile@1
+    name: officialKey
+    inputs:
+      secureFile: ${{ parameters.signingKeySecureFile }}
+  - pwsh: ./scripts/build-plugins.ps1 -SigningMode Official -SigningKeyPath $env:SIGNING_KEY -ExpectedPublicKeyToken $env:EXPECTED_TOKEN
+    displayName: Build and verify official plugin signing identity
+    env:
+      SIGNING_KEY: $(officialKey.secureFilePath)
+      EXPECTED_TOKEN: ${{ parameters.expectedPublicKeyToken }}
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFormat: VSTest
+      testResultsFiles: '**/TestResults/*.trx'
+      failTaskOnFailedTests: true
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: $(Build.SourcesDirectory)/artifacts/plugins
+      artifact: documents-plugins-official

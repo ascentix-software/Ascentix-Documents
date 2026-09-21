@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net462</TargetFramework>
+        <SignAssembly>true</SignAssembly>
+        <AssemblyOriginatorKeyFile>$(DocumentsSigningKeyPath)</AssemblyOriginatorKeyFile>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="Microsoft.CrmSdk.CoreAssemblies" Version="9.0.2.60" />
+        <Reference Include="System.Runtime.Serialization" />
+        <Compile
+            Include="../Ascentix.Documents.Conditions/*.cs"
+            Link="Conditions/%(Filename)%(Extension)"
+        />
+        <Compile
+            Include="../Ascentix.Documents.Domain/*.cs"
+            Link="Domain/%(Filename)%(Extension)"
+        />
+        <Compile
+            Include="../Ascentix.Documents.Dataverse/*.cs"
+            Link="Dataverse/%(Filename)%(Extension)"
+        />
+    </ItemGroup>
+</Project>

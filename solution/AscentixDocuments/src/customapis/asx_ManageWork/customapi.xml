@@ -1,0 +1,19 @@
+<customapi uniquename="asx_ManageWork">
+  <allowedcustomprocessingsteptype>0</allowedcustomprocessingsteptype>
+  <bindingtype>0</bindingtype>
+  <description default="Owned by standalone Ascentix Documents development setup v1">
+    <label description="Owned by standalone Ascentix Documents development setup v1" languagecode="1033" />
+  </description>
+  <displayname default="ManageWork">
+    <label description="ManageWork" languagecode="1033" />
+  </displayname>
+  <executeprivilegename>prvCreateasx_operatorcommand</executeprivilegename>
+  <iscustomizable>1</iscustomizable>
+  <isfunction>0</isfunction>
+  <isprivate>0</isprivate>
+  <name>asx_ManageWork</name>
+  <plugintypeid>
+    <plugintypeexportkey>4cd622a7-dbac-f111-aaab-70a8a50cc3fd</plugintypeexportkey>
+  </plugintypeid>
+  <workflowsdkstepenabled>0</workflowsdkstepenabled>
+</customapi>

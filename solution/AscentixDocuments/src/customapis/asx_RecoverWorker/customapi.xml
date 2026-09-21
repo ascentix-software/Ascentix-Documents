@@ -1,0 +1,19 @@
+<customapi uniquename="asx_RecoverWorker">
+  <allowedcustomprocessingsteptype>0</allowedcustomprocessingsteptype>
+  <bindingtype>0</bindingtype>
+  <description default="Owned by standalone Ascentix Documents development setup v1">
+    <label description="Owned by standalone Ascentix Documents development setup v1" languagecode="1033" />
+  </description>
+  <displayname default="RecoverWorker">
+    <label description="RecoverWorker" languagecode="1033" />
+  </displayname>
+  <executeprivilegename>prvCreateasx_operatorcommand</executeprivilegename>
+  <iscustomizable>1</iscustomizable>
+  <isfunction>0</isfunction>
+  <isprivate>0</isprivate>
+  <name>asx_RecoverWorker</name>
+  <plugintypeid>
+    <plugintypeexportkey>f65f388f-dbac-f111-aaab-7ced8d35c3dd</plugintypeexportkey>
+  </plugintypeid>
+  <workflowsdkstepenabled>0</workflowsdkstepenabled>
+</customapi>

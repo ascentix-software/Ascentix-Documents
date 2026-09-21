@@ -1,0 +1,23 @@
+name: documents-webresources-$(Date:yyyyMMdd)-$(Rev:r)
+trigger:
+  branches:
+    include: ['*']
+  paths:
+    include: ['client/*', 'scripts/build-webresources.ps1', 'tests/web/*', 'pipelines/webresources-ci.yml']
+pr:
+  paths:
+    include: ['client/*', 'scripts/build-webresources.ps1', 'tests/web/*', 'pipelines/webresources-ci.yml']
+pool:
+  vmImage: windows-latest
+steps:
+  - checkout: self
+    persistCredentials: false
+  - task: NodeTool@0
+    inputs:
+      versionSpec: 22.x
+  - pwsh: ./scripts/build-webresources.ps1
+    displayName: Validate and package web resources independently
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: $(Build.SourcesDirectory)/artifacts/webresources
+      artifact: documents-webresources

@@ -1,0 +1,19 @@
+<customapi uniquename="asx_DocumentWorker">
+  <allowedcustomprocessingsteptype>0</allowedcustomprocessingsteptype>
+  <bindingtype>0</bindingtype>
+  <description default="Owned by standalone Ascentix Documents development setup v1">
+    <label description="Owned by standalone Ascentix Documents development setup v1" languagecode="1033" />
+  </description>
+  <displayname default="DocumentWorker">
+    <label description="DocumentWorker" languagecode="1033" />
+  </displayname>
+  <executeprivilegename>prvCreateasx_workercommand</executeprivilegename>
+  <iscustomizable>1</iscustomizable>
+  <isfunction>0</isfunction>
+  <isprivate>0</isprivate>
+  <name>asx_DocumentWorker</name>
+  <plugintypeid>
+    <plugintypeexportkey>030f7691-dbac-f111-aaab-002248af9c7f</plugintypeexportkey>
+  </plugintypeid>
+  <workflowsdkstepenabled>0</workflowsdkstepenabled>
+</customapi>

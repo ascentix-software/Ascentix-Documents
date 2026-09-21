@@ -1,0 +1,30 @@
+name: documents-plugins-$(Date:yyyyMMdd)-$(Rev:r)
+trigger:
+  branches:
+    include: ['*']
+  paths:
+    include: ['src/*', 'tests/*', 'Directory.Build.props', 'NuGet.Config', 'Ascentix.Documents.sln', 'scripts/build-plugins.ps1', 'scripts/verify-source-boundary.ps1', 'pipelines/plugins-ci.yml']
+pr:
+  paths:
+    include: ['src/*', 'tests/*', 'Directory.Build.props', 'NuGet.Config', 'Ascentix.Documents.sln', 'scripts/build-plugins.ps1', 'scripts/verify-source-boundary.ps1', 'pipelines/plugins-ci.yml']
+pool:
+  vmImage: windows-latest
+steps:
+  - checkout: self
+    persistCredentials: false
+  - task: UseDotNet@2
+    inputs:
+      packageType: sdk
+      version: 10.0.302
+  - pwsh: ./scripts/build-plugins.ps1
+    displayName: Build and test plugins using a disposable development key
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFormat: VSTest
+      testResultsFiles: '**/TestResults/*.trx'
+      failTaskOnFailedTests: true
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: $(Build.SourcesDirectory)/artifacts/plugins
+      artifact: documents-plugins-development

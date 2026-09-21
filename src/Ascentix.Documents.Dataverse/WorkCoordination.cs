@@ -1,0 +1,252 @@
+using System;
+using System.Linq;
+using System.Runtime.Serialization;
+using Ascentix.Documents.Conditions;
+using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Query;
+
+namespace Ascentix.Documents.Dataverse;
+
+[DataContract]
+public sealed class ConnectionBudget : StoredDocument
+{
+    [DataMember]
+    public string[] Writers { get; set; } = Array.Empty<string>();
+
+    [DataMember]
+    public DateTime NextStartUtc { get; set; }
+
+    [DataMember]
+    public DateTime PauseUntilUtc { get; set; }
+
+    [DataMember]
+    public int PaceSeconds { get; set; } = 1;
+
+    [DataMember]
+    public DateTime RecoverPaceUtc { get; set; }
+}
+
+public static class WorkCoordination
+{
+    public const string BudgetKey = "connection-budget:v1";
+
+    public static string SiteUrl(string url) =>
+        "site-writer:" + DocumentStore.Hash(url.TrimEnd('/').ToLowerInvariant());
+
+    public static string Site(IOrganizationService service, Guid id) =>
+        SiteUrl(
+            TemplateStore.Text(
+                service.Retrieve("asx_site", id, new ColumnSet("asx_url")),
+                "asx_url"
+            )
+        );
+
+    public static string Library(IOrganizationService service, Guid id) =>
+        Site(
+            service,
+            service
+                .Retrieve("asx_library", id, new ColumnSet("asx_siteid"))
+                .GetAttributeValue<EntityReference>("asx_siteid")
+                .Id
+        );
+
+    public static string Operation(IOrganizationService service, string key)
+    {
+        var store = new DocumentStore(service);
+        if (key.StartsWith("catalogprobe:", StringComparison.Ordinal))
+            return SiteUrl(store.Require<CatalogProbe>("asx_operation", key).Value.WebUrl);
+        if (key.StartsWith("librarycreate:", StringComparison.Ordinal))
+            return SiteUrl(store.Require<LibrarySetup>("asx_operation", key).Value.WebUrl);
+        if (key.StartsWith("policywork:", StringComparison.Ordinal))
+            return SiteUrl(store.Require<SecurityOperation>("asx_operation", key).Value.WebUrl);
+        var op = store.Require<OperationDocument>("asx_operation", key).Value;
+        return Library(
+            service,
+            op.HistoryCompacted || op.Folders.Length == 0 ? op.ResultLibraryId : op.Folder.LibraryId
+        );
+    }
+
+    private static StoredRow<ConnectionBudget> Budget(DocumentStore store)
+    {
+        var budget = store.Find<ConnectionBudget>("asx_claim", BudgetKey);
+        if (budget == null)
+        {
+            store.Create("asx_claim", new ConnectionBudget { Key = BudgetKey, Status = "Budget" });
+            budget = store.Require<ConnectionBudget>("asx_claim", BudgetKey);
+        }
+        return budget;
+    }
+
+    /// <summary>
+    /// Updates the shared two-writer budget in the site claim transaction; unresolved writers retain a slot.
+    /// </summary>
+    /// <param name="service">The Dataverse service participating in the site claim transaction.</param>
+    /// <param name="claim">The site writer's current ownership and outstanding-request state.</param>
+    public static void SaveWriter(IOrganizationService service, DispatcherDocument claim)
+    {
+        if (!claim.Key.StartsWith("site-writer:", StringComparison.Ordinal))
+            throw new EvaluationBlockedException("Writer must have a site scope.");
+        if (claim.RunId == null && claim.HttpOutstanding)
+            throw new EvaluationBlockedException(
+                "Cannot release a writer with an unresolved HTTP request."
+            );
+        var store = new DocumentStore(service);
+        var budget = Budget(store);
+        var other = budget.Value.Writers.Where(key => key != claim.Key).ToArray();
+        if (claim.RunId != null && other.Length >= 2)
+            throw new EvaluationBlockedException(
+                "Shared connection has two active writers. Retry dispatch later."
+            );
+        budget.Value.Writers =
+            claim.RunId == null ? other : other.Concat(new[] { claim.Key }).ToArray();
+        store.Save(budget);
+    }
+
+    public static bool Busy(IOrganizationService service) =>
+        new DocumentStore(service)
+            .Find<ConnectionBudget>("asx_claim", BudgetKey)
+            ?.Value.Writers.Length > 0;
+
+    public static void RequireIdle(IOrganizationService service)
+    {
+        var store = new DocumentStore(service);
+        var budget = Budget(store);
+        if (budget.Value.Writers.Length != 0)
+            throw new EvaluationBlockedException(
+                "Finish or reconcile active writers before changing runtime configuration."
+            );
+        // Writes the shared row using its current version, including when its values are unchanged.
+        store.Save(budget);
+    }
+
+    public static bool HasCapacity(IOrganizationService service, string scope, DateTime? now = null)
+    {
+        var budget = new DocumentStore(service)
+            .Find<ConnectionBudget>("asx_claim", BudgetKey)
+            ?.Value;
+        return budget == null
+            || budget.Writers.Contains(scope)
+            || (budget.Writers.Length < 2 && budget.PauseUntilUtc <= (now ?? DateTime.UtcNow));
+    }
+
+    /// <summary>
+    /// Renews the site lease and grants one HTTP request when shared pacing and backoff allow it.
+    /// </summary>
+    /// <param name="service">The transactional Dataverse service used to update claims and the budget.</param>
+    /// <param name="request">The operation key, run identity, and current claim token.</param>
+    /// <param name="now">The UTC time used for lease renewal and request admission.</param>
+    /// <returns>A Permit result or a Wait result containing the required delay in seconds.</returns>
+    public static WorkerResult BeginHttp(
+        IOrganizationService service,
+        WorkerRequest request,
+        DateTime now
+    )
+    {
+        var store = new DocumentStore(service);
+        var claim = store.Require<DispatcherDocument>("asx_claim", Operation(service, request.Key));
+        Assert(claim.Value, request, now);
+        if (claim.Value.HttpOutstanding)
+            throw new EvaluationBlockedException(
+                "The previous HTTP request must complete before another can start."
+            );
+        var budget = Budget(store);
+        if (!budget.Value.Writers.Contains(claim.Value.Key))
+            throw new EvaluationBlockedException(
+                "Writer is not admitted to the shared connection."
+            );
+        var until =
+            budget.Value.NextStartUtc > budget.Value.PauseUntilUtc
+                ? budget.Value.NextStartUtc
+                : budget.Value.PauseUntilUtc;
+        claim.Value.LeaseUntilUtc = now.AddMinutes(5);
+        store.Save(claim);
+        if (until > now)
+            return new WorkerResult
+            {
+                Status = "Wait",
+                Key = request.Key,
+                WaitSeconds = Math.Min(
+                    60,
+                    Math.Max(1, (int)Math.Ceiling((until - now).TotalSeconds))
+                ),
+            };
+        // SaveWriter refreshed the same row; read its new row version before the admission CAS.
+        budget = Budget(store);
+        if (budget.Value.PaceSeconds > 1 && budget.Value.RecoverPaceUtc <= now)
+        {
+            budget.Value.PaceSeconds = Math.Max(1, budget.Value.PaceSeconds / 2);
+            budget.Value.RecoverPaceUtc = now.AddMinutes(10);
+        }
+        budget.Value.NextStartUtc = now.AddSeconds(Math.Max(1, budget.Value.PaceSeconds));
+        store.Save(budget);
+        claim = store.Require<DispatcherDocument>("asx_claim", claim.Value.Key);
+        claim.Value.HttpOutstanding = true;
+        store.Save(claim);
+        return new WorkerResult { Status = "Permit", Key = request.Key };
+    }
+
+    /// <summary>
+    /// Applies connection-wide backoff and releases the outstanding request flag for known responses.
+    /// </summary>
+    /// <param name="service">The transactional Dataverse service used to update claims and the budget.</param>
+    /// <param name="request">The claim identity, HTTP status, and optional Retry-After response value.</param>
+    /// <param name="now">The UTC time used to validate the claim and calculate backoff.</param>
+    /// <returns>A quarantine result for an unknown outcome, or null for a known response.</returns>
+    public static WorkerResult? Response(
+        IOrganizationService service,
+        WorkerRequest request,
+        DateTime now
+    )
+    {
+        var store = new DocumentStore(service);
+        var claim = store.Require<DispatcherDocument>("asx_claim", Operation(service, request.Key));
+        Assert(claim.Value, request, now);
+        if (request.HttpStatus == 429 || request.HttpStatus >= 500)
+        {
+            var budget = Budget(store);
+            DateTime pause;
+            try
+            {
+                pause = WorkerCoordinator.RetryAt(now, 1, request.RetryAfter);
+            }
+            catch (EvaluationBlockedException)
+            {
+                pause = now.AddDays(7);
+            }
+            if (pause > budget.Value.PauseUntilUtc)
+                budget.Value.PauseUntilUtc = pause;
+            budget.Value.PaceSeconds = Math.Min(4, Math.Max(1, budget.Value.PaceSeconds) * 2);
+            budget.Value.RecoverPaceUtc = pause.AddMinutes(10);
+            store.Save(budget);
+        }
+        if (request.HttpStatus == 0 || request.HttpStatus == 408)
+            return new WorkerResult
+            {
+                Status = "Quarantined",
+                Key = request.Key,
+                Token = request.Token,
+                Notices = new[]
+                {
+                    "Request completion is unknown. The shared slot remains reserved until the original run is reconciled.",
+                },
+            };
+        claim.Value.HttpOutstanding = false;
+        store.Save(claim);
+        return null;
+    }
+
+    private static void Assert(DispatcherDocument claim, WorkerRequest request, DateTime now)
+    {
+        if (
+            request.Token == Guid.Empty
+            || claim.Token != request.Token
+            || claim.OperationKey != request.Key
+            || claim.RunId != request.RunId
+            || claim.LeaseUntilUtc <= now
+            || claim.RecoveryPermitted
+        )
+            throw new EvaluationBlockedException(
+                "HTTP admission requires the current site writer."
+            );
+    }
+}

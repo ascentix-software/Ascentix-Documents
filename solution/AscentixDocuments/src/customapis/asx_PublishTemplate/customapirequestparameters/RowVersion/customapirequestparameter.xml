@@ -1,0 +1,12 @@
+<customapirequestparameter uniquename="RowVersion">
+  <description default="Owned by standalone Ascentix Documents development setup v1">
+    <label description="Owned by standalone Ascentix Documents development setup v1" languagecode="1033" />
+  </description>
+  <displayname default="RowVersion">
+    <label description="RowVersion" languagecode="1033" />
+  </displayname>
+  <iscustomizable>1</iscustomizable>
+  <isoptional>0</isoptional>
+  <name>RowVersion</name>
+  <type>10</type>
+</customapirequestparameter>

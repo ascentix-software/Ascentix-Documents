@@ -1,0 +1,202 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<ImportExportXml version="9.2.26091.144" SolutionPackageVersion="9.2" languagecode="1033" generatedBy="CrmLive" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" OrganizationVersion="9.2.26091.144" OrganizationSchemaType="Standard" CRMServerServiceabilityVersion="9.2.26091.00144">
+  <SolutionManifest>
+    <UniqueName>AscentixDocuments</UniqueName>
+    <LocalizedNames>
+      <LocalizedName description="Ascentix Documents" languagecode="1033" />
+    </LocalizedNames>
+    <Descriptions>
+      <Description description="Owned by standalone Ascentix Documents development setup v1" languagecode="1033" />
+    </Descriptions>
+    <Version>0.1.0.3</Version>
+    <Managed>2</Managed>
+    <Publisher>
+      <UniqueName>ascentix</UniqueName>
+      <LocalizedNames>
+        <LocalizedName description="Ascentix" languagecode="1033" />
+      </LocalizedNames>
+      <Descriptions />
+      <EMailAddress xsi:nil="true"></EMailAddress>
+      <SupportingWebsiteUrl xsi:nil="true"></SupportingWebsiteUrl>
+      <CustomizationPrefix>asx</CustomizationPrefix>
+      <CustomizationOptionValuePrefix>10000</CustomizationOptionValuePrefix>
+      <Addresses>
+        <Address>
+          <AddressNumber>1</AddressNumber>
+          <AddressTypeCode>1</AddressTypeCode>
+          <City xsi:nil="true"></City>
+          <County xsi:nil="true"></County>
+          <Country xsi:nil="true"></Country>
+          <Fax xsi:nil="true"></Fax>
+          <FreightTermsCode xsi:nil="true"></FreightTermsCode>
+          <ImportSequenceNumber xsi:nil="true"></ImportSequenceNumber>
+          <Latitude xsi:nil="true"></Latitude>
+          <Line1 xsi:nil="true"></Line1>
+          <Line2 xsi:nil="true"></Line2>
+          <Line3 xsi:nil="true"></Line3>
+          <Longitude xsi:nil="true"></Longitude>
+          <Name xsi:nil="true"></Name>
+          <PostalCode xsi:nil="true"></PostalCode>
+          <PostOfficeBox xsi:nil="true"></PostOfficeBox>
+          <PrimaryContactName xsi:nil="true"></PrimaryContactName>
+          <ShippingMethodCode>1</ShippingMethodCode>
+          <StateOrProvince xsi:nil="true"></StateOrProvince>
+          <Telephone1 xsi:nil="true"></Telephone1>
+          <Telephone2 xsi:nil="true"></Telephone2>
+          <Telephone3 xsi:nil="true"></Telephone3>
+          <TimeZoneRuleVersionNumber xsi:nil="true"></TimeZoneRuleVersionNumber>
+          <UPSZone xsi:nil="true"></UPSZone>
+          <UTCOffset xsi:nil="true"></UTCOffset>
+          <UTCConversionTimeZoneCode xsi:nil="true"></UTCConversionTimeZoneCode>
+        </Address>
+        <Address>
+          <AddressNumber>2</AddressNumber>
+          <AddressTypeCode>1</AddressTypeCode>
+          <City xsi:nil="true"></City>
+          <County xsi:nil="true"></County>
+          <Country xsi:nil="true"></Country>
+          <Fax xsi:nil="true"></Fax>
+          <FreightTermsCode xsi:nil="true"></FreightTermsCode>
+          <ImportSequenceNumber xsi:nil="true"></ImportSequenceNumber>
+          <Latitude xsi:nil="true"></Latitude>
+          <Line1 xsi:nil="true"></Line1>
+          <Line2 xsi:nil="true"></Line2>
+          <Line3 xsi:nil="true"></Line3>
+          <Longitude xsi:nil="true"></Longitude>
+          <Name xsi:nil="true"></Name>
+          <PostalCode xsi:nil="true"></PostalCode>
+          <PostOfficeBox xsi:nil="true"></PostOfficeBox>
+          <PrimaryContactName xsi:nil="true"></PrimaryContactName>
+          <ShippingMethodCode>1</ShippingMethodCode>
+          <StateOrProvince xsi:nil="true"></StateOrProvince>
+          <Telephone1 xsi:nil="true"></Telephone1>
+          <Telephone2 xsi:nil="true"></Telephone2>
+          <Telephone3 xsi:nil="true"></Telephone3>
+          <TimeZoneRuleVersionNumber xsi:nil="true"></TimeZoneRuleVersionNumber>
+          <UPSZone xsi:nil="true"></UPSZone>
+          <UTCOffset xsi:nil="true"></UTCOffset>
+          <UTCConversionTimeZoneCode xsi:nil="true"></UTCConversionTimeZoneCode>
+        </Address>
+      </Addresses>
+    </Publisher>
+    <RootComponents>
+      <RootComponent type="1" schemaName="asx_attempt" behavior="0" />
+      <RootComponent type="1" schemaName="asx_claim" behavior="0" />
+      <RootComponent type="1" schemaName="asx_condition" behavior="0" />
+      <RootComponent type="1" schemaName="asx_destination" behavior="0" />
+      <RootComponent type="1" schemaName="asx_documentconditiongroup" behavior="0" />
+      <RootComponent type="1" schemaName="asx_folder" behavior="0" />
+      <RootComponent type="1" schemaName="asx_library" behavior="0" />
+      <RootComponent type="1" schemaName="asx_managedgrant" behavior="0" />
+      <RootComponent type="1" schemaName="asx_managedgroup" behavior="0" />
+      <RootComponent type="1" schemaName="asx_membership" behavior="0" />
+      <RootComponent type="1" schemaName="asx_operation" behavior="0" />
+      <RootComponent type="1" schemaName="asx_operatorcommand" behavior="0" />
+      <RootComponent type="1" schemaName="asx_outbox" behavior="0" />
+      <RootComponent type="1" schemaName="asx_policy" behavior="0" />
+      <RootComponent type="1" schemaName="asx_policyentry" behavior="0" />
+      <RootComponent type="1" schemaName="asx_publication" behavior="0" />
+      <RootComponent type="1" schemaName="asx_revision" behavior="0" />
+      <RootComponent type="1" schemaName="asx_runtime" behavior="0" />
+      <RootComponent type="1" schemaName="asx_site" behavior="0" />
+      <RootComponent type="1" schemaName="asx_source" behavior="0" />
+      <RootComponent type="1" schemaName="asx_teamregistration" behavior="0" />
+      <RootComponent type="1" schemaName="asx_template" behavior="0" />
+      <RootComponent type="1" schemaName="asx_workercommand" behavior="0" />
+      <RootComponent type="1" schemaName="sharepointdocumentlocation" behavior="1" />
+      <RootComponent type="1" schemaName="sharepointsite" behavior="1" />
+      <RootComponent type="20" id="{5f67d3c0-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="20" id="{767342ba-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="20" id="{7d38dac5-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="20" id="{c743bec7-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="20" id="{daaacbc6-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="20" id="{e8ded1b6-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="29" id="{0b9582d5-1044-4514-b521-4cb5d47c8d2d}" behavior="0" />
+      <RootComponent type="29" id="{9fa28a4b-8364-4431-951d-6e706e283cd7}" behavior="0" />
+      <RootComponent type="61" schemaName="asx_admin/admin.css" behavior="0" />
+      <RootComponent type="61" schemaName="asx_admin/admin.js" behavior="0" />
+      <RootComponent type="61" schemaName="asx_admin/folder.svg" behavior="0" />
+      <RootComponent type="61" schemaName="asx_admin/index.html" behavior="0" />
+      <RootComponent type="61" schemaName="asx_admin/sites-access.js" behavior="0" />
+      <RootComponent type="62" schemaName="asx_DocumentsAdmin" behavior="0" />
+      <RootComponent type="80" schemaName="asx_DocumentsAdmin" behavior="0" />
+      <RootComponent type="91" id="{ef5f388f-dbac-f111-aaab-7ced8d35c3dd}" schemaName="Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" behavior="0" />
+      <RootComponent type="92" id="{01b6f4a7-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{0263a0da-e2ac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{03b6f4a7-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{0463a0da-e2ac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{0685eca0-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{06b6f4a7-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{08b6f4a7-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{0963a0da-e2ac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{0985eca0-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{0ab6f4a7-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{0c63a0da-e2ac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{0d688ca1-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{0f688ca1-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{11688ca1-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{14688ca1-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{2b688ca1-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{2e688ca1-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{30ad3c9a-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{32ad3c9a-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{35d622a7-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{37d622a7-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{3bd622a7-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{3ed622a7-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{41d622a7-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{43d622a7-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{5aad3c9a-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{5cad3c9a-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{60dabcb0-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{65dabcb0-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{7d8384a4-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{828384a4-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{833e889b-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{858384a4-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{85ea9baa-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{8a3e889b-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{8cc69fae-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{8d3e889b-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{900de6b3-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{913e889b-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{943e889b-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{983e889b-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{b0ff5cd9-e2ac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{b4ff5cd9-e2ac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{b7ff5cd9-e2ac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{b9ff5cd9-e2ac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{be679ab4-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{bf11e897-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{c1679ab4-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{c211e897-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{c6679ab4-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{c8679ab4-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{ca679ab4-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{dcded1b6-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{deded1b6-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{df0de6b3-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{e0ded1b6-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{e10de6b3-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{e40de6b3-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{e4ded1b6-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{e70de6b3-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{ea4cf89d-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{ec0de6b3-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{ef4cf89d-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{f74cf89d-dbac-f111-aaab-002248af9c7f}" behavior="0" />
+      <RootComponent type="92" id="{f7b5f4a7-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{f885eca0-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
+      <RootComponent type="92" id="{fcb5f4a7-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+      <RootComponent type="92" id="{ffb5f4a7-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
+    </RootComponents>
+    <MissingDependencies>
+      <MissingDependency>
+        <Required type="SettingDefinition" displayName="AppChannel" solution="msdyn_AppFrameworkInfraExtensions (1.0.0.20)" id.uniquename="AppChannel">
+          <package appName="PowerAppsAppFramework Package" version="1.0.0.25">PowerAppsAppFramework_Anchor (1.0.0.25)</package>
+        </Required>
+        <Dependent type="AppSetting" displayName="parentappmoduleid.uniquename=asx_DocumentsAdmin,settingdefinitionid.uniquename=AppChannel" id.parentappmoduleid.uniquename="asx_DocumentsAdmin" id.settingdefinitionid.uniquename="AppChannel" />
+      </MissingDependency>
+    </MissingDependencies>
+  </SolutionManifest>
+</ImportExportXml>

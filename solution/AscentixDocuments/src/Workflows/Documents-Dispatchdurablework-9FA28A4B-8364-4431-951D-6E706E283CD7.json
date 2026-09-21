@@ -1,0 +1,806 @@
+{
+  "properties": {
+    "connectionReferences": {
+      "shared_commondataserviceforapps": {
+        "impersonation": {},
+        "runtimeSource": "embedded",
+        "connection": {
+          "connectionReferenceLogicalName": "asx_documentsdataverse"
+        },
+        "api": {
+          "name": "shared_commondataserviceforapps"
+        }
+      },
+      "shared_webcontents": {
+        "runtimeSource": "embedded",
+        "connection": {
+          "connectionReferenceLogicalName": "asx_documentshttp"
+        },
+        "api": {
+          "name": "shared_webcontents"
+        }
+      }
+    },
+    "definition": {
+      "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+      "contentVersion": "1.0.0.0",
+      "parameters": {
+        "$connections": {
+          "defaultValue": {},
+          "type": "Object"
+        },
+        "$authentication": {
+          "defaultValue": {},
+          "type": "SecureObject"
+        }
+      },
+      "triggers": {
+        "recurrence": {
+          "recurrence": {
+            "frequency": "Minute",
+            "interval": 1
+          },
+          "type": "Recurrence",
+          "runtimeConfiguration": {
+            "concurrency": {
+              "runs": 1
+            }
+          }
+        }
+      },
+      "actions": {
+        "Initialize_work": {
+          "runAfter": {},
+          "type": "InitializeVariable",
+          "inputs": {
+            "variables": [
+              {
+                "name": "WorkerAction",
+                "type": "string",
+                "value": "asx_DocumentWorker"
+              },
+              {
+                "name": "Work",
+                "type": "object",
+                "value": {}
+              },
+              {
+                "name": "HttpAdmission",
+                "type": "object",
+                "value": {}
+              }
+            ]
+          }
+        },
+        "Purge_completed_history": {
+          "runAfter": {
+            "Initialize_work": [
+              "Succeeded"
+            ]
+          },
+          "type": "OpenApiConnection",
+          "inputs": {
+            "host": {
+              "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+              "connectionName": "shared_commondataserviceforapps",
+              "operationId": "PerformUnboundAction"
+            },
+            "parameters": {
+              "actionName": "@variables('WorkerAction')",
+              "item": {
+                "Request": "@string(setProperty(json('{}'),'Command','PurgeHistory'))"
+              }
+            },
+            "authentication": "@parameters('$authentication')",
+            "retryPolicy": {
+              "type": "none"
+            }
+          }
+        },
+        "Refresh_approved_security": {
+          "runAfter": {
+            "Purge_completed_history": [
+              "Succeeded",
+              "Failed",
+              "TimedOut"
+            ]
+          },
+          "type": "OpenApiConnection",
+          "inputs": {
+            "host": {
+              "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+              "connectionName": "shared_commondataserviceforapps",
+              "operationId": "PerformUnboundAction"
+            },
+            "parameters": {
+              "actionName": "@variables('WorkerAction')",
+              "item": {
+                "Request": "@string(setProperty(json('{}'),'Command','RefreshSecurity'))"
+              }
+            },
+            "authentication": "@parameters('$authentication')",
+            "retryPolicy": {
+              "type": "none"
+            }
+          }
+        },
+        "List_pending_outbox": {
+          "runAfter": {
+            "Refresh_approved_security": [
+              "Succeeded",
+              "Failed",
+              "TimedOut"
+            ]
+          },
+          "type": "OpenApiConnection",
+          "inputs": {
+            "host": {
+              "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+              "connectionName": "shared_commondataserviceforapps",
+              "operationId": "PerformUnboundAction"
+            },
+            "parameters": {
+              "actionName": "@variables('WorkerAction')",
+              "item": {
+                "Request": "@string(setProperty(json('{}'),'Command','ListOutbox'))"
+              }
+            },
+            "authentication": "@parameters('$authentication')",
+            "retryPolicy": {
+              "type": "none"
+            }
+          }
+        },
+        "For_each_outbox": {
+          "foreach": "@coalesce(json(body('List_pending_outbox')?['Result'])?['Keys'],json('[]'))",
+          "actions": {
+            "Plan_outbox": {
+              "runAfter": {},
+              "type": "OpenApiConnection",
+              "inputs": {
+                "host": {
+                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                  "connectionName": "shared_commondataserviceforapps",
+                  "operationId": "PerformUnboundAction"
+                },
+                "parameters": {
+                  "actionName": "@variables('WorkerAction')",
+                  "item": {
+                    "Request": "@string(setProperty(setProperty(json('{}'),'Command','Plan'),'Key',items('For_each_outbox')))"
+                  }
+                },
+                "authentication": "@parameters('$authentication')",
+                "retryPolicy": {
+                  "type": "none"
+                }
+              }
+            },
+            "Record_blocked_outbox": {
+              "runAfter": {
+                "Plan_outbox": [
+                  "Failed",
+                  "TimedOut"
+                ]
+              },
+              "type": "OpenApiConnection",
+              "inputs": {
+                "host": {
+                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                  "connectionName": "shared_commondataserviceforapps",
+                  "operationId": "PerformUnboundAction"
+                },
+                "parameters": {
+                  "actionName": "@variables('WorkerAction')",
+                  "item": {
+                    "Request": "@string(setProperty(setProperty(json('{}'),'Command','FailOutbox'),'Key',items('For_each_outbox')))"
+                  }
+                },
+                "authentication": "@parameters('$authentication')",
+                "retryPolicy": {
+                  "type": "none"
+                }
+              }
+            }
+          },
+          "runAfter": {
+            "List_pending_outbox": [
+              "Succeeded"
+            ]
+          },
+          "type": "Foreach",
+          "runtimeConfiguration": {
+            "concurrency": {
+              "repetitions": 1
+            }
+          }
+        },
+        "List_pending_operations": {
+          "runAfter": {
+            "For_each_outbox": [
+              "Succeeded",
+              "Failed",
+              "TimedOut"
+            ]
+          },
+          "type": "OpenApiConnection",
+          "inputs": {
+            "host": {
+              "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+              "connectionName": "shared_commondataserviceforapps",
+              "operationId": "PerformUnboundAction"
+            },
+            "parameters": {
+              "actionName": "@variables('WorkerAction')",
+              "item": {
+                "Request": "@string(setProperty(json('{}'),'Command','ListOperations'))"
+              }
+            },
+            "authentication": "@parameters('$authentication')",
+            "retryPolicy": {
+              "type": "none"
+            }
+          }
+        },
+        "For_each_operation": {
+          "foreach": "@coalesce(json(body('List_pending_operations')?['Result'])?['Keys'],json('[]'))",
+          "actions": {
+            "Claim_operation": {
+              "runAfter": {},
+              "type": "OpenApiConnection",
+              "inputs": {
+                "host": {
+                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                  "connectionName": "shared_commondataserviceforapps",
+                  "operationId": "PerformUnboundAction"
+                },
+                "parameters": {
+                  "actionName": "@variables('WorkerAction')",
+                  "item": {
+                    "Request": "@string(setProperty(setProperty(setProperty(json('{}'),'Command','Claim'),'Key',items('For_each_operation')),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])))"
+                  }
+                },
+                "authentication": "@parameters('$authentication')",
+                "retryPolicy": {
+                  "type": "none"
+                }
+              }
+            },
+            "Record_failed_claim": {
+              "runAfter": {
+                "Claim_operation": [
+                  "Failed",
+                  "TimedOut"
+                ]
+              },
+              "type": "OpenApiConnection",
+              "inputs": {
+                "host": {
+                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                  "connectionName": "shared_commondataserviceforapps",
+                  "operationId": "PerformUnboundAction"
+                },
+                "parameters": {
+                  "actionName": "@variables('WorkerAction')",
+                  "item": {
+                    "Request": "@string(setProperty(setProperty(json('{}'),'Command','FailUnclaimed'),'Key',items('For_each_operation')))"
+                  }
+                },
+                "authentication": "@parameters('$authentication')",
+                "retryPolicy": {
+                  "type": "none"
+                }
+              }
+            },
+            "Save_claim_state": {
+              "runAfter": {
+                "Claim_operation": [
+                  "Succeeded"
+                ]
+              },
+              "type": "SetVariable",
+              "inputs": {
+                "name": "Work",
+                "value": "@json(body('Claim_operation')?['Result'])"
+              }
+            },
+            "Drive_operation": {
+              "actions": {
+                "Worker_state": {
+                  "runAfter": {},
+                  "cases": {
+                    "Read": {
+                      "case": "Read",
+                      "actions": {
+                        "Renew_read": {
+                          "runAfter": {},
+                          "type": "OpenApiConnection",
+                          "inputs": {
+                            "host": {
+                              "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                              "connectionName": "shared_commondataserviceforapps",
+                              "operationId": "PerformUnboundAction"
+                            },
+                            "parameters": {
+                              "actionName": "@variables('WorkerAction')",
+                              "item": {
+                                "Request": "@string(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','Renew'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']))"
+                              }
+                            },
+                            "authentication": "@parameters('$authentication')",
+                            "retryPolicy": {
+                              "type": "none"
+                            }
+                          }
+                        },
+                        "Reset_read_permit": {
+                          "runAfter": {
+                            "Renew_read": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "SetVariable",
+                          "inputs": {
+                            "name": "HttpAdmission",
+                            "value": {}
+                          }
+                        },
+                        "Await_read_slot": {
+                          "actions": {
+                            "Begin_read": {
+                              "runAfter": {},
+                              "type": "OpenApiConnection",
+                              "inputs": {
+                                "host": {
+                                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                                  "connectionName": "shared_commondataserviceforapps",
+                                  "operationId": "PerformUnboundAction"
+                                },
+                                "parameters": {
+                                  "actionName": "@variables('WorkerAction')",
+                                  "item": {
+                                    "Request": "@string(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','BeginHttp'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']))"
+                                  }
+                                },
+                                "authentication": "@parameters('$authentication')",
+                                "retryPolicy": {
+                                  "type": "none"
+                                }
+                              }
+                            },
+                            "Save_read_permit": {
+                              "runAfter": {
+                                "Begin_read": [
+                                  "Succeeded"
+                                ]
+                              },
+                              "type": "SetVariable",
+                              "inputs": {
+                                "name": "HttpAdmission",
+                                "value": "@json(body('Begin_read')?['Result'])"
+                              }
+                            },
+                            "Wait_read": {
+                              "actions": {
+                                "Pause_read": {
+                                  "runAfter": {},
+                                  "type": "Wait",
+                                  "inputs": {
+                                    "interval": {
+                                      "count": "@variables('HttpAdmission')?['WaitSeconds']",
+                                      "unit": "Second"
+                                    }
+                                  }
+                                }
+                              },
+                              "runAfter": {
+                                "Save_read_permit": [
+                                  "Succeeded"
+                                ]
+                              },
+                              "else": {
+                                "actions": {}
+                              },
+                              "expression": "@equals(variables('HttpAdmission')?['Status'],'Wait')",
+                              "type": "If"
+                            }
+                          },
+                          "runAfter": {
+                            "Reset_read_permit": [
+                              "Succeeded"
+                            ]
+                          },
+                          "expression": "@equals(variables('HttpAdmission')?['Status'],'Permit')",
+                          "limit": {
+                            "count": 120,
+                            "timeout": "PT2H"
+                          },
+                          "type": "Until",
+                          "operationOptions": "FailWhenLimitsReached"
+                        },
+                        "Read_HTTP": {
+                          "runAfter": {
+                            "Await_read_slot": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "OpenApiConnection",
+                          "inputs": {
+                            "host": {
+                              "apiId": "/providers/Microsoft.PowerApps/apis/shared_webcontents",
+                              "connectionName": "shared_webcontents",
+                              "operationId": "InvokeHttp"
+                            },
+                            "parameters": {
+                              "request/method": "GET",
+                              "request/url": "@concat(variables('Work')?['SiteUrl'],'/',variables('Work')?['Http']?['RelativeUri'])",
+                              "request/headers": {
+                                "Accept": "application/json;odata=verbose"
+                              }
+                            },
+                            "authentication": "@parameters('$authentication')",
+                            "retryPolicy": {
+                              "type": "none"
+                            }
+                          }
+                        },
+                        "Observe_read": {
+                          "runAfter": {
+                            "Read_HTTP": [
+                              "Succeeded",
+                              "Failed",
+                              "TimedOut"
+                            ]
+                          },
+                          "type": "OpenApiConnection",
+                          "inputs": {
+                            "host": {
+                              "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                              "connectionName": "shared_commondataserviceforapps",
+                              "operationId": "PerformUnboundAction"
+                            },
+                            "parameters": {
+                              "actionName": "@variables('WorkerAction')",
+                              "item": {
+                                "Request": "@string(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','Observe'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']),'ProbeId',variables('Work')?['ProbeId']),'ProbeKind',variables('Work')?['ProbeKind']),'HttpStatus',coalesce(outputs('Read_HTTP')?['statusCode'],0)),'ResponseBody',string(body('Read_HTTP'))),'RetryAfter',coalesce(outputs('Read_HTTP')?['headers']?['Retry-After'],outputs('Read_HTTP')?['headers']?['retry-after'],'')))"
+                              }
+                            },
+                            "authentication": "@parameters('$authentication')",
+                            "retryPolicy": {
+                              "type": "none"
+                            }
+                          }
+                        },
+                        "Save_read_state": {
+                          "runAfter": {
+                            "Observe_read": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "SetVariable",
+                          "inputs": {
+                            "name": "Work",
+                            "value": "@json(body('Observe_read')?['Result'])"
+                          }
+                        }
+                      }
+                    },
+                    "Ready": {
+                      "case": "ReadyToCreate",
+                      "actions": {
+                        "Prepare_create": {
+                          "runAfter": {},
+                          "type": "OpenApiConnection",
+                          "inputs": {
+                            "host": {
+                              "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                              "connectionName": "shared_commondataserviceforapps",
+                              "operationId": "PerformUnboundAction"
+                            },
+                            "parameters": {
+                              "actionName": "@variables('WorkerAction')",
+                              "item": {
+                                "Request": "@string(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','PrepareCreate'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']))"
+                              }
+                            },
+                            "authentication": "@parameters('$authentication')",
+                            "retryPolicy": {
+                              "type": "none"
+                            }
+                          }
+                        },
+                        "Save_prepared_state": {
+                          "runAfter": {
+                            "Prepare_create": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "SetVariable",
+                          "inputs": {
+                            "name": "Work",
+                            "value": "@json(body('Prepare_create')?['Result'])"
+                          }
+                        }
+                      }
+                    },
+                    "Create": {
+                      "case": "Create",
+                      "actions": {
+                        "Renew_create": {
+                          "runAfter": {},
+                          "type": "OpenApiConnection",
+                          "inputs": {
+                            "host": {
+                              "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                              "connectionName": "shared_commondataserviceforapps",
+                              "operationId": "PerformUnboundAction"
+                            },
+                            "parameters": {
+                              "actionName": "@variables('WorkerAction')",
+                              "item": {
+                                "Request": "@string(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','Renew'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']))"
+                              }
+                            },
+                            "authentication": "@parameters('$authentication')",
+                            "retryPolicy": {
+                              "type": "none"
+                            }
+                          }
+                        },
+                        "Reset_create_permit": {
+                          "runAfter": {
+                            "Renew_create": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "SetVariable",
+                          "inputs": {
+                            "name": "HttpAdmission",
+                            "value": {}
+                          }
+                        },
+                        "Await_create_slot": {
+                          "actions": {
+                            "Begin_create": {
+                              "runAfter": {},
+                              "type": "OpenApiConnection",
+                              "inputs": {
+                                "host": {
+                                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                                  "connectionName": "shared_commondataserviceforapps",
+                                  "operationId": "PerformUnboundAction"
+                                },
+                                "parameters": {
+                                  "actionName": "@variables('WorkerAction')",
+                                  "item": {
+                                    "Request": "@string(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','BeginHttp'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']))"
+                                  }
+                                },
+                                "authentication": "@parameters('$authentication')",
+                                "retryPolicy": {
+                                  "type": "none"
+                                }
+                              }
+                            },
+                            "Save_create_permit": {
+                              "runAfter": {
+                                "Begin_create": [
+                                  "Succeeded"
+                                ]
+                              },
+                              "type": "SetVariable",
+                              "inputs": {
+                                "name": "HttpAdmission",
+                                "value": "@json(body('Begin_create')?['Result'])"
+                              }
+                            },
+                            "Wait_create": {
+                              "actions": {
+                                "Pause_create": {
+                                  "runAfter": {},
+                                  "type": "Wait",
+                                  "inputs": {
+                                    "interval": {
+                                      "count": "@variables('HttpAdmission')?['WaitSeconds']",
+                                      "unit": "Second"
+                                    }
+                                  }
+                                }
+                              },
+                              "runAfter": {
+                                "Save_create_permit": [
+                                  "Succeeded"
+                                ]
+                              },
+                              "else": {
+                                "actions": {}
+                              },
+                              "expression": "@equals(variables('HttpAdmission')?['Status'],'Wait')",
+                              "type": "If"
+                            }
+                          },
+                          "runAfter": {
+                            "Reset_create_permit": [
+                              "Succeeded"
+                            ]
+                          },
+                          "expression": "@equals(variables('HttpAdmission')?['Status'],'Permit')",
+                          "limit": {
+                            "count": 120,
+                            "timeout": "PT2H"
+                          },
+                          "type": "Until",
+                          "operationOptions": "FailWhenLimitsReached"
+                        },
+                        "Create_HTTP": {
+                          "runAfter": {
+                            "Await_create_slot": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "OpenApiConnection",
+                          "inputs": {
+                            "host": {
+                              "apiId": "/providers/Microsoft.PowerApps/apis/shared_webcontents",
+                              "connectionName": "shared_webcontents",
+                              "operationId": "InvokeHttp"
+                            },
+                            "parameters": {
+                              "request/method": "POST",
+                              "request/url": "@concat(variables('Work')?['SiteUrl'],'/',variables('Work')?['Http']?['RelativeUri'])",
+                              "request/headers": {
+                                "Accept": "application/json;odata=verbose",
+                                "Content-Type": "application/json;odata=verbose"
+                              },
+                              "request/body": "@variables('Work')?['Http']?['Body']"
+                            },
+                            "authentication": "@parameters('$authentication')",
+                            "retryPolicy": {
+                              "type": "none"
+                            }
+                          }
+                        },
+                        "Record_create_response": {
+                          "runAfter": {
+                            "Create_HTTP": [
+                              "Succeeded",
+                              "Failed",
+                              "TimedOut"
+                            ]
+                          },
+                          "type": "OpenApiConnection",
+                          "inputs": {
+                            "host": {
+                              "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                              "connectionName": "shared_commondataserviceforapps",
+                              "operationId": "PerformUnboundAction"
+                            },
+                            "parameters": {
+                              "actionName": "@variables('WorkerAction')",
+                              "item": {
+                                "Request": "@string(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','CreateResponse'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']),'HttpStatus',coalesce(outputs('Create_HTTP')?['statusCode'],0)),'ResponseBody',string(body('Create_HTTP'))),'RetryAfter',coalesce(outputs('Create_HTTP')?['headers']?['Retry-After'],outputs('Create_HTTP')?['headers']?['retry-after'],'')))"
+                              }
+                            },
+                            "authentication": "@parameters('$authentication')",
+                            "retryPolicy": {
+                              "type": "none"
+                            }
+                          }
+                        },
+                        "Save_create_state": {
+                          "runAfter": {
+                            "Record_create_response": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "SetVariable",
+                          "inputs": {
+                            "name": "Work",
+                            "value": "@json(body('Record_create_response')?['Result'])"
+                          }
+                        }
+                      }
+                    },
+                    "Verified": {
+                      "case": "Verified",
+                      "actions": {
+                        "Complete_operation": {
+                          "runAfter": {},
+                          "type": "OpenApiConnection",
+                          "inputs": {
+                            "host": {
+                              "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                              "connectionName": "shared_commondataserviceforapps",
+                              "operationId": "PerformUnboundAction"
+                            },
+                            "parameters": {
+                              "actionName": "@variables('WorkerAction')",
+                              "item": {
+                                "Request": "@string(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','Complete'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']))"
+                              }
+                            },
+                            "authentication": "@parameters('$authentication')",
+                            "retryPolicy": {
+                              "type": "none"
+                            }
+                          }
+                        },
+                        "Save_complete_state": {
+                          "runAfter": {
+                            "Complete_operation": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "SetVariable",
+                          "inputs": {
+                            "name": "Work",
+                            "value": "@json(body('Complete_operation')?['Result'])"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "default": {
+                    "actions": {}
+                  },
+                  "expression": "@variables('Work')?['Status']",
+                  "type": "Switch"
+                }
+              },
+              "runAfter": {
+                "Save_claim_state": [
+                  "Succeeded"
+                ]
+              },
+              "expression": "@not(contains(createArray('Read','ReadyToCreate','Create','Verified'),variables('Work')?['Status']))",
+              "limit": {
+                "count": 80,
+                "timeout": "PT3H"
+              },
+              "type": "Until",
+              "operationOptions": "FailWhenLimitsReached"
+            },
+            "Record_failed_operation": {
+              "runAfter": {
+                "Drive_operation": [
+                  "Failed",
+                  "TimedOut"
+                ]
+              },
+              "type": "OpenApiConnection",
+              "inputs": {
+                "host": {
+                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                  "connectionName": "shared_commondataserviceforapps",
+                  "operationId": "PerformUnboundAction"
+                },
+                "parameters": {
+                  "actionName": "@variables('WorkerAction')",
+                  "item": {
+                    "Request": "@string(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','Fail'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']))"
+                  }
+                },
+                "authentication": "@parameters('$authentication')",
+                "retryPolicy": {
+                  "type": "none"
+                }
+              }
+            }
+          },
+          "runAfter": {
+            "List_pending_operations": [
+              "Succeeded"
+            ]
+          },
+          "type": "Foreach",
+          "runtimeConfiguration": {
+            "concurrency": {
+              "repetitions": 1
+            }
+          }
+        }
+      }
+    },
+    "templateName": null
+  },
+  "schemaVersion": "1.0.0.0"
+}

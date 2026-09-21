@@ -1,0 +1,33 @@
+Ascentix Documents
+Copyright 2026 Ascentix Software
+
+Licensed under the Apache License, Version 2.0; see LICENSE.
+
+Source attribution
+------------------
+
+This product includes source portions adapted from Ascentix Rules Engine,
+Copyright 2026 Ascentix Software, licensed under Apache-2.0.
+
+Upstream repository: https://github.com/ascentix-software/Ascentix-Rules-Engine
+Upstream commit: 55cd13989ba433a09943ef06e44b793df661e533
+
+Upstream: Ascentix.RulesEngine.Core/Evaluation/ValueComparer.cs
+Adapted in: src/Ascentix.Documents.Conditions/Values.cs
+Changes: Typed values replace ambient parsing; invariant numbers; explicit null vs empty; type/operator rejection; comparison-only enums.
+
+Upstream: Ascentix.RulesEngine.Core/Documents/FolderPlanner.cs
+Adapted in: src/Ascentix.Documents.Domain/Planning.cs
+Changes: No SDK entities/rule IDs; multiple sections, direct lookup snapshots, stable keys, stricter bounded tree contract.
+
+Upstream: Ascentix.SharePointDemo.Plugin/FolderWorkerApi.cs
+Adapted in: src/Ascentix.Documents.Dataverse/SharePointRequests.cs
+Changes: Approved list GUID and decoded parent; AsxdWorkKey; no hardcoded demo scope or engine API; request construction only, no HTTP.
+
+The upstream React/Fluent UI bundles, fonts, and icon artwork are not included
+in Ascentix Documents. The admin interface uses system fonts with Manrope as a
+preferred family; no font binary is redistributed. Folder artwork is original
+Ascentix Software work.
+
+Dataverse SDK and test packages remain governed by their package licenses.
+Dataverse supplies the SDK at plugin runtime.

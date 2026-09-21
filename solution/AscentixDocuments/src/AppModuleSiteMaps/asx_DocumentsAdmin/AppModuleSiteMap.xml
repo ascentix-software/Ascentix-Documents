@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<AppModuleSiteMap xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <SiteMapUniqueName>asx_DocumentsAdmin</SiteMapUniqueName>
+  <EnableCollapsibleGroups>False</EnableCollapsibleGroups>
+  <ShowHome>True</ShowHome>
+  <ShowPinned>True</ShowPinned>
+  <ShowRecents>True</ShowRecents>
+  <SiteMap>
+    <Area Id="asx_documents" Title="Ascentix Documents" ShowGroups="true">
+      <Group Id="asx_authoring" Title="Templates">
+        <SubArea Id="asx_studio" Title="Folder templates" Url="$webresource:asx_admin/index.html?data=ui20260909labels4" />
+      </Group>
+      <Group Id="asx_security" Title="Access and operations">
+        <SubArea Id="asx_policyadmin" Title="Sites and access" Url="$webresource:asx_admin/index.html?data=ui20260909labels4#access" />
+        <SubArea Id="asx_runtimeadmin" Title="Runtime" Url="$webresource:asx_admin/index.html?data=ui20260909labels4#runtime" />
+        <SubArea Id="asx_operationsadmin" Title="Operations" Url="$webresource:asx_admin/index.html?data=ui20260909labels4#operations" />
+      </Group>
+    </Area>
+  </SiteMap>
+  <LocalizedNames>
+    <LocalizedName description="Ascentix Documents" languagecode="1033" />
+  </LocalizedNames>
+</AppModuleSiteMap>

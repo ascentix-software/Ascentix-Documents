@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<SdkMessageProcessingStep Name="Ascentix Documents: guard Delete asx_source" SdkMessageProcessingStepId="{5aad3c9a-dbac-f111-aaab-70a8a50cc3fd}" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <SdkMessageId>a1bdbb1b-ea3e-db11-86a7-000a3a5473e8</SdkMessageId>
+  <PluginTypeName>Ascentix.Documents.Plugins.RevisionGuard, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5</PluginTypeName>
+  <PluginTypeId>f35f388f-dbac-f111-aaab-7ced8d35c3dd</PluginTypeId>
+  <PrimaryEntity>asx_source</PrimaryEntity>
+  <AsyncAutoDelete>0</AsyncAutoDelete>
+  <Description>Owned by standalone Ascentix Documents development setup v1</Description>
+  <FilteringAttributes></FilteringAttributes>
+  <InvocationSource>1</InvocationSource>
+  <Mode>0</Mode>
+  <Rank>1</Rank>
+  <EventHandlerTypeCode>4602</EventHandlerTypeCode>
+  <Stage>20</Stage>
+  <IsCustomizable>1</IsCustomizable>
+  <IsHidden>0</IsHidden>
+  <SupportedDeployment>0</SupportedDeployment>
+  <IntroducedVersion>1.0</IntroducedVersion>
+  <SdkMessageProcessingStepImages />
+</SdkMessageProcessingStep>

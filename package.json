@@ -1,0 +1,11 @@
+{
+  "name": "ascentix-documents",
+  "private": true,
+  "scripts": {
+    "format": "prettier --write \"client/admin/**/*.{js,css,html}\" \"scripts/*.cjs\" \"tests/web/*.cjs\"",
+    "format:check": "prettier --check \"client/admin/**/*.{js,css,html}\" \"scripts/*.cjs\" \"tests/web/*.cjs\""
+  },
+  "devDependencies": {
+    "prettier": "3.9.6"
+  }
+}

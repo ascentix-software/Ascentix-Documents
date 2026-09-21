@@ -1,0 +1,57 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<PluginAssembly FullName="Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginAssemblyId="ef5f388f-dbac-f111-aaab-7ced8d35c3dd" CustomizationLevel="1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <IsolationMode>2</IsolationMode>
+  <SourceType>0</SourceType>
+  <IntroducedVersion>1.0</IntroducedVersion>
+  <FileName>/PluginAssemblies/AscentixDocumentsPlugins-EF5F388F-DBAC-F111-AAAB-7CED8D35C3DD/AscentixDocumentsPlugins.dll</FileName>
+  <PluginTypes>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.CatalogAdminApi, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="88ea9baa-dbac-f111-aaab-002248af9c7f" Name="Ascentix.Documents.Plugins.CatalogAdminApi">
+      <FriendlyName>Ascentix.Documents.Plugins.CatalogAdminApi</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.CatalogGuard, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="4dd622a7-dbac-f111-aaab-70a8a50cc3fd" Name="Ascentix.Documents.Plugins.CatalogGuard">
+      <FriendlyName>Ascentix.Documents.Plugins.CatalogGuard</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.CreateDraftApi, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="000f7691-dbac-f111-aaab-002248af9c7f" Name="Ascentix.Documents.Plugins.CreateDraftApi">
+      <FriendlyName>Ascentix.Documents.Plugins.CreateDraftApi</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.DocumentWorkerApi, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="030f7691-dbac-f111-aaab-002248af9c7f" Name="Ascentix.Documents.Plugins.DocumentWorkerApi">
+      <FriendlyName>Ascentix.Documents.Plugins.DocumentWorkerApi</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.LoadDraftApi, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="f25f388f-dbac-f111-aaab-7ced8d35c3dd" Name="Ascentix.Documents.Plugins.LoadDraftApi">
+      <FriendlyName>Ascentix.Documents.Plugins.LoadDraftApi</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.ManageWorkApi, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="4cd622a7-dbac-f111-aaab-70a8a50cc3fd" Name="Ascentix.Documents.Plugins.ManageWorkApi">
+      <FriendlyName>Ascentix.Documents.Plugins.ManageWorkApi</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.PreviewTemplateApi, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="010f7691-dbac-f111-aaab-002248af9c7f" Name="Ascentix.Documents.Plugins.PreviewTemplateApi">
+      <FriendlyName>Ascentix.Documents.Plugins.PreviewTemplateApi</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.PublishTemplateApi, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="b46d4f8d-dbac-f111-aaab-70a8a50cc3fd" Name="Ascentix.Documents.Plugins.PublishTemplateApi">
+      <FriendlyName>Ascentix.Documents.Plugins.PublishTemplateApi</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.RecordInvalidationPlugin, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="f45f388f-dbac-f111-aaab-7ced8d35c3dd" Name="Ascentix.Documents.Plugins.RecordInvalidationPlugin">
+      <FriendlyName>Ascentix.Documents.Plugins.RecordInvalidationPlugin</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.RecoverWorkerApi, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="f65f388f-dbac-f111-aaab-7ced8d35c3dd" Name="Ascentix.Documents.Plugins.RecoverWorkerApi">
+      <FriendlyName>Ascentix.Documents.Plugins.RecoverWorkerApi</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.RevisionGuard, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="f35f388f-dbac-f111-aaab-7ced8d35c3dd" Name="Ascentix.Documents.Plugins.RevisionGuard">
+      <FriendlyName>Ascentix.Documents.Plugins.RevisionGuard</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.RuntimeAdminApi, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="4ad622a7-dbac-f111-aaab-70a8a50cc3fd" Name="Ascentix.Documents.Plugins.RuntimeAdminApi">
+      <FriendlyName>Ascentix.Documents.Plugins.RuntimeAdminApi</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.SecurityAdminApi, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="3eb6f4a7-dbac-f111-aaab-7ced8d35c3dd" Name="Ascentix.Documents.Plugins.SecurityAdminApi">
+      <FriendlyName>Ascentix.Documents.Plugins.SecurityAdminApi</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.StateGuard, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="b56d4f8d-dbac-f111-aaab-70a8a50cc3fd" Name="Ascentix.Documents.Plugins.StateGuard">
+      <FriendlyName>Ascentix.Documents.Plugins.StateGuard</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.TeamMembershipInvalidationPlugin, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="f55f388f-dbac-f111-aaab-7ced8d35c3dd" Name="Ascentix.Documents.Plugins.TeamMembershipInvalidationPlugin">
+      <FriendlyName>Ascentix.Documents.Plugins.TeamMembershipInvalidationPlugin</FriendlyName>
+    </PluginType>
+    <PluginType AssemblyQualifiedName="Ascentix.Documents.Plugins.TeamRetirementPlugin, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5" PluginTypeId="020f7691-dbac-f111-aaab-002248af9c7f" Name="Ascentix.Documents.Plugins.TeamRetirementPlugin">
+      <FriendlyName>Ascentix.Documents.Plugins.TeamRetirementPlugin</FriendlyName>
+    </PluginType>
+  </PluginTypes>
+</PluginAssembly>

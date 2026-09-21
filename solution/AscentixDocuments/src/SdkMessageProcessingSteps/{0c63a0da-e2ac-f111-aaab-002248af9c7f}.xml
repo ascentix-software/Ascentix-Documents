@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<SdkMessageProcessingStep Name="Ascentix Documents: membership Disassociate" SdkMessageProcessingStepId="{0c63a0da-e2ac-f111-aaab-002248af9c7f}" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <SdkMessageId>bdfc191d-fc56-493a-a6b1-cb0c47a22ecc</SdkMessageId>
+  <PluginTypeName>Ascentix.Documents.Plugins.TeamMembershipInvalidationPlugin, Ascentix.Documents.Plugins, Version=0.1.0.0, Culture=neutral, PublicKeyToken=50214c64469649b5</PluginTypeName>
+  <PluginTypeId>f55f388f-dbac-f111-aaab-7ced8d35c3dd</PluginTypeId>
+  <AsyncAutoDelete>0</AsyncAutoDelete>
+  <Description>Owned by standalone Ascentix Documents development setup v1</Description>
+  <FilteringAttributes></FilteringAttributes>
+  <ImpersonatingUserIdName># ascentix-documents-dev</ImpersonatingUserIdName>
+  <InvocationSource>0</InvocationSource>
+  <Mode>0</Mode>
+  <Rank>1</Rank>
+  <EventHandlerTypeCode>4602</EventHandlerTypeCode>
+  <Stage>40</Stage>
+  <IsCustomizable>1</IsCustomizable>
+  <IsHidden>0</IsHidden>
+  <SupportedDeployment>0</SupportedDeployment>
+  <IntroducedVersion>1.0</IntroducedVersion>
+  <SdkMessageProcessingStepImages />
+</SdkMessageProcessingStep>

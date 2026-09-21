@@ -1,0 +1,21 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Role id="{e8ded1b6-dbac-f111-aaab-002248af9c7f}" name="Documents Reader" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <IsCustomizable>1</IsCustomizable>
+  <IsAutoAssigned>0</IsAutoAssigned>
+  <Description>Owned by standalone Ascentix Documents development setup v1</Description>
+  <RolePrivileges>
+    <RolePrivilege name="prvReadasx_condition" level="Global" />
+    <RolePrivilege name="prvReadasx_destination" level="Global" />
+    <RolePrivilege name="prvReadasx_documentconditiongroup" level="Global" />
+    <RolePrivilege name="prvReadasx_folder" level="Global" />
+    <RolePrivilege name="prvReadasx_library" level="Global" />
+    <RolePrivilege name="prvReadasx_policy" level="Global" />
+    <RolePrivilege name="prvReadasx_policyentry" level="Global" />
+    <RolePrivilege name="prvReadasx_revision" level="Global" />
+    <RolePrivilege name="prvReadasx_runtime" level="Global" />
+    <RolePrivilege name="prvReadasx_site" level="Global" />
+    <RolePrivilege name="prvReadasx_source" level="Global" />
+    <RolePrivilege name="prvReadasx_teamregistration" level="Global" />
+    <RolePrivilege name="prvReadasx_template" level="Global" />
+  </RolePrivileges>
+</Role>
