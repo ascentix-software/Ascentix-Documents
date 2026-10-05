@@ -117,7 +117,11 @@
             },
             "authentication": "@parameters('$authentication')",
             "retryPolicy": {
-              "type": "none"
+              "type": "exponential",
+              "count": 4,
+              "interval": "PT10S",
+              "minimumInterval": "PT5S",
+              "maximumInterval": "PT1H"
             }
           }
         },
@@ -144,7 +148,11 @@
             },
             "authentication": "@parameters('$authentication')",
             "retryPolicy": {
-              "type": "none"
+              "type": "exponential",
+              "count": 4,
+              "interval": "PT10S",
+              "minimumInterval": "PT5S",
+              "maximumInterval": "PT1H"
             }
           }
         },
@@ -171,7 +179,11 @@
             },
             "authentication": "@parameters('$authentication')",
             "retryPolicy": {
-              "type": "none"
+              "type": "exponential",
+              "count": 4,
+              "interval": "PT10S",
+              "minimumInterval": "PT5S",
+              "maximumInterval": "PT1H"
             }
           }
         },
@@ -195,7 +207,11 @@
                 },
                 "authentication": "@parameters('$authentication')",
                 "retryPolicy": {
-                  "type": "none"
+                  "type": "exponential",
+                  "count": 4,
+                  "interval": "PT10S",
+                  "minimumInterval": "PT5S",
+                  "maximumInterval": "PT1H"
                 }
               }
             },
@@ -216,12 +232,16 @@
                 "parameters": {
                   "actionName": "@variables('WorkerAction')",
                   "item": {
-                    "Request": "@string(setProperty(setProperty(json('{}'),'Command','FailOutbox'),'Key',items('For_each_outbox')))"
+                    "Request": "@string(setProperty(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','FailOutbox'),'Key',items('For_each_outbox')),'StatusCode',coalesce(actions('Plan_outbox')?['outputs']?['statusCode'],0)),'ErrorCode',coalesce(actions('Plan_outbox')?['outputs']?['body']?['error']?['code'],actions('Plan_outbox')?['error']?['code'])),'Error',coalesce(actions('Plan_outbox')?['outputs']?['body']?['error']?['message'],actions('Plan_outbox')?['error']?['message'])))"
                   }
                 },
                 "authentication": "@parameters('$authentication')",
                 "retryPolicy": {
-                  "type": "none"
+                  "type": "exponential",
+                  "count": 4,
+                  "interval": "PT10S",
+                  "minimumInterval": "PT5S",
+                  "maximumInterval": "PT1H"
                 }
               }
             }
@@ -261,7 +281,11 @@
             },
             "authentication": "@parameters('$authentication')",
             "retryPolicy": {
-              "type": "none"
+              "type": "exponential",
+              "count": 4,
+              "interval": "PT10S",
+              "minimumInterval": "PT5S",
+              "maximumInterval": "PT1H"
             }
           }
         },
@@ -285,7 +309,11 @@
                 },
                 "authentication": "@parameters('$authentication')",
                 "retryPolicy": {
-                  "type": "none"
+                  "type": "exponential",
+                  "count": 4,
+                  "interval": "PT10S",
+                  "minimumInterval": "PT5S",
+                  "maximumInterval": "PT1H"
                 }
               }
             },
@@ -306,12 +334,16 @@
                 "parameters": {
                   "actionName": "@variables('WorkerAction')",
                   "item": {
-                    "Request": "@string(setProperty(setProperty(json('{}'),'Command','FailUnclaimed'),'Key',items('For_each_operation')))"
+                    "Request": "@string(setProperty(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','FailUnclaimed'),'Key',items('For_each_operation')),'StatusCode',coalesce(actions('Claim_operation')?['outputs']?['statusCode'],0)),'ErrorCode',coalesce(actions('Claim_operation')?['outputs']?['body']?['error']?['code'],actions('Claim_operation')?['error']?['code'])),'Error',coalesce(actions('Claim_operation')?['outputs']?['body']?['error']?['message'],actions('Claim_operation')?['error']?['message'])))"
                   }
                 },
                 "authentication": "@parameters('$authentication')",
                 "retryPolicy": {
-                  "type": "none"
+                  "type": "exponential",
+                  "count": 4,
+                  "interval": "PT10S",
+                  "minimumInterval": "PT5S",
+                  "maximumInterval": "PT1H"
                 }
               }
             },
@@ -352,7 +384,11 @@
                             },
                             "authentication": "@parameters('$authentication')",
                             "retryPolicy": {
-                              "type": "none"
+                              "type": "exponential",
+                              "count": 4,
+                              "interval": "PT10S",
+                              "minimumInterval": "PT5S",
+                              "maximumInterval": "PT1H"
                             }
                           }
                         },
@@ -387,7 +423,11 @@
                                 },
                                 "authentication": "@parameters('$authentication')",
                                 "retryPolicy": {
-                                  "type": "none"
+                                  "type": "exponential",
+                                  "count": 4,
+                                  "interval": "PT10S",
+                                  "minimumInterval": "PT5S",
+                                  "maximumInterval": "PT1H"
                                 }
                               }
                             },
@@ -490,7 +530,11 @@
                             },
                             "authentication": "@parameters('$authentication')",
                             "retryPolicy": {
-                              "type": "none"
+                              "type": "exponential",
+                              "count": 4,
+                              "interval": "PT10S",
+                              "minimumInterval": "PT5S",
+                              "maximumInterval": "PT1H"
                             }
                           }
                         },
@@ -528,7 +572,11 @@
                             },
                             "authentication": "@parameters('$authentication')",
                             "retryPolicy": {
-                              "type": "none"
+                              "type": "exponential",
+                              "count": 4,
+                              "interval": "PT10S",
+                              "minimumInterval": "PT5S",
+                              "maximumInterval": "PT1H"
                             }
                           }
                         },
@@ -566,7 +614,11 @@
                             },
                             "authentication": "@parameters('$authentication')",
                             "retryPolicy": {
-                              "type": "none"
+                              "type": "exponential",
+                              "count": 4,
+                              "interval": "PT10S",
+                              "minimumInterval": "PT5S",
+                              "maximumInterval": "PT1H"
                             }
                           }
                         },
@@ -601,7 +653,11 @@
                                 },
                                 "authentication": "@parameters('$authentication')",
                                 "retryPolicy": {
-                                  "type": "none"
+                                  "type": "exponential",
+                                  "count": 4,
+                                  "interval": "PT10S",
+                                  "minimumInterval": "PT5S",
+                                  "maximumInterval": "PT1H"
                                 }
                               }
                             },
@@ -706,7 +762,11 @@
                             },
                             "authentication": "@parameters('$authentication')",
                             "retryPolicy": {
-                              "type": "none"
+                              "type": "exponential",
+                              "count": 4,
+                              "interval": "PT10S",
+                              "minimumInterval": "PT5S",
+                              "maximumInterval": "PT1H"
                             }
                           }
                         },
@@ -744,7 +804,11 @@
                             },
                             "authentication": "@parameters('$authentication')",
                             "retryPolicy": {
-                              "type": "none"
+                              "type": "exponential",
+                              "count": 4,
+                              "interval": "PT10S",
+                              "minimumInterval": "PT5S",
+                              "maximumInterval": "PT1H"
                             }
                           }
                         },
@@ -800,12 +864,16 @@
                 "parameters": {
                   "actionName": "@variables('WorkerAction')",
                   "item": {
-                    "Request": "@string(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','Fail'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']))"
+                    "Request": "@string(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','Fail'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']),'StatusCode',coalesce(if(equals(actions('Renew_read')?['status'],'Failed'),actions('Renew_read')?['outputs']?['statusCode'],null),if(equals(actions('Begin_read')?['status'],'Failed'),actions('Begin_read')?['outputs']?['statusCode'],null),if(equals(actions('Observe_read')?['status'],'Failed'),actions('Observe_read')?['outputs']?['statusCode'],null),if(equals(actions('Prepare_create')?['status'],'Failed'),actions('Prepare_create')?['outputs']?['statusCode'],null),if(equals(actions('Renew_create')?['status'],'Failed'),actions('Renew_create')?['outputs']?['statusCode'],null),if(equals(actions('Begin_create')?['status'],'Failed'),actions('Begin_create')?['outputs']?['statusCode'],null),if(equals(actions('Record_create_response')?['status'],'Failed'),actions('Record_create_response')?['outputs']?['statusCode'],null),if(equals(actions('Complete_operation')?['status'],'Failed'),actions('Complete_operation')?['outputs']?['statusCode'],null),0)),'ErrorCode',coalesce(if(equals(actions('Renew_read')?['status'],'Failed'),actions('Renew_read')?['outputs']?['body']?['error']?['code'],null),if(equals(actions('Begin_read')?['status'],'Failed'),actions('Begin_read')?['outputs']?['body']?['error']?['code'],null),if(equals(actions('Observe_read')?['status'],'Failed'),actions('Observe_read')?['outputs']?['body']?['error']?['code'],null),if(equals(actions('Prepare_create')?['status'],'Failed'),actions('Prepare_create')?['outputs']?['body']?['error']?['code'],null),if(equals(actions('Renew_create')?['status'],'Failed'),actions('Renew_create')?['outputs']?['body']?['error']?['code'],null),if(equals(actions('Begin_create')?['status'],'Failed'),actions('Begin_create')?['outputs']?['body']?['error']?['code'],null),if(equals(actions('Record_create_response')?['status'],'Failed'),actions('Record_create_response')?['outputs']?['body']?['error']?['code'],null),if(equals(actions('Complete_operation')?['status'],'Failed'),actions('Complete_operation')?['outputs']?['body']?['error']?['code'],null),if(equals(actions('Renew_read')?['status'],'Failed'),actions('Renew_read')?['error']?['code'],null),if(equals(actions('Begin_read')?['status'],'Failed'),actions('Begin_read')?['error']?['code'],null),if(equals(actions('Observe_read')?['status'],'Failed'),actions('Observe_read')?['error']?['code'],null),if(equals(actions('Prepare_create')?['status'],'Failed'),actions('Prepare_create')?['error']?['code'],null),if(equals(actions('Renew_create')?['status'],'Failed'),actions('Renew_create')?['error']?['code'],null),if(equals(actions('Begin_create')?['status'],'Failed'),actions('Begin_create')?['error']?['code'],null),if(equals(actions('Record_create_response')?['status'],'Failed'),actions('Record_create_response')?['error']?['code'],null),if(equals(actions('Complete_operation')?['status'],'Failed'),actions('Complete_operation')?['error']?['code'],null))),'Error',coalesce(if(equals(actions('Renew_read')?['status'],'Failed'),actions('Renew_read')?['outputs']?['body']?['error']?['message'],null),if(equals(actions('Begin_read')?['status'],'Failed'),actions('Begin_read')?['outputs']?['body']?['error']?['message'],null),if(equals(actions('Observe_read')?['status'],'Failed'),actions('Observe_read')?['outputs']?['body']?['error']?['message'],null),if(equals(actions('Prepare_create')?['status'],'Failed'),actions('Prepare_create')?['outputs']?['body']?['error']?['message'],null),if(equals(actions('Renew_create')?['status'],'Failed'),actions('Renew_create')?['outputs']?['body']?['error']?['message'],null),if(equals(actions('Begin_create')?['status'],'Failed'),actions('Begin_create')?['outputs']?['body']?['error']?['message'],null),if(equals(actions('Record_create_response')?['status'],'Failed'),actions('Record_create_response')?['outputs']?['body']?['error']?['message'],null),if(equals(actions('Complete_operation')?['status'],'Failed'),actions('Complete_operation')?['outputs']?['body']?['error']?['message'],null),if(equals(actions('Renew_read')?['status'],'Failed'),actions('Renew_read')?['error']?['message'],null),if(equals(actions('Begin_read')?['status'],'Failed'),actions('Begin_read')?['error']?['message'],null),if(equals(actions('Observe_read')?['status'],'Failed'),actions('Observe_read')?['error']?['message'],null),if(equals(actions('Prepare_create')?['status'],'Failed'),actions('Prepare_create')?['error']?['message'],null),if(equals(actions('Renew_create')?['status'],'Failed'),actions('Renew_create')?['error']?['message'],null),if(equals(actions('Begin_create')?['status'],'Failed'),actions('Begin_create')?['error']?['message'],null),if(equals(actions('Record_create_response')?['status'],'Failed'),actions('Record_create_response')?['error']?['message'],null),if(equals(actions('Complete_operation')?['status'],'Failed'),actions('Complete_operation')?['error']?['message'],null))))"
                   }
                 },
                 "authentication": "@parameters('$authentication')",
                 "retryPolicy": {
-                  "type": "none"
+                  "type": "exponential",
+                  "count": 4,
+                  "interval": "PT10S",
+                  "minimumInterval": "PT5S",
+                  "maximumInterval": "PT1H"
                 }
               }
             }
