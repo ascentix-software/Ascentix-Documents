@@ -8,6 +8,25 @@ namespace Ascentix.Documents.SdkTests;
 
 public sealed class TransientFailureTests
 {
+    [Fact]
+    public void ANameConflictSurvivesATemporaryReadError()
+    {
+        var f = new DurableWorkerTests.Fixture();
+        var prepared = f.Call("PrepareCreate", f.Observe(f.Preflight(f.Claim()), "{}"));
+        var conflict = f.Call("CreateResponse", prepared, "{}", 409);
+        Assert.Equal("Folder", conflict.ProbeKind);
+        Assert.Equal("RetryWait", f.Call("Observe", conflict, "{}", 429).Status);
+        Assert.Contains(
+            "Waiting to retry",
+            f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value.ErrorCode
+        );
+        f.Now = f.Now.AddMinutes(1);
+        var folder = f.Preflight(f.Claim("run-2"));
+        var file = f.Observe(folder, "{}");
+        Assert.Equal("Read", file.Status);
+        Assert.Equal("ConflictFile", file.ProbeKind);
+    }
+
     [Theory]
     [InlineData(429, null, null, true)]
     [InlineData(500, null, null, true)]

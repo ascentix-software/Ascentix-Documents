@@ -726,7 +726,10 @@ public sealed class WorkerCoordinator
                 return Block(operation, dispatcher, "EstablishedFolderMissing");
             if (
                 operation.Value.ExternalResponseKnown
-                && operation.Value.ErrorCode == "CreateNameConflict"
+                && (
+                    operation.Value.NameConflict
+                    || operation.Value.ErrorCode == "CreateNameConflict"
+                )
             )
                 return Probe(operation, dispatcher.Value, library, "ConflictFile");
             if (operation.Value.Reprobe)
@@ -769,6 +772,7 @@ public sealed class WorkerCoordinator
             };
         // A folder at the path is adopted, so an unknown create is never repeated.
         operation.Value.Reprobe = false;
+        operation.Value.NameConflict = false;
         binding.PhysicalId = item.Id;
         binding.PhysicalPath = item.Path;
         binding.Candidate = item.Name;
@@ -849,6 +853,7 @@ public sealed class WorkerCoordinator
         if (request.HttpStatus == 409)
         {
             operation.Value.ErrorCode = "CreateNameConflict";
+            operation.Value.NameConflict = true;
             return Probe(operation, dispatcher.Value, library, "Folder");
         }
         try
@@ -896,6 +901,7 @@ public sealed class WorkerCoordinator
         if (!retired && operation.Value.Cursor + 1 < operation.Value.Folders.Length)
         {
             operation.Value.Cursor++;
+            operation.Value.NameConflict = false;
             operation.Value.ExternalSubmitted = false;
             operation.Value.ExternalResponseKnown = false;
             operation.Value.ParentPath = null;

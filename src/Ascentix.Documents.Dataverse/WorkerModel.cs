@@ -246,6 +246,12 @@ public class OperationDocument : StoredDocument
     // either adopted or cleared so it can be prepared again.
     [DataMember]
     public bool Reprobe { get; set; }
+
+    // SharePoint answered the create with 409: something already uses the folder path. Kept
+    // apart from ErrorCode, which a later wait notice overwrites, so the conflict is still
+    // recognised when the folder read is retried.
+    [DataMember]
+    public bool NameConflict { get; set; }
 }
 
 [DataContract]
