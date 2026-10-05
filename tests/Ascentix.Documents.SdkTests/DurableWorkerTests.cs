@@ -1694,6 +1694,9 @@ public sealed class DurableWorkerTests
         public List<UpdateRequest> Updates { get; } = new List<UpdateRequest>();
         public string? FailUpdateTable;
         public Func<QueryExpression, EntityCollection?>? QueryHook;
+
+        /// <summary>Lookup columns by "table.column", with the table each one targets.</summary>
+        public Dictionary<string, string> Lookups { get; } = new Dictionary<string, string>();
         private long version = 1;
 
         private static Entity Copy(Entity row, ColumnSet? columns = null)
@@ -1820,11 +1823,21 @@ public sealed class DurableWorkerTests
             }
             if (request is RetrieveAttributeRequest attribute)
             {
-                AttributeMetadata metadata = new StringAttributeMetadata
-                {
-                    LogicalName = attribute.LogicalName,
-                    IsSecured = false,
-                };
+                AttributeMetadata metadata = Lookups.TryGetValue(
+                    attribute.EntityLogicalName + "." + attribute.LogicalName,
+                    out var target
+                )
+                    ? new LookupAttributeMetadata
+                    {
+                        LogicalName = attribute.LogicalName,
+                        IsSecured = false,
+                        Targets = new[] { target },
+                    }
+                    : new StringAttributeMetadata
+                    {
+                        LogicalName = attribute.LogicalName,
+                        IsSecured = false,
+                    };
                 typeof(AttributeMetadata)
                     .GetProperty("IsValidForRead")!
                     .SetValue(metadata, true, null);

@@ -65,7 +65,7 @@ public sealed class PublishTemplateApi : IPlugin
             throw new InvalidPluginExecutionException("Draft changed; reload before publishing.");
         // Validate current metadata and the structural/catalog contract before freezing a revision.
         var publishedTemplate = new TemplateStore(service).Read(revisionId);
-        RuntimeProfile.Read(service).ValidateSources(publishedTemplate);
+        var notices = RuntimeProfile.Read(service).ValidateSources(publishedTemplate);
         new SnapshotReader(service).ValidateMetadata(publishedTemplate);
         service.Execute(
             new UpdateRequest
@@ -95,7 +95,9 @@ public sealed class PublishTemplateApi : IPlugin
                 ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
             }
         );
-        context.OutputParameters["Result"] = "Published";
+        context.OutputParameters["Result"] = JsonWire.Write(
+            new PublishResult { Status = "Published", Notices = notices }
+        );
     }
 }
 

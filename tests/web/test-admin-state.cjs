@@ -373,6 +373,27 @@ async function change(n, value) {
   assert.equal(nodes.savedRevision.value, 'latest-3');
   assert.match(nodes.destinations.textContent, /Account onboarding/);
   assert.equal(nodes.publish.disabled, false);
+  {
+    // Publishing a template whose lookup table is not enabled succeeds and shows the notice.
+    const load = xrm.WebApi.online.execute;
+    const notice =
+      "Changes to contact records don't update folders until the account record changes or is replanned. Enable contact in the Tables panel to react to its changes.";
+    xrm.WebApi.online.execute = async (req) =>
+      req.getMetadata().operationName === 'asx_PublishTemplate'
+        ? {
+            ok: true,
+            json: async () => ({
+              Result: JSON.stringify({ Status: 'Published', Notices: [notice] }),
+            }),
+          }
+        : load(req);
+    await nodes.publish.onclick();
+    assert.match(nodes.status.textContent, /Revision published/);
+    assert(nodes.status.textContent.includes(notice), 'The template editor shows publish notices');
+    assert.equal(nodes.status.className, '', 'A publish notice is not an error');
+    xrm.WebApi.online.execute = load;
+    loadedIds.splice(1); // Publishing reloads the revision; later checks count explicit loads only.
+  }
   await change(nodes.savedRevision, 'older-2');
   await nodes.loadRevision.onclick();
   assert.deepEqual(loadedIds, ['latest-3', 'older-2']);

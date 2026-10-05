@@ -1489,18 +1489,23 @@
     });
   $('publish').onclick = () =>
     task(async () => {
-      const result = await api('asx_PublishTemplate', {
-        RevisionId: state.saved.RevisionId,
-        RowVersion: state.saved.RowVersion,
-      });
-      state.saved.Status = result;
+      const result = JSON.parse(
+        await api('asx_PublishTemplate', {
+          RevisionId: state.saved.RevisionId,
+          RowVersion: state.saved.RowVersion,
+        }),
+      );
+      state.saved.Status = result.Status;
       state.editBase = { ...state.saved };
       $('revision').textContent = 'Published ' + state.saved.RevisionId;
       await revisions();
       $('savedRevision').value = state.saved.RevisionId;
       await loadRevision();
       message(
-        'Revision published. Provisioning follows the separately configured runtime profile.',
+        [
+          'Revision published. Provisioning follows the separately configured runtime profile.',
+          ...(result.Notices || []),
+        ].join(' '),
       );
     });
   const security = { runtime: null, operations: [] };

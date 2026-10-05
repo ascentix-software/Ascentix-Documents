@@ -214,6 +214,9 @@ public sealed class WorkerCoordinator
         var revision =
             header!.GetAttributeValue<EntityReference>("asx_publishedrevisionid")
             ?? throw new EvaluationBlockedException("Template is unpublished.");
+        // Only the template's own table must be enabled. Lookup source tables are read with the
+        // worker's Read privilege; their changes queue no replans unless they are enabled too.
+        Allowed(job.Value.Table);
         if (
             job.Value.PinnedRevision
             && (
@@ -239,8 +242,6 @@ public sealed class WorkerCoordinator
         var template = new TemplateStore(service).Read(revision.Id);
         if (template.Id != job.Value.TemplateId || template.Table != job.Value.Table)
             throw new EvaluationBlockedException("Queued template/table identity changed.");
-        foreach (var source in template.Sources)
-            Allowed(source.Table);
         var snapshot = new SnapshotReader(service).Read(template, job.Value.RecordId);
         var intents = FolderPlanner.Plan(template, job.Value.RecordId, snapshot.Values);
         for (int i = 0; i < snapshot.Records.Count; i++)
@@ -1137,7 +1138,6 @@ public sealed class WorkerCoordinator
 
     private bool MatchesSource(SourceVersion source)
     {
-        Allowed(source.Table);
         return !string.IsNullOrEmpty(source.Version)
             && service.Retrieve(source.Table, source.Id, new ColumnSet(false)).RowVersion
                 == source.Version;

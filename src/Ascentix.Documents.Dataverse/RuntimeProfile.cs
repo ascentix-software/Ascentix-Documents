@@ -127,11 +127,38 @@ public sealed class RuntimeProfile
             );
     }
 
-    public void ValidateSources(DocumentTemplate template)
+    /// <summary>
+    /// Checks a template's source tables against the enabled tables before it is published.
+    /// The template's own table must be enabled. Lookup source tables need not be.
+    /// </summary>
+    /// <param name="template">The template revision being published.</param>
+    /// <returns>One notice for each lookup source table that is not enabled.</returns>
+    public string[] ValidateSources(DocumentTemplate template)
     {
-        if (template.Sources.Any(s => !Tables.Contains(s.Table, StringComparer.Ordinal)))
+        if (!Tables.Contains(template.Table, StringComparer.Ordinal))
             throw new EvaluationBlockedException(
-                "Template source is outside the approved background data scope."
+                "Table '"
+                    + template.Table
+                    + "' is not enabled. Enable it in the Tables panel before publishing its template."
             );
+        return template
+            .Sources.Select(s => s.Table)
+            .Where(table => !Tables.Contains(table, StringComparer.Ordinal))
+            .Distinct(StringComparer.Ordinal)
+            .Select(table => RelatedTableNotice(table, template.Table))
+            .ToArray();
     }
+
+    /// <summary>Explains that a lookup source table which is not enabled triggers no replans.</summary>
+    /// <param name="table">The lookup source table that is not enabled.</param>
+    /// <param name="root">The template's own table.</param>
+    /// <returns>The notice shown to the template author.</returns>
+    public static string RelatedTableNotice(string table, string root) =>
+        "Changes to "
+        + table
+        + " records don't update folders until the "
+        + root
+        + " record changes or is replanned. Enable "
+        + table
+        + " in the Tables panel to react to its changes.";
 }

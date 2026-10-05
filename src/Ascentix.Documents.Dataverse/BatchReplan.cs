@@ -90,7 +90,8 @@ public sealed class BatchReplan
                 header.GetAttributeValue<EntityReference>("asx_publishedrevisionid")?.Id
                 ?? throw new EvaluationBlockedException("Publish before batch review.");
             var template = new TemplateStore(service).Read(revision);
-            if (template.Sources.Any(s => !allowed.Contains(s.Table)))
+            // Lookup source tables need not be enabled; only the template's own table must be.
+            if (!allowed.Contains(template.Table))
                 throw new EvaluationBlockedException("Batch source exceeds runtime scope.");
             int total = 0;
             var records = request
@@ -176,12 +177,13 @@ public sealed class BatchReplan
             throw new EvaluationBlockedException(
                 "Publication changed; request a new batch review."
             );
+        if (!allowed.Contains(TemplateStore.Text(current, "asx_table")))
+            throw new EvaluationBlockedException("Batch source exceeds runtime scope.");
         foreach (var record in batch.Value.Records)
         foreach (var source in record.Sources)
         {
             if (
-                !allowed.Contains(source.Table)
-                || string.IsNullOrEmpty(source.Version)
+                string.IsNullOrEmpty(source.Version)
                 || service.Retrieve(source.Table, source.Id, new ColumnSet(false)).RowVersion
                     != source.Version
             )

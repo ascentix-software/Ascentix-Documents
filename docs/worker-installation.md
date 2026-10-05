@@ -13,7 +13,7 @@ Application users, credentials, and connector connections are environment-specif
 | DataverseSourceReference | Reference bound to a Dataverse connection authenticated as that application |
 | CertificateSourceReference | HTTP with Microsoft Entra ID (preauthorized) reference for the configured SharePoint tenant hosts |
 | SharePointHosts | Lowercase tenant hostnames, such as `tenant.sharepoint.com`; no URL paths or wildcards |
-| AllowedTables | Root and lookup-source table logical names |
+| AllowedTables | Template (root) table logical names; add a lookup-source table only when its changes should update folders |
 | EventTables | Root and related-source tables requiring events, within AllowedTables |
 
 ## Connections and permissions
@@ -28,7 +28,7 @@ Use an enabled application user for the configured worker and event-step imperso
 
 ## Sites, tables, and activation
 
-Enable document management for the selected business tables. Include lookup-source tables in the allowlist. Each target site requires an active native SharePoint Site registration within the configured hosts. Use Add site to validate the site, then create or register libraries and configure team access.
+Enable document management for the selected business tables. A template can use lookup columns from tables that are not enabled; the worker reads them with its Read privilege, and changes to them update folders only when that table is enabled too. Each target site requires an active native SharePoint Site registration within the configured hosts. Use Add site to validate the site, then create or register libraries and configure team access.
 
 Publish a small template and configure event registrations with the same worker identity. An allowed-table entry does not install missing steps. The [record-update setting](record-update-processing.md) controls installed Update and UpdateMultiple steps and defaults to Off.
 

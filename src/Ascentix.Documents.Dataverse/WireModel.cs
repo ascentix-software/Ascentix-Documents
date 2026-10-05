@@ -48,6 +48,18 @@ public static class JsonWire
     }
 }
 
+/// <summary>The result of publishing a template revision.</summary>
+[DataContract]
+public sealed class PublishResult
+{
+    [DataMember]
+    public string Status { get; set; } = "";
+
+    /// <summary>Information for the author; a notice never means the publish failed.</summary>
+    [DataMember]
+    public string[] Notices { get; set; } = Array.Empty<string>();
+}
+
 [DataContract]
 public sealed class SourceDto
 {
