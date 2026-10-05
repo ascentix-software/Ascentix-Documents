@@ -65,3 +65,9 @@ jobs:
           MaxAsyncWaitTime: 30
           PublishWorkflows: false
           OverwriteUnmanagedCustomizations: true
+      - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.publish-customizations.PowerPlatformPublishCustomizations@2
+        displayName: Publish customizations in DEV
+        inputs:
+          authenticationType: PowerPlatformSPN
+          PowerPlatformSPN: Ascentix Documents DEV
+          Environment: $(DocumentsDevUrl)
