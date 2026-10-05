@@ -433,6 +433,56 @@ public sealed class GuardTests
         }
     }
 
+    private static IPluginExecutionContext RuntimeFrame(
+        string message,
+        Guid user,
+        Guid correlation,
+        bool marked,
+        IPluginExecutionContext? parent = null
+    ) =>
+        ContextProxy.Create(
+            new Dictionary<string, object>
+            {
+                ["MessageName"] = message,
+                ["UserId"] = user,
+                ["CorrelationId"] = correlation,
+                ["IsInTransaction"] = true,
+                ["Stage"] = 30,
+                ["Mode"] = 0,
+                ["ParentContext"] = parent!,
+                ["SharedVariables"] = marked
+                    ? new ParameterCollection { [DocumentWorkerApi.InternalWrite] = true }
+                    : new ParameterCollection(),
+            }
+        );
+
+    private static void RunRuntimeTableGuard(
+        string message,
+        Guid user,
+        Guid correlation,
+        IPluginExecutionContext? parent
+    ) =>
+        new CatalogGuard().Execute(
+            new SingleContextProvider(
+                ContextProxy.Create(
+                    new Dictionary<string, object>
+                    {
+                        ["Stage"] = 20,
+                        ["Mode"] = 0,
+                        ["IsInTransaction"] = true,
+                        ["MessageName"] = message,
+                        ["PrimaryEntityName"] = "asx_runtimetable",
+                        ["PrimaryEntityId"] = Guid.NewGuid(),
+                        ["UserId"] = user,
+                        ["CorrelationId"] = correlation,
+                        ["ParentContext"] = parent!,
+                        ["InputParameters"] = new ParameterCollection(),
+                        ["SharedVariables"] = new ParameterCollection(),
+                    }
+                )
+            )
+        );
+
     [Theory]
     [InlineData("Create", true)]
     [InlineData("Delete", true)]
@@ -443,37 +493,50 @@ public sealed class GuardTests
         bool fromApi
     )
     {
-        var shared = new ParameterCollection { [DocumentWorkerApi.InternalWrite] = true };
         var user = Guid.NewGuid();
-        var parent = ContextProxy.Create(
-            new Dictionary<string, object>
-            {
-                ["MessageName"] = fromApi ? "asx_RuntimeAdmin" : "Create",
-                ["UserId"] = user,
-                ["SharedVariables"] = fromApi ? shared : new ParameterCollection(),
-            }
+        var correlation = Guid.NewGuid();
+        var parent = RuntimeFrame(
+            fromApi ? "asx_RuntimeAdmin" : "Create",
+            user,
+            correlation,
+            fromApi
         );
-        var context = ContextProxy.Create(
-            new Dictionary<string, object>
-            {
-                ["Stage"] = 20,
-                ["Mode"] = 0,
-                ["IsInTransaction"] = true,
-                ["MessageName"] = message,
-                ["PrimaryEntityName"] = "asx_runtimetable",
-                ["PrimaryEntityId"] = Guid.NewGuid(),
-                ["UserId"] = user,
-                ["ParentContext"] = parent,
-                ["InputParameters"] = new ParameterCollection(),
-                ["SharedVariables"] = new ParameterCollection(),
-            }
-        );
-        var provider = new SingleContextProvider(context);
         if (fromApi)
-            new CatalogGuard().Execute(provider);
+            RunRuntimeTableGuard(message, user, correlation, parent);
         else
             Assert.Throws<InvalidPluginExecutionException>(() =>
-                new CatalogGuard().Execute(provider)
+                RunRuntimeTableGuard(message, user, correlation, parent)
+            );
+    }
+
+    [Theory]
+    [InlineData("Create", "allowed")]
+    [InlineData("Delete", "allowed")]
+    [InlineData("Create", "unmarked")]
+    [InlineData("Delete", "unmarked")]
+    [InlineData("Create", "otheruser")]
+    [InlineData("Delete", "otheruser")]
+    [InlineData("Create", "othercorrelation")]
+    [InlineData("Delete", "othercorrelation")]
+    public void RuntimeTableRowsAreRecognizedThroughNestedPlatformFrames(
+        string message,
+        string scenario
+    )
+    {
+        var user = Guid.NewGuid();
+        var correlation = Guid.NewGuid();
+        var api = RuntimeFrame(
+            "asx_RuntimeAdmin",
+            scenario == "otheruser" ? Guid.NewGuid() : user,
+            scenario == "othercorrelation" ? Guid.NewGuid() : correlation,
+            scenario != "unmarked"
+        );
+        var intermediate = RuntimeFrame("Create", user, correlation, false, api);
+        if (scenario == "allowed")
+            RunRuntimeTableGuard(message, user, correlation, intermediate);
+        else
+            Assert.Throws<InvalidPluginExecutionException>(() =>
+                RunRuntimeTableGuard(message, user, correlation, intermediate)
             );
     }
 

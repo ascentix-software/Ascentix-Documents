@@ -137,20 +137,40 @@ public sealed class ManageWorkApi : IPlugin
 
 public sealed class CatalogGuard : IPlugin
 {
+    private static bool FromRuntimeAdmin(IPluginExecutionContext context)
+    {
+        if (
+            context.Stage != 20
+            || !context.IsInTransaction
+            || context.UserId == Guid.Empty
+            || context.CorrelationId == Guid.Empty
+        )
+            return false;
+        var frame = context.ParentContext;
+        for (int depth = 0; frame != null && depth < 3; depth++, frame = frame.ParentContext)
+        {
+            if (
+                frame.UserId != context.UserId
+                || frame.CorrelationId != context.CorrelationId
+                || !frame.IsInTransaction
+                || frame.Stage != 30
+                || frame.Mode != 0
+            )
+                return false;
+            if (frame.MessageName == "asx_RuntimeAdmin")
+                return frame.SharedVariables?.Contains(DocumentWorkerApi.InternalWrite) == true
+                    && frame.SharedVariables[DocumentWorkerApi.InternalWrite] is bool marked
+                    && marked;
+        }
+        return false;
+    }
+
     public void Execute(IServiceProvider provider)
     {
         var context = (IPluginExecutionContext)provider.GetService(typeof(IPluginExecutionContext));
         if (context.PrimaryEntityName == "asx_runtimetable")
         {
-            var owner = context.ParentContext;
-            bool fromRuntimeAdmin =
-                context.Stage == 20
-                && context.IsInTransaction
-                && owner?.MessageName == "asx_RuntimeAdmin"
-                && owner.UserId == context.UserId
-                && owner.SharedVariables.Contains(DocumentWorkerApi.InternalWrite)
-                && owner.SharedVariables[DocumentWorkerApi.InternalWrite] is bool adminMarked
-                && adminMarked;
+            bool fromRuntimeAdmin = FromRuntimeAdmin(context);
             if (!fromRuntimeAdmin)
                 throw new InvalidPluginExecutionException(
                     "Runtime tables are changed only through Runtime administration."
