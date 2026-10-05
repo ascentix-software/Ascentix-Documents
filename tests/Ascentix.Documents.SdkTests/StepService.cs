@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Query;
 using Xunit;
 
@@ -15,6 +16,7 @@ internal sealed class StepService : IOrganizationService
     internal readonly DurableWorkerTests.MemoryService Memory = new();
     internal readonly List<string> Writes = new();
     internal bool IgnoreStepWrites { get; set; }
+    internal HashSet<string> MissingTables { get; set; } = new();
 
     public Guid Create(Entity entity)
     {
@@ -37,7 +39,18 @@ internal sealed class StepService : IOrganizationService
         Memory.Delete(name, id);
     }
 
-    public OrganizationResponse Execute(OrganizationRequest request) => Memory.Execute(request);
+    public OrganizationResponse Execute(OrganizationRequest request)
+    {
+        if (request is RetrieveEntityRequest entity)
+        {
+            if (MissingTables.Contains(entity.LogicalName))
+                throw new InvalidOperationException(
+                    "Entity " + entity.LogicalName + " does not exist."
+                );
+            return new RetrieveEntityResponse();
+        }
+        return Memory.Execute(request);
+    }
 
     public Entity Retrieve(string name, Guid id, ColumnSet columns) =>
         Memory.Retrieve(name, id, columns);

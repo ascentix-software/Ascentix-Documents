@@ -141,4 +141,42 @@ public sealed class EventRegistrationTests
         );
         Assert.Empty(o.Steps);
     }
+
+    [Fact]
+    public void DeletedTableIsNamedAndInspectDoesNotThrow()
+    {
+        var o = new Org("account");
+        o.S.MissingTables = new System.Collections.Generic.HashSet<string> { "cr123_deleted" };
+        var ex = Assert.Throws<EvaluationBlockedException>(() =>
+            EventRegistrations.Reconcile(o.S, o.Worker, new[] { "account", "cr123_deleted" }, false)
+        );
+        Assert.Contains("cr123_deleted", ex.Message);
+        Assert.Contains("does not exist", ex.Message);
+        var summary = EventRegistrations.Inspect(
+            o.S,
+            o.Worker,
+            new[] { "account", "cr123_deleted" },
+            false
+        );
+        Assert.Contains("cr123_deleted", summary.Error);
+    }
+
+    [Fact]
+    public void DuplicateAssociateFiltersDoNotBlockReconcile()
+    {
+        var o = new Org("account");
+        var associate = o.S.Memory.Rows.Values.First(r =>
+            r.LogicalName == "sdkmessage" && r.GetAttributeValue<string>("name") == "Associate"
+        );
+        o.S.Memory.Seed(
+            new Entity("sdkmessagefilter", Guid.NewGuid())
+            {
+                ["sdkmessageid"] = associate.ToEntityReference(),
+                ["primaryobjecttypecode"] = "team",
+                ["iscustomprocessingstepallowed"] = true,
+            }
+        );
+        var summary = EventRegistrations.Reconcile(o.S, o.Worker, new[] { "account" }, false);
+        Assert.All(summary.Readiness, r => Assert.Equal("Ready", r.Status));
+    }
 }

@@ -4,6 +4,8 @@ using System.Linq;
 using System.Runtime.Serialization;
 using Ascentix.Documents.Conditions;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Messages;
+using Microsoft.Xrm.Sdk.Metadata;
 using Microsoft.Xrm.Sdk.Query;
 
 namespace Ascentix.Documents.Dataverse;
@@ -148,6 +150,13 @@ public static class EventRegistrations
             catalog.Messages[row.GetAttributeValue<string>("name")] = row.Id;
         foreach (var name in names.Where(n => !catalog.Messages.ContainsKey(n)))
             throw new EvaluationBlockedException("Platform message " + name + " is missing.");
+        foreach (var table in tables)
+            RequireTable(service, table);
+        var recordIds = EventRegistrationPlan
+            .RecordMessages.Concat(new[] { "Delete" })
+            .Distinct()
+            .Select(n => (object)catalog.Messages[n])
+            .ToArray();
         var filters = In(
             new QueryExpression("sdkmessagefilter")
             {
@@ -160,11 +169,7 @@ public static class EventRegistrations
             "primaryobjecttypecode",
             tables.Concat(new[] { EventRegistrationPlan.TeamScope }).Cast<object>().ToArray()
         );
-        filters.Criteria.AddCondition(
-            "sdkmessageid",
-            ConditionOperator.In,
-            catalog.Messages.Values.Cast<object>().ToArray()
-        );
+        filters.Criteria.AddCondition("sdkmessageid", ConditionOperator.In, recordIds);
         foreach (var row in All(service, filters))
         {
             if (!row.GetAttributeValue<bool>("iscustomprocessingstepallowed"))
@@ -187,6 +192,30 @@ public static class EventRegistrations
         if (!catalog.Filters.ContainsKey("Delete|team"))
             throw new EvaluationBlockedException("Team Delete event registration is unavailable.");
         return catalog;
+    }
+
+    private static void RequireTable(IOrganizationService service, string table)
+    {
+        try
+        {
+            service.Execute(
+                new RetrieveEntityRequest
+                {
+                    LogicalName = table,
+                    EntityFilters = EntityFilters.Entity,
+                }
+            );
+        }
+        catch (EvaluationBlockedException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            throw new EvaluationBlockedException(
+                "Table '" + table + "' does not exist in this environment."
+            );
+        }
     }
 
     private static List<ExistingStep> Steps(
