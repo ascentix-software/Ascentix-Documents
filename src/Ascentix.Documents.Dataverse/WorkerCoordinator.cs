@@ -574,11 +574,8 @@ public sealed class WorkerCoordinator
                             operation.Value.ParentPath,
                             StringComparison.Ordinal
                         )
-                        || (!isLibraryRoot && parent.Item?.UniquePermissions != false)
                     )
-                        throw new EvaluationBlockedException(
-                            "Parent folder identity or inherited policy differs."
-                        );
+                        throw new EvaluationBlockedException("Parent folder identity differs.");
                     bool finalParent = operation.Value.ProbeKind == "FinalParent";
                     if (!isLibraryRoot)
                     {
@@ -619,10 +616,9 @@ public sealed class WorkerCoordinator
                             operation.Value.LibraryRootPath + "/",
                             StringComparison.Ordinal
                         )
-                        || ancestorFolder.Item?.UniquePermissions != false
                     )
                         throw new EvaluationBlockedException(
-                            "Intermediate ancestor identity or inherited library policy differs."
+                            "Intermediate ancestor identity differs."
                         );
                     string nextAncestor = ancestorFolder.Path.Substring(
                         0,
@@ -1210,7 +1206,7 @@ public sealed class WorkerCoordinator
                     RelativeUri =
                         "_api/web/GetFolderByServerRelativePath(decodedUrl='"
                         + Uri.EscapeDataString(operation.Value.AncestorPath!.Replace("'", "''"))
-                        + "')?$select=UniqueId,ServerRelativeUrl,ListItemAllFields/HasUniqueRoleAssignments&$expand=ListItemAllFields",
+                        + "')?$select=UniqueId,ServerRelativeUrl",
                 };
                 break;
             case "FinalParent":
@@ -1220,7 +1216,7 @@ public sealed class WorkerCoordinator
                     RelativeUri =
                         "_api/web/GetFolderByServerRelativePath(decodedUrl='"
                         + Uri.EscapeDataString(operation.Value.ParentPath!.Replace("'", "''"))
-                        + "')?$select=UniqueId,ServerRelativeUrl,ListItemAllFields/HasUniqueRoleAssignments&$expand=ListItemAllFields",
+                        + "')?$select=UniqueId,ServerRelativeUrl",
                 };
                 break;
             case "ConflictFile":

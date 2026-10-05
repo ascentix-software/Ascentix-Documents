@@ -93,7 +93,7 @@ public static class SharePointRequests
             RelativeUri =
                 "_api/web/GetFolderByServerRelativePath(decodedUrl='"
                 + Uri.EscapeDataString(path.Replace("'", "''"))
-                + "')?$select=Exists,UniqueId,ServerRelativeUrl,ListItemAllFields/Id,ListItemAllFields/UniqueId,ListItemAllFields/FileLeafRef,ListItemAllFields/FileRef,ListItemAllFields/FSObjType,ListItemAllFields/HasUniqueRoleAssignments&$expand=ListItemAllFields",
+                + "')?$select=Exists,UniqueId,ServerRelativeUrl,ListItemAllFields/Id,ListItemAllFields/UniqueId,ListItemAllFields/FileLeafRef,ListItemAllFields/FileRef,ListItemAllFields/FSObjType&$expand=ListItemAllFields",
         };
     }
 

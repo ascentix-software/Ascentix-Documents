@@ -379,6 +379,29 @@ public sealed class DurableWorkerTests
         Assert.Equal(new[] { "account" }, profile.Tables);
     }
 
+    /// <summary>
+    /// Adds a SharePoint report of hand-set (unique) permissions to a folder or folder-item read.
+    /// The product no longer requests this field, so the edit works on the JSON text.
+    /// </summary>
+    /// <param name="body">A serialized folder observation or folder lookup observation.</param>
+    /// <returns>The same body with <c>ListItemAllFields/HasUniqueRoleAssignments</c> set to true.</returns>
+    internal static string WithUniquePermissions(string body)
+    {
+        body = System.Text.RegularExpressions.Regex.Replace(
+            body,
+            "\"HasUniqueRoleAssignments\":(true|false|null),?",
+            ""
+        );
+        body = body.Replace("\"ListItemAllFields\":null", "\"ListItemAllFields\":{}");
+        if (!body.Contains("\"ListItemAllFields\":{"))
+            body = body.Replace("{\"d\":{", "{\"d\":{\"ListItemAllFields\":{},");
+        return body.Replace(
+                "\"ListItemAllFields\":{",
+                "\"ListItemAllFields\":{\"HasUniqueRoleAssignments\":true,"
+            )
+            .Replace(",}", "}");
+    }
+
     private static string Rows<T>(params T[] values) =>
         typeof(T) == typeof(ItemObservation)
             ? (
@@ -729,14 +752,13 @@ public sealed class DurableWorkerTests
         );
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void NestedEntryCannotInheritAnUnreviewedIntermediateScope(bool driftAtFinal)
+    [Fact]
+    public void FolderUnderAncestorsWithHandSetPermissionsIsCreatedAndApplied()
     {
         var f = new Fixture();
         string entry = "/sites/proto/General/Archive/Entry";
         f.Service.Rows[f.LibraryId]["asx_entryurl"] = "https://example.sharepoint.com" + entry;
+        f.Service.Rows[f.NativeParent]["relativeurl"] = "General/Archive/Entry";
         var work = f.Claim();
         work = f.Observe(
             work,
@@ -755,18 +777,15 @@ public sealed class DurableWorkerTests
                 }
             )
         );
-        string parent = JsonWire.Write(
-            new ODataEnvelope<FolderObservation>
-            {
-                Data = new FolderObservation
+        string parent = WithUniquePermissions(
+            JsonWire.Write(
+                new ODataEnvelope<FolderObservation>
                 {
-                    Id = f.EntryId,
-                    Path = entry,
-                    Item = new ParentListItem { UniquePermissions = false },
-                },
-            }
+                    Data = new FolderObservation { Id = f.EntryId, Path = entry },
+                }
+            )
         );
-        string ancestor(bool unique) =>
+        string ancestor = WithUniquePermissions(
             JsonWire.Write(
                 new ODataEnvelope<FolderObservation>
                 {
@@ -774,30 +793,74 @@ public sealed class DurableWorkerTests
                     {
                         Id = Guid.NewGuid(),
                         Path = "/sites/proto/General/Archive",
-                        Item = new ParentListItem { UniquePermissions = unique },
                     },
                 }
-            );
+            )
+        );
         work = f.Observe(work, parent);
         Assert.Equal("Ancestor", work.ProbeKind);
-        work = f.Observe(work, ancestor(!driftAtFinal));
-        if (driftAtFinal)
-        {
-            Assert.Equal("Folder", work.ProbeKind);
-            var item = f.Item(Guid.NewGuid(), null);
-            item.Path = entry + "/Example";
-            work = f.Observe(work, Rows(item));
-            work = f.Observe(work, parent);
-            Assert.Equal("FinalAncestor", work.ProbeKind);
-            work = f.Observe(work, ancestor(true));
-        }
-        Assert.Equal("Blocked", work.Status);
-        Assert.DoesNotContain(
-            f.Service.Rows.Values,
-            r =>
-                r.LogicalName == "sharepointdocumentlocation"
-                && r.GetAttributeValue<EntityReference>("regardingobjectid") != null
+        work = f.Observe(work, ancestor);
+        Assert.Equal("Folder", work.ProbeKind);
+        work = f.Observe(work, Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Path = entry + "/Example";
+        work = f.Observe(work, Rows(item));
+        Assert.Equal("FinalParent", work.ProbeKind);
+        work = f.Observe(work, parent);
+        Assert.Equal("FinalAncestor", work.ProbeKind);
+        work = f.Observe(work, ancestor);
+        Assert.Equal("Verified", work.Status);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+    }
+
+    [Fact]
+    public void ChildFolderUnderAParentWithHandSetPermissionsIsCreatedAndApplied()
+    {
+        var f = new Fixture(false);
+        var child = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        child.Key += "-child";
+        child.Node = "invoices";
+        child.ParentBinding = "root";
+        child.OriginalName = child.Candidate = "Invoices";
+        f.Operation.Folders = new[] { f.Binding, child };
+        f.Store.Create("asx_operation", f.Operation);
+        var root = Guid.NewGuid();
+        var work = f.ObserveAndFinalize(f.Preflight(f.Claim()), f.Item(root, null));
+        Assert.Equal("Pending", f.Call("Complete", work).Status);
+        work = f.Claim("child-run");
+        work = f.Observe(work, f.LibraryBody());
+        string parent = WithUniquePermissions(
+            JsonWire.Write(
+                new ODataEnvelope<FolderObservation>
+                {
+                    Data = new FolderObservation
+                    {
+                        Id = root,
+                        Path = "/sites/proto/General/Example",
+                    },
+                }
+            )
         );
+        work = f.Observe(work, parent);
+        Assert.Equal("Folder", work.ProbeKind);
+        work = f.Observe(work, Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Name = "Invoices";
+        item.Path += "/Invoices";
+        // The new folder also reports hand-set permissions, for example from a SharePoint policy.
+        work = f.Observe(work, WithUniquePermissions(Rows(item)));
+        Assert.Equal("FinalParent", work.ProbeKind);
+        work = f.Observe(work, parent);
+        Assert.Equal("Verified", work.Status);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
     }
 
     [Fact]
@@ -860,12 +923,7 @@ public sealed class DurableWorkerTests
         string parent = JsonWire.Write(
             new ODataEnvelope<FolderObservation>
             {
-                Data = new FolderObservation
-                {
-                    Id = root,
-                    Path = "/sites/proto/General/Example",
-                    Item = new ParentListItem { UniquePermissions = false },
-                },
+                Data = new FolderObservation { Id = root, Path = "/sites/proto/General/Example" },
             }
         );
         work = f.Observe(work, parent);
@@ -1618,7 +1676,6 @@ public sealed class DurableWorkerTests
                 Name = "Example",
                 Path = "/sites/proto/General/Example",
                 Type = 1,
-                UniquePermissions = false,
             };
 
         public WorkerResult ObserveAndFinalize(WorkerResult read, ItemObservation item)

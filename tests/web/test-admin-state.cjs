@@ -102,6 +102,7 @@ const libraries = [
     asx_entryurl: 'https://example.test/b',
   },
 ];
+const libraryQueries = [];
 const xrm = {
   Utility: { getGlobalContext: () => ({ getClientUrl: () => 'https://example.test' }) },
   WebApi: {
@@ -110,19 +111,22 @@ const xrm = {
       asx_name: 'Account onboarding',
       asx_table: 'account',
     }),
-    retrieveMultipleRecords: async (name) => ({
-      entities:
-        name === 'asx_library'
-          ? libraries
-          : name === 'asx_runtimetable'
-            ? [{ asx_logicalname: 'account' }]
-            : name === 'asx_site'
-              ? [
-                  { asx_siteid: 'site-a', asx_name: 'Delivery' },
-                  { asx_siteid: 'site-b', asx_name: 'Commercial' },
-                ]
-              : [],
-    }),
+    retrieveMultipleRecords: async (name, options) => {
+      if (name === 'asx_library') libraryQueries.push(options);
+      return {
+        entities:
+          name === 'asx_library'
+            ? libraries
+            : name === 'asx_runtimetable'
+              ? [{ asx_logicalname: 'account' }]
+              : name === 'asx_site'
+                ? [
+                    { asx_siteid: 'site-a', asx_name: 'Delivery' },
+                    { asx_siteid: 'site-b', asx_name: 'Commercial' },
+                  ]
+                : [],
+      };
+    },
     online: {
       execute: async (req) => {
         requests.push(req);
@@ -174,9 +178,10 @@ const fetch = async (url) => ({
             : [table, contact, lead],
   }),
 });
+const win = { parent: { Xrm: xrm }, addEventListener: () => {} };
 vm.runInNewContext(fs.readFileSync(path.join(base, 'admin.js'), 'utf8'), {
   document,
-  window: { parent: { Xrm: xrm }, addEventListener: () => {} },
+  window: win,
   location: { hash: '' },
   fetch,
   console,
@@ -196,6 +201,16 @@ async function change(n, value) {
 }
 (async () => {
   await new Promise(setImmediate);
+  await win.AsxdAdmin.refreshCatalog();
+  assert.equal(libraryQueries.length, 2, 'Initial load and refresh both read the library catalog');
+  for (const query of libraryQueries) {
+    assert.match(query, /\$filter=asx_approved eq true$/);
+    assert.doesNotMatch(
+      query,
+      /asx_policyapplied/,
+      'Templates list every approved library, whatever its access state',
+    );
+  }
   assert.equal(nodes.authorWorkspace.hidden, true);
   assert.equal(nodes.templateActions.hidden, true);
   await change(nodes.table, 'account');

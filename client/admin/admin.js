@@ -1853,7 +1853,7 @@
     refreshCatalog: async () => {
       const rows = await xrm.WebApi.retrieveMultipleRecords(
         'asx_library',
-        '?$select=asx_libraryid,asx_name,_asx_siteid_value,asx_entryurl&$filter=asx_approved eq true and asx_policyapplied eq true',
+        '?$select=asx_libraryid,asx_name,_asx_siteid_value,asx_entryurl&$filter=asx_approved eq true',
       );
       if (rows.nextLink) throw new Error('Use a narrower destination catalog.');
       state.libraries = rows.entities;
@@ -1892,7 +1892,7 @@
     $('table').disabled = false;
     const catalog = await xrm.WebApi.retrieveMultipleRecords(
       'asx_library',
-      '?$select=asx_libraryid,asx_name,_asx_siteid_value,asx_entryurl&$filter=asx_approved eq true and asx_policyapplied eq true',
+      '?$select=asx_libraryid,asx_name,_asx_siteid_value,asx_entryurl&$filter=asx_approved eq true',
     );
     if (catalog.nextLink)
       throw new Error('Approved library catalog exceeded the current completeness bound.');

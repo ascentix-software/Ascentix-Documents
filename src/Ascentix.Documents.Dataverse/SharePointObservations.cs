@@ -41,16 +41,6 @@ public sealed class FolderObservation
 
     [DataMember(Name = "ServerRelativeUrl")]
     public string Path { get; set; } = "";
-
-    [DataMember(Name = "ListItemAllFields")]
-    public ParentListItem? Item { get; set; }
-}
-
-[DataContract]
-public sealed class ParentListItem
-{
-    [DataMember(Name = "HasUniqueRoleAssignments")]
-    public bool? UniquePermissions { get; set; }
 }
 
 [DataContract]
@@ -86,9 +76,6 @@ public sealed class ItemObservation
 
     [DataMember(Name = "FSObjType")]
     public int? Type { get; set; }
-
-    [DataMember(Name = "HasUniqueRoleAssignments")]
-    public bool? UniquePermissions { get; set; }
 }
 
 [DataContract]
@@ -239,13 +226,10 @@ public static class SharePointObservations
             item.Id == Guid.Empty
             || item.ItemId <= 0
             || item.Type != 1
-            || item.UniquePermissions != false
             || !string.Equals(item.Path, expectedPath, StringComparison.OrdinalIgnoreCase)
             || !item.Path.EndsWith("/" + item.Name, StringComparison.Ordinal)
         )
-            throw new EvaluationBlockedException(
-                "Physical path/type/inherited-policy observation differs."
-            );
+            throw new EvaluationBlockedException("Physical path/type observation differs.");
         Domain.FolderNames.Validate(item.Name);
         return item;
     }

@@ -1049,13 +1049,9 @@ public sealed class CatalogWorker
                         "CatalogEntry",
                         StringComparison.Ordinal
                     );
-                    if (
-                        folder.Id == Guid.Empty
-                        || folder.Path != op.Value.AncestorPath
-                        || folder.Item?.UniquePermissions != false
-                    )
+                    if (folder.Id == Guid.Empty || folder.Path != op.Value.AncestorPath)
                         throw new EvaluationBlockedException(
-                            "Approved entry and all ancestors must inherit the library policy."
+                            "Approved entry or ancestor folder identity differs."
                         );
                     if (first)
                     {
@@ -1206,7 +1202,7 @@ public sealed class CatalogWorker
             endpoint =
                 "_api/web/GetFolderByServerRelativePath(decodedUrl='"
                 + Uri.EscapeDataString(op.Value.AncestorPath!.Replace("'", "''"))
-                + "')?$select=UniqueId,ServerRelativeUrl,ListItemAllFields/HasUniqueRoleAssignments&$expand=ListItemAllFields";
+                + "')?$select=UniqueId,ServerRelativeUrl";
         if (kind == "CatalogAcl")
             op.Value.Acl = Array.Empty<AclAssignment>();
         if (kind == "CatalogRoles")

@@ -251,11 +251,11 @@ public sealed class CatalogApprovalTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void NestedNativeEntryRequiresInheritedIntermediateAncestors(bool unique)
+    public void NestedNativeEntryIsApprovedWhateverItsFolderPermissions(bool unique)
     {
         var f = new Fixture();
         f.Nested = true;
-        f.UniqueAncestor = unique;
+        f.UniqueFolders = unique;
         var root = Guid.NewGuid();
         f.Service.Seed(
             new Entity("sharepointdocumentlocation", root)
@@ -305,29 +305,21 @@ public sealed class CatalogApprovalTests
                 true
             ).Key
         );
-        if (unique)
-        {
-            Assert.Equal("Blocked", probe.Status);
-            Assert.Throws<EvaluationBlockedException>(() =>
-                f.Admin.Execute(
-                    new CatalogRequest
-                    {
-                        Command = "Approve",
-                        Key = probe.Key,
-                        RowVersion = probe.RowVersion,
-                        Name = "Library",
-                    },
-                    true
-                )
-            );
-        }
-        else
-        {
-            Assert.Equal("Captured", probe.Status);
-            Assert.Equal(f.NestedEntry, probe.Observation!.EntryId);
-            Assert.EndsWith("/General/Archive/Entry", probe.Observation.EntryUrl);
-            Assert.Equal(4, f.AncestorReads);
-        }
+        Assert.Equal("Captured", probe.Status);
+        Assert.Equal(f.NestedEntry, probe.Observation!.EntryId);
+        Assert.EndsWith("/General/Archive/Entry", probe.Observation.EntryUrl);
+        Assert.Equal(4, f.AncestorReads);
+        var library = f.Admin.Execute(
+            new CatalogRequest
+            {
+                Command = "Approve",
+                Key = probe.Key,
+                RowVersion = probe.RowVersion,
+                Name = "Library",
+            },
+            true
+        );
+        Assert.True(f.Service.Rows[library.CatalogId].GetAttributeValue<bool>("asx_approved"));
     }
 
     [Fact]
@@ -744,7 +736,7 @@ public sealed class CatalogApprovalTests
         public DateTime Now = new DateTime(2026, 9, 8, 12, 0, 0, DateTimeKind.Utc);
         public string Url = "https://example.sharepoint.com/sites/proto";
         public bool Nested,
-            UniqueAncestor;
+            UniqueFolders;
         public int AncestorReads;
         public Guid NestedEntry = Guid.NewGuid();
         public Guid Collection = Guid.NewGuid();
@@ -876,12 +868,10 @@ public sealed class CatalogApprovalTests
                                 Path = entry
                                     ? "/sites/proto/General/Archive/Entry"
                                     : "/sites/proto/General/Archive",
-                                Item = new ParentListItem
-                                {
-                                    UniquePermissions = !entry && UniqueAncestor,
-                                },
                             }
                         );
+                        if (UniqueFolders)
+                            body = DurableWorkerTests.WithUniquePermissions(body);
                         break;
                     case "CatalogRoles":
                         body = Envelope(

@@ -288,6 +288,21 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   assert.equal(existing.ListId, id(8));
   assert.equal(existing.NativeParentId, undefined, 'Native navigation is automatic');
   assert(!requests.some((r) => r.Command === 'RegisterTeam'), 'No manual team mapping step');
+  lib.asx_policyapplied = false;
+  await window.AsxdSites.selectLibrary(id(3));
+  assert.equal(
+    nodes['ad-library-status'].textContent,
+    'Ready for folder templates',
+    'An approved library is ready for templates before its access is applied',
+  );
+  assert.equal(nodes['ad-library-access'].textContent, 'Access setup pending');
+  lib.asx_policyapplied = true;
+  await window.AsxdSites.selectLibrary(id(3));
+  assert.equal(nodes['ad-library-access'].textContent, 'Access applied');
+  lib.asx_approved = false;
+  await window.AsxdSites.selectLibrary(id(3));
+  assert.equal(nodes['ad-library-status'].textContent, 'Needs attention');
+  lib.asx_approved = true;
   console.log(
     'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, and author deep link. Mocked APIs; connected acceptance pending.',
   );

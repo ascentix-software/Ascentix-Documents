@@ -283,8 +283,11 @@
     const p = policy();
     if (state.library) {
       $('ad-library-title').textContent = state.library.asx_name;
-      $('ad-library-status').textContent = state.library.asx_policyapplied
+      $('ad-library-status').textContent = state.library.asx_approved
         ? 'Ready for folder templates'
+        : 'Needs attention';
+      $('ad-library-access').textContent = state.library.asx_policyapplied
+        ? 'Access applied'
         : 'Access setup pending';
     }
     $('ad-teams').replaceChildren();
