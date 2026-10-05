@@ -262,8 +262,6 @@ public sealed class RecordInvalidationPlugin : IPlugin
         var context = (IPluginExecutionContext)provider.GetService(typeof(IPluginExecutionContext));
         if (
             context.Stage != 40
-            || context.Mode != 0
-            || !context.IsInTransaction
             || !new[] { "Create", "Update", "CreateMultiple", "UpdateMultiple", "Delete" }.Contains(
                 context.MessageName
             )
@@ -272,36 +270,39 @@ public sealed class RecordInvalidationPlugin : IPlugin
         var service = (
             (IOrganizationServiceFactory)provider.GetService(typeof(IOrganizationServiceFactory))
         ).CreateOrganizationService(context.UserId);
-        var profile = RuntimeProfile.Read(service);
+        var profile = RuntimeProfile.ReadCapture(service);
+        if (!profile.Tables.Contains(context.PrimaryEntityName))
+            return;
         if (
             context.MessageName.StartsWith("Update", StringComparison.Ordinal)
             && !profile.ProcessRecordUpdates
         )
             return;
-        if (
-            context.UserId != profile.WorkerId
-            || !profile.Tables.Contains(context.PrimaryEntityName)
-        )
+        if (context.UserId != profile.WorkerId)
             throw new InvalidPluginExecutionException(
-                "Event registration differs from the approved planner identity/scope."
+                "Event registration differs from the approved planner identity."
             );
         Guid[] ids;
         if (context.MessageName.EndsWith("Multiple", StringComparison.Ordinal))
         {
+            var created =
+                context.OutputParameters != null
+                && context.OutputParameters.Contains("Ids")
+                && context.OutputParameters["Ids"] is Guid[] output
+                    ? output
+                    : null;
             var targets = context.InputParameters.Contains("Targets")
                 ? context.InputParameters["Targets"] as EntityCollection
                 : null;
             if (
                 targets == null
-                || targets.Entities.Count > 100
-                || targets.Entities.Any(e =>
-                    e.LogicalName != context.PrimaryEntityName || e.Id == Guid.Empty
-                )
+                || targets.Entities.Any(e => e.LogicalName != context.PrimaryEntityName)
             )
-                throw new InvalidPluginExecutionException(
-                    "Bulk invalidation requires at most 100 exact persisted record identities."
-                );
-            ids = targets.Entities.Select(e => e.Id).Distinct().ToArray();
+                throw new InvalidPluginExecutionException("Bulk event targets are inconsistent.");
+            ids = (created ?? targets.Entities.Select(e => e.Id).ToArray())
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToArray();
         }
         else
         {

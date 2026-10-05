@@ -12,8 +12,6 @@ public sealed class TeamMembershipInvalidationPlugin : IPlugin
         var context = (IPluginExecutionContext)provider.GetService(typeof(IPluginExecutionContext));
         if (
             context.Stage != 40
-            || context.Mode != 0
-            || !context.IsInTransaction
             || (context.MessageName != "Associate" && context.MessageName != "Disassociate")
         )
             throw new InvalidPluginExecutionException("Invalid membership event registration.");
@@ -23,13 +21,6 @@ public sealed class TeamMembershipInvalidationPlugin : IPlugin
             || relationship.SchemaName != "teammembership_association"
         )
             return;
-        var service = (
-            (IOrganizationServiceFactory)provider.GetService(typeof(IOrganizationServiceFactory))
-        ).CreateOrganizationService(context.UserId);
-        if (RuntimeProfile.Read(service).WorkerId != context.UserId)
-            throw new InvalidPluginExecutionException(
-                "Membership event identity differs from approved runtime."
-            );
         var target = context.InputParameters.Contains("Target")
             ? context.InputParameters["Target"] as EntityReference
             : null;
@@ -40,11 +31,10 @@ public sealed class TeamMembershipInvalidationPlugin : IPlugin
             target == null
             || target.Id == Guid.Empty
             || related == null
-            || related.Count > 100
             || related.Any(r => r.Id == Guid.Empty)
         )
             throw new InvalidPluginExecutionException(
-                "Bounded exact membership relationship identities required."
+                "Exact membership relationship identities required."
             );
         Guid[] teams;
         if (target.LogicalName == "team" && related.All(r => r.LogicalName == "systemuser"))
@@ -55,13 +45,24 @@ public sealed class TeamMembershipInvalidationPlugin : IPlugin
             throw new InvalidPluginExecutionException(
                 "Unsupported membership relationship direction."
             );
+        var service = (
+            (IOrganizationServiceFactory)provider.GetService(typeof(IOrganizationServiceFactory))
+        ).CreateOrganizationService(context.UserId);
         var store = new DocumentStore(service);
-        foreach (var team in teams)
-            if (
+        var registered = teams
+            .Where(team =>
                 store.Find<TeamRegistration>("asx_teamregistration", "team:" + team.ToString("N"))
                 != null
             )
-                Enqueue(store, team, context.CorrelationId, context.MessageName);
+            .ToArray();
+        if (registered.Length == 0)
+            return;
+        if (RuntimeProfile.ReadCapture(service).WorkerId != context.UserId)
+            throw new InvalidPluginExecutionException(
+                "Membership event identity differs from approved runtime."
+            );
+        foreach (var team in registered)
+            Enqueue(store, team, context.CorrelationId, context.MessageName);
     }
 
     public static void Enqueue(DocumentStore store, Guid team, Guid correlation, string message)

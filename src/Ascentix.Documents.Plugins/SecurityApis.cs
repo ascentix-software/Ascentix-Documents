@@ -235,7 +235,7 @@ public sealed class CatalogGuard : IPlugin
                 (IOrganizationServiceFactory)
                     provider.GetService(typeof(IOrganizationServiceFactory))
             ).CreateOrganizationService(context.UserId);
-            if (RuntimeProfile.Read(service).WorkerId != context.UserId)
+            if (RuntimeProfile.ReadCapture(service).WorkerId != context.UserId)
                 throw new InvalidPluginExecutionException(
                     "Team retirement requires the configured worker."
                 );
@@ -278,8 +278,6 @@ public sealed class TeamRetirementPlugin : IPlugin
         var context = (IPluginExecutionContext)provider.GetService(typeof(IPluginExecutionContext));
         if (
             context.Stage != 40
-            || context.Mode != 0
-            || !context.IsInTransaction
             || context.MessageName != "Delete"
             || context.PrimaryEntityName != "team"
             || context.PrimaryEntityId == Guid.Empty
@@ -288,10 +286,6 @@ public sealed class TeamRetirementPlugin : IPlugin
         var service = (
             (IOrganizationServiceFactory)provider.GetService(typeof(IOrganizationServiceFactory))
         ).CreateOrganizationService(context.UserId);
-        if (RuntimeProfile.Read(service).WorkerId != context.UserId)
-            throw new InvalidPluginExecutionException(
-                "Team lifecycle identity differs from runtime."
-            );
         var store = new DocumentStore(service);
         var registration = store.Find<TeamRegistration>(
             "asx_teamregistration",
@@ -299,6 +293,10 @@ public sealed class TeamRetirementPlugin : IPlugin
         );
         if (registration == null)
             return;
+        if (RuntimeProfile.ReadCapture(service).WorkerId != context.UserId)
+            throw new InvalidPluginExecutionException(
+                "Team lifecycle identity differs from runtime."
+            );
         registration.Value.Enabled = false;
         registration.Value.Status = "Revoking";
         store.Save(registration);

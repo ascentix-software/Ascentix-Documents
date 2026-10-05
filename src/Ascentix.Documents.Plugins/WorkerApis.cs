@@ -158,7 +158,7 @@ public sealed class StateGuard : IPlugin
                 context,
                 () =>
                     RuntimeProfile
-                        .Read(
+                        .ReadCapture(
                             (
                                 (IOrganizationServiceFactory)
                                     provider.GetService(typeof(IOrganizationServiceFactory))

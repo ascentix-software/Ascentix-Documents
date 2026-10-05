@@ -67,7 +67,7 @@ public sealed class LifecycleTests
     }
 
     [Fact]
-    public void BulkRootEventsAreBoundedAndUseExactWorkerIdentity()
+    public void BulkRootEventsUseExactWorkerIdentity()
     {
         var f = Setup();
         var targets = new EntityCollection(
@@ -87,17 +87,6 @@ public sealed class LifecycleTests
         Assert.Throws<InvalidPluginExecutionException>(() =>
             new RecordInvalidationPlugin().Execute(
                 new Provider(f, Event(f, "Create", new ParameterCollection(), Guid.NewGuid()))
-            )
-        );
-        var oversized = new EntityCollection(
-            Enumerable.Range(0, 101).Select(_ => new Entity("account", Guid.NewGuid())).ToList()
-        );
-        Assert.Throws<InvalidPluginExecutionException>(() =>
-            new RecordInvalidationPlugin().Execute(
-                new Provider(
-                    f,
-                    Event(f, "CreateMultiple", new ParameterCollection { ["Targets"] = oversized })
-                )
             )
         );
     }
