@@ -487,6 +487,34 @@ async function change(n, value) {
   await nodes.confirmUnregister.onclick();
   assert.equal(runtimeSaves.at(-1).Command, 'Unregister');
   {
+    // Pausing with a disabled or deleted worker: the worker list omits it, but Save must still
+    // send the configured WorkerId so the server takes the toggle-only path.
+    const select = nodes.runtimeWorker;
+    let selected = '';
+    Object.defineProperty(select, 'value', {
+      configurable: true,
+      get: () => selected,
+      // Like a browser select: a value without a matching option selects nothing.
+      set: (v) => (selected = select.children.some((o) => o.value === v) ? v : ''),
+    });
+    const retrieve = xrm.WebApi.retrieveMultipleRecords;
+    xrm.WebApi.retrieveMultipleRecords = async (name) => ({
+      entities: name === 'asx_runtime' ? [{ asx_runtimeid: 'runtime-1' }] : [],
+    });
+    runtimeProfile = { ...runtimeProfile, WorkerId: 'worker-gone', Enabled: true };
+    await nodes.loadRuntime.onclick();
+    assert.equal(select.value, 'worker-gone');
+    assert.match(select.textContent, /Configured worker \(disabled or not found\)/);
+    nodes.runtimeEnabled.checked = false;
+    await nodes.saveRuntime.onclick();
+    assert.equal(runtimeSaves.at(-1).Command, 'Save');
+    assert.equal(runtimeSaves.at(-1).WorkerId, 'worker-gone', 'Pause keeps the configured worker');
+    assert.equal(runtimeSaves.at(-1).Enabled, false);
+    xrm.WebApi.retrieveMultipleRecords = retrieve;
+    delete select.value;
+    select.value = '';
+  }
+  {
     const failed = [
       {
         asyncoperationid: 'job-1',

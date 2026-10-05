@@ -1151,7 +1151,10 @@ public sealed class WorkerCoordinator
 
     private WorkerLibrary Current(OperationDocument operation, FolderStep binding)
     {
-        Allowed(binding.Table);
+        // A create already sent to SharePoint may finish (response, reads, completion) after its
+        // table is removed, so its writer slot is released. Unsent work for the table stops here.
+        if (!operation.ExternalSubmitted)
+            Allowed(binding.Table);
         if (!operation.ExternalSubmitted && Retired(binding.Table, binding.RecordId))
             throw new EvaluationBlockedException(
                 "Deleted record requires decommission review; no new folder write."

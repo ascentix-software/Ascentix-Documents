@@ -364,6 +364,27 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
+    public void SentCreateForARemovedTableFinishesAndReleasesItsWriterSlot()
+    {
+        var f = new Fixture();
+        f.AllowedTables = new[] { "account" };
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        string[] Writers() =>
+            f
+                .Store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey)
+                .Value.Writers;
+        Assert.NotEmpty(Writers());
+        f.AllowedTables = new[] { "contact" };
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        Assert.Equal("Read", work.Status);
+        var verified = f.ObserveAndFinalize(work, f.Item(Guid.NewGuid(), null));
+        Assert.Equal("Applied", f.Call("Complete", verified).Status);
+        Assert.Empty(Writers());
+    }
+
+    [Fact]
     public void WorkerSourceScopeIsCheckedBeforeReadingQueuedBusinessRecord()
     {
         var fixture = new Fixture(seedBinding: false);
@@ -772,8 +793,13 @@ public sealed class DurableWorkerTests
         );
     }
 
-    [Fact]
-    public void FolderUnderAncestorsWithHandSetPermissionsIsCreatedAndApplied()
+    [Theory]
+    [InlineData("None")]
+    [InlineData("EmptyId")]
+    [InlineData("OtherPath")]
+    public void FolderUnderAncestorsWithHandSetPermissionsIsCreatedUnlessAncestorIdentityChanges(
+        string finalChange
+    )
     {
         var f = new Fixture();
         string entry = "/sites/proto/General/Archive/Entry";
@@ -805,21 +831,19 @@ public sealed class DurableWorkerTests
                 }
             )
         );
-        string ancestor = WithUniquePermissions(
-            JsonWire.Write(
-                new ODataEnvelope<FolderObservation>
-                {
-                    Data = new FolderObservation
+        string Ancestor(Guid id, string path) =>
+            WithUniquePermissions(
+                JsonWire.Write(
+                    new ODataEnvelope<FolderObservation>
                     {
-                        Id = Guid.NewGuid(),
-                        Path = "/sites/proto/General/Archive",
-                    },
-                }
-            )
-        );
+                        Data = new FolderObservation { Id = id, Path = path },
+                    }
+                )
+            );
+        var ancestorId = Guid.NewGuid();
         work = f.Observe(work, parent);
         Assert.Equal("Ancestor", work.ProbeKind);
-        work = f.Observe(work, ancestor);
+        work = f.Observe(work, Ancestor(ancestorId, "/sites/proto/General/Archive"));
         Assert.Equal("Folder", work.ProbeKind);
         work = f.Observe(work, Rows<ItemObservation>());
         Assert.Equal("ReadyToCreate", work.Status);
@@ -832,7 +856,25 @@ public sealed class DurableWorkerTests
         Assert.Equal("FinalParent", work.ProbeKind);
         work = f.Observe(work, parent);
         Assert.Equal("FinalAncestor", work.ProbeKind);
-        work = f.Observe(work, ancestor);
+        work = f.Observe(
+            work,
+            Ancestor(
+                finalChange == "EmptyId" ? Guid.Empty : ancestorId,
+                finalChange == "OtherPath"
+                    ? "/sites/proto/General/Moved"
+                    : "/sites/proto/General/Archive"
+            )
+        );
+        if (finalChange != "None")
+        {
+            // The kept identity and path checks still stop the work at the final read.
+            Assert.Equal("Blocked", work.Status);
+            Assert.Equal(
+                "ObservationMismatch",
+                f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value.ErrorCode
+            );
+            return;
+        }
         Assert.Equal("Verified", work.Status);
         Assert.Equal("Applied", f.Call("Complete", work).Status);
     }

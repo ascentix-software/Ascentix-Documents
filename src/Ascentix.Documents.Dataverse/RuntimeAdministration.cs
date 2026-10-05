@@ -313,8 +313,8 @@ public static class RuntimeAdministration
         }
         else
         {
-            // No wait for active writers: in-flight work for a removed table stops at its next
-            // worker step, before any SharePoint write, because the table is out of scope.
+            // No wait for active writers: unsent work for a removed table stops at its next worker
+            // step, before any SharePoint write. A create already sent may still finish.
             tables = current
                 .Tables.Where(t => !string.Equals(t, table, StringComparison.Ordinal))
                 .ToArray();

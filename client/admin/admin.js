@@ -1540,7 +1540,16 @@
         ...workerRows.map((w) => option(w.systemuserid, w.fullname)),
       );
     }
-    $('runtimeWorker').value = result.WorkerId;
+    // The worker list holds enabled application users only. Keep a disabled or deleted configured
+    // worker selectable so a pause sends the same WorkerId and the server pauses at once.
+    const configured = result.WorkerId;
+    if (
+      configured &&
+      configured !== '00000000-0000-0000-0000-000000000000' &&
+      ![...$('runtimeWorker').options].some((o) => o.value === configured)
+    )
+      $('runtimeWorker').append(option(configured, 'Configured worker (disabled or not found)'));
+    $('runtimeWorker').value = configured;
     setReadiness(result);
     $('runtimeSites').value = result.SharePointHosts.join(',');
     $('runtimeEnabled').checked = result.Enabled;
