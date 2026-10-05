@@ -144,6 +144,9 @@ const xrm = {
                         Node: 'root',
                       },
                     ],
+                    Notices: [
+                      "Folder 'destination_1/child' is waiting for 'root.code' to have a value.",
+                    ],
                   }
                 : {
                     TemplateId: 'template-1',
@@ -282,6 +285,7 @@ async function change(n, value) {
   await change(nodes.record, 'record-1');
   await nodes.preview.onclick();
   assert.match(nodes.previewTrees.textContent, /Resolved account/);
+  assert.match(nodes.previewTrees.textContent, /is waiting for 'root\.code' to have a value/);
   assert(!nodes.previewTrees.textContent.includes('BindingKey'));
   tabs[2].onclick();
   assert.equal(nodes.templateActions.hidden, true);

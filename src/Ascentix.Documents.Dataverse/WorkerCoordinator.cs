@@ -297,6 +297,7 @@ public sealed class WorkerCoordinator
                     RevisionId = revision.Id,
                     Sources = sourceVersions,
                     IncludedSections = included,
+                    Notices = intents.Notices.ToArray(),
                 }
             );
         else
@@ -307,6 +308,7 @@ public sealed class WorkerCoordinator
             selected.Value.RevisionId = revision.Id;
             selected.Value.Sources = sourceVersions;
             selected.Value.IncludedSections = included;
+            selected.Value.Notices = intents.Notices.ToArray();
             store.Save(selected);
         }
         var operations = new List<string>();
@@ -372,7 +374,7 @@ public sealed class WorkerCoordinator
         completedSelection.Value.Status = "Selection";
         store.Save(completedSelection);
         job.Value.Operations = operations.ToArray();
-        job.Value.Notices = Array.Empty<string>();
+        job.Value.Notices = intents.Notices.ToArray();
         job.Value.Status = "Planned";
         store.Save(job);
         return new WorkerResult
@@ -380,6 +382,7 @@ public sealed class WorkerCoordinator
             Status = job.Value.Status,
             Key = key,
             Keys = job.Value.Operations,
+            Notices = job.Value.Notices,
         };
     }
 
@@ -716,9 +719,11 @@ public sealed class WorkerCoordinator
         WorkerLibrary library
     )
     {
+        // A child folder is always below the library root; a root folder may sit at it.
         var item = SharePointObservations.Find(
             request,
-            operation.Value.ParentPath + "/" + binding.Candidate
+            operation.Value.ParentPath + "/" + binding.Candidate,
+            binding.ParentBinding == null
         );
         if (item == null)
         {

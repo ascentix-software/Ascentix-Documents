@@ -39,6 +39,7 @@ public sealed class BatchDocument : StoredDocument
 
 public sealed class BatchReplan
 {
+    private const int BatchNoticeLimit = 20;
     private readonly IOrganizationService service;
     private readonly DocumentStore store;
     private readonly string[] allowed;
@@ -135,6 +136,15 @@ public sealed class BatchReplan
                                     + "/"
                                     + intent.RelativePath;
                             })
+                            // The batch row holds up to 1000 paths for five records inside the
+                            // 500,000-character payload limit, so each record lists at most 20
+                            // of its plan notices (about 12,000 characters).
+                            .Concat(intents.Notices.Take(BatchNoticeLimit))
+                            .Concat(
+                                intents.Notices.Count > BatchNoticeLimit
+                                    ? new[] { "More notices were not recorded." }
+                                    : Array.Empty<string>()
+                            )
                             .Concat(
                                 new[]
                                 {

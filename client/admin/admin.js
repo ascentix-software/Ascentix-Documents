@@ -499,6 +499,8 @@
   }
   function renderPreview(plan) {
     $('previewTrees').replaceChildren();
+    // Adjusted folder names and folders waiting for a value; text, never markup.
+    for (const notice of plan.Notices || []) $('previewTrees').append(el('div', notice, 'callout'));
     if (!plan.Folders?.length) {
       $('previewTrees').append(el('div', "No folders match this record's conditions.", 'callout'));
       return;

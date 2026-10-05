@@ -65,6 +65,26 @@ public sealed class TransportTests
         );
     }
 
+    [Fact]
+    public void FormsIsAllowedBelowTheApprovedEntry()
+    {
+        var target = Target();
+        string nested = target.EntryPath + "/Acme";
+        SharePointRequests.CreateFolder(target, nested, "Forms");
+        SharePointRequests.FindFolder(target, nested, "Forms");
+        SharePointRequests.CreateFolder(target, nested + "/Forms", "Contracts");
+        // The entry may be the library root, so a folder directly under it is still refused.
+        Assert.Throws<EvaluationBlockedException>(() =>
+            SharePointRequests.CreateFolder(target, target.EntryPath, "Forms")
+        );
+        Assert.Throws<EvaluationBlockedException>(() =>
+            SharePointRequests.FindFolder(target, target.EntryPath, "Forms")
+        );
+        Assert.Throws<EvaluationBlockedException>(() =>
+            SharePointRequests.CreateFolder(target, target.EntryPath + "/Forms", "Contracts")
+        );
+    }
+
     [Theory]
     [InlineData("/sites/other/General")]
     [InlineData("/sites/proto/General/../Other")]

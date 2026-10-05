@@ -54,9 +54,15 @@ public sealed class SharePointTarget
     {
         if (parent != EntryPath && !parent.StartsWith(EntryPath + "/", StringComparison.Ordinal))
             throw new EvaluationBlockedException("Parent is outside the approved entry.");
+        // The entry may be the library root, so only its first segment may sit at the root;
+        // SharePoint reserves "Forms" only there.
+        bool first = true;
         foreach (var segment in parent.Substring(EntryPath.Length).Split('/'))
             if (segment.Length > 0)
-                FolderNames.Validate(segment);
+            {
+                FolderNames.Validate(segment, first);
+                first = false;
+            }
         if (parent.Contains("//") || parent.EndsWith("/", StringComparison.Ordinal))
             throw new EvaluationBlockedException("Parent path is not canonical.");
     }
@@ -86,7 +92,7 @@ public static class SharePointRequests
     public static HttpIntent FindFolder(SharePointTarget target, string parent, string name)
     {
         target.ValidateParent(parent);
-        FolderNames.Validate(name);
+        FolderNames.Validate(name, parent == target.EntryPath);
         string path = parent + "/" + name;
         return new HttpIntent
         {
@@ -100,7 +106,7 @@ public static class SharePointRequests
     public static HttpIntent CreateFolder(SharePointTarget target, string parent, string name)
     {
         target.ValidateParent(parent);
-        FolderNames.Validate(name);
+        FolderNames.Validate(name, parent == target.EntryPath);
         // Folder path is decoded ResourcePath input; never URL-escape the field value itself.
         var origin = target.Web.GetLeftPart(UriPartial.Authority);
         return new HttpIntent

@@ -83,7 +83,9 @@ public sealed class RecordInspection
             Notices = new[]
             {
                 "Current evaluation only. Existing folders remain intact. Paths shared by records contain shared documents; no permanent child-folder inventory is maintained.",
-            },
+            }
+                .Concat(selection.Value.Notices)
+                .ToArray(),
         };
     }
 

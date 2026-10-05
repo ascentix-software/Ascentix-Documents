@@ -1056,6 +1056,82 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
+    public void ChildFolderNamedFormsIsCreatedBelowTheRoot()
+    {
+        var f = new Fixture(false);
+        var child = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        child.Key += "-child";
+        child.Node = "forms";
+        child.ParentBinding = "root";
+        child.OriginalName = child.Candidate = "Forms";
+        f.Operation.Folders = new[] { f.Binding, child };
+        f.Store.Create("asx_operation", f.Operation);
+        var root = Guid.NewGuid();
+        var work = f.ObserveAndFinalize(f.Preflight(f.Claim()), f.Item(root, null));
+        Assert.Equal("Pending", f.Call("Complete", work).Status);
+        work = f.Claim("child-run");
+        work = f.Observe(work, f.LibraryBody());
+        string parent = JsonWire.Write(
+            new ODataEnvelope<FolderObservation>
+            {
+                Data = new FolderObservation { Id = root, Path = "/sites/proto/General/Example" },
+            }
+        );
+        work = f.Observe(work, parent);
+        Assert.Equal("ReadyToCreate", f.Observe(work, Rows<ItemObservation>()).Status);
+        work = f.Call("PrepareCreate", f.Results.Last());
+        Assert.Equal("Create", work.Status);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Name = "Forms";
+        item.Path += "/Forms";
+        work = f.Observe(work, Rows(item));
+        Assert.Equal("FinalParent", work.ProbeKind);
+        work = f.Observe(work, parent);
+        Assert.Equal("Verified", work.Status);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+    }
+
+    [Fact]
+    public void RecordNameSharePointForbidsIsCleanedAndApplied()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        f.Service.Rows[f.RecordId]["name"] = "Smith & Sons: Holdings";
+        var planned = f.PlanRecord();
+        Assert.Equal("Planned", planned.Status);
+        const string notice =
+            "Folder name 'Smith & Sons: Holdings' was adjusted to 'Smith & Sons- Holdings' for SharePoint.";
+        Assert.Equal(new[] { notice }, planned.Notices);
+        f.OperationKey = Assert.Single(planned.Keys);
+        Assert.Equal(
+            "Smith & Sons- Holdings",
+            f.Store.Require<OperationDocument>(
+                "asx_operation",
+                f.OperationKey
+            ).Value.Folder.Candidate
+        );
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+        work = f.Call("PrepareCreate", work);
+        Assert.Contains("Smith & Sons- Holdings", work.Http!.Body, StringComparison.Ordinal);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Name = "Smith & Sons- Holdings";
+        item.Path = "/sites/proto/General/Smith & Sons- Holdings";
+        work = f.ObserveAndFinalize(work, item);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        var inspected = RecordInspection.Read(
+            f.Service,
+            new WorkerRequest { TemplateId = f.TemplateId, RecordId = f.RecordId },
+            new[] { "account" }
+        );
+        Assert.Equal("Applied", inspected.Status);
+        Assert.Equal("Smith & Sons- Holdings", Assert.Single(inspected.Record!.Folders).Candidate);
+        Assert.Contains(notice, inspected.Notices);
+    }
+
+    [Fact]
     public void PlanAndClaimSucceedWhenLibraryHasNoPolicyRevisionOrAclFingerprint()
     {
         foreach (var seeded in new[] { false, true })
@@ -1415,6 +1491,9 @@ public sealed class DurableWorkerTests
 
         /// <summary>The enabled tables the worker API passes in; null means no scope check.</summary>
         public string[]? AllowedTables;
+
+        /// <summary>The operation Claim and Call drive; null means the seeded one.</summary>
+        public string? OperationKey;
         public DateTime Now = new DateTime(2026, 9, 8, 8, 0, 0, DateTimeKind.Utc);
         public Guid TemplateId { get; } = Guid.NewGuid();
         public Guid RevisionId { get; } = Guid.NewGuid();
@@ -1658,7 +1737,7 @@ public sealed class DurableWorkerTests
                     new WorkerRequest
                     {
                         Command = "Claim",
-                        Key = Operation.Key,
+                        Key = OperationKey ?? Operation.Key,
                         RunId = runId,
                         Token = token,
                     },
@@ -1681,7 +1760,7 @@ public sealed class DurableWorkerTests
                     new WorkerRequest
                     {
                         Command = command,
-                        Key = Operation.Key,
+                        Key = OperationKey ?? Operation.Key,
                         RunId = run,
                         Token = previous.Token,
                         ProbeId = previous.ProbeId,

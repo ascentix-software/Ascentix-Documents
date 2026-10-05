@@ -260,7 +260,17 @@ public static class SharePointObservations
                 .ToLowerInvariant();
     }
 
-    public static ItemObservation? Find(WorkerRequest request, string expectedPath)
+    /// <summary>Reads the folder at the expected path, or null when SharePoint has none.</summary>
+    /// <param name="request">The folder read's response.</param>
+    /// <param name="expectedPath">The folder's full server-relative path.</param>
+    /// <param name="atLibraryRoot">
+    /// False when the folder is known to be below the library root, where "Forms" is allowed.
+    /// </param>
+    public static ItemObservation? Find(
+        WorkerRequest request,
+        string expectedPath,
+        bool atLibraryRoot = true
+    )
     {
         if (request.HttpStatus == 404)
             return null;
@@ -285,7 +295,7 @@ public static class SharePointObservations
             || !item.Path.EndsWith("/" + item.Name, StringComparison.Ordinal)
         )
             throw new EvaluationBlockedException("Physical path/type observation differs.");
-        Domain.FolderNames.Validate(item.Name);
+        Domain.FolderNames.Validate(item.Name, atLibraryRoot);
         return item;
     }
 

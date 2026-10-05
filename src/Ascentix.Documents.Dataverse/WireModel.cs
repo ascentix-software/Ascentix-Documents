@@ -225,9 +225,14 @@ public sealed class PlanDto
     [DataMember]
     public IntentDto[] Folders { get; set; } = Array.Empty<IntentDto>();
 
-    public static PlanDto From(IReadOnlyList<FolderIntent> intents) =>
+    /// <summary>Adjusted folder names and folders waiting for a value.</summary>
+    [DataMember]
+    public string[] Notices { get; set; } = Array.Empty<string>();
+
+    public static PlanDto From(FolderPlan intents) =>
         new PlanDto
         {
+            Notices = intents.Notices.ToArray(),
             Folders = intents
                 .Select(i => new IntentDto
                 {

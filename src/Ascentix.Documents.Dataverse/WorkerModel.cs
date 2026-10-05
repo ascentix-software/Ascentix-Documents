@@ -115,6 +115,19 @@ public sealed class RecordPlanDocument : StoredDocument
 
     [DataMember]
     public string[] IncludedSections { get; set; } = Array.Empty<string>();
+
+    private string[]? notices;
+
+    /// <summary>
+    /// What planning recorded for the admin, such as an adjusted folder name or a folder that
+    /// waits for a value. Rows stored before this field read as empty.
+    /// </summary>
+    [DataMember]
+    public string[] Notices
+    {
+        get => notices ?? Array.Empty<string>();
+        set => notices = value;
+    }
 }
 
 [DataContract]

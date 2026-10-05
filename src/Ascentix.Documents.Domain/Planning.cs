@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Ascentix.Documents.Conditions;
@@ -81,33 +82,132 @@ public sealed class FolderIntent
     }
 }
 
+/// <summary>
+/// SharePoint folder-name rules, from Microsoft's "Restrictions and limitations in OneDrive and
+/// SharePoint", section "Invalid file names and file types"
+/// (https://support.microsoft.com/office/64883a5d-228e-48f5-b3d2-eb39e07630fa):
+/// the characters " * : &lt; &gt; ? / \ | are not allowed; leading and trailing spaces are not
+/// allowed; the names .lock, CON, PRN, AUX, NUL, COM0-COM9, LPT0-LPT9 and desktop.ini are not
+/// allowed; _vti_ cannot appear anywhere in a name; a name cannot start with ~$; "forms" cannot
+/// be used at the root level of a library; and U+309B and U+1027 cannot be the first character
+/// of a folder. Trailing periods, control characters and the 255-character name limit are the
+/// Windows and SharePoint limits the product has always enforced.
+/// </summary>
 public static class FolderNames
 {
+    private const string Forbidden = "\"*:<>?/\\|";
+    private const int MaxLength = 255;
+
+    private static readonly Regex DeviceName = new Regex(
+        @"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])($|\.)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+    );
+
+    private static readonly Regex Vti = new Regex(
+        "_(vti)_",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+    );
+
     /// <summary>
-    /// Rejects empty, oversized, reserved, and path-containing SharePoint folder names.
+    /// Rejects empty, oversized, reserved, and path-containing SharePoint folder names. This
+    /// guards names that already exist or come from outside; names built from record data go
+    /// through <see cref="Clean"/> instead.
     /// </summary>
-    /// <param name="name">The resolved folder name, excluding its parent path.</param>
-    public static void Validate(string name)
+    /// <param name="name">The folder name, excluding its parent path.</param>
+    /// <param name="atLibraryRoot">
+    /// False only when the caller knows the folder is below the library root, where SharePoint
+    /// allows "Forms".
+    /// </param>
+    public static void Validate(string name, bool atLibraryRoot = true)
     {
         if (
             string.IsNullOrWhiteSpace(name)
-            || name.Length > 255
+            || name.Length > MaxLength
             || name != name.Trim()
             || name.EndsWith(".", StringComparison.Ordinal)
-            || name.Any(c => char.IsControl(c) || "\"*:<>?/\\|".IndexOf(c) >= 0)
+            || name.Any(c => char.IsControl(c) || Forbidden.IndexOf(c) >= 0)
             || name == "."
             || name == ".."
-            || name.Equals("Forms", StringComparison.OrdinalIgnoreCase)
+            || (atLibraryRoot && name.Equals("Forms", StringComparison.OrdinalIgnoreCase))
             || name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase)
             || name.StartsWith("~$", StringComparison.Ordinal)
             || name.IndexOf("_vti_", StringComparison.OrdinalIgnoreCase) >= 0
-            || Regex.IsMatch(
-                name,
-                @"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])($|\.)",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
-            )
+            || DeviceName.IsMatch(name)
         )
             throw new EvaluationBlockedException("Resolved folder name is invalid or reserved.");
+    }
+
+    /// <summary>
+    /// Turns a name built from record data into a name SharePoint accepts, instead of refusing
+    /// it. Forbidden and control characters become "-", the ends are trimmed of spaces and
+    /// trailing periods, reserved names get a "_" and the name is cut to 255 characters. The
+    /// result always passes <see cref="Validate"/> at the same depth.
+    /// </summary>
+    /// <param name="raw">The rendered name.</param>
+    /// <param name="atLibraryRoot">True when the folder may sit at the root of the library.</param>
+    /// <returns>The cleaned name, or null when the value has nothing SharePoint can use.</returns>
+    public static string? Clean(string? raw, bool atLibraryRoot)
+    {
+        // A value made only of characters that are removed or replaced has nothing to name the
+        // folder with; "***" would otherwise become "---".
+        if (
+            raw == null
+            || !raw.Any(c =>
+                !char.IsControl(c) && !char.IsWhiteSpace(c) && c != '.' && Forbidden.IndexOf(c) < 0
+            )
+        )
+            return null;
+        string name = TrimEnds(
+            new string(
+                raw.Trim()
+                    .Select(c => char.IsControl(c) || Forbidden.IndexOf(c) >= 0 ? '-' : c)
+                    .ToArray()
+            )
+        );
+        if (name.Length > 0 && (name[0] == (char)0x309B || name[0] == (char)0x1027))
+            name = "-" + name.Substring(1);
+        if (name.StartsWith("~$", StringComparison.Ordinal))
+            name = "-$" + name.Substring(2);
+        name = Vti.Replace(name, "-$1-");
+        while (true)
+        {
+            name = Unreserve(name, atLibraryRoot);
+            if (name.Length <= MaxLength)
+                break;
+            int cut = MaxLength;
+            if (char.IsHighSurrogate(name[cut - 1]))
+                cut--;
+            name = TrimEnds(name.Substring(0, cut));
+        }
+        return name.Length == 0 ? null : name;
+    }
+
+    private static string TrimEnds(string name)
+    {
+        name = name.TrimStart();
+        int end = name.Length;
+        while (end > 0 && (char.IsWhiteSpace(name[end - 1]) || name[end - 1] == '.'))
+            end--;
+        return name.Substring(0, end);
+    }
+
+    // "." and ".." never reach here: trailing periods are already trimmed away.
+    private static string Unreserve(string name, bool atLibraryRoot)
+    {
+        if (DeviceName.IsMatch(name))
+        {
+            // "CON" becomes "CON_" and "con.txt" becomes "con_.txt"; a suffix after the
+            // extension would still start with the reserved "con.".
+            int dot = name.IndexOf('.');
+            return dot < 0 ? name + "_" : name.Substring(0, dot) + "_" + name.Substring(dot);
+        }
+        if (
+            name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase)
+            || name.Equals(".lock", StringComparison.OrdinalIgnoreCase)
+            || (atLibraryRoot && name.Equals("Forms", StringComparison.OrdinalIgnoreCase))
+        )
+            return name + "_";
+        return name;
     }
 }
 
@@ -268,18 +368,48 @@ public static class TemplateValidator
     }
 }
 
+/// <summary>A record's planned folders, with the notices planning recorded for them.</summary>
+public sealed class FolderPlan : ReadOnlyCollection<FolderIntent>
+{
+    /// <summary>
+    /// Things an admin should see about this plan, such as a folder name that was adjusted for
+    /// SharePoint. A notice never means the plan failed.
+    /// </summary>
+    public IReadOnlyList<string> Notices { get; }
+
+    public FolderPlan(IList<FolderIntent> intents, IList<string> notices)
+        : base(intents)
+    {
+        Notices = new ReadOnlyCollection<string>(notices);
+    }
+}
+
 public static class FolderPlanner
 {
-    public static IReadOnlyList<FolderIntent> Plan(
-        DocumentTemplate template,
-        Guid recordId,
-        Snapshot snapshot
-    )
+    // Bounded like the other stored notices so a plan stays well inside the 500,000-character
+    // payload limit of the rows that keep it.
+    private const int NoticeLimit = 200;
+    private const int NoticeLength = 600;
+
+    private static void Notice(IList<string> notices, string text)
+    {
+        text = new string(text.Where(c => !char.IsControl(c)).ToArray());
+        if (text.Length > NoticeLength)
+            text = text.Substring(0, NoticeLength) + "...";
+        if (notices.Count >= NoticeLimit)
+            text = "More notices were not recorded.";
+        if (notices.Count > NoticeLimit || notices.Contains(text))
+            return;
+        notices.Add(text);
+    }
+
+    public static FolderPlan Plan(DocumentTemplate template, Guid recordId, Snapshot snapshot)
     {
         TemplateValidator.Validate(template);
         if (recordId == Guid.Empty)
             throw new EvaluationBlockedException("Persisted record identity required.");
         var result = new List<FolderIntent>();
+        var notices = new List<string>();
         foreach (var section in template.Destinations)
         {
             var binding =
@@ -297,8 +427,33 @@ public static class FolderPlanner
                 {
                     if (node.Condition != null && !node.Condition.Evaluate(snapshot))
                         continue;
-                    var name = NameExpression.Render(node.Name, snapshot);
-                    FolderNames.Validate(name);
+                    var raw = NameExpression.Render(node.Name, snapshot);
+                    // A section's root folder may sit at the library root; deeper ones never do.
+                    var name = FolderNames.Clean(raw, parent == null);
+                    if (name == null)
+                    {
+                        // Skip this folder and everything below it; the rest of the plan goes on.
+                        Notice(
+                            notices,
+                            "Folder '"
+                                + section.Key
+                                + "/"
+                                + node.Key
+                                + "' is waiting for a usable name: '"
+                                + raw
+                                + "' has no characters SharePoint accepts."
+                        );
+                        continue;
+                    }
+                    if (name != raw)
+                        Notice(
+                            notices,
+                            "Folder name '"
+                                + raw
+                                + "' was adjusted to '"
+                                + name
+                                + "' for SharePoint."
+                        );
                     if (!names.Add(name))
                         throw new EvaluationBlockedException(
                             "Included siblings resolve to the same name."
@@ -332,6 +487,6 @@ public static class FolderPlanner
             };
             visit(null, "");
         }
-        return result.AsReadOnly();
+        return new FolderPlan(result, notices);
     }
 }
