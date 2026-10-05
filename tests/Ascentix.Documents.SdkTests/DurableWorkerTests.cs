@@ -1376,6 +1376,10 @@ public sealed class DurableWorkerTests
                     return actual == null;
                 if (condition.Operator == ConditionOperator.NotNull)
                     return actual != null;
+                if (condition.Operator == ConditionOperator.In)
+                    return condition.Values.Any(v =>
+                        Equals(actual, v is EntityReference r ? r.Id : v)
+                    );
                 object expected = condition.Values[0];
                 if (condition.Operator == ConditionOperator.Equal)
                     return Equals(actual, expected);
@@ -1416,6 +1420,20 @@ public sealed class DurableWorkerTests
                 values = sorted;
             if (query.TopCount.HasValue)
                 values = values.Take(query.TopCount.Value);
+            if (query.PageInfo != null && query.PageInfo.Count > 0)
+            {
+                var all = values.ToList();
+                int skip = (Math.Max(1, query.PageInfo.PageNumber) - 1) * query.PageInfo.Count;
+                var rows = all.Skip(skip).Take(query.PageInfo.Count).ToList();
+                var page = new EntityCollection(rows.Select(r => Copy(r, query.ColumnSet)).ToList())
+                {
+                    MoreRecords = skip + rows.Count < all.Count,
+                };
+                page.PagingCookie = page.MoreRecords
+                    ? "page-" + (query.PageInfo.PageNumber + 1)
+                    : null;
+                return page;
+            }
             return new EntityCollection(values.Select(r => Copy(r, query.ColumnSet)).ToList());
         }
 
