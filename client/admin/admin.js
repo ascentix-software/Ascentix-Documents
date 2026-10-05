@@ -1526,6 +1526,75 @@
       runtimeResult(await runtimeCommand({ Command: 'Unregister' }));
       message('All Documents event registrations were removed.');
     });
+  const failedJobs = { next: null };
+  function failedJobQuery() {
+    const steps = security.runtime?.Registration?.StepIds || [];
+    if (!steps.length)
+      throw new Error('Load the runtime profile first; no event steps are registered.');
+    return (
+      '?$select=asyncoperationid,message,createdon,_regardingobjectid_value' +
+      '&$filter=statuscode eq 31 and (' +
+      steps.map((id) => '_owningextensionid_value eq ' + id).join(' or ') +
+      ')&$orderby=createdon desc'
+    );
+  }
+  function renderFailed(rows, append) {
+    if (!append) $('failedJobs').replaceChildren();
+    for (const row of rows) {
+      const table = row['_regardingobjectid_value@Microsoft.Dynamics.CRM.lookuplogicalname'] || '';
+      const item = document.createElement('li');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.dataset.table = table;
+      box.dataset.record = row._regardingobjectid_value || '';
+      item.append(box);
+      const text = document.createElement('span');
+      text.textContent =
+        ' ' +
+        table +
+        ' ' +
+        box.dataset.record +
+        ' · ' +
+        (row.message || 'No error text') +
+        ' · ' +
+        row.createdon;
+      item.append(text);
+      $('failedJobs').append(item);
+    }
+  }
+  async function loadFailedPage(options, append) {
+    const result = await xrm.WebApi.retrieveMultipleRecords('asyncoperation', options, 50);
+    renderFailed(result.entities, append);
+    failedJobs.next = result.nextLink
+      ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
+      : null;
+    $('moreFailedJobs').hidden = !failedJobs.next;
+  }
+  $('loadFailedJobs').onclick = () => task(() => loadFailedPage(failedJobQuery(), false));
+  $('moreFailedJobs').onclick = () => task(() => loadFailedPage(failedJobs.next, true));
+  $('replanFailed').onclick = () =>
+    task(async () => {
+      const picked = [...$('failedJobs').children]
+        .map((li) => li.children[0])
+        .filter((box) => box.checked && box.dataset.record);
+      if (!picked.length) throw new Error('Select at least one failed job with a record.');
+      let queued = 0;
+      for (const box of picked) {
+        const templates = state.templates.filter((t) => t.asx_table === box.dataset.table);
+        for (const template of templates) {
+          await api('asx_ManageWork', {
+            Request: JSON.stringify({
+              Command: 'Queue',
+              RequestId: crypto.randomUUID(),
+              TemplateId: template.asx_templateid,
+              RecordId: box.dataset.record,
+            }),
+          });
+          queued++;
+        }
+      }
+      message('Queued ' + queued + ' record plans for the selected failed jobs.');
+    });
   $('loadOperations').onclick = () =>
     task(async () => {
       const rows = await xrm.WebApi.retrieveMultipleRecords(

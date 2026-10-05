@@ -383,6 +383,16 @@ Select up to five records for a published-revision impact review.</pre>
             ><button id="cancelUnregister" class="secondary">Keep registrations</button>
           </div>
           <p id="runtimeStatus" class="hint">No profile loaded.</p>
+
+          <h4>Failed capture jobs</h4>
+          <p class="hint">
+            Record or team events whose background job failed. Fix the cause, then replan the
+            records to queue them again.
+          </p>
+          <button id="loadFailedJobs" class="secondary">Load failed jobs</button>
+          <ul id="failedJobs"></ul>
+          <button id="moreFailedJobs" class="secondary" hidden>Load more</button
+          ><button id="replanFailed">Replan selected records</button>
         </details>
         <details id="operations" class="card">
           <summary>Operations and recovery</summary>

@@ -164,7 +164,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'admin.js'), 'utf8'), {
   location: { hash: '' },
   fetch,
   console,
-  crypto: { randomUUID: () => 'test' },
+  crypto: require('crypto').webcrypto,
 });
 const descendants = (n) => n.children.flatMap((c) => [c, ...descendants(c)]);
 const find = (text, tag) =>
@@ -426,6 +426,44 @@ async function change(n, value) {
   assert.equal(runtimeSaves.at(-1).Command, 'Save', 'Unregister waits for confirmation');
   await nodes.confirmUnregister.onclick();
   assert.equal(runtimeSaves.at(-1).Command, 'Unregister');
+  {
+    const failed = [
+      {
+        asyncoperationid: 'job-1',
+        _regardingobjectid_value: 'rec-1',
+        '_regardingobjectid_value@Microsoft.Dynamics.CRM.lookuplogicalname': 'account',
+        message: 'Runtime identity/source scope is incomplete.',
+        createdon: '2026-10-05T10:00:00Z',
+      },
+    ];
+    xrm.WebApi.retrieveMultipleRecords = async (name, options) => {
+      if (name === 'asyncoperation') {
+        assert.match(options, /statuscode eq 31/);
+        assert.match(options, /_owningextensionid_value eq step-1/);
+        return { entities: failed };
+      }
+      return { entities: [] };
+    };
+    // Templates 'template-1' and 'template-2' (both account) were loaded earlier in this file.
+    const queued = [];
+    xrm.WebApi.online.execute = async (req) => {
+      assert.equal(req.getMetadata().operationName, 'asx_ManageWork');
+      queued.push(JSON.parse(req.Request));
+      return { ok: true, json: async () => ({ Result: JSON.stringify({ Status: 'Pending' }) }) };
+    };
+    await nodes.loadFailedJobs.onclick();
+    assert.match(nodes.failedJobs.textContent, /account.*rec-1.*incomplete/);
+    nodes.failedJobs.children[0].children[0].checked = true;
+    await nodes.replanFailed.onclick();
+    assert.deepEqual(
+      queued.map((q) => [q.Command, q.TemplateId, q.RecordId]),
+      [
+        ['Queue', 'template-1', 'rec-1'],
+        ['Queue', 'template-2', 'rec-1'],
+      ],
+    );
+    assert.notEqual(queued[0].RequestId, queued[1].RequestId);
+  }
   console.log(
     'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
   );
