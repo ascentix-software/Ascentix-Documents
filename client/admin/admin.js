@@ -12,7 +12,9 @@
     saved: null,
     template: null,
     templates: [],
-    addedTables: new Set(),
+    enabledTables: [],
+    readiness: null,
+    removing: null,
     expandedTables: new Set(),
     sectionSequence: 0,
     editBase: null,
@@ -66,7 +68,8 @@
     return b;
   }
   function controls() {
-    $('newTemplate').disabled = state.busy || !state.root;
+    $('newTemplate').disabled =
+      state.busy || !state.root || !state.enabledTables.includes(state.root.LogicalName);
     $('templateName').disabled = state.busy || !state.root || !!state.template;
     $('revisionControls').hidden = !state.root;
     $('templateActions').hidden = !state.root || $('author-view').hidden;
@@ -1101,7 +1104,6 @@
         state.templates.find((t) => t.asx_table === table) ||
         null;
     $('templateName').value = state.template?.asx_name || 'New template';
-    state.addedTables.add(table);
     state.expandedTables.add(table);
     renderTemplateTree();
     state.editBase = null;
@@ -1176,8 +1178,58 @@
       $('tablePicker').hidden = true;
     });
   $('addTable').onclick = () => {
+    renderEnablePicker();
     $('tablePicker').hidden = !$('tablePicker').hidden;
   };
+  function renderEnablePicker() {
+    $('enableTable').replaceChildren(
+      option('', 'Select a table to enable'),
+      ...state.tables
+        .filter((t) => !state.enabledTables.includes(t.LogicalName))
+        .map((t) => option(t.LogicalName, display(t))),
+    );
+    $('enableTable').value = '';
+  }
+  $('enableTable').onchange = () => {
+    const name = $('enableTable').value;
+    if (name) return task(() => enableTable(name));
+  };
+  async function loadEnabledTables() {
+    const rows = [];
+    let options = '?$select=asx_logicalname&$orderby=asx_logicalname';
+    do {
+      const result = await xrm.WebApi.retrieveMultipleRecords('asx_runtimetable', options);
+      rows.push(...result.entities);
+      options = result.nextLink
+        ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
+        : null;
+    } while (options);
+    state.enabledTables = [...new Set(rows.map((r) => r.asx_logicalname).filter(Boolean))].sort();
+  }
+  function setReadiness(result) {
+    const readiness = result?.Registration?.Readiness;
+    state.readiness = Array.isArray(readiness)
+      ? Object.fromEntries(readiness.map((r) => [r.Scope, r.Status]))
+      : null;
+  }
+  // Applies a Get-shaped result from AddTable/RemoveTable to the panel and the loaded runtime card.
+  async function tableChanged(result) {
+    setReadiness(result);
+    if (security.runtime) runtimeResult(result);
+    state.removing = null;
+    await loadEnabledTables();
+    renderEnablePicker();
+    $('tablePicker').hidden = true;
+    renderTemplateTree();
+  }
+  async function enableTable(name) {
+    await tableChanged(await runtimeCommand({ Command: 'AddTable', Table: name }));
+    message('Table enabled for Documents.');
+  }
+  async function disableTable(name) {
+    await tableChanged(await runtimeCommand({ Command: 'RemoveTable', Table: name }));
+    message('Table removed from Documents. Its templates are kept.');
+  }
   $('newTemplate').onclick = () => task(() => selectTemplate(state.root.LogicalName, null, true));
   async function loadTemplates() {
     const rows = [];
@@ -1195,14 +1247,22 @@
   function renderTemplateTree() {
     const tree = $('templateTree');
     tree.replaceChildren();
-    const tables = [...new Set([...state.templates.map((t) => t.asx_table), ...state.addedTables])]
-      .filter(Boolean)
-      .sort();
-    for (const table of tables) {
-      const section = el('details'),
-        summary = el(
-          'summary',
-          display(state.tables.find((t) => t.LogicalName === table) || { LogicalName: table }),
+    const name = (table) =>
+      display(state.tables.find((t) => t.LogicalName === table) || { LogicalName: table });
+    const templated = [...new Set(state.templates.map((t) => t.asx_table))].filter(Boolean);
+    const enabled = [...state.enabledTables].sort();
+    const disabled = templated.filter((t) => !enabled.includes(t)).sort();
+    const entry = (table, isEnabled) => {
+      const wrap = el('div', null, 'table-entry'),
+        section = el('details'),
+        summary = el('summary', name(table));
+      if (isEnabled && state.readiness?.[table])
+        summary.append(
+          el(
+            'span',
+            ' ' + (readinessText[state.readiness[table]] || state.readiness[table]),
+            'hint',
+          ),
         );
       section.open = state.expandedTables.has(table);
       section.ontoggle = () => {
@@ -1222,16 +1282,45 @@
         );
         section.append(item);
       }
-      section.append(
-        button(
-          '＋ New template',
-          () => task(() => selectTemplate(table, null, true)),
-          'template-item',
-        ),
-      );
-      tree.append(section);
+      if (isEnabled)
+        section.append(
+          button(
+            '＋ New template',
+            () => task(() => selectTemplate(table, null, true)),
+            'template-item',
+          ),
+        );
+      wrap.append(section);
+      if (isEnabled && state.removing === table) {
+        const confirm = el('div', null, 'callout');
+        confirm.append(
+          el('p', 'Capture for this table stops. Its templates are kept.'),
+          button('Remove table', () => task(() => disableTable(table)), 'danger'),
+          button('Cancel', () => {
+            state.removing = null;
+            renderTemplateTree();
+          }),
+        );
+        wrap.append(confirm);
+      } else {
+        const action = isEnabled
+          ? button('Remove', () => {
+              state.removing = table;
+              renderTemplateTree();
+            })
+          : button('Enable', () => task(() => enableTable(table)));
+        action.setAttribute('aria-label', (isEnabled ? 'Remove ' : 'Enable ') + name(table));
+        wrap.append(action);
+      }
+      tree.append(wrap);
+    };
+    enabled.forEach((table) => entry(table, true));
+    if (disabled.length) {
+      tree.append(el('h4', 'Not enabled'));
+      disabled.forEach((table) => entry(table, false));
     }
-    if (!tables.length) tree.append(el('p', 'Add a table to create its first template.', 'hint'));
+    if (!enabled.length && !disabled.length)
+      tree.append(el('p', 'Add a table to create its first template.', 'hint'));
   }
   $('addDestination').onclick = () => {
     if (state.sections.length >= 10) return;
@@ -1446,18 +1535,7 @@
       );
     }
     $('runtimeWorker').value = result.WorkerId;
-    const known = state.tables.map((t) => t.LogicalName);
-    const names = [...new Set([...known, ...result.Tables])];
-    $('runtimeTables').replaceChildren(
-      ...names.map((name) => {
-        const item = option(
-          name,
-          display(state.tables.find((t) => t.LogicalName === name) || { LogicalName: name }),
-        );
-        item.selected = result.Tables.includes(name);
-        return item;
-      }),
-    );
+    setReadiness(result);
     $('runtimeSites').value = result.SharePointHosts.join(',');
     $('runtimeEnabled').checked = result.Enabled;
     $('runtimeRecordUpdates').checked = result.ProcessRecordUpdates === true;
@@ -1480,6 +1558,7 @@
     $('runtimePending').textContent =
       'Tables pending registration: Save to register their event steps (large sets register in batches, so Save again until none are pending).';
     $('runtimePending').hidden = !readiness.some((r) => r.Status !== 'Ready');
+    renderTemplateTree();
     $('runtimeStatus').textContent = result.Enabled
       ? 'Runtime enabled; flow activation and role assignments are separate.'
       : 'Runtime paused: events queue until it is enabled.';
@@ -1503,7 +1582,6 @@
           Command: 'Save',
           RowVersion: security.runtime.RowVersion,
           WorkerId: $('runtimeWorker').value,
-          Tables: [...$('runtimeTables').options].filter((o) => o.selected).map((o) => o.value),
           SharePointHosts: $('runtimeSites')
             .value.split(',')
             .map((s) => s.trim().toLowerCase())
@@ -1761,7 +1839,15 @@
     );
     if (sites.nextLink) throw new Error('Approved site catalog is incomplete.');
     state.sites = sites.entities;
+    await loadEnabledTables();
     await loadTemplates();
+    try {
+      setReadiness(await runtimeCommand({ Command: 'Get' }));
+    } catch {
+      state.readiness = null; // Not permitted for this user: show no badge.
+    }
+    renderEnablePicker();
+    renderTemplateTree();
     render();
     message('Connected. Select a document-enabled table to start a new draft.');
   });

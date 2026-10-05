@@ -74,6 +74,20 @@ const requests = [],
     PrimaryIdAttribute: 'accountid',
     PrimaryNameAttribute: 'name',
   };
+const contact = {
+  LogicalName: 'contact',
+  EntitySetName: 'contacts',
+  PrimaryIdAttribute: 'contactid',
+  PrimaryNameAttribute: 'fullname',
+  DisplayName: { UserLocalizedLabel: { Label: 'Contact' } },
+};
+const lead = {
+  LogicalName: 'lead',
+  EntitySetName: 'leads',
+  PrimaryIdAttribute: 'leadid',
+  PrimaryNameAttribute: 'fullname',
+  DisplayName: { UserLocalizedLabel: { Label: 'Lead' } },
+};
 const libraries = [
   {
     asx_libraryid: 'lib-a',
@@ -100,12 +114,14 @@ const xrm = {
       entities:
         name === 'asx_library'
           ? libraries
-          : name === 'asx_site'
-            ? [
-                { asx_siteid: 'site-a', asx_name: 'Delivery' },
-                { asx_siteid: 'site-b', asx_name: 'Commercial' },
-              ]
-            : [],
+          : name === 'asx_runtimetable'
+            ? [{ asx_logicalname: 'account' }]
+            : name === 'asx_site'
+              ? [
+                  { asx_siteid: 'site-a', asx_name: 'Delivery' },
+                  { asx_siteid: 'site-b', asx_name: 'Commercial' },
+                ]
+              : [],
     }),
     online: {
       execute: async (req) => {
@@ -155,7 +171,7 @@ const fetch = async (url) => ({
           ? []
           : url.includes('/accounts?')
             ? [{ accountid: 'record-1', name: 'Example' }]
-            : [table],
+            : [table, contact, lead],
   }),
 });
 vm.runInNewContext(fs.readFileSync(path.join(base, 'admin.js'), 'utf8'), {
@@ -265,8 +281,11 @@ async function change(n, value) {
   assert.match(nodes.previewTrees.textContent, /Draft changed/);
   assert.equal(nodes.preview.disabled, true, 'Editing invalidates saved preview');
   assert(
-    requests.every((r) =>
-      ['asx_CreateDraft', 'asx_PreviewTemplate'].includes(r.getMetadata().operationName),
+    requests.every(
+      (r) =>
+        ['asx_CreateDraft', 'asx_PreviewTemplate'].includes(r.getMetadata().operationName) ||
+        (r.getMetadata().operationName === 'asx_RuntimeAdmin' &&
+          JSON.parse(r.Request).Command === 'Get'),
     ),
     'No permission/runtime mutations',
   );
@@ -390,10 +409,11 @@ async function change(n, value) {
       runtimeSaves.push(payload);
       runtimeProfile = {
         ...payload,
+        Tables: runtimeProfile.Tables,
         RowVersion: '2',
         Migrated: true,
         Registration: {
-          Readiness: payload.Tables.map((t) => ({ Scope: t, Status: 'Ready' })).concat([
+          Readiness: runtimeProfile.Tables.map((t) => ({ Scope: t, Status: 'Ready' })).concat([
             { Scope: 'team', Status: 'Ready' },
           ]),
           ExtraSteps: 0,
@@ -410,15 +430,12 @@ async function change(n, value) {
   await nodes.loadRuntime.onclick();
   assert.match(nodes.runtimePending.textContent, /pending registration/i);
   assert.match(nodes.runtimeReadiness.textContent, /account.*Pending/);
-  assert.deepEqual(
-    nodes.runtimeTables.options.filter((o) => o.selected).map((o) => o.value),
-    ['account'],
-  );
+  assert.equal(nodes.runtimeTables, undefined, 'Runtime administration has no table picker');
   assert.equal(nodes.runtimeWorker.value, 'worker-1');
   nodes.runtimeRecordUpdates.checked = true;
   await nodes.saveRuntime.onclick();
   assert.equal(runtimeSaves.at(-1).ProcessRecordUpdates, true);
-  assert.deepEqual(runtimeSaves.at(-1).Tables, ['account']);
+  assert.equal('Tables' in runtimeSaves.at(-1), false, 'Save no longer sends Tables');
   assert.match(nodes.runtimeReadiness.textContent, /account.*Ready/);
   assert.equal(nodes.runtimePending.hidden, true);
   await nodes.unregisterRuntime.onclick();
@@ -489,6 +506,91 @@ async function change(n, value) {
     await nodes.replanFailed.onclick();
     assert.equal(calls, 0);
     assert.match(nodes.status.textContent, /contact.*no template/i);
+  }
+  {
+    // Tables panel: enabled tables come from asx_runtimetable; add, remove and enable are server commands.
+    let enabled = ['account'];
+    const commands = [];
+    const retrieve = xrm.WebApi.retrieveMultipleRecords;
+    xrm.WebApi.retrieveMultipleRecords = async (name, options) =>
+      name === 'asx_runtimetable'
+        ? { entities: enabled.map((asx_logicalname) => ({ asx_logicalname })) }
+        : name === 'asx_runtime'
+          ? { entities: [{ asx_runtimeid: 'runtime-1' }] }
+          : name === 'systemuser'
+            ? { entities: [{ systemuserid: 'worker-1', fullname: 'Documents worker' }] }
+            : retrieve(name, options);
+    xrm.WebApi.online.execute = async (req) => {
+      assert.equal(req.getMetadata().operationName, 'asx_RuntimeAdmin');
+      const payload = JSON.parse(req.Request);
+      commands.push(payload);
+      if (payload.Command === 'AddTable') enabled = [...new Set([...enabled, payload.Table])];
+      if (payload.Command === 'RemoveTable') enabled = enabled.filter((t) => t !== payload.Table);
+      return {
+        ok: true,
+        json: async () => ({
+          Result: JSON.stringify({
+            WorkerId: 'worker-1',
+            Tables: enabled,
+            SharePointHosts: [],
+            Enabled: false,
+            ProcessRecordUpdates: false,
+            RowVersion: '9',
+            Registration: {
+              Readiness: enabled
+                .map((t) => ({ Scope: t, Status: t === 'lead' ? 'Pending' : 'Ready' }))
+                .concat([{ Scope: 'team', Status: 'Ready' }]),
+              ExtraSteps: 0,
+              StepIds: ['step-1'],
+            },
+          }),
+        }),
+      };
+    };
+    const buttons = () => descendants(nodes.templateTree).filter((n) => n.tagName === 'BUTTON');
+    const named = (label) => buttons().find((n) => n.attrs['aria-label'] === label);
+    const text = (label) => buttons().find((n) => n.textContent === label);
+    // Loading the runtime profile refreshes readiness badges (and, here, enabled tables).
+    await nodes.loadRuntime.onclick();
+    assert.match(nodes.templateTree.textContent, /Account onboarding/);
+    assert.equal(nodes.templateTree.textContent.includes('Not enabled'), false);
+    assert.match(nodes.templateTree.textContent, /account.*Ready/, 'Badge shows readiness text');
+    assert.deepEqual(
+      nodes.enableTable.options.map((o) => o.value),
+      ['', 'contact', 'lead'],
+      'Picker lists document-enabled tables that are not enabled',
+    );
+    nodes.enableTable.value = 'lead';
+    await nodes.enableTable.onchange();
+    assert.deepEqual(commands.at(-1), { Command: 'AddTable', Table: 'lead' });
+    assert.match(nodes.templateTree.textContent, /Lead.*Pending/);
+    assert.match(
+      nodes.runtimeReadiness.textContent,
+      /lead.*Pending/,
+      'Runtime readiness refreshed',
+    );
+    assert.deepEqual(
+      nodes.enableTable.options.map((o) => o.value),
+      ['', 'contact'],
+    );
+    const count = commands.length;
+    await named('Remove account').onclick();
+    assert.equal(commands.length, count, 'Remove waits for in-page confirmation');
+    assert.match(
+      nodes.templateTree.textContent,
+      /Capture for this table stops\. Its templates are kept\./,
+    );
+    await text('Cancel').onclick();
+    assert.equal(commands.length, count);
+    await named('Remove account').onclick();
+    await text('Remove table').onclick();
+    assert.deepEqual(commands.at(-1), { Command: 'RemoveTable', Table: 'account' });
+    assert.match(nodes.templateTree.textContent, /Not enabled/);
+    assert.match(nodes.templateTree.textContent, /Sales documents/, 'Templates are kept');
+    await named('Enable account').onclick();
+    assert.deepEqual(commands.at(-1), { Command: 'AddTable', Table: 'account' });
+    assert.equal(nodes.templateTree.textContent.includes('Not enabled'), false);
+    xrm.WebApi.retrieveMultipleRecords = retrieve;
   }
   console.log(
     'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, empty input validation and table reset. Mocked DOM/API; visual QA separate.',

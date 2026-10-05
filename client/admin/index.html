@@ -67,10 +67,15 @@
               </div>
               <div id="tablePicker" hidden>
                 <label
-                  >Document-enabled table<select id="table" disabled>
-                    <option>Loading metadata…</option>
+                  >Enable a document-enabled table<select id="enableTable">
+                    <option value="">Select a table to enable</option>
                   </select></label
                 >
+              </div>
+              <div hidden>
+                <select id="table" disabled>
+                  <option>Loading metadata…</option>
+                </select>
               </div>
               <div id="templateTree"></div>
             </aside>
@@ -341,8 +346,9 @@ Select up to five records for a published-revision impact review.</pre>
         <details id="runtime" class="card">
           <summary>Runtime administration</summary>
           <p>
-            Configuration is separate from flow activation and role assignment. Saving registers the
-            event steps for the selected tables and worker; it requires System Administrator.
+            Configuration is separate from flow activation and role assignment. Business tables are
+            enabled from the Tables panel on Folder templates. Saving registers the pending event
+            steps for the worker; it requires System Administrator.
           </p>
           <button id="loadRuntime" class="secondary">Load runtime profile</button>
           <p id="runtimePending" class="hint warning" hidden>
@@ -350,12 +356,6 @@ Select up to five records for a published-revision impact review.</pre>
           </p>
           <div class="row">
             <label>Worker application user<select id="runtimeWorker"></select></label
-            ><label
-              >Source tables (document-enabled)<select
-                id="runtimeTables"
-                multiple
-                size="8"
-              ></select></label
             ><label
               >SharePoint tenant hosts<input
                 id="runtimeSites"
