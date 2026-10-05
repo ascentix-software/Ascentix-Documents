@@ -78,7 +78,9 @@ public static class WorkCoordination
     }
 
     /// <summary>
-    /// Updates the shared two-writer budget in the site claim transaction; unresolved writers retain a slot.
+    /// Records the site writer in the shared connection row in the site claim transaction, so
+    /// pacing, backoff and the runtime idle check see it; unresolved writers stay listed. Each
+    /// site has one writer, which keeps its writes in order; sites do not limit one another.
     /// </summary>
     /// <param name="service">The Dataverse service participating in the site claim transaction.</param>
     /// <param name="claim">The site writer's current ownership and outstanding-request state.</param>
@@ -93,10 +95,6 @@ public static class WorkCoordination
         var store = new DocumentStore(service);
         var budget = Budget(store);
         var other = budget.Value.Writers.Where(key => key != claim.Key).ToArray();
-        if (claim.RunId != null && other.Length >= 2)
-            throw new EvaluationBlockedException(
-                "Shared connection has two active writers. Retry dispatch later."
-            );
         budget.Value.Writers =
             claim.RunId == null ? other : other.Concat(new[] { claim.Key }).ToArray();
         store.Save(budget);
@@ -124,9 +122,11 @@ public static class WorkCoordination
         var budget = new DocumentStore(service)
             .Find<ConnectionBudget>("asx_claim", BudgetKey)
             ?.Value;
+        // A site that already writes keeps going; a new writer waits only out a shared
+        // Retry-After pause.
         return budget == null
             || budget.Writers.Contains(scope)
-            || (budget.Writers.Length < 2 && budget.PauseUntilUtc <= (now ?? DateTime.UtcNow));
+            || budget.PauseUntilUtc <= (now ?? DateTime.UtcNow);
     }
 
     /// <summary>
@@ -224,7 +224,7 @@ public static class WorkCoordination
                 Token = request.Token,
                 Notices = new[]
                 {
-                    "Request completion is unknown. The shared slot remains reserved until the original run is reconciled.",
+                    "Request completion is unknown. The site's writer stays reserved until the original run is reconciled.",
                 },
             };
         claim.Value.HttpOutstanding = false;

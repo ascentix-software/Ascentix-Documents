@@ -169,7 +169,7 @@ flowchart TD
 
 Dataverse and SharePoint do not share a transaction. SharePoint can create a folder even if its response is lost. The persisted claim, submission intent and later readback let the system distinguish a safe retry from an uncertain external write. A timeout or lease expiry alone cannot prove that an old SharePoint request has stopped.
 
-Claims serialize writers for a site. A shared connection budget caps active site writers at two, and HTTP admission applies pacing and shared `Retry-After` backoff. The solution flows run their loops serially and disable connector-level retries; the server coordinates retry decisions. Two is a ceiling, not a promise that every dispatcher run uses two concurrent requests.
+Claims serialize writers for a site: each site has one writer at a time, which keeps its writes in order. Sites do not limit one another. HTTP admission applies shared pacing and shared `Retry-After` backoff across all writers. The solution flows run their loops serially and disable connector-level retries; the server coordinates retry decisions.
 
 Transient reads can be rescheduled. Ambiguous writes retain state for controlled recovery. Completion is based on verification, rather than merely receiving a successful create response. Parent completion gates child work.
 

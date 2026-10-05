@@ -1195,6 +1195,26 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
+    public void ASiteKeepsOneWriterSoItsWritesStayInOrder()
+    {
+        var f = new Fixture();
+        Assert.Equal("Library", f.Claim().ProbeKind);
+        var second = JsonWire.Read<OperationDocument>(JsonWire.Write(f.Operation));
+        second.Key += ":second";
+        second.Folders[0].Key += ":second";
+        f.Store.Create("asx_operation", second);
+        f.OperationKey = second.Key;
+        Assert.Equal("Busy", f.Claim("run-2").Status);
+        f.OperationKey = null;
+        var held = f.Store.Require<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(f.Service, f.Operation.Key)
+        );
+        Assert.Equal(f.Operation.Key, held.Value.OperationKey);
+        Assert.Equal("run-1", held.Value.RunId);
+    }
+
+    [Fact]
     public void ClaimAndDriveSucceedWhilePolicyIsBeingApplied()
     {
         var f = new Fixture();

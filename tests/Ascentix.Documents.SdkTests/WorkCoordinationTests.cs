@@ -8,18 +8,26 @@ namespace Ascentix.Documents.SdkTests;
 public sealed class WorkCoordinationTests
 {
     [Fact]
-    public void TwoSitesCanHoldWritersButThirdCannotAndReleaseRestoresCapacity()
+    public void EverySiteCanHoldItsOwnWriterAtOnceAndReleaseRemovesIt()
     {
         var f = new Fixture();
         var a = f.Claim("a");
-        var b = f.Claim("b");
-        Assert.False(
+        f.Claim("b");
+        f.Claim("c");
+        Assert.True(
             WorkCoordination.HasCapacity(
                 f.Service,
-                WorkCoordination.SiteUrl("https://example.sharepoint.com/sites/c")
+                WorkCoordination.SiteUrl("https://example.sharepoint.com/sites/d")
             )
         );
-        Assert.Throws<EvaluationBlockedException>(() => f.Claim("c"));
+        f.Claim("d");
+        Assert.Equal(
+            4,
+            f.Store.Require<ConnectionBudget>(
+                "asx_claim",
+                WorkCoordination.BudgetKey
+            ).Value.Writers.Length
+        );
         var claim = f.Store.Require<DispatcherDocument>(
             "asx_claim",
             WorkCoordination.Operation(f.Service, a.Key)
@@ -27,9 +35,8 @@ public sealed class WorkCoordinationTests
         claim.Value.RunId = null;
         claim.Value.Status = "Idle";
         f.Store.Save(claim);
-        f.Claim("c");
         Assert.Equal(
-            2,
+            3,
             f.Store.Require<ConnectionBudget>(
                 "asx_claim",
                 WorkCoordination.BudgetKey
