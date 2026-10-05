@@ -65,7 +65,7 @@ public static class EventRegistrationPlan
     public const string Label = "Ascentix Documents event registration";
     public const string TeamScope = "team";
 
-    /// <summary>Record messages registered per allowlisted table. Task 12 settles bulk messages.</summary>
+    /// <summary>Record messages registered per allowlisted table. Add CreateMultiple/UpdateMultiple only if single-record steps do not run for bulk items.</summary>
     public static readonly string[] RecordMessages = { "Create", "Update", "Delete" };
 
     public static List<StepSpec> Desired(

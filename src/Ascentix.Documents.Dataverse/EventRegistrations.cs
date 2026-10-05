@@ -36,7 +36,7 @@ public static class EventRegistrations
 
     /// <summary>
     /// Newly added tables per Save. Each new table creates and verifies its steps inside one
-    /// custom API call, which Dataverse stops after 2 minutes. Value measured in DEV (Task 13).
+    /// custom API call, which Dataverse stops after 2 minutes. Value measured in a development environment.
     /// </summary>
     public const int MaxNewTablesPerSave = 25;
 
