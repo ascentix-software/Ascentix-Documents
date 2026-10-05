@@ -1243,7 +1243,11 @@ public sealed class WorkerCoordinator
             );
         // Re-read on every step so a suspension stops work before the next write. The library's
         // policy generation is deliberately not compared: folders inherit the library's access.
-        var library = catalog.Read(binding.LibraryId);
+        // A create already sent may finish after a suspension; nothing unsent proceeds.
+        var library = catalog.Read(
+            binding.LibraryId,
+            requireApproved: !operation.ExternalSubmitted
+        );
         if (library.EntryId != binding.EntryId)
             throw new EvaluationBlockedException("Approved destination entry changed.");
         return library;

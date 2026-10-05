@@ -263,7 +263,9 @@ public sealed class SecurityAdministration
         Version(existing.Row, expectedVersion);
         if (existing.Value.OperationKey != null)
             throw new EvaluationBlockedException("A policy generation is already queued.");
-        // Serialize approval with a concurrent claim; an active external writer must finish first.
+        // Serialize queuing with a concurrent claim. Queuing writes nothing to SharePoint; the
+        // queued operation takes the writer claim itself later, so an active writer is no reason
+        // to refuse.
         var dispatcher = store.Find<DispatcherDocument>(
             "asx_claim",
             WorkCoordination.Library(service, request.LibraryId)
@@ -284,13 +286,7 @@ public sealed class SecurityAdministration
             );
         }
         if (dispatcher != null)
-        {
-            if (dispatcher.Value.RunId != null)
-                throw new EvaluationBlockedException(
-                    "An external writer is active. Queue after it completes."
-                );
             store.Save(dispatcher);
-        }
         string baseline = TemplateStore.Text(catalog.Library, "asx_aclhash");
         if (!Regex.IsMatch(baseline, "\\A[a-f0-9]{64}\\z"))
             throw new EvaluationBlockedException(

@@ -354,6 +354,20 @@ public sealed class SecurityWorkerTests
     }
 
     [Fact]
+    public void AccessQueuesWhileAnotherRunWritesOnTheSite()
+    {
+        var f = new Fixture();
+        AdminStopTests.HoldWriter(
+            f.Store,
+            WorkCoordination.Library(f.Service, f.Library),
+            DateTime.UtcNow
+        );
+        f.Queue("Read");
+        Assert.NotNull(f.Policy().OperationKey);
+        Assert.Equal("Pending", f.Operation().Status);
+    }
+
+    [Fact]
     public void ThrottledSecurityReadsKeepWaitingWithNoAttemptCap()
     {
         var f = new Fixture();

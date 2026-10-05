@@ -368,14 +368,11 @@ public sealed class CatalogAdministration
                         : WorkCoordination.Site(service, row.Id)
                 )
             );
+            // Suspension always succeeds. A write already sent to SharePoint may finish and record
+            // its result; every new claim or create re-reads approval and stops. Saving the writer
+            // row serializes this change with a concurrent claim.
             if (active != null)
-            {
-                if (active.Value.RunId != null)
-                    throw new EvaluationBlockedException(
-                        "Finish or recover the current external writer before suspension."
-                    );
                 store.Save(active);
-            }
             else
                 store.Create(
                     "asx_claim",
@@ -492,14 +489,10 @@ public sealed class CatalogAdministration
             "asx_claim",
             WorkCoordination.Operation(service, request.Key)
         );
+        // Approval proceeds while another run writes on the site; saving the writer row
+        // serializes it with a concurrent claim.
         if (claim != null)
-        {
-            if (claim.Value.RunId != null)
-                throw new EvaluationBlockedException(
-                    "Wait for the current external writer before approval."
-                );
             store.Save(claim);
-        }
         else
             store.Create(
                 "asx_claim",

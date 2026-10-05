@@ -79,6 +79,42 @@ public sealed class CatalogApprovalTests
     }
 
     [Fact]
+    public void ApprovalProceedsWhileAnotherRunWritesOnTheSite()
+    {
+        var f = new Fixture();
+        var probe = f.Admin.Execute(
+            new CatalogRequest
+            {
+                Command = "ProbeSite",
+                NativeSiteId = f.NativeSite,
+                RequestId = Guid.NewGuid(),
+            },
+            true
+        );
+        probe = f.Capture(probe.Key);
+        var store = new DocumentStore(f.Service);
+        var writer = WorkCoordination.Operation(f.Service, probe.Key);
+        AdminStopTests.HoldWriter(store, writer, f.Now);
+        var approved = f.Service.Transaction(() =>
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "Approve",
+                    Key = probe.Key,
+                    RowVersion = probe.RowVersion,
+                    Name = "Site",
+                },
+                true
+            )
+        );
+        Assert.True(f.Service.Rows[approved.CatalogId].GetAttributeValue<bool>("asx_approved"));
+        Assert.Equal(
+            "other/run",
+            store.Require<DispatcherDocument>("asx_claim", writer).Value.RunId
+        );
+    }
+
+    [Fact]
     public void ExpiredObservationAndChangedNativeMappingCannotBeApproved()
     {
         var f = new Fixture();

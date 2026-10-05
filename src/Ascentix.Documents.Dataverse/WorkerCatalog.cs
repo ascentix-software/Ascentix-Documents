@@ -30,8 +30,12 @@ public sealed class WorkerCatalog
     /// the library's policy-update state and ACL are not consulted.
     /// </summary>
     /// <param name="id">The approved library row.</param>
+    /// <param name="requireApproved">
+    /// False only for a write already sent to SharePoint, which may finish and record its result
+    /// after the site or library is suspended. Nothing new starts without approval.
+    /// </param>
     /// <returns>The library's SharePoint target and native identities.</returns>
-    public WorkerLibrary Read(Guid id)
+    public WorkerLibrary Read(Guid id, bool requireApproved = true)
     {
         var row = service.Retrieve(
             "asx_library",
@@ -54,8 +58,11 @@ public sealed class WorkerCatalog
             new ColumnSet("asx_nativeid", "asx_webid", "asx_url", "asx_approved")
         );
         if (
-            !row.GetAttributeValue<bool>("asx_approved")
-            || !site.GetAttributeValue<bool>("asx_approved")
+            requireApproved
+            && (
+                !row.GetAttributeValue<bool>("asx_approved")
+                || !site.GetAttributeValue<bool>("asx_approved")
+            )
         )
             throw new EvaluationBlockedException("Site or library is suspended.");
         var entry = new Uri(TemplateStore.Text(row, "asx_entryurl"));

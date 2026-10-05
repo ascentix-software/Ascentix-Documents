@@ -465,7 +465,7 @@ public sealed class DurableWorkerTests
                 new ODataEnvelope<ODataRows<T>> { Data = new ODataRows<T> { Rows = values } }
             );
 
-    private static string CreateBody() =>
+    internal static string CreateBody() =>
         JsonWire.Write(
             new ODataEnvelope<CreateObservation>
             {
