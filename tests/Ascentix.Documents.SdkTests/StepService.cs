@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.Crm.Sdk.Messages;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
+using Microsoft.Xrm.Sdk.Metadata;
 using Microsoft.Xrm.Sdk.Query;
 using Xunit;
 
@@ -18,6 +20,23 @@ internal sealed class StepService : IOrganizationService
     internal readonly List<string> Writes = new();
     internal bool IgnoreStepWrites { get; set; }
     internal HashSet<string> MissingTables { get; set; } = new();
+
+    /// <summary>When true the worker holds no prvReadAsyncOperation.</summary>
+    internal bool WorkerLacksSystemJobs { get; set; }
+
+    /// <summary>Worker Read depth per table; a table not listed is held at Global, null = not held.</summary>
+    internal Dictionary<string, PrivilegeDepth?> WorkerReadDepth { get; set; } = new();
+
+    internal static Guid ReadPrivilegeId(string table) =>
+        new Guid(
+            System
+                .Security.Cryptography.MD5.Create()
+                .ComputeHash(System.Text.Encoding.UTF8.GetBytes("read:" + table))
+        );
+
+    internal static readonly Guid SystemJobsPrivilegeId = Guid.Parse(
+        "00000000-0000-0000-0000-00000000a5c0"
+    );
 
     public Guid Create(Entity entity)
     {
@@ -48,7 +67,37 @@ internal sealed class StepService : IOrganizationService
                 throw new InvalidOperationException(
                     "Entity " + entity.LogicalName + " does not exist."
                 );
-            return new RetrieveEntityResponse();
+            var metadata = new EntityMetadata { LogicalName = entity.LogicalName };
+            typeof(EntityMetadata)
+                .GetProperty("Privileges")!
+                .SetValue(metadata, new[] { ReadPrivilege(entity.LogicalName) }, null);
+            var response = new RetrieveEntityResponse();
+            response.Results["EntityMetadata"] = metadata;
+            return response;
+        }
+        if (request is RetrieveUserPrivilegesRequest)
+        {
+            var held = new List<RolePrivilege>();
+            if (!WorkerLacksSystemJobs)
+                held.Add(
+                    new RolePrivilege((int)PrivilegeDepth.Basic, SystemJobsPrivilegeId, Guid.Empty)
+                    {
+                        PrivilegeName = "prvReadAsyncOperation",
+                    }
+                );
+            foreach (var table in Tables)
+            {
+                var depth = WorkerReadDepth.TryGetValue(table, out var d)
+                    ? d
+                    : PrivilegeDepth.Global;
+                if (depth.HasValue)
+                    held.Add(
+                        new RolePrivilege((int)depth.Value, ReadPrivilegeId(table), Guid.Empty)
+                    );
+            }
+            var privileges = new RetrieveUserPrivilegesResponse();
+            privileges.Results["RolePrivileges"] = held.ToArray();
+            return privileges;
         }
         return Memory.Execute(request);
     }
@@ -76,6 +125,32 @@ internal sealed class StepService : IOrganizationService
 
     public void Disassociate(string n, Guid id, Relationship r, EntityReferenceCollection e) =>
         throw new NotSupportedException();
+
+    private static SecurityPrivilegeMetadata ReadPrivilege(string table)
+    {
+        var privilege = (SecurityPrivilegeMetadata)
+            System.Runtime.Serialization.FormatterServices.GetUninitializedObject(
+                typeof(SecurityPrivilegeMetadata)
+            );
+        foreach (
+            var pair in new (string, object)[]
+            {
+                ("PrivilegeId", ReadPrivilegeId(table)),
+                ("PrivilegeType", PrivilegeType.Read),
+            }
+        )
+            typeof(SecurityPrivilegeMetadata)
+                .GetProperty(pair.Item1)!
+                .GetSetMethod(true)!
+                .Invoke(privilege, new[] { pair.Item2 });
+        return privilege;
+    }
+
+    private IEnumerable<string> Tables =>
+        Memory
+            .Rows.Values.Where(r => r.LogicalName == "sdkmessagefilter")
+            .Select(r => r.GetAttributeValue<string>("primaryobjecttypecode"))
+            .Distinct();
 
     internal int StepWrites => Writes.FindAll(w => w.EndsWith("sdkmessageprocessingstep")).Count;
 }

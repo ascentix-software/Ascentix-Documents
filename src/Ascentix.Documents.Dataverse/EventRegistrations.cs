@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.Serialization;
 using Ascentix.Documents.Conditions;
+using Microsoft.Crm.Sdk.Messages;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Metadata;
@@ -43,6 +44,9 @@ public static class EventRegistrations
     public const int MaxNewTablesPerSave = 90;
 
     private const string Step = "sdkmessageprocessingstep";
+    private const string SystemJobsRead = "prvReadAsyncOperation";
+    private const string SystemJobsMessage =
+        "The worker application user cannot read System Jobs (prvReadAsyncOperation). Assign the Documents Worker role from this release before registering events.";
 
     public static RegistrationSummary Reconcile(
         IOrganizationService service,
@@ -52,6 +56,16 @@ public static class EventRegistrations
     )
     {
         var catalog = Catalog(service, tables);
+        var privileges = WorkerPrivileges(service, worker);
+        if (!privileges.ContainsKey(SystemJobsRead))
+            throw new EvaluationBlockedException(SystemJobsMessage);
+        foreach (var table in tables)
+            if (!CanReadAll(catalog, privileges, table))
+                throw new EvaluationBlockedException(
+                    "The worker application user cannot read every '"
+                        + table
+                        + "' record (organization-level Read required). Grant it before enabling this table."
+                );
         var desired = EventRegistrationPlan.Desired(catalog, tables, processUpdates);
         var changes = EventRegistrationPlan.Diff(desired, Steps(service, catalog), worker);
         foreach (var id in changes.Delete)
@@ -74,7 +88,17 @@ public static class EventRegistrations
         {
             var catalog = Catalog(service, tables);
             var desired = EventRegistrationPlan.Desired(catalog, tables, processUpdates);
-            return Summary(desired, Steps(service, catalog), worker);
+            var summary = Summary(desired, Steps(service, catalog), worker);
+            var privileges = WorkerPrivileges(service, worker);
+            if (!privileges.ContainsKey(SystemJobsRead))
+                summary.Error = SystemJobsMessage;
+            foreach (var row in summary.Readiness)
+                if (
+                    row.Scope != EventRegistrationPlan.TeamScope
+                    && !CanReadAll(catalog, privileges, row.Scope)
+                )
+                    row.Status = "WorkerCannotRead";
+            return summary;
         }
         catch (EvaluationBlockedException ex)
         {
@@ -186,7 +210,7 @@ public static class EventRegistrations
         foreach (var name in names.Where(n => !catalog.Messages.ContainsKey(n)))
             throw new EvaluationBlockedException("Platform message " + name + " is missing.");
         foreach (var table in tables)
-            RequireTable(service, table);
+            catalog.ReadPrivileges[table] = RequireTable(service, table);
         var recordIds = EventRegistrationPlan
             .RecordMessages.Concat(new[] { "Delete" })
             .Distinct()
@@ -229,17 +253,54 @@ public static class EventRegistrations
         return catalog;
     }
 
-    private static void RequireTable(IOrganizationService service, string table)
+    /// <summary>The worker's effective privileges by name; the value is the highest depth held.</summary>
+    private static Dictionary<string, PrivilegeDepth> WorkerPrivileges(
+        IOrganizationService service,
+        Guid worker
+    )
+    {
+        var response = (RetrieveUserPrivilegesResponse)
+            service.Execute(new RetrieveUserPrivilegesRequest { UserId = worker });
+        var held = new Dictionary<string, PrivilegeDepth>(StringComparer.OrdinalIgnoreCase);
+        foreach (var privilege in response.RolePrivileges ?? Array.Empty<RolePrivilege>())
+        {
+            var name = privilege.PrivilegeName ?? privilege.PrivilegeId.ToString();
+            if (!held.TryGetValue(name, out var depth) || privilege.Depth > depth)
+                held[name] = privilege.Depth;
+            var byId = privilege.PrivilegeId.ToString();
+            if (!held.TryGetValue(byId, out depth) || privilege.Depth > depth)
+                held[byId] = privilege.Depth;
+        }
+        return held;
+    }
+
+    private static bool CanReadAll(
+        RegistrationCatalog catalog,
+        Dictionary<string, PrivilegeDepth> privileges,
+        string table
+    ) =>
+        catalog.ReadPrivileges.TryGetValue(table, out var id)
+        && id.HasValue
+        && privileges.TryGetValue(id.Value.ToString(), out var depth)
+        && depth == PrivilegeDepth.Global;
+
+    private static Guid? RequireTable(IOrganizationService service, string table)
     {
         try
         {
-            service.Execute(
-                new RetrieveEntityRequest
-                {
-                    LogicalName = table,
-                    EntityFilters = EntityFilters.Entity,
-                }
-            );
+            var response = (RetrieveEntityResponse)
+                service.Execute(
+                    new RetrieveEntityRequest
+                    {
+                        LogicalName = table,
+                        EntityFilters = EntityFilters.Entity | EntityFilters.Privileges,
+                    }
+                );
+            return response
+                .EntityMetadata?.Privileges?.FirstOrDefault(p =>
+                    p.PrivilegeType == PrivilegeType.Read
+                )
+                ?.PrivilegeId;
         }
         catch (EvaluationBlockedException)
         {

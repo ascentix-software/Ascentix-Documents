@@ -39,6 +39,9 @@ public sealed class RegistrationCatalog
 
     /// <summary>Key "Message|table".</summary>
     public Dictionary<string, Guid> Filters { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Read privilege id per table; null when metadata exposes none.</summary>
+    public Dictionary<string, Guid?> ReadPrivileges { get; } = new(StringComparer.Ordinal);
 }
 
 public sealed class RegistrationChanges

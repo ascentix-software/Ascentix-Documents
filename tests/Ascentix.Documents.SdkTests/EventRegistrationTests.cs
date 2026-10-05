@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Ascentix.Documents.Conditions;
 using Ascentix.Documents.Dataverse;
+using Microsoft.Crm.Sdk.Messages;
 using Microsoft.Xrm.Sdk;
 using Xunit;
 
@@ -106,6 +107,46 @@ public sealed class EventRegistrationTests
             o.Steps,
             s => s.GetAttributeValue<string>("name").EndsWith(" contact")
         );
+    }
+
+    [Fact]
+    public void WorkerWithoutSystemJobsReadIsRefusedBeforeAnyWrite()
+    {
+        var o = new Org("account");
+        o.S.WorkerLacksSystemJobs = true;
+        var ex = Assert.Throws<EvaluationBlockedException>(() =>
+            EventRegistrations.Reconcile(o.S, o.Worker, new[] { "account" }, false)
+        );
+        Assert.Contains("prvReadAsyncOperation", ex.Message);
+        Assert.Empty(o.S.Writes);
+        Assert.Contains(
+            "prvReadAsyncOperation",
+            EventRegistrations.Inspect(o.S, o.Worker, new[] { "account" }, false).Error
+        );
+    }
+
+    [Fact]
+    public void TableTheWorkerCannotReadGloballyIsRefusedAndInspectReportsIt()
+    {
+        var o = new Org("account", "contact");
+        o.S.WorkerReadDepth["contact"] = PrivilegeDepth.Basic;
+        var ex = Assert.Throws<EvaluationBlockedException>(() =>
+            EventRegistrations.Reconcile(o.S, o.Worker, new[] { "account", "contact" }, false)
+        );
+        Assert.Contains("'contact'", ex.Message);
+        Assert.Empty(o.S.Writes);
+        var summary = EventRegistrations.Inspect(
+            o.S,
+            o.Worker,
+            new[] { "account", "contact" },
+            false
+        );
+        Assert.Null(summary.Error);
+        Assert.Equal(
+            "WorkerCannotRead",
+            summary.Readiness.Single(r => r.Scope == "contact").Status
+        );
+        Assert.Equal("Pending", summary.Readiness.Single(r => r.Scope == "account").Status);
     }
 
     [Fact]

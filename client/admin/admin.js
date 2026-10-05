@@ -1513,6 +1513,7 @@
     WrongMode: 'Registered synchronously: Save to repair',
     WrongState: 'Enabled state differs: Save to repair',
     Outdated: 'Outdated registration: Save to repair',
+    WorkerCannotRead: 'Worker cannot read this table: grant organization-level Read',
   };
   async function workers() {
     const rows = [];
