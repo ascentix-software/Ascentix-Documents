@@ -427,7 +427,23 @@ public static class FolderPlanner
                 {
                     if (node.Condition != null && !node.Condition.Evaluate(snapshot))
                         continue;
-                    var raw = NameExpression.Render(node.Name, snapshot);
+                    var raw = NameExpression.Render(node.Name, snapshot, out var blank);
+                    if (raw == null)
+                    {
+                        // Skip this folder and everything below it until the field is filled
+                        // in; the record's next update or a replan plans it then.
+                        Notice(
+                            notices,
+                            "Folder '"
+                                + section.Key
+                                + "/"
+                                + node.Key
+                                + "' is waiting for '"
+                                + blank
+                                + "' to have a value."
+                        );
+                        continue;
+                    }
                     // A section's root folder may sit at the library root; deeper ones never do.
                     var name = FolderNames.Clean(raw, parent == null);
                     if (name == null)

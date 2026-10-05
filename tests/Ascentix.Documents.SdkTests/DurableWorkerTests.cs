@@ -1093,6 +1093,48 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
+    public void BlankRecordNameWaitsWithANoticeAndIsPlannedOnceFilledIn()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        f.Service.Rows[f.RecordId]["name"] = null;
+        var waiting = f.PlanRecord();
+        Assert.Equal("Planned", waiting.Status);
+        Assert.Empty(waiting.Keys);
+        const string notice = "Folder 'general/root' is waiting for 'root.name' to have a value.";
+        Assert.Equal(new[] { notice }, waiting.Notices);
+        var inspected = RecordInspection.Read(
+            f.Service,
+            new WorkerRequest { TemplateId = f.TemplateId, RecordId = f.RecordId },
+            new[] { "account" }
+        );
+        Assert.Equal("NoCurrentOperations", inspected.Status);
+        Assert.Contains(notice, inspected.Notices);
+        // The record's Update event queues the record again once the field is filled in.
+        f.Service.Rows[f.RecordId]["name"] = "Example";
+        var planned = f.PlanRecord();
+        Assert.Equal("Planned", planned.Status);
+        Assert.Empty(planned.Notices);
+        Assert.Equal(
+            "Example",
+            f.Store.Require<OperationDocument>(
+                "asx_operation",
+                Assert.Single(planned.Keys)
+            ).Value.Folder.Candidate
+        );
+        Assert.DoesNotContain(
+            notice,
+            RecordInspection
+                .Read(
+                    f.Service,
+                    new WorkerRequest { TemplateId = f.TemplateId, RecordId = f.RecordId },
+                    new[] { "account" }
+                )
+                .Notices
+        );
+    }
+
+    [Fact]
     public void RecordNameSharePointForbidsIsCleanedAndApplied()
     {
         var f = new Fixture(seedBinding: false);

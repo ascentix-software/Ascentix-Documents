@@ -151,17 +151,30 @@ public static class NameExpression
             .ToArray();
     }
 
-    public static string Render(string expression, Snapshot snapshot)
+    /// <summary>Renders a folder name from the snapshot.</summary>
+    /// <param name="expression">The naming expression with its field tokens.</param>
+    /// <param name="snapshot">The record's authorized values.</param>
+    /// <param name="blank">The first field whose value is null or blank, if any.</param>
+    /// <returns>The rendered name, or null when a field has no value yet.</returns>
+    public static string? Render(string expression, Snapshot snapshot, out FieldReference? blank)
     {
         Fields(expression);
-        return Token
-            .Replace(
-                expression,
-                m =>
-                    snapshot
-                        .Resolve(new FieldReference(m.Groups[1].Value, m.Groups[2].Value))
-                        .Format()
-            )
-            .Normalize(NormalizationForm.FormC);
+        FieldReference? missing = null;
+        var name = Token.Replace(
+            expression,
+            m =>
+            {
+                var field = new FieldReference(m.Groups[1].Value, m.Groups[2].Value);
+                var text = snapshot.Resolve(field).Format();
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    missing ??= field;
+                    return "";
+                }
+                return text!;
+            }
+        );
+        blank = missing;
+        return blank == null ? name.Normalize(NormalizationForm.FormC) : null;
     }
 }

@@ -73,10 +73,12 @@ public sealed class Value
             Array.AsReadOnly(values.Distinct().OrderBy(v => v).ToArray())
         );
 
-    public string Format()
+    /// <summary>Formats the value for a folder name, culture-independently.</summary>
+    /// <returns>The text, or null when the value is null so the planner can wait for it.</returns>
+    public string? Format()
     {
         if (IsNull)
-            throw new EvaluationBlockedException("Required naming value is null.");
+            return null;
         if (Kind == ValueKind.DateOnly)
             return ((DateTime)Data!).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         if (Kind == ValueKind.DateTime)

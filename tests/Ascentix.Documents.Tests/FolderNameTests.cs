@@ -217,6 +217,70 @@ public class FolderNameTests
     }
 
     [Fact]
+    public void BlankNamingValueAtARootWaitsWhileOtherSectionsArePlanned()
+    {
+        var template = AcceptanceTests.Template();
+        template.Destinations[1].Nodes[0].Name = "Static";
+        foreach (var customer in new[] { null, "", "   " })
+        {
+            var plan = FolderPlanner.Plan(template, Guid.NewGuid(), Names("Example", customer));
+            Assert.DoesNotContain(plan, n => n.Section == "general");
+            Assert.Equal(2, plan.Count(n => n.Section == "sensitive"));
+            Assert.Equal(
+                new[] { "Folder 'general/root' is waiting for 'customer.name' to have a value." },
+                plan.Notices
+            );
+        }
+    }
+
+    [Fact]
+    public void BlankNamingValueSkipsOnlyThatFolderAndItsChildrenUntilFilledIn()
+    {
+        var template = AcceptanceTests.Template();
+        foreach (var section in template.Destinations)
+        {
+            section.Nodes[0].Name = "Fixed {root.name}";
+            section.Nodes[1].Name = "{customer.name}";
+            section.Nodes.Add(
+                new FolderNode
+                {
+                    Key = "deep",
+                    ParentKey = "child",
+                    Name = "Deep",
+                }
+            );
+        }
+        var record = Guid.NewGuid();
+        var waiting = FolderPlanner.Plan(template, record, Names("Example", null));
+        Assert.Equal(2, waiting.Count);
+        Assert.All(waiting, n => Assert.Equal("root", n.Node));
+        Assert.Equal(
+            new[]
+            {
+                "Folder 'general/child' is waiting for 'customer.name' to have a value.",
+                "Folder 'sensitive/child' is waiting for 'customer.name' to have a value.",
+            },
+            waiting.Notices
+        );
+        var filled = FolderPlanner.Plan(template, record, Names("Example", "Acme"));
+        Assert.Equal(6, filled.Count);
+        Assert.Contains(filled, n => n.RelativePath == "Fixed Example/Acme/Deep");
+        Assert.Empty(filled.Notices);
+        Assert.Equal(
+            waiting.Select(n => n.BindingKey),
+            filled.Where(n => n.Node == "root").Select(n => n.BindingKey)
+        );
+    }
+
+    [Fact]
+    public void ANullValueFormatsAsNullForNaming()
+    {
+        Assert.Null(Value.Null(ValueKind.Text).Format());
+        Assert.Null(Value.Null(ValueKind.DateOnly).Format());
+        Assert.Equal("", Value.Text("").Format());
+    }
+
+    [Fact]
     public void PlanNoticesAreBounded()
     {
         var template = AcceptanceTests.Template();
