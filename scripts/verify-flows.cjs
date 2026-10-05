@@ -27,7 +27,7 @@ for (const name of files) {
     'Solution references must not embed environment connections',
   );
   assert.deepEqual(
-    flow.properties.definition.actions.Initialize_work.inputs.variables.filter(
+    flow.properties.definition.actions.Initialize_worker_action.inputs.variables.filter(
       (v) => v.name === 'WorkerAction',
     ),
     [{ name: 'WorkerAction', type: 'string', value: 'asx_DocumentWorker' }],

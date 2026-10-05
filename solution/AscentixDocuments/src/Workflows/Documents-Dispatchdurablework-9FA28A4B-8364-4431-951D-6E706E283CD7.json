@@ -49,7 +49,7 @@
         }
       },
       "actions": {
-        "Initialize_work": {
+        "Initialize_worker_action": {
           "runAfter": {},
           "type": "InitializeVariable",
           "inputs": {
@@ -58,14 +58,38 @@
                 "name": "WorkerAction",
                 "type": "string",
                 "value": "asx_DocumentWorker"
-              },
-              {
-                "name": "Work",
-                "type": "object",
-                "value": {}
-              },
+              }
+            ]
+          }
+        },
+        "Initialize_http_admission": {
+          "runAfter": {
+            "Initialize_worker_action": [
+              "Succeeded"
+            ]
+          },
+          "type": "InitializeVariable",
+          "inputs": {
+            "variables": [
               {
                 "name": "HttpAdmission",
+                "type": "object",
+                "value": {}
+              }
+            ]
+          }
+        },
+        "Initialize_work": {
+          "runAfter": {
+            "Initialize_http_admission": [
+              "Succeeded"
+            ]
+          },
+          "type": "InitializeVariable",
+          "inputs": {
+            "variables": [
+              {
+                "name": "Work",
                 "type": "object",
                 "value": {}
               }
