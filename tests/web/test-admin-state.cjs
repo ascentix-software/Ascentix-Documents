@@ -639,6 +639,75 @@ async function change(n, value) {
     assert.equal(nodes.status.textContent, 'No blocked records.');
   }
   {
+    // Blocked folder jobs: Blocked asx_operation rows, each with the operator Retry in-page.
+    const jobRows = [
+      {
+        asx_payload: JSON.stringify({
+          Key: 'folderjob:abc',
+          Status: 'Blocked',
+          ErrorCode: 'FileAtExpectedFolderPath',
+        }),
+        modifiedon: '2026-10-05T17:00:00Z',
+      },
+    ];
+    const jobQueries = [];
+    xrm.WebApi.retrieveMultipleRecords = async (name, options, size) => {
+      assert.equal(name, 'asx_operation');
+      jobQueries.push([options, size]);
+      return jobQueries.length === 1
+        ? { entities: jobRows, nextLink: 'https://example.test/api?$skiptoken=jobs2' }
+        : {
+            entities: [
+              {
+                asx_payload: JSON.stringify({ Key: 'policywork:p', Status: 'Blocked' }),
+                modifiedon: '2026-10-05T17:01:00Z',
+              },
+            ],
+          };
+    };
+    const retried = [];
+    xrm.WebApi.online.execute = async (req) => {
+      assert.equal(req.getMetadata().operationName, 'asx_ManageWork');
+      retried.push(JSON.parse(req.Request));
+      return { ok: true, json: async () => ({ Result: JSON.stringify({ Status: 'Pending' }) }) };
+    };
+    await nodes.loadBlockedJobs.onclick();
+    assert.match(jobQueries[0][0], /asx_status eq 'Blocked'/);
+    assert.match(jobQueries[0][0], /orderby=modifiedon desc/);
+    assert.equal(jobQueries[0][1], 50, 'Same page size as the blocked-records list');
+    assert.match(
+      nodes.blockedJobs.textContent,
+      /folderjob:abc.*Folder job.*FileAtExpectedFolderPath.*2026-10-05T17:00:00Z/,
+    );
+    assert.equal(nodes.moreBlockedJobs.hidden, false);
+    await nodes.moreBlockedJobs.onclick();
+    assert.equal(jobQueries[1][0], '?$skiptoken=jobs2');
+    assert.equal(nodes.blockedJobs.children.length, 2, 'Load more appends');
+    assert.match(
+      nodes.blockedJobs.children[1].textContent,
+      /policywork:p.*Access policy.*No notice/,
+    );
+    assert.equal(nodes.moreBlockedJobs.hidden, true);
+    const retry = nodes.blockedJobs.children[0].children.find((n) => n.tagName === 'BUTTON');
+    assert.equal(retry.textContent, 'Retry');
+    await retry.onclick();
+    assert.deepEqual(retried, [{ Command: 'Retry', Key: 'folderjob:abc' }]);
+    assert.equal(retry.disabled, true);
+    assert.match(nodes.status.textContent, /queued to run again/i);
+    xrm.WebApi.online.execute = async () => ({
+      ok: true,
+      json: async () => ({ Result: JSON.stringify({ Status: 'Applied' }) }),
+    });
+    const second = nodes.blockedJobs.children[1].children.find((n) => n.tagName === 'BUTTON');
+    await second.onclick();
+    assert.match(nodes.status.textContent, /Applied; nothing to retry/);
+    xrm.WebApi.retrieveMultipleRecords = async () => ({ entities: [] });
+    await nodes.loadBlockedJobs.onclick();
+    assert.equal(nodes.blockedJobs.children.length, 0);
+    assert.equal(nodes.moreBlockedJobs.hidden, true);
+    assert.equal(nodes.status.textContent, 'No blocked folder jobs.');
+  }
+  {
     // Tables panel: enabled tables come from asx_runtimetable; add, remove and enable are server commands.
     let enabled = ['account'];
     const commands = [];
@@ -724,7 +793,7 @@ async function change(n, value) {
     xrm.WebApi.retrieveMultipleRecords = retrieve;
   }
   console.log(
-    'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, blocked-record retry, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
+    'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, blocked-record retry, blocked folder job retry, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
   );
 })().catch((e) => {
   console.error(e);

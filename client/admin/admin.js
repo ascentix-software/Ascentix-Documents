@@ -1761,6 +1761,73 @@
       ),
     );
   $('moreBlockedRecords').onclick = () => task(() => loadBlockedPage(blockedRecords.next, true));
+  const blockedJobs = { next: null };
+  // Operation keys start with their kind; any other key is a folder job.
+  const jobKinds = {
+    'folderjob:': 'Folder job',
+    'policywork:': 'Access policy',
+    'librarycreate:': 'Library setup',
+    'catalogprobe:': 'Site or library check',
+  };
+  function jobKind(key) {
+    const prefix = Object.keys(jobKinds).find((p) => (key || '').startsWith(p));
+    return prefix ? jobKinds[prefix] : 'Folder job';
+  }
+  function renderBlockedJobs(rows, append) {
+    if (!append) $('blockedJobs').replaceChildren();
+    for (const row of rows) {
+      const job = blockedWork(row);
+      const item = document.createElement('li');
+      const text = document.createElement('span');
+      text.textContent =
+        (job.Key || 'No key') +
+        ' · ' +
+        jobKind(job.Key) +
+        ' · ' +
+        (job.ErrorCode || 'No notice') +
+        ' · ' +
+        row.modifiedon +
+        ' ';
+      item.append(text);
+      const retry = document.createElement('button');
+      retry.className = 'secondary';
+      retry.textContent = 'Retry';
+      retry.disabled = !job.Key;
+      retry.onclick = () =>
+        task(async () => {
+          const result = JSON.parse(
+            await api('asx_ManageWork', {
+              Request: JSON.stringify({ Command: 'Retry', Key: job.Key }),
+            }),
+          );
+          retry.disabled = true;
+          message(
+            result.Status === 'Pending'
+              ? 'Job queued to run again. It blocks again if the cause remains.'
+              : 'Job is ' + result.Status + '; nothing to retry.',
+          );
+        });
+      item.append(retry);
+      $('blockedJobs').append(item);
+    }
+  }
+  async function loadBlockedJobsPage(options, append) {
+    const result = await xrm.WebApi.retrieveMultipleRecords('asx_operation', options, 50);
+    renderBlockedJobs(result.entities, append);
+    blockedJobs.next = result.nextLink
+      ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
+      : null;
+    $('moreBlockedJobs').hidden = !blockedJobs.next;
+    if (!append && !result.entities.length) message('No blocked folder jobs.');
+  }
+  $('loadBlockedJobs').onclick = () =>
+    task(() =>
+      loadBlockedJobsPage(
+        "?$select=asx_payload,modifiedon&$filter=asx_status eq 'Blocked'&$orderby=modifiedon desc",
+        false,
+      ),
+    );
+  $('moreBlockedJobs').onclick = () => task(() => loadBlockedJobsPage(blockedJobs.next, true));
   $('loadOperations').onclick = () =>
     task(async () => {
       const rows = await xrm.WebApi.retrieveMultipleRecords(
