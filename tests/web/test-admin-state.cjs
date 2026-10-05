@@ -181,6 +181,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'admin.js'), 'utf8'), {
   fetch,
   console,
   crypto: require('crypto').webcrypto,
+  URL,
 });
 const descendants = (n) => n.children.flatMap((c) => [c, ...descendants(c)]);
 const find = (text, tag) =>
@@ -508,6 +509,61 @@ async function change(n, value) {
     assert.match(nodes.status.textContent, /contact.*no template/i);
   }
   {
+    // Blocked records: outbox rows whose planning failed, each with an in-page Retry.
+    const blockedRows = [
+      {
+        asx_payload: JSON.stringify({
+          Key: 'request:aaa',
+          Status: 'Blocked',
+          Table: 'account',
+          RecordId: 'rec-7',
+          Notices: ['Planning failed. Check that the site and library are approved.'],
+        }),
+        modifiedon: '2026-10-05T16:02:40Z',
+      },
+    ];
+    const blockedQueries = [];
+    xrm.WebApi.retrieveMultipleRecords = async (name, options, size) => {
+      assert.equal(name, 'asx_outbox');
+      blockedQueries.push([options, size]);
+      return blockedQueries.length === 1
+        ? { entities: blockedRows, nextLink: 'https://example.test/api?$skiptoken=page2' }
+        : {
+            entities: [
+              {
+                asx_payload: JSON.stringify({ Key: 'team-event:x', Status: 'Blocked' }),
+                modifiedon: '2026-10-05T16:03:00Z',
+              },
+            ],
+          };
+    };
+    const retried = [];
+    xrm.WebApi.online.execute = async (req) => {
+      assert.equal(req.getMetadata().operationName, 'asx_ManageWork');
+      retried.push(JSON.parse(req.Request));
+      return { ok: true, json: async () => ({ Result: JSON.stringify({ Status: 'Pending' }) }) };
+    };
+    await nodes.loadBlockedRecords.onclick();
+    assert.match(blockedQueries[0][0], /asx_status eq 'Blocked'/);
+    assert.equal(blockedQueries[0][1], 50, 'Same page size as the failed-jobs list');
+    assert.match(
+      nodes.blockedRecords.textContent,
+      /account.*rec-7.*site and library are approved.*2026-10-05T16:02:40Z/,
+    );
+    assert.equal(nodes.moreBlockedRecords.hidden, false);
+    await nodes.moreBlockedRecords.onclick();
+    assert.equal(blockedQueries[1][0], '?$skiptoken=page2');
+    assert.equal(nodes.blockedRecords.children.length, 2, 'Load more appends');
+    assert.match(nodes.blockedRecords.children[1].textContent, /team-event:x/);
+    assert.equal(nodes.moreBlockedRecords.hidden, true);
+    const retry = nodes.blockedRecords.children[0].children.find((n) => n.tagName === 'BUTTON');
+    assert.equal(retry.textContent, 'Retry');
+    await retry.onclick();
+    assert.deepEqual(retried, [{ Command: 'RetryOutbox', Key: 'request:aaa' }]);
+    assert.equal(retry.disabled, true);
+    assert.match(nodes.status.textContent, /queued for planning again/i);
+  }
+  {
     // Tables panel: enabled tables come from asx_runtimetable; add, remove and enable are server commands.
     let enabled = ['account'];
     const commands = [];
@@ -593,7 +649,7 @@ async function change(n, value) {
     xrm.WebApi.retrieveMultipleRecords = retrieve;
   }
   console.log(
-    'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
+    'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, blocked-record retry, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
   );
 })().catch((e) => {
   console.error(e);

@@ -96,6 +96,8 @@ public sealed class WorkerCoordinator
                 return store.FailUnclaimed<OperationDocument>(request.Key);
             case "FailOutbox":
                 return FailOutbox(request);
+            case "RetryOutbox":
+                return RetryOutbox(request);
             default:
                 throw new EvaluationBlockedException("Unsupported worker command.");
         }
@@ -974,16 +976,40 @@ public sealed class WorkerCoordinator
         return result;
     }
 
+    public const string PlanningFailedNotice =
+        "Planning failed. Check that the site and library are approved, then use Retry in Blocked records.";
+
+    /// <summary>
+    /// Returns a Blocked outbox row to Pending so the dispatcher plans it again. Replanning
+    /// re-reads the current template, record and catalog, so a row blocked for a reason that
+    /// still holds simply blocks again.
+    /// </summary>
+    /// <param name="request">The outbox key to retry.</param>
+    /// <returns>Pending when the row was retried; otherwise its unchanged status.</returns>
+    private WorkerResult RetryOutbox(WorkerRequest request)
+    {
+        var job = store.Require<OutboxDocument>("asx_outbox", request.Key);
+        if (job.Value.Status == "Blocked")
+        {
+            job.Value.Status = "Pending";
+            job.Value.Notices = Array.Empty<string>();
+            store.Save(job);
+        }
+        return new WorkerResult
+        {
+            Status = job.Value.Status,
+            Key = request.Key,
+            Notices = job.Value.Notices,
+        };
+    }
+
     private WorkerResult FailOutbox(WorkerRequest request)
     {
         var job = store.Require<OutboxDocument>("asx_outbox", request.Key);
         if (job.Value.Status == "Pending")
         {
             job.Value.Status = "Blocked";
-            job.Value.Notices = new[]
-            {
-                "Planning failed; inspect permissions/configuration and enqueue a new request after repair.",
-            };
+            job.Value.Notices = new[] { PlanningFailedNotice };
             store.Save(job);
         }
         return new WorkerResult { Status = job.Value.Status, Key = request.Key };

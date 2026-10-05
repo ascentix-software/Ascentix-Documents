@@ -117,11 +117,17 @@ public sealed class ManageWorkApi : IPlugin
             && request.Command != "Cancel"
             && request.Command != "Replan"
             && request.Command != "Queue"
+            && request.Command != "RetryOutbox"
         )
             throw new InvalidPluginExecutionException("Unsupported operator action.");
         context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
         context.OutputParameters["Result"] = JsonWire.Write(
-            request.Key?.StartsWith("librarycreate:", StringComparison.Ordinal) == true
+            request.Command == "RetryOutbox"
+                ? new WorkerCoordinator(
+                    service,
+                    allowedTables: RuntimeProfile.Read(service).Tables
+                ).Execute(request, context.IsInTransaction)
+            : request.Key?.StartsWith("librarycreate:", StringComparison.Ordinal) == true
                 ? new LibraryProvisioning(service).Execute(request, context.IsInTransaction)
             : request.Key?.StartsWith("catalogprobe:", StringComparison.Ordinal) == true
                 ? new CatalogWorker(service).Execute(request, context.IsInTransaction)

@@ -393,6 +393,15 @@ Select up to five records for a published-revision impact review.</pre>
           <ul id="failedJobs"></ul>
           <button id="moreFailedJobs" class="secondary" hidden>Load more</button
           ><button id="replanFailed">Replan selected records</button>
+
+          <h4>Blocked records</h4>
+          <p class="hint">
+            Records whose folder planning stopped. Check that the site and library are approved,
+            then retry. A record blocked for a reason that still holds blocks again.
+          </p>
+          <button id="loadBlockedRecords" class="secondary">Load blocked records</button>
+          <ul id="blockedRecords"></ul>
+          <button id="moreBlockedRecords" class="secondary" hidden>Load more</button>
         </details>
         <details id="operations" class="card">
           <summary>Operations and recovery</summary>

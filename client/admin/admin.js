@@ -1684,6 +1684,68 @@
       if (!queued) throw new Error('Nothing was queued.' + why);
       message('Queued ' + queued + ' record plans for the selected failed jobs.' + why);
     });
+  const blockedRecords = { next: null };
+  function blockedWork(row) {
+    try {
+      return JSON.parse(row.asx_payload || '{}');
+    } catch {
+      return {};
+    }
+  }
+  function renderBlocked(rows, append) {
+    if (!append) $('blockedRecords').replaceChildren();
+    for (const row of rows) {
+      const work = blockedWork(row);
+      const item = document.createElement('li');
+      const text = document.createElement('span');
+      text.textContent =
+        (work.Table || 'No table') +
+        ' ' +
+        (work.RecordId || work.Key || '') +
+        ' · ' +
+        ((work.Notices || [])[0] || 'No notice') +
+        ' · ' +
+        row.modifiedon +
+        ' ';
+      item.append(text);
+      const retry = document.createElement('button');
+      retry.className = 'secondary';
+      retry.textContent = 'Retry';
+      retry.disabled = !work.Key;
+      retry.onclick = () =>
+        task(async () => {
+          const result = JSON.parse(
+            await api('asx_ManageWork', {
+              Request: JSON.stringify({ Command: 'RetryOutbox', Key: work.Key }),
+            }),
+          );
+          retry.disabled = true;
+          message(
+            result.Status === 'Pending'
+              ? 'Record queued for planning again. It blocks again if the cause remains.'
+              : 'Record is ' + result.Status + '; nothing to retry.',
+          );
+        });
+      item.append(retry);
+      $('blockedRecords').append(item);
+    }
+  }
+  async function loadBlockedPage(options, append) {
+    const result = await xrm.WebApi.retrieveMultipleRecords('asx_outbox', options, 50);
+    renderBlocked(result.entities, append);
+    blockedRecords.next = result.nextLink
+      ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
+      : null;
+    $('moreBlockedRecords').hidden = !blockedRecords.next;
+  }
+  $('loadBlockedRecords').onclick = () =>
+    task(() =>
+      loadBlockedPage(
+        "?$select=asx_payload,modifiedon&$filter=asx_status eq 'Blocked'&$orderby=modifiedon desc",
+        false,
+      ),
+    );
+  $('moreBlockedRecords').onclick = () => task(() => loadBlockedPage(blockedRecords.next, true));
   $('loadOperations').onclick = () =>
     task(async () => {
       const rows = await xrm.WebApi.retrieveMultipleRecords(

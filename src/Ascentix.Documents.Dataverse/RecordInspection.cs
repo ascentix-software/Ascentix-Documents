@@ -65,7 +65,8 @@ public sealed class RecordInspection
             "recordplan:" + template.Id.ToString("N") + ":" + request.RecordId.ToString("N")
         );
         if (selection == null)
-            return new WorkerResult { Status = "NotPlanned" };
+            return Blocked(service, template.Id, request.RecordId)
+                ?? new WorkerResult { Status = "NotPlanned" };
         var operations = selection
             .Value.Operations.Select(key =>
                 store.Require<OperationDocument>("asx_operation", key).Value
@@ -84,6 +85,49 @@ public sealed class RecordInspection
                 "Current evaluation only. Existing folders remain intact. Paths shared by records contain shared documents; no permanent child-folder inventory is maintained.",
             },
         };
+    }
+
+    /// <summary>
+    /// Finds the most recent Blocked outbox row for a record that has never been planned. Outbox
+    /// rows do not index the record, so this pages through Blocked rows only; Blocked is the
+    /// exception state, not the queue.
+    /// </summary>
+    private static WorkerResult? Blocked(IOrganizationService service, Guid template, Guid record)
+    {
+        var query = new QueryExpression("asx_outbox")
+        {
+            ColumnSet = new ColumnSet("asx_payload"),
+            PageInfo = new PagingInfo { Count = 5000, PageNumber = 1 },
+        };
+        query.Criteria.AddCondition("asx_status", ConditionOperator.Equal, "Blocked");
+        query.AddOrder("modifiedon", OrderType.Descending);
+        while (true)
+        {
+            var page = service.RetrieveMultiple(query);
+            foreach (var row in page.Entities)
+            {
+                var job = JsonWire.Read<OutboxDocument>(
+                    row.GetAttributeValue<string>("asx_payload")
+                );
+                if (
+                    job.Status == "Blocked"
+                    && job.TemplateId == template
+                    && job.RecordId == record
+                    && job.RelatedRecordId == Guid.Empty
+                    && job.SecurityTeamId == Guid.Empty
+                )
+                    return new WorkerResult
+                    {
+                        Status = "Blocked",
+                        Key = job.Key,
+                        Notices = job.Notices,
+                    };
+            }
+            if (!page.MoreRecords)
+                return null;
+            query.PageInfo.PageNumber++;
+            query.PageInfo.PagingCookie = page.PagingCookie;
+        }
     }
 
     private static string Summarize(

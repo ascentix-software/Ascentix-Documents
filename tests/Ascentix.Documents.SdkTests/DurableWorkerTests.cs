@@ -1068,6 +1068,201 @@ public sealed class DurableWorkerTests
         }
     }
 
+    public const string PlanningFailedNotice =
+        "Planning failed. Check that the site and library are approved, then use Retry in Blocked records.";
+
+    [Fact]
+    public void FailOutboxBlocksOnlyPendingRows()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        var key = f.BlockRecord();
+        var blocked = f.Store.Require<OutboxDocument>("asx_outbox", key).Value;
+        Assert.Equal("Blocked", blocked.Status);
+        Assert.Equal(new[] { PlanningFailedNotice }, blocked.Notices);
+        Assert.Equal(
+            "Blocked",
+            f.Execute(new WorkerRequest { Command = "FailOutbox", Key = key }).Status
+        );
+        var planned = f.PlanRecord();
+        Assert.Equal("Planned", planned.Status);
+        var after = f.Execute(new WorkerRequest { Command = "FailOutbox", Key = planned.Key });
+        Assert.Equal("Planned", after.Status);
+        var row = f.Store.Require<OutboxDocument>("asx_outbox", planned.Key).Value;
+        Assert.Equal("Planned", row.Status);
+        Assert.Empty(row.Notices);
+    }
+
+    [Fact]
+    public void RetryOutboxReturnsABlockedRowToPendingAndClearsItsNotices()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        var key = f.BlockRecord();
+        var retried = f.Execute(new WorkerRequest { Command = "RetryOutbox", Key = key });
+        Assert.Equal("Pending", retried.Status);
+        Assert.Equal(key, retried.Key);
+        var row = f.Store.Require<OutboxDocument>("asx_outbox", key).Value;
+        Assert.Equal("Pending", row.Status);
+        Assert.Empty(row.Notices);
+        Assert.Equal(new[] { key }, f.Store.Pending("asx_outbox"));
+        var planned = f.Execute(new WorkerRequest { Command = "Plan", Key = key });
+        Assert.Equal("Planned", planned.Status);
+        Assert.Single(planned.Keys);
+    }
+
+    [Fact]
+    public void RetryOutboxLeavesAnyOtherStatusUnchanged()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        var planned = f.PlanRecord();
+        var before = f.Store.Require<OutboxDocument>("asx_outbox", planned.Key).Row.RowVersion;
+        var result = f.Execute(new WorkerRequest { Command = "RetryOutbox", Key = planned.Key });
+        Assert.Equal("Planned", result.Status);
+        var row = f.Store.Require<OutboxDocument>("asx_outbox", planned.Key);
+        Assert.Equal("Planned", row.Value.Status);
+        Assert.Equal(before, row.Row.RowVersion);
+        Assert.Equal(planned.Keys, row.Value.Operations);
+    }
+
+    [Fact]
+    public void RetryOutboxRefusesAnUnknownKey()
+    {
+        var f = new Fixture(seedBinding: false);
+        Assert.Throws<EvaluationBlockedException>(() =>
+            f.Execute(new WorkerRequest { Command = "RetryOutbox", Key = "request:unknown" })
+        );
+        Assert.Throws<EvaluationBlockedException>(() =>
+            f.Execute(new WorkerRequest { Command = "RetryOutbox", Key = "" })
+        );
+        Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_outbox");
+    }
+
+    [Fact]
+    public void RetryOutboxRunsOnlyWithTheCallersOwnPermissions()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        RuntimeSeed.Seed(f.Service, Guid.NewGuid(), "account");
+        var key = f.BlockRecord();
+        Guid operatorId = Guid.NewGuid(),
+            other = Guid.NewGuid();
+        var asked = new List<Guid?>();
+        // Dataverse refuses asx_ManageWork without prvCreateasx_operatorcommand, and every write
+        // runs as the caller. A caller without operator privileges cannot change the row.
+        Func<Guid?, IOrganizationService> factory = id =>
+        {
+            asked.Add(id);
+            return id == operatorId ? f.Service : new DenyWrites(f.Service);
+        };
+        Assert.ThrowsAny<Exception>(() => ManageWork(f, factory, other, "RetryOutbox", key));
+        Assert.Equal("Blocked", f.Store.Require<OutboxDocument>("asx_outbox", key).Value.Status);
+        var result = ManageWork(f, factory, operatorId, "RetryOutbox", key);
+        Assert.Equal("Pending", result.Status);
+        Assert.Equal("Pending", f.Store.Require<OutboxDocument>("asx_outbox", key).Value.Status);
+        Assert.Equal(new Guid?[] { other, operatorId }, asked.ToArray());
+    }
+
+    private static WorkerResult ManageWork(
+        Fixture f,
+        Func<Guid?, IOrganizationService> factory,
+        Guid caller,
+        string command,
+        string key
+    )
+    {
+        var context = GuardTests.ContextProxy.Create(
+            new Dictionary<string, object>
+            {
+                ["Stage"] = 30,
+                ["Mode"] = 0,
+                ["IsInTransaction"] = true,
+                ["UserId"] = caller,
+                ["CorrelationId"] = Guid.NewGuid(),
+                ["MessageName"] = "asx_ManageWork",
+                ["InputParameters"] = new ParameterCollection
+                {
+                    ["Request"] = JsonWire.Write(
+                        new WorkerRequest { Command = command, Key = key }
+                    ),
+                },
+                ["OutputParameters"] = new ParameterCollection(),
+                ["SharedVariables"] = new ParameterCollection(),
+            }
+        );
+        return f.Service.Transaction(() =>
+        {
+            new Ascentix.Documents.Plugins.ManageWorkApi().Execute(
+                new ApiProvider(context, factory)
+            );
+            return JsonWire.Read<WorkerResult>((string)context.OutputParameters["Result"]);
+        });
+    }
+
+    private sealed class ApiProvider : IServiceProvider, IOrganizationServiceFactory
+    {
+        private readonly IPluginExecutionContext context;
+        private readonly Func<Guid?, IOrganizationService> factory;
+
+        public ApiProvider(
+            IPluginExecutionContext context,
+            Func<Guid?, IOrganizationService> factory
+        )
+        {
+            this.context = context;
+            this.factory = factory;
+        }
+
+        public object GetService(Type type) =>
+            type == typeof(IPluginExecutionContext) ? context : this;
+
+        public IOrganizationService CreateOrganizationService(Guid? userId) => factory(userId);
+    }
+
+    private sealed class DenyWrites : IOrganizationService
+    {
+        private readonly IOrganizationService inner;
+
+        public DenyWrites(IOrganizationService inner)
+        {
+            this.inner = inner;
+        }
+
+        private static Exception Denied() =>
+            new InvalidOperationException("Principal user is missing the operator privilege.");
+
+        public Guid Create(Entity entity) => throw Denied();
+
+        public Entity Retrieve(string name, Guid id, ColumnSet columns) =>
+            inner.Retrieve(name, id, columns);
+
+        public void Update(Entity entity) => throw Denied();
+
+        public void Delete(string name, Guid id) => throw Denied();
+
+        public OrganizationResponse Execute(OrganizationRequest request) =>
+            request is CreateRequest || request is UpdateRequest || request is DeleteRequest
+                ? throw Denied()
+                : inner.Execute(request);
+
+        public void Associate(
+            string name,
+            Guid id,
+            Relationship relationship,
+            EntityReferenceCollection entities
+        ) => throw Denied();
+
+        public void Disassociate(
+            string name,
+            Guid id,
+            Relationship relationship,
+            EntityReferenceCollection entities
+        ) => throw Denied();
+
+        public EntityCollection RetrieveMultiple(QueryBase query) => inner.RetrieveMultiple(query);
+    }
+
     internal sealed class Fixture
     {
         public MemoryService Service { get; } = new MemoryService();
@@ -1258,6 +1453,36 @@ public sealed class DurableWorkerTests
         {
             Service.Rows[LibraryId]["asx_policyrevision"] = Guid.NewGuid().ToString();
             Service.Rows[LibraryId]["asx_policyapplied"] = false;
+        }
+
+        public WorkerResult Execute(WorkerRequest request) =>
+            Service.Transaction(() => Coordinator.Execute(request, true));
+
+        /// <summary>
+        /// Queues the record while its library is suspended, lets planning fail and records the
+        /// failure the way the dispatch flow does, then lifts the suspension.
+        /// </summary>
+        public string BlockRecord()
+        {
+            Service.Rows[LibraryId]["asx_approved"] = false;
+            var queued = Execute(
+                new WorkerRequest
+                {
+                    Command = "Queue",
+                    TemplateId = TemplateId,
+                    RecordId = RecordId,
+                    RequestId = Guid.NewGuid(),
+                }
+            );
+            Assert.Throws<EvaluationBlockedException>(() =>
+                Execute(new WorkerRequest { Command = "Plan", Key = queued.Key })
+            );
+            Assert.Equal(
+                "Blocked",
+                Execute(new WorkerRequest { Command = "FailOutbox", Key = queued.Key }).Status
+            );
+            Service.Rows[LibraryId]["asx_approved"] = true;
+            return queued.Key;
         }
 
         public WorkerResult PlanRecord()
