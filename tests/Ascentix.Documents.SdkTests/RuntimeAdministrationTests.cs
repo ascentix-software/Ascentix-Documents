@@ -365,4 +365,63 @@ public sealed class RuntimeAdministrationTests
         Assert.Empty(e.Org.Steps);
         Assert.All(after.Registration!.Readiness, x => Assert.Equal("Pending", x.Status));
     }
+
+    [Fact]
+    public void AddTableOnALegacyProfileBatchesRegistrationAndAlwaysIncludesTheNewTable()
+    {
+        var legacy = Enumerable
+            .Range(0, EventRegistrations.MaxNewTablesPerSave + 1)
+            .Select(i => "cr123_t" + i)
+            .ToArray();
+        var e = new Env(legacy, legacy.Concat(new[] { "cr123_new" }).ToArray());
+        e.ClearRows();
+        var got = e.Change("AddTable", "cr123_new");
+        var scopes = got.Registration!.Readiness.Where(r =>
+                r.Scope == "cr123_new" || legacy.Contains(r.Scope)
+            )
+            .ToList();
+        Assert.Equal(
+            EventRegistrations.MaxNewTablesPerSave,
+            scopes.Count(r => r.Status == "Ready")
+        );
+        Assert.Equal(2, scopes.Count(r => r.Status == "Pending"));
+        Assert.Equal("Ready", scopes.Single(r => r.Scope == "cr123_new").Status);
+        Assert.Equal(legacy.Length + 1, e.Rows().Length);
+    }
+
+    [Fact]
+    public void AddTableWithoutAWorkerIsRefusedAndWritesNothing()
+    {
+        var e = new Env("account");
+        e.Org.S.Memory.Rows[e.Runtime]["asx_workeruserid"] = "";
+        var ex = Assert.Throws<EvaluationBlockedException>(() => e.Change("AddTable", "contact"));
+        Assert.Contains("Select the worker application user.", ex.Message);
+        Assert.Empty(e.Org.S.Writes);
+    }
+
+    [Fact]
+    public void RemoveTableWorksForTablesDeletedFromTheEnvironment()
+    {
+        var e = new Env(new[] { "account", "cr123_a", "cr123_b" }, new[] { "cr123_a", "cr123_b" });
+        e.Save(e.Get());
+        foreach (var gone in new[] { "cr123_a", "cr123_b" })
+            e.Org.S.MissingTables.Add(gone);
+        int accountSteps = e.StepsFor("account");
+        e.Change("RemoveTable", "cr123_a");
+        Assert.Equal(new[] { "account", "cr123_b" }, e.Rows());
+        e.Change("RemoveTable", "cr123_b");
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Equal(accountSteps, e.StepsFor("account"));
+        Assert.Equal(0, e.StepsFor("cr123_a"));
+        Assert.Equal(0, e.StepsFor("cr123_b"));
+    }
+
+    [Fact]
+    public void AddTableOnAMigratedProfileChecksTheRuntimeRowVersion()
+    {
+        var e = new Env("account");
+        var before = e.Org.S.Memory.Updates.Count;
+        e.Change("AddTable", "contact");
+        Assert.True(e.Org.S.Memory.Updates.Count > before);
+    }
 }

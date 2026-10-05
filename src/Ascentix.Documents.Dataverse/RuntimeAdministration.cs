@@ -82,28 +82,13 @@ public static class RuntimeAdministration
         // Save never changes the table list; tables are added and removed one at a time.
         var tables = RuntimeTables.Effective(service, old).Tables;
         RuntimeTables.Replace(service, old.Id, tables);
-        // Register in batches: each new table's steps are created inside this one call, which Dataverse stops after 2 minutes.
-        var probe = EventRegistrations.Inspect(
+        var registerNow = BatchedTables(
             service,
             request.WorkerId,
             tables,
-            request.ProcessRecordUpdates
+            request.ProcessRecordUpdates,
+            null
         );
-        var registerNow = tables;
-        if (probe.Error == null)
-        {
-            var ready = new System.Collections.Generic.HashSet<string>(
-                probe.Readiness.Where(r => r.Status == "Ready").Select(r => r.Scope),
-                StringComparer.Ordinal
-            );
-            var firstPending = new System.Collections.Generic.HashSet<string>(
-                tables.Where(t => !ready.Contains(t)).Take(EventRegistrations.MaxNewTablesPerSave),
-                StringComparer.Ordinal
-            );
-            registerNow = tables
-                .Where(t => ready.Contains(t) || firstPending.Contains(t))
-                .ToArray();
-        }
         EventRegistrations.Reconcile(
             service,
             request.WorkerId,
@@ -128,6 +113,46 @@ public static class RuntimeAdministration
         return Get(service, Profile(service));
     }
 
+    /// <summary>
+    /// Registers in batches: each new table's steps are created inside one call, which Dataverse stops after 2 minutes.
+    /// Registers every Ready table, the table being added (always, within the limit) and then the
+    /// first not-Ready tables in list order; the rest stay Pending for a later Save.
+    /// </summary>
+    private static string[] BatchedTables(
+        IOrganizationService service,
+        Guid worker,
+        string[] tables,
+        bool processUpdates,
+        string? include
+    )
+    {
+        var probe = EventRegistrations.Inspect(service, worker, tables, processUpdates);
+        if (probe.Error != null)
+            return tables;
+        var ready = new System.Collections.Generic.HashSet<string>(
+            probe.Readiness.Where(r => r.Status == "Ready").Select(r => r.Scope),
+            StringComparer.Ordinal
+        );
+        int slots =
+            EventRegistrations.MaxNewTablesPerSave
+            - (include != null && !ready.Contains(include) ? 1 : 0);
+        var firstPending = new System.Collections.Generic.HashSet<string>(
+            tables
+                .Where(t =>
+                    !ready.Contains(t) && !string.Equals(t, include, StringComparison.Ordinal)
+                )
+                .Take(slots),
+            StringComparer.Ordinal
+        );
+        return tables
+            .Where(t =>
+                ready.Contains(t)
+                || firstPending.Contains(t)
+                || string.Equals(t, include, StringComparison.Ordinal)
+            )
+            .ToArray();
+    }
+
     private static RuntimeRequest ChangeTable(
         IOrganizationService service,
         Entity old,
@@ -141,35 +166,49 @@ public static class RuntimeAdministration
         bool present = current.Tables.Contains(table, StringComparer.Ordinal);
         if (present == add)
             return Get(service, old);
-        if (!add)
-            WorkCoordination.RequireIdle(service);
-        var tables = add
-            ? current.Tables.Concat(new[] { table }).ToArray()
-            : current
-                .Tables.Where(t => !string.Equals(t, table, StringComparison.Ordinal))
-                .ToArray();
         var worker = Guid.TryParse(TemplateStore.Text(old, "asx_workeruserid"), out var id)
             ? id
             : Guid.Empty;
-        bool updates = old.GetAttributeValue<bool>("asx_processrecordupdates");
-        // Refuse unknown or unsupported tables before anything is written.
-        var probe = EventRegistrations.Inspect(service, worker, tables, updates);
-        if (probe.Error != null)
-            throw new EvaluationBlockedException(probe.Error);
-        RuntimeTables.Replace(service, old.Id, tables);
-        EventRegistrations.Reconcile(service, worker, tables, updates);
-        if (!current.Migrated)
-            service.Execute(
-                new UpdateRequest
-                {
-                    Target = new Entity("asx_runtime", old.Id)
-                    {
-                        RowVersion = old.RowVersion,
-                        ["asx_allowedtables"] = "[]",
-                    },
-                    ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
-                }
+        string[] tables;
+        if (add)
+        {
+            ValidateWorker(service, worker);
+            tables = current.Tables.Concat(new[] { table }).ToArray();
+            bool updates = old.GetAttributeValue<bool>("asx_processrecordupdates");
+            // Refuse unknown or unsupported tables before anything is written.
+            var probe = EventRegistrations.Inspect(service, worker, tables, updates);
+            if (probe.Error != null)
+                throw new EvaluationBlockedException(probe.Error);
+            RuntimeTables.Replace(service, old.Id, tables);
+            EventRegistrations.Reconcile(
+                service,
+                worker,
+                BatchedTables(service, worker, tables, updates, table),
+                updates
             );
+        }
+        else
+        {
+            WorkCoordination.RequireIdle(service);
+            tables = current
+                .Tables.Where(t => !string.Equals(t, table, StringComparison.Ordinal))
+                .ToArray();
+            // Only this table's own steps are touched, so tables already dropped from the environment stay removable.
+            RuntimeTables.Replace(service, old.Id, tables);
+            EventRegistrations.RemoveTableSteps(service, table);
+        }
+        // Always version-check the runtime row so concurrent table changes cannot overwrite each other.
+        service.Execute(
+            new UpdateRequest
+            {
+                Target = new Entity("asx_runtime", old.Id)
+                {
+                    RowVersion = old.RowVersion,
+                    ["asx_allowedtables"] = "[]",
+                },
+                ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+            }
+        );
         return Get(service, Profile(service));
     }
 

@@ -88,6 +88,60 @@ public static class EventRegistrations
         return steps.Count;
     }
 
+    /// <summary>
+    /// Deletes only the record-invalidation steps of one table: steps owned by that handler whose
+    /// message filter targets the table. Resolved by filter id rather than step name, and without
+    /// inspecting any other table, so a table dropped from the environment can still be removed.
+    /// </summary>
+    public static int RemoveTableSteps(IOrganizationService service, string table)
+    {
+        var handlers = All(
+            service,
+            In(
+                new QueryExpression("plugintype") { ColumnSet = new ColumnSet("typename") },
+                "typename",
+                RecordHandler
+            )
+        );
+        if (handlers.Count != 1)
+            throw new EvaluationBlockedException(
+                "Exactly one installed plug-in type " + RecordHandler + " is required."
+            );
+        var filters = new QueryExpression("sdkmessagefilter")
+        {
+            ColumnSet = new ColumnSet("primaryobjecttypecode"),
+        };
+        filters.Criteria.AddCondition("primaryobjecttypecode", ConditionOperator.Equal, table);
+        var filterIds = All(service, filters).Select(r => (object)r.Id).ToArray();
+        if (filterIds.Length == 0)
+            return 0;
+        var steps = All(
+            service,
+            In(
+                new QueryExpression(Step)
+                {
+                    ColumnSet = new ColumnSet("eventhandler", "sdkmessagefilterid"),
+                    Criteria =
+                    {
+                        Conditions =
+                        {
+                            new ConditionExpression(
+                                "eventhandler",
+                                ConditionOperator.Equal,
+                                handlers[0].Id
+                            ),
+                        },
+                    },
+                },
+                "sdkmessagefilterid",
+                filterIds
+            )
+        );
+        foreach (var step in steps)
+            service.Delete(Step, step.Id);
+        return steps.Count;
+    }
+
     private static RegistrationSummary Summary(
         List<StepSpec> desired,
         List<ExistingStep> existing,
