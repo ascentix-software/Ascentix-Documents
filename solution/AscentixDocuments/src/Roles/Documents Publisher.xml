@@ -43,6 +43,7 @@
     <RolePrivilege name="prvReadasx_policyentry" level="Global" />
     <RolePrivilege name="prvReadasx_revision" level="Global" />
     <RolePrivilege name="prvReadasx_runtime" level="Global" />
+    <RolePrivilege name="prvReadasx_runtimetable" level="Global" />
     <RolePrivilege name="prvReadasx_site" level="Global" />
     <RolePrivilege name="prvReadasx_source" level="Global" />
     <RolePrivilege name="prvReadasx_teamregistration" level="Global" />
