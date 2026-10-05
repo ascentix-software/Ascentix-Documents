@@ -1,0 +1,53 @@
+# Manual DEV deployment: build from this repository, pack the unmanaged development
+# solution, and import it into Documents DEV. Credentials stay in the ADO service connection.
+# Requires pipeline variable DocumentsDevUrl (the DEV environment URL), defined in the pipeline settings, not in this repository.
+name: documents-dev-deploy-$(Date:yyyyMMdd)-$(Rev:r)
+trigger: none
+pr: none
+
+pool:
+  vmImage: windows-latest
+
+jobs:
+  - job: DeployDev
+    timeoutInMinutes: 30
+    steps:
+      - checkout: self
+        persistCredentials: false
+      - task: UseDotNet@2
+        inputs:
+          packageType: sdk
+          version: 10.0.302
+      - task: NodeTool@0
+        inputs:
+          versionSpec: '22.x'
+      - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.tool-installer.PowerPlatformToolInstaller@2
+        inputs:
+          AddToolsToPath: true
+      - pwsh: |
+          $ErrorActionPreference = 'Stop'
+          npm ci
+          dotnet tool restore
+          ./scripts/build.ps1 -SigningMode Development
+        displayName: Build, test and pack (development signing)
+      - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.whoami.PowerPlatformWhoAmi@2
+        displayName: Confirm Documents DEV service connection
+        inputs:
+          authenticationType: PowerPlatformSPN
+          PowerPlatformSPN: Ascentix Documents DEV
+          Environment: $(DocumentsDevUrl)
+      - pwsh: |
+          [xml]$m = Get-Content solution/AscentixDocuments/src/Other/Solution.xml -Raw
+          Write-Host "##vso[task.setvariable variable=solutionVersion]$($m.ImportExportXml.SolutionManifest.Version)"
+        displayName: Read solution version
+      - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.import-solution.PowerPlatformImportSolution@2
+        displayName: Import unmanaged development solution into DEV
+        inputs:
+          authenticationType: PowerPlatformSPN
+          PowerPlatformSPN: Ascentix Documents DEV
+          Environment: $(DocumentsDevUrl)
+          SolutionInputFile: artifacts/solutions/development/AscentixDocuments_$(solutionVersion)_development_unmanaged.zip
+          AsyncOperation: true
+          MaxAsyncWaitTime: 30
+          PublishWorkflows: false
+          OverwriteUnmanagedCustomizations: true
