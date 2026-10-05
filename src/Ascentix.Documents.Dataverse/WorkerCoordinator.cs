@@ -338,7 +338,6 @@ public sealed class WorkerCoordinator
                         Key = operationKey,
                         Folders = folders,
                         RevisionId = revision.Id,
-                        PolicyRevision = library.PolicyRevision,
                     }
                 );
             operations.Add(operationKey);
@@ -422,7 +421,7 @@ public sealed class WorkerCoordinator
             )
         )
             return new WorkerResult { Status = "Busy", Key = request.Key };
-        var library = Current(operation.Value, binding, true);
+        var library = Current(operation.Value, binding);
         var dispatcher = store.Find<DispatcherDocument>(
             "asx_claim",
             WorkCoordination.Operation(service, request.Key)
@@ -478,7 +477,6 @@ public sealed class WorkerCoordinator
         )
             throw new EvaluationBlockedException("Pinned parent path changed.");
         operation.Value.ParentPath = parent;
-        operation.Value.ApprovedAclHash = library.AclHash;
         operation.Value.AbsenceVerified = false;
         if (recovery)
             operation.Value.ExternalResponseKnown = true; // Requires the separately privileged, audited recovery permit.
@@ -518,6 +516,16 @@ public sealed class WorkerCoordinator
             || request.ProbeKind != operation.Value.ProbeKind
         )
             throw new EvaluationBlockedException("Observation does not match the issued probe.");
+        // Earlier versions read the library's role assignments before and after each folder.
+        // Folder work no longer checks permissions, so an operation persisted mid-probe ignores
+        // that response, whatever it was, and continues with the parent-folder read.
+        if (operation.Value.ProbeKind == "Acl" || operation.Value.ProbeKind == "FinalAcl")
+            return Probe(
+                operation,
+                dispatcher.Value,
+                library,
+                operation.Value.ProbeKind == "FinalAcl" ? "FinalParent" : "Parent"
+            );
         if (request.HttpStatus == 429 || request.HttpStatus >= 500 || request.HttpStatus == 0)
             return ScheduleRetry(operation, dispatcher, request.RetryAfter);
         try
@@ -544,23 +552,7 @@ public sealed class WorkerCoordinator
                         );
                     operation.Value.LibraryRootPath = observedLibrary.Root.Path;
                     operation.Value.LibraryRootId = observedLibrary.Root.Id;
-                    return Probe(operation, dispatcher.Value, library, "Acl");
-                case "Acl":
-                case "FinalAcl":
-                    if (
-                        SharePointObservations.AclHash(
-                            SharePointObservations.Body<ODataRows<AclAssignment>>(request)
-                        ) != library.AclHash
-                    )
-                        throw new EvaluationBlockedException(
-                            "Library ACL drifted from the approved policy observation."
-                        );
-                    return Probe(
-                        operation,
-                        dispatcher.Value,
-                        library,
-                        operation.Value.ProbeKind == "FinalAcl" ? "FinalParent" : "Parent"
-                    );
+                    return Probe(operation, dispatcher.Value, library, "Parent");
                 case "Parent":
                 case "FinalParent":
                     var parent = SharePointObservations.Body<FolderObservation>(request);
@@ -737,7 +729,7 @@ public sealed class WorkerCoordinator
         binding.Status = "Verified";
         operation.Value.Status = "NeedsFinalPolicy";
         operation.Value.AbsenceVerified = false;
-        return Probe(operation, dispatcher.Value, library, "FinalAcl");
+        return Probe(operation, dispatcher.Value, library, "FinalParent");
     }
 
     private WorkerResult PrepareCreate(WorkerRequest request)
@@ -1135,11 +1127,7 @@ public sealed class WorkerCoordinator
     private bool Retired(string table, Guid id) =>
         store.Find<OutboxDocument>("asx_outbox", RetirementKey(table, id)) != null;
 
-    private WorkerLibrary Current(
-        OperationDocument operation,
-        FolderStep binding,
-        bool begin = false
-    )
+    private WorkerLibrary Current(OperationDocument operation, FolderStep binding)
     {
         Allowed(binding.Table);
         if (!operation.ExternalSubmitted && Retired(binding.Table, binding.RecordId))
@@ -1161,21 +1149,11 @@ public sealed class WorkerCoordinator
             throw new EvaluationBlockedException(
                 "A newer record evaluation no longer selects this unsubmitted operation."
             );
+        // Re-read on every step so a suspension stops work before the next write. The library's
+        // policy generation is deliberately not compared: folders inherit the library's access.
         var library = catalog.Read(binding.LibraryId);
-        if (
-            library.EntryId != binding.EntryId
-            || !begin
-                && (
-                    library.PolicyRevision != operation.PolicyRevision
-                    || (
-                        operation.ApprovedAclHash != null
-                        && operation.ApprovedAclHash != library.AclHash
-                    )
-                )
-        )
-            throw new EvaluationBlockedException("Approved destination/policy generation changed.");
-        if (begin)
-            operation.PolicyRevision = library.PolicyRevision; // A fresh claim independently reads the currently approved library and ACL before any write.
+        if (library.EntryId != binding.EntryId)
+            throw new EvaluationBlockedException("Approved destination entry changed.");
         return library;
     }
 
@@ -1197,16 +1175,6 @@ public sealed class WorkerCoordinator
                         "_api/web/lists(guid'"
                         + library.Target.ListId
                         + "')?$select=Id,RootFolder/UniqueId,RootFolder/ServerRelativeUrl&$expand=RootFolder",
-                };
-                break;
-            case "FinalAcl":
-            case "Acl":
-                http = new HttpIntent
-                {
-                    RelativeUri =
-                        "_api/web/lists(guid'"
-                        + library.Target.ListId
-                        + "')/roleassignments?$select=Member/Id,Member/PrincipalType,RoleDefinitionBindings/Id,RoleDefinitionBindings/BasePermissions&$expand=Member,RoleDefinitionBindings",
                 };
                 break;
             case "Ancestor":

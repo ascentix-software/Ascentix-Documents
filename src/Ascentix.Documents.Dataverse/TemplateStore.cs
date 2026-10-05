@@ -130,7 +130,14 @@ public sealed class TemplateStore
                     WebId = Guid.Parse(Text(site, "asx_webid")),
                     ListId = Guid.Parse(Text(library, "asx_listid")),
                     EntryId = Guid.Parse(Text(library, "asx_entryid")),
-                    PolicyRevision = Guid.Parse(Text(library, "asx_policyrevision")),
+                    // Informational only: a library whose first policy has not been applied has
+                    // no revision, and policy state never blocks planning.
+                    PolicyRevision = Guid.TryParse(
+                        library.GetAttributeValue<string>("asx_policyrevision"),
+                        out var policyRevision
+                    )
+                        ? policyRevision
+                        : Guid.Empty,
                     EntryUrl = entryUrl,
                     Approved =
                         site.GetAttributeValue<bool>("asx_approved")

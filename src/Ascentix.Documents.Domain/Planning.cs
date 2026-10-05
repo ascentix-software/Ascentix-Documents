@@ -174,17 +174,17 @@ public static class TemplateValidator
             if (!sectionKeys.Add(section.Key))
                 throw new EvaluationBlockedException("Invalid destination section.");
             var lib = section.Library;
+            // Folders inherit the library's permissions, so the library's policy-update state
+            // (PolicyApplied, PolicyRevision) never gates planning. Only suspension does.
             if (
                 !lib.Approved
-                || !lib.PolicyApplied
                 || lib.ApprovalId == Guid.Empty
                 || lib.WebId == Guid.Empty
                 || lib.ListId == Guid.Empty
                 || lib.EntryId == Guid.Empty
-                || lib.PolicyRevision == Guid.Empty
             )
                 throw new EvaluationBlockedException(
-                    "Destination must have approved identity and applied policy."
+                    "Destination must be approved and have a valid identity."
                 );
             if (
                 !Uri.TryCreate(lib.EntryUrl, UriKind.Absolute, out var url)

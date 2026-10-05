@@ -232,14 +232,29 @@ public class AcceptanceTests
     }
 
     [Fact]
-    public void InvalidTreeAndUnavailablePolicyBlock()
+    public void InvalidTreeAndSuspendedDestinationBlock()
     {
         var template = Template();
         template.Destinations[0].Nodes[1].ParentKey = "child";
         Assert.Throws<EvaluationBlockedException>(() => TemplateValidator.Validate(template));
         template = Template();
-        template.Destinations[0].Library.PolicyApplied = false;
+        template.Destinations[0].Library.Approved = false;
+        var suspended = Assert.Throws<EvaluationBlockedException>(() =>
+            TemplateValidator.Validate(template)
+        );
+        Assert.Equal("Destination must be approved and have a valid identity.", suspended.Message);
+        template = Template();
+        template.Destinations[0].Library.EntryId = Guid.Empty;
         Assert.Throws<EvaluationBlockedException>(() => TemplateValidator.Validate(template));
+    }
+
+    [Fact]
+    public void PolicyUpdateStateDoesNotBlockAnApprovedDestination()
+    {
+        var template = Template();
+        template.Destinations[0].Library.PolicyApplied = false;
+        template.Destinations[0].Library.PolicyRevision = Guid.Empty;
+        TemplateValidator.Validate(template);
     }
 
     [Theory]

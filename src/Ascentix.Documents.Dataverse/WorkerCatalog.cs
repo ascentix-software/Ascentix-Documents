@@ -1,5 +1,4 @@
 using System;
-using System.Text.RegularExpressions;
 using Ascentix.Documents.Conditions;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
@@ -13,9 +12,7 @@ public sealed class WorkerLibrary
     public Guid EntryId { get; set; }
     public Guid NativeParentId { get; set; }
     public Guid NativeSiteId { get; set; }
-    public Guid PolicyRevision { get; set; }
     public string EntryUrl { get; set; } = "";
-    public string AclHash { get; set; } = "";
 }
 
 public sealed class WorkerCatalog
@@ -27,6 +24,13 @@ public sealed class WorkerCatalog
         this.service = service;
     }
 
+    /// <summary>
+    /// Reads where folder work for a library is written. The only access gate is that the site
+    /// and library are approved (not suspended); folders inherit the library's permissions, so
+    /// the library's policy-update state and ACL are not consulted.
+    /// </summary>
+    /// <param name="id">The approved library row.</param>
+    /// <returns>The library's SharePoint target and native identities.</returns>
     public WorkerLibrary Read(Guid id)
     {
         var row = service.Retrieve(
@@ -38,10 +42,7 @@ public sealed class WorkerCatalog
                 "asx_entryid",
                 "asx_entryurl",
                 "asx_nativeparentid",
-                "asx_policyrevision",
-                "asx_approved",
-                "asx_policyapplied",
-                "asx_aclhash"
+                "asx_approved"
             )
         );
         var siteRef =
@@ -54,16 +55,10 @@ public sealed class WorkerCatalog
         );
         if (
             !row.GetAttributeValue<bool>("asx_approved")
-            || !row.GetAttributeValue<bool>("asx_policyapplied")
             || !site.GetAttributeValue<bool>("asx_approved")
         )
-            throw new EvaluationBlockedException("Site/library/policy approval is not active.");
+            throw new EvaluationBlockedException("Site or library is suspended.");
         var entry = new Uri(TemplateStore.Text(row, "asx_entryurl"));
-        var aclHash = TemplateStore.Text(row, "asx_aclhash");
-        if (!Regex.IsMatch(aclHash, "^[a-f0-9]{64}$"))
-            throw new EvaluationBlockedException(
-                "An approved complete library ACL fingerprint is required."
-            );
         var target = new SharePointTarget(
             TemplateStore.Text(site, "asx_url"),
             Guid.Parse(TemplateStore.Text(site, "asx_webid")),
@@ -81,9 +76,7 @@ public sealed class WorkerCatalog
             Id = id,
             Target = target,
             EntryId = Guid.Parse(TemplateStore.Text(row, "asx_entryid")),
-            PolicyRevision = Guid.Parse(TemplateStore.Text(row, "asx_policyrevision")),
             EntryUrl = entry.AbsoluteUri,
-            AclHash = aclHash,
             NativeParentId =
                 row.GetAttributeValue<EntityReference>("asx_nativeparentid")?.Id ?? Guid.Empty,
             NativeSiteId =
@@ -91,7 +84,6 @@ public sealed class WorkerCatalog
         };
         if (
             result.EntryId == Guid.Empty
-            || result.PolicyRevision == Guid.Empty
             || result.NativeParentId == Guid.Empty
             || result.NativeSiteId == Guid.Empty
         )

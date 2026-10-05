@@ -862,6 +862,144 @@ public sealed class SecurityWorkerTests
     }
 
     [Fact]
+    public void RecordPlannedInTheSameRunAsATeamChangeIsNotBlocked()
+    {
+        // TEST 2026-10-05: a user joined a registered team; the team event issued a new policy
+        // generation (asx_policyapplied=false) and every record planned before it applied Blocked.
+        var f = new Fixture();
+        f.Queue("Read");
+        f.Drive();
+        Assert.True(f.Service.Rows[f.Library].GetAttributeValue<bool>("asx_policyapplied"));
+        var applied = f.Service.Rows[f.Library].GetAttributeValue<string>("asx_policyrevision");
+        Guid template = Guid.NewGuid(),
+            record = Guid.NewGuid();
+        SeedRecordTemplate(f, template, record);
+        f.AddUser();
+        f.Store.Create(
+            "asx_outbox",
+            new OutboxDocument
+            {
+                Key = "team-event",
+                SecurityTeamId = f.Team,
+                SecurityPage = 1,
+            }
+        );
+        var refreshed = f.Service.Transaction(() =>
+            new WorkerCoordinator(f.Service).Execute(
+                new WorkerRequest { Command = "Plan", Key = "team-event" },
+                true
+            )
+        );
+        Assert.Equal("Planned", refreshed.Status);
+        Assert.StartsWith("policywork:", Assert.Single(refreshed.Keys));
+        Assert.False(f.Service.Rows[f.Library].GetAttributeValue<bool>("asx_policyapplied"));
+        Assert.NotEqual(
+            applied,
+            f.Service.Rows[f.Library].GetAttributeValue<string>("asx_policyrevision")
+        );
+        var queued = f.Service.Transaction(() =>
+            new WorkerCoordinator(f.Service).Execute(
+                new WorkerRequest
+                {
+                    Command = "Queue",
+                    TemplateId = template,
+                    RecordId = record,
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            )
+        );
+        var planned = f.Service.Transaction(() =>
+            new WorkerCoordinator(f.Service).Execute(
+                new WorkerRequest { Command = "Plan", Key = queued.Key },
+                true
+            )
+        );
+        Assert.Equal("Planned", planned.Status);
+        Assert.StartsWith("folderjob:", Assert.Single(planned.Keys));
+    }
+
+    private static void SeedRecordTemplate(Fixture f, Guid template, Guid record)
+    {
+        Guid revision = Guid.NewGuid(),
+            nativeSite = Guid.NewGuid(),
+            nativeParent = Guid.NewGuid();
+        f.Service.Rows[f.Site]["asx_nativeid"] = new EntityReference("sharepointsite", nativeSite);
+        f.Service.Rows[f.Library]["asx_entryid"] = Guid.NewGuid().ToString();
+        f.Service.Rows[f.Library]["asx_nativeparentid"] = new EntityReference(
+            "sharepointdocumentlocation",
+            nativeParent
+        );
+        f.Service.Seed(
+            new Entity("sharepointsite", nativeSite)
+            {
+                ["absoluteurl"] = "https://example.sharepoint.com/sites/proto",
+                ["statecode"] = new OptionSetValue(0),
+            }
+        );
+        f.Service.Seed(
+            new Entity("sharepointdocumentlocation", nativeParent)
+            {
+                ["relativeurl"] = "General",
+                ["parentsiteorlocation"] = new EntityReference("sharepointsite", nativeSite),
+                ["statecode"] = new OptionSetValue(0),
+                ["servicetype"] = new OptionSetValue(0),
+            }
+        );
+        f.Service.Seed(
+            new Entity("asx_template", template)
+            {
+                ["asx_name"] = "Accounts",
+                ["asx_table"] = "account",
+                ["asx_publishedrevisionid"] = new EntityReference("asx_revision", revision),
+            }
+        );
+        f.Service.Seed(
+            new Entity("asx_revision", revision)
+            {
+                ["asx_templateid"] = new EntityReference("asx_template", template),
+                ["asx_version"] = 1,
+                ["asx_status"] = "Published",
+            }
+        );
+        f.Service.Seed(
+            new Entity("asx_source", Guid.NewGuid())
+            {
+                ["asx_revisionid"] = new EntityReference("asx_revision", revision),
+                ["asx_payload"] = JsonWire.Write(
+                    new SourceDto
+                    {
+                        Table = "account",
+                        Columns = new[]
+                        {
+                            new ColumnDto { Name = "name", Kind = "Text" },
+                        },
+                    }
+                ),
+            }
+        );
+        f.Service.Seed(
+            new Entity("asx_destination", Guid.NewGuid())
+            {
+                ["asx_revisionid"] = new EntityReference("asx_revision", revision),
+                ["asx_key"] = "general",
+                ["asx_libraryid"] = new EntityReference("asx_library", f.Library),
+            }
+        );
+        f.Service.Seed(
+            new Entity("asx_folder", Guid.NewGuid())
+            {
+                ["asx_revisionid"] = new EntityReference("asx_revision", revision),
+                ["asx_key"] = "root",
+                ["asx_sectionkey"] = "general",
+                ["asx_expression"] = "{root.name}",
+                ["asx_order"] = 0,
+            }
+        );
+        f.Service.Seed(new Entity("account", record) { ["name"] = "Example" });
+    }
+
+    [Fact]
     public void IncompleteTeamPolicyPageNeverConsumesInvalidation()
     {
         var f = new Fixture();

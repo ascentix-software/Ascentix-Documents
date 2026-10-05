@@ -120,25 +120,38 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
-    public void KnownCreateResponseStillRequiresIndependentFolderAndFinalPolicyReads()
+    public void KnownCreateResponseStillRequiresIndependentFolderAndFinalParentReads()
     {
         var fixture = new Fixture();
         var absent = fixture.Observe(fixture.Preflight(fixture.Claim()), Rows<ItemObservation>());
         var prepared = fixture.Call("PrepareCreate", absent);
         var read = fixture.Call("CreateResponse", prepared, CreateBody(), 200);
         Assert.Throws<EvaluationBlockedException>(() => fixture.Call("Complete", read));
-        var finalAcl = fixture.Observe(read, Rows(fixture.Item(Guid.NewGuid(), null)));
-        Assert.Equal("FinalAcl", finalAcl.ProbeKind);
-        Assert.Throws<EvaluationBlockedException>(() => fixture.Call("Complete", finalAcl));
+        var finalParent = fixture.Observe(read, Rows(fixture.Item(Guid.NewGuid(), null)));
+        Assert.Equal("FinalParent", finalParent.ProbeKind);
+        Assert.Throws<EvaluationBlockedException>(() => fixture.Call("Complete", finalParent));
     }
 
     [Fact]
-    public void FinalAclDriftBlocksAppliedAndReleasesKnownWriter()
+    public void FinalParentIdentityChangeBlocksAppliedAndReleasesKnownWriter()
     {
         var fixture = new Fixture();
         var read = fixture.Preflight(fixture.Claim());
-        var finalAcl = fixture.Observe(read, Rows(fixture.Item(Guid.NewGuid(), null)));
-        var drift = fixture.Observe(finalAcl, Rows<AclAssignment>());
+        var finalParent = fixture.Observe(read, Rows(fixture.Item(Guid.NewGuid(), null)));
+        Assert.Equal("FinalParent", finalParent.ProbeKind);
+        var drift = fixture.Observe(
+            finalParent,
+            JsonWire.Write(
+                new ODataEnvelope<FolderObservation>
+                {
+                    Data = new FolderObservation
+                    {
+                        Id = Guid.NewGuid(),
+                        Path = "/sites/proto/General",
+                    },
+                }
+            )
+        );
         Assert.Equal("Blocked", drift.Status);
         Assert.NotEqual(
             "Applied",
@@ -166,7 +179,7 @@ public sealed class DurableWorkerTests
         Assert.Throws<EvaluationBlockedException>(() =>
             fixture.Observe(claim, fixture.LibraryBody())
         );
-        Assert.Equal("Acl", next.ProbeKind);
+        Assert.Equal("Parent", next.ProbeKind);
     }
 
     [Fact]
@@ -742,7 +755,6 @@ public sealed class DurableWorkerTests
                 }
             )
         );
-        work = f.Observe(work, f.AclBody());
         string parent = JsonWire.Write(
             new ODataEnvelope<FolderObservation>
             {
@@ -775,7 +787,6 @@ public sealed class DurableWorkerTests
             var item = f.Item(Guid.NewGuid(), null);
             item.Path = entry + "/Example";
             work = f.Observe(work, Rows(item));
-            work = f.Observe(work, f.AclBody());
             work = f.Observe(work, parent);
             Assert.Equal("FinalAncestor", work.ProbeKind);
             work = f.Observe(work, ancestor(true));
@@ -846,7 +857,6 @@ public sealed class DurableWorkerTests
         );
         work = f.Claim("child-run");
         work = f.Observe(work, f.LibraryBody());
-        work = f.Observe(work, f.AclBody());
         string parent = JsonWire.Write(
             new ODataEnvelope<FolderObservation>
             {
@@ -863,7 +873,6 @@ public sealed class DurableWorkerTests
         item.Name = "Invoices";
         item.Path += "/Invoices";
         work = f.Observe(work, Rows(item));
-        work = f.Observe(work, f.AclBody());
         work = f.Observe(work, parent);
         Assert.Equal("Verified", work.Status);
         work = f.Call("Complete", work);
@@ -890,29 +899,173 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
-    public void FreshClaimRevalidatesCurrentApprovedPolicyButInFlightGenerationChangesBlock()
+    public void InFlightFolderJobSurvivesPolicyGenerationChange()
     {
         var f = new Fixture();
-        var next = Guid.NewGuid();
-        f.Service.Rows[f.LibraryId]["asx_policyrevision"] = next.ToString();
-        var work = f.Claim();
-        Assert.Equal("Library", work.ProbeKind);
+        var work = f.Preflight(f.Claim());
+        f.StartPolicyUpdate();
+        work = f.Observe(work, Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+        work = f.Call("PrepareCreate", work);
+        f.StartPolicyUpdate();
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        work = f.ObserveAndFinalize(work, f.Item(Guid.NewGuid(), null));
+        f.StartPolicyUpdate();
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+    }
+
+    [Fact]
+    public void PlanSucceedsWhileLibraryPolicyIsBeingApplied()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        f.StartPolicyUpdate();
+        var planned = f.PlanRecord();
+        Assert.Equal("Planned", planned.Status);
+        Assert.Single(planned.Keys);
+        Assert.StartsWith("folderjob:", planned.Keys[0]);
         Assert.Equal(
-            next,
+            "Example",
             f.Store.Require<OperationDocument>(
                 "asx_operation",
-                f.Operation.Key
-            ).Value.PolicyRevision
+                planned.Keys[0]
+            ).Value.Folder.Candidate
         );
-        work = f.Preflight(work);
-        f.Service.Rows[f.LibraryId]["asx_policyrevision"] = Guid.NewGuid().ToString();
-        Assert.Throws<EvaluationBlockedException>(() => f.Observe(work, Rows<ItemObservation>()));
-        Assert.False(
-            f.Store.Require<OperationDocument>(
-                "asx_operation",
-                f.Operation.Key
-            ).Value.ExternalSubmitted
+    }
+
+    [Fact]
+    public void PlanAndClaimSucceedWhenLibraryHasNoPolicyRevisionOrAclFingerprint()
+    {
+        foreach (var seeded in new[] { false, true })
+        {
+            var f = new Fixture(seedBinding: seeded);
+            f.SeedTemplate();
+            f.Service.Rows[f.LibraryId].Attributes.Remove("asx_policyrevision");
+            f.Service.Rows[f.LibraryId].Attributes.Remove("asx_aclhash");
+            f.Service.Rows[f.LibraryId]["asx_policyapplied"] = false;
+            if (seeded)
+                Assert.Equal("Library", f.Claim().ProbeKind);
+            else
+            {
+                var planned = f.PlanRecord();
+                Assert.Equal("Planned", planned.Status);
+                Assert.Single(planned.Keys);
+            }
+        }
+    }
+
+    [Fact]
+    public void ClaimAndDriveSucceedWhilePolicyIsBeingApplied()
+    {
+        var f = new Fixture();
+        f.StartPolicyUpdate();
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        work = f.Call("PrepareCreate", work);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        work = f.ObserveAndFinalize(work, f.Item(Guid.NewGuid(), null));
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        Assert.NotEmpty(f.Results);
+        Assert.DoesNotContain(
+            f.Results,
+            r => r.Http?.RelativeUri.IndexOf("roleassignments", StringComparison.Ordinal) >= 0
         );
+        Assert.DoesNotContain(f.Results, r => r.ProbeKind == "Acl" || r.ProbeKind == "FinalAcl");
+    }
+
+    [Fact]
+    public void SuspendedLibraryStillBlocksPlanning()
+    {
+        var f = new Fixture();
+        f.SeedTemplate();
+        f.Service.Rows[f.LibraryId]["asx_approved"] = false;
+        AssertPlanAndClaimBlocked(f);
+    }
+
+    [Fact]
+    public void SuspendedSiteStillBlocksPlanning()
+    {
+        var f = new Fixture();
+        f.SeedTemplate();
+        f.Service.Rows[f.SiteId]["asx_approved"] = false;
+        AssertPlanAndClaimBlocked(f);
+    }
+
+    private static void AssertPlanAndClaimBlocked(Fixture f)
+    {
+        var queued = f.Service.Transaction(() =>
+            f.Coordinator.Execute(
+                new WorkerRequest
+                {
+                    Command = "Queue",
+                    TemplateId = f.TemplateId,
+                    RecordId = f.RecordId,
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            )
+        );
+        Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() =>
+                f.Coordinator.Execute(
+                    new WorkerRequest { Command = "Plan", Key = queued.Key },
+                    true
+                )
+            )
+        );
+        Assert.Equal(
+            "Pending",
+            f.Store.Require<OutboxDocument>("asx_outbox", queued.Key).Value.Status
+        );
+        Assert.DoesNotContain(
+            f.Service.Rows.Values,
+            r => r.LogicalName == "asx_operation" && r.Id != f.OperationRowId
+        );
+        Assert.Throws<EvaluationBlockedException>(() => f.Claim());
+        Assert.Equal(
+            "Pending",
+            f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value.Status
+        );
+    }
+
+    [Theory]
+    [InlineData("Acl", "Parent")]
+    [InlineData("FinalAcl", "FinalParent")]
+    public void PersistedAclProbeFromAnEarlierVersionAdvancesWithoutReadingPermissions(
+        string legacy,
+        string next
+    )
+    {
+        var f = new Fixture();
+        // An earlier version issued Acl right after the library read, and FinalAcl right after
+        // the folder read; persist the operation in that state.
+        var work = f.Observe(f.Claim(), f.LibraryBody());
+        if (legacy == "FinalAcl")
+            work = f.Observe(f.Observe(work, f.ParentBody()), Rows(f.Item(Guid.NewGuid(), null)));
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key);
+        stored.Value.ProbeKind = legacy;
+        stored.Value.ProbeId = Guid.NewGuid();
+        if (legacy == "FinalAcl")
+            stored.Value.Status = "NeedsFinalPolicy";
+        f.Store.Save(stored);
+        work = new WorkerResult
+        {
+            Status = "Read",
+            Key = work.Key,
+            Token = work.Token,
+            ProbeId = stored.Value.ProbeId,
+            ProbeKind = legacy,
+        };
+        work = f.Observe(work, "{}");
+        Assert.Equal("Read", work.Status);
+        Assert.Equal(next, work.ProbeKind);
+        work = f.Observe(work, f.ParentBody());
+        if (legacy == "Acl")
+            Assert.Equal("Folder", work.ProbeKind);
+        else
+        {
+            Assert.Equal("Verified", work.Status);
+            Assert.Equal("Applied", f.Call("Complete", work).Status);
+        }
     }
 
     internal sealed class Fixture
@@ -929,6 +1082,9 @@ public sealed class DurableWorkerTests
         public Guid EntryId { get; } = Guid.NewGuid();
         public Guid NativeParent { get; } = Guid.NewGuid();
         public Guid NativeSite { get; } = Guid.NewGuid();
+        public Guid SiteId { get; } = Guid.NewGuid();
+        public List<WorkerResult> Results { get; } = new List<WorkerResult>();
+        public Guid OperationRowId => DocumentStore.StableId("asx_operation:" + Operation.Key);
         public string EntryUrl => "https://example.sharepoint.com/sites/proto/General";
         public FolderStep Binding { get; }
         public OperationDocument Operation { get; }
@@ -962,7 +1118,7 @@ public sealed class DurableWorkerTests
 
         public Fixture(bool seedBinding = true)
         {
-            Guid site = Guid.NewGuid(),
+            Guid site = SiteId,
                 policy = Guid.NewGuid();
             Service.Seed(
                 new Entity("asx_site", site)
@@ -1094,10 +1250,39 @@ public sealed class DurableWorkerTests
             Service.Seed(new Entity("account", RecordId) { ["name"] = "Example" });
         }
 
+        /// <summary>
+        /// Starts a new library policy generation the way a team-membership refresh does:
+        /// the library stays approved while its policy is marked as not yet applied.
+        /// </summary>
+        public void StartPolicyUpdate()
+        {
+            Service.Rows[LibraryId]["asx_policyrevision"] = Guid.NewGuid().ToString();
+            Service.Rows[LibraryId]["asx_policyapplied"] = false;
+        }
+
+        public WorkerResult PlanRecord()
+        {
+            var queued = Service.Transaction(() =>
+                Coordinator.Execute(
+                    new WorkerRequest
+                    {
+                        Command = "Queue",
+                        TemplateId = TemplateId,
+                        RecordId = RecordId,
+                        RequestId = Guid.NewGuid(),
+                    },
+                    true
+                )
+            );
+            return Service.Transaction(() =>
+                Coordinator.Execute(new WorkerRequest { Command = "Plan", Key = queued.Key }, true)
+            );
+        }
+
         public WorkerResult Claim(string runId = "run-1", Guid token = default)
         {
             run = runId;
-            return Service.Transaction(() =>
+            var result = Service.Transaction(() =>
                 Coordinator.Execute(
                     new WorkerRequest
                     {
@@ -1109,6 +1294,8 @@ public sealed class DurableWorkerTests
                     true
                 )
             );
+            Results.Add(result);
+            return result;
         }
 
         public WorkerResult Call(
@@ -1116,8 +1303,9 @@ public sealed class DurableWorkerTests
             WorkerResult previous,
             string? body = null,
             int status = 0
-        ) =>
-            Service.Transaction(() =>
+        )
+        {
+            var result = Service.Transaction(() =>
                 Coordinator.Execute(
                     new WorkerRequest
                     {
@@ -1133,6 +1321,9 @@ public sealed class DurableWorkerTests
                     true
                 )
             );
+            Results.Add(result);
+            return result;
+        }
 
         public WorkerResult Observe(WorkerResult read, string body) =>
             Call("Observe", read, body, read.ProbeKind == "Folder" && body == "{}" ? 404 : 200);
@@ -1168,8 +1359,6 @@ public sealed class DurableWorkerTests
         {
             Assert.Equal("Library", read.ProbeKind);
             read = Observe(read, LibraryBody());
-            Assert.Equal("Acl", read.ProbeKind);
-            read = Observe(read, AclBody());
             Assert.Equal("Parent", read.ProbeKind);
             read = Observe(read, ParentBody());
             Assert.Equal("Folder", read.ProbeKind);
@@ -1190,8 +1379,6 @@ public sealed class DurableWorkerTests
         public WorkerResult ObserveAndFinalize(WorkerResult read, ItemObservation item)
         {
             read = Observe(read, Rows(item));
-            Assert.Equal("FinalAcl", read.ProbeKind);
-            read = Observe(read, AclBody());
             Assert.Equal("FinalParent", read.ProbeKind);
             read = Observe(read, ParentBody());
             Assert.Equal("Verified", read.Status);

@@ -188,6 +188,8 @@ public class OperationDocument : StoredDocument
     [DataMember]
     public Guid RevisionId { get; set; }
 
+    // The policy generation a SecurityOperation applies. Folder jobs no longer set or read it;
+    // it stays on the shared model so stored folder-job payloads still deserialize.
     [DataMember]
     public Guid PolicyRevision { get; set; }
 
@@ -212,6 +214,7 @@ public class OperationDocument : StoredDocument
     [DataMember]
     public Guid LibraryRootId { get; set; }
 
+    // Unused: folder jobs no longer compare the library ACL. Kept so stored payloads deserialize.
     [DataMember]
     public string? ApprovedAclHash { get; set; }
 
