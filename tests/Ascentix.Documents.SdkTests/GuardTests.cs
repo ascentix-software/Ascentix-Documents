@@ -433,6 +433,62 @@ public sealed class GuardTests
         }
     }
 
+    [Theory]
+    [InlineData("Create", true)]
+    [InlineData("Delete", true)]
+    [InlineData("Create", false)]
+    [InlineData("Delete", false)]
+    public void RuntimeTableRowsAreWritableOnlyFromRuntimeAdministration(
+        string message,
+        bool fromApi
+    )
+    {
+        var shared = new ParameterCollection { [DocumentWorkerApi.InternalWrite] = true };
+        var user = Guid.NewGuid();
+        var parent = ContextProxy.Create(
+            new Dictionary<string, object>
+            {
+                ["MessageName"] = fromApi ? "asx_RuntimeAdmin" : "Create",
+                ["UserId"] = user,
+                ["SharedVariables"] = fromApi ? shared : new ParameterCollection(),
+            }
+        );
+        var context = ContextProxy.Create(
+            new Dictionary<string, object>
+            {
+                ["Stage"] = 20,
+                ["Mode"] = 0,
+                ["IsInTransaction"] = true,
+                ["MessageName"] = message,
+                ["PrimaryEntityName"] = "asx_runtimetable",
+                ["PrimaryEntityId"] = Guid.NewGuid(),
+                ["UserId"] = user,
+                ["ParentContext"] = parent,
+                ["InputParameters"] = new ParameterCollection(),
+                ["SharedVariables"] = new ParameterCollection(),
+            }
+        );
+        var provider = new SingleContextProvider(context);
+        if (fromApi)
+            new CatalogGuard().Execute(provider);
+        else
+            Assert.Throws<InvalidPluginExecutionException>(() =>
+                new CatalogGuard().Execute(provider)
+            );
+    }
+
+    private sealed class SingleContextProvider : IServiceProvider
+    {
+        private readonly IPluginExecutionContext context;
+
+        public SingleContextProvider(IPluginExecutionContext context) => this.context = context;
+
+        public object GetService(Type type) =>
+            type == typeof(IPluginExecutionContext)
+                ? context
+                : throw new InvalidOperationException("No service calls expected.");
+    }
+
     internal sealed class ContextProxy : RealProxy
     {
         private readonly IDictionary<string, object> properties;

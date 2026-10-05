@@ -140,6 +140,23 @@ public sealed class CatalogGuard : IPlugin
     public void Execute(IServiceProvider provider)
     {
         var context = (IPluginExecutionContext)provider.GetService(typeof(IPluginExecutionContext));
+        if (context.PrimaryEntityName == "asx_runtimetable")
+        {
+            var owner = context.ParentContext;
+            bool fromRuntimeAdmin =
+                context.Stage == 20
+                && context.IsInTransaction
+                && owner?.MessageName == "asx_RuntimeAdmin"
+                && owner.UserId == context.UserId
+                && owner.SharedVariables.Contains(DocumentWorkerApi.InternalWrite)
+                && owner.SharedVariables[DocumentWorkerApi.InternalWrite] is bool adminMarked
+                && adminMarked;
+            if (!fromRuntimeAdmin)
+                throw new InvalidPluginExecutionException(
+                    "Runtime tables are changed only through Runtime administration."
+                );
+            return;
+        }
         bool transported = ApiWriteService.Authorizes(context, true);
         string message = context.MessageName;
         if (
