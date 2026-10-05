@@ -464,6 +464,32 @@ async function change(n, value) {
     );
     assert.notEqual(queued[0].RequestId, queued[1].RequestId);
   }
+  {
+    xrm.WebApi.retrieveMultipleRecords = async (name) =>
+      name === 'asyncoperation'
+        ? {
+            entities: [
+              {
+                asyncoperationid: 'job-2',
+                _regardingobjectid_value: 'rec-9',
+                '_regardingobjectid_value@Microsoft.Dynamics.CRM.lookuplogicalname': 'contact',
+                message: 'Failed.',
+                createdon: '2026-10-05T11:00:00Z',
+              },
+            ],
+          }
+        : { entities: [] };
+    let calls = 0;
+    xrm.WebApi.online.execute = async () => {
+      calls++;
+      return { ok: true, json: async () => ({ Result: JSON.stringify({ Status: 'Pending' }) }) };
+    };
+    await nodes.loadFailedJobs.onclick();
+    nodes.failedJobs.children[0].children[0].checked = true;
+    await nodes.replanFailed.onclick();
+    assert.equal(calls, 0);
+    assert.match(nodes.status.textContent, /contact.*no template/i);
+  }
   console.log(
     'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
   );

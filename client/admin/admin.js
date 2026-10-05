@@ -1579,8 +1579,14 @@
         .filter((box) => box.checked && box.dataset.record);
       if (!picked.length) throw new Error('Select at least one failed job with a record.');
       let queued = 0;
+      const skipped = [];
       for (const box of picked) {
         const templates = state.templates.filter((t) => t.asx_table === box.dataset.table);
+        if (!box.dataset.table) skipped.push('table unknown for record ' + box.dataset.record);
+        else if (!templates.length)
+          skipped.push(
+            "table '" + box.dataset.table + "' has no template (record " + box.dataset.record + ')',
+          );
         for (const template of templates) {
           await api('asx_ManageWork', {
             Request: JSON.stringify({
@@ -1593,7 +1599,11 @@
           queued++;
         }
       }
-      message('Queued ' + queued + ' record plans for the selected failed jobs.');
+      const why = skipped.length
+        ? ' Skipped ' + skipped.length + ' record(s): ' + skipped.join('; ') + '.'
+        : '';
+      if (!queued) throw new Error('Nothing was queued.' + why);
+      message('Queued ' + queued + ' record plans for the selected failed jobs.' + why);
     });
   $('loadOperations').onclick = () =>
     task(async () => {
