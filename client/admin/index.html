@@ -341,16 +341,21 @@ Select up to five records for a published-revision impact review.</pre>
         <details id="runtime" class="card">
           <summary>Runtime administration</summary>
           <p>
-            Configuration is separate from flow activation and role assignment. Finish active work
-            before changing runtime identity or scope.
+            Configuration is separate from flow activation and role assignment. Saving registers the
+            event steps for the selected tables and worker; it requires System Administrator.
           </p>
           <button id="loadRuntime" class="secondary">Load runtime profile</button>
+          <p id="runtimePending" class="hint warning" hidden>
+            Tables pending registration: Save to register their event steps.
+          </p>
           <div class="row">
-            <label>Dataverse worker user ID<input id="runtimeWorker" /></label
+            <label>Worker application user<select id="runtimeWorker"></select></label
             ><label
-              >Allowed source tables<input
+              >Source tables (document-enabled)<select
                 id="runtimeTables"
-                placeholder="account,contact" /></label
+                multiple
+                size="8"
+              ></select></label
             ><label
               >SharePoint tenant hosts<input
                 id="runtimeSites"
@@ -363,10 +368,20 @@ Select up to five records for a published-revision impact review.</pre>
             ><button id="saveRuntime">Save runtime profile</button>
           </div>
           <p class="hint">
-            Applies system-wide to all configured source tables. Off disables record-update
-            monitoring; creation still works. Turning it on processes future updates only. Existing
-            queued work can finish. Saving this setting requires permission to manage plug-in steps.
+            When the runtime is off, events keep queueing and nothing is lost; the worker resumes
+            when it is turned on. Record-update monitoring applies to future updates only.
           </p>
+          <h4>Event registration</h4>
+          <ul id="runtimeReadiness"></ul>
+          <button id="unregisterRuntime" class="secondary">Remove all event registrations</button>
+          <div id="unregisterConfirm" class="confirm" hidden>
+            <p>
+              This removes every Documents event step. Record and team changes stop being captured
+              until you Save again. Use this before uninstalling.
+            </p>
+            <button id="confirmUnregister">Remove registrations</button
+            ><button id="cancelUnregister" class="secondary">Keep registrations</button>
+          </div>
           <p id="runtimeStatus" class="hint">No profile loaded.</p>
         </details>
         <details id="operations" class="card">

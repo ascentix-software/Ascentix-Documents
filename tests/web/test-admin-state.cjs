@@ -358,7 +358,12 @@ async function change(n, value) {
     'New template has an independent empty tree',
   );
   xrm.WebApi.retrieveMultipleRecords = async (name) => ({
-    entities: name === 'asx_runtime' ? [{ asx_runtimeid: 'runtime-1' }] : [],
+    entities:
+      name === 'asx_runtime'
+        ? [{ asx_runtimeid: 'runtime-1' }]
+        : name === 'systemuser'
+          ? [{ systemuserid: 'worker-1', fullname: 'Documents worker' }]
+          : [],
   });
   let runtimeProfile = {
     WorkerId: 'worker-1',
@@ -367,6 +372,15 @@ async function change(n, value) {
     Enabled: false,
     ProcessRecordUpdates: false,
     RowVersion: '1',
+    Migrated: false,
+    Registration: {
+      Readiness: [
+        { Scope: 'account', Status: 'Pending' },
+        { Scope: 'team', Status: 'Pending' },
+      ],
+      ExtraSteps: 0,
+      StepIds: [],
+    },
   };
   const runtimeSaves = [];
   xrm.WebApi.online.execute = async (req) => {
@@ -374,20 +388,44 @@ async function change(n, value) {
     const payload = JSON.parse(req.Request);
     if (payload.Command === 'Save') {
       runtimeSaves.push(payload);
-      runtimeProfile = { ...payload, RowVersion: '2' };
+      runtimeProfile = {
+        ...payload,
+        RowVersion: '2',
+        Migrated: true,
+        Registration: {
+          Readiness: payload.Tables.map((t) => ({ Scope: t, Status: 'Ready' })).concat([
+            { Scope: 'team', Status: 'Ready' },
+          ]),
+          ExtraSteps: 0,
+          StepIds: ['step-1'],
+        },
+      };
+    }
+    if (payload.Command === 'Unregister') {
+      runtimeSaves.push(payload);
+      runtimeProfile.Registration.Readiness.forEach((r) => (r.Status = 'Pending'));
     }
     return { ok: true, json: async () => ({ Result: JSON.stringify(runtimeProfile) }) };
   };
   await nodes.loadRuntime.onclick();
-  assert.equal(nodes.runtimeRecordUpdates.checked, false);
+  assert.match(nodes.runtimePending.textContent, /pending registration/i);
+  assert.match(nodes.runtimeReadiness.textContent, /account.*Pending/);
+  assert.deepEqual(
+    nodes.runtimeTables.options.filter((o) => o.selected).map((o) => o.value),
+    ['account'],
+  );
+  assert.equal(nodes.runtimeWorker.value, 'worker-1');
   nodes.runtimeRecordUpdates.checked = true;
   await nodes.saveRuntime.onclick();
   assert.equal(runtimeSaves.at(-1).ProcessRecordUpdates, true);
-  assert.equal(nodes.runtimeRecordUpdates.checked, true);
-  nodes.runtimeRecordUpdates.checked = false;
-  await nodes.saveRuntime.onclick();
-  assert.equal(runtimeSaves.at(-1).ProcessRecordUpdates, false);
-  assert.equal(runtimeSaves.at(-1).RowVersion, '2');
+  assert.deepEqual(runtimeSaves.at(-1).Tables, ['account']);
+  assert.match(nodes.runtimeReadiness.textContent, /account.*Ready/);
+  assert.equal(nodes.runtimePending.hidden, true);
+  await nodes.unregisterRuntime.onclick();
+  assert.equal(nodes.unregisterConfirm.hidden, false);
+  assert.equal(runtimeSaves.at(-1).Command, 'Save', 'Unregister waits for confirmation');
+  await nodes.confirmUnregister.onclick();
+  assert.equal(runtimeSaves.at(-1).Command, 'Unregister');
   console.log(
     'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
   );

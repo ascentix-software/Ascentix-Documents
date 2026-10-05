@@ -1416,52 +1416,115 @@
     });
   const security = { runtime: null, operations: [] };
   const etag = (row) => (row['@odata.etag'] || '').replace(/^W\/"|"$/g, '');
-  function runtimeResult(result) {
+  const readinessText = {
+    Ready: 'Ready',
+    Pending: 'Pending: not registered',
+    Missing: 'Missing steps: Save to repair',
+    WrongWorker: 'Registered for a different worker: Save to repair',
+    WrongMode: 'Registered synchronously: Save to repair',
+    WrongState: 'Enabled state differs: Save to repair',
+    Outdated: 'Outdated registration: Save to repair',
+  };
+  async function workers() {
+    const rows = [];
+    let options =
+      '?$select=systemuserid,fullname&$filter=applicationid ne null and isdisabled eq false&$orderby=fullname';
+    do {
+      const result = await xrm.WebApi.retrieveMultipleRecords('systemuser', options);
+      rows.push(...result.entities);
+      options = result.nextLink
+        ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
+        : null;
+    } while (options);
+    return rows;
+  }
+  function runtimeResult(result, workerRows) {
     security.runtime = result;
+    if (workerRows) {
+      $('runtimeWorker').replaceChildren(
+        ...workerRows.map((w) => option(w.systemuserid, w.fullname)),
+      );
+    }
     $('runtimeWorker').value = result.WorkerId;
-    $('runtimeTables').value = result.Tables.join(',');
+    const known = state.tables.map((t) => t.LogicalName);
+    const names = [...new Set([...known, ...result.Tables])];
+    $('runtimeTables').replaceChildren(
+      ...names.map((name) => {
+        const item = option(
+          name,
+          display(state.tables.find((t) => t.LogicalName === name) || { LogicalName: name }),
+        );
+        item.selected = result.Tables.includes(name);
+        return item;
+      }),
+    );
     $('runtimeSites').value = result.SharePointHosts.join(',');
     $('runtimeEnabled').checked = result.Enabled;
     $('runtimeRecordUpdates').checked = result.ProcessRecordUpdates === true;
+    const readiness = result.Registration?.Readiness || [];
+    $('runtimeReadiness').replaceChildren(
+      ...readiness.map((r) => {
+        const item = document.createElement('li');
+        item.textContent =
+          (r.Scope === 'team' ? 'Team access events' : r.Scope) +
+          ': ' +
+          (readinessText[r.Status] || r.Status);
+        return item;
+      }),
+    );
+    if (result.Registration?.Error) {
+      const item = document.createElement('li');
+      item.textContent = 'Registration check failed: ' + result.Registration.Error;
+      $('runtimeReadiness').append(item);
+    }
+    $('runtimePending').textContent =
+      'Tables pending registration: Save to register their event steps (large sets register in batches, so Save again until none are pending).';
+    $('runtimePending').hidden = !readiness.some((r) => r.Status !== 'Ready');
     $('runtimeStatus').textContent = result.Enabled
       ? 'Runtime enabled; flow activation and role assignments are separate.'
-      : 'Runtime disabled.';
+      : 'Runtime paused: events queue until it is enabled.';
+  }
+  async function runtimeCommand(payload) {
+    return JSON.parse(await api('asx_RuntimeAdmin', { Request: JSON.stringify(payload) }));
   }
   $('loadRuntime').onclick = () =>
     task(async () => {
       if (!(await runtimeRows()).length)
         throw new Error(
-          'No runtime profile is installed. An administrator must choose the worker identity and allowed tables, then install the disabled worker setup before this profile can be loaded or edited.',
+          'No runtime profile is installed. Import the Documents solution, then load the runtime profile.',
         );
-      runtimeResult(
-        JSON.parse(await api('asx_RuntimeAdmin', { Request: JSON.stringify({ Command: 'Get' }) })),
-      );
+      runtimeResult(await runtimeCommand({ Command: 'Get' }), await workers());
     });
   $('saveRuntime').onclick = () =>
     task(async () => {
       if (!security.runtime) throw new Error('Load the current runtime profile first.');
       runtimeResult(
-        JSON.parse(
-          await api('asx_RuntimeAdmin', {
-            Request: JSON.stringify({
-              Command: 'Save',
-              RowVersion: security.runtime.RowVersion,
-              WorkerId: $('runtimeWorker').value,
-              Tables: $('runtimeTables')
-                .value.split(',')
-                .map((v) => v.trim())
-                .filter(Boolean),
-              SharePointHosts: $('runtimeSites')
-                .value.split(',')
-                .map((v) => v.trim())
-                .filter(Boolean),
-              Enabled: $('runtimeEnabled').checked,
-              ProcessRecordUpdates: $('runtimeRecordUpdates').checked,
-            }),
-          }),
-        ),
+        await runtimeCommand({
+          Command: 'Save',
+          RowVersion: security.runtime.RowVersion,
+          WorkerId: $('runtimeWorker').value,
+          Tables: [...$('runtimeTables').options].filter((o) => o.selected).map((o) => o.value),
+          SharePointHosts: $('runtimeSites')
+            .value.split(',')
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean),
+          Enabled: $('runtimeEnabled').checked,
+          ProcessRecordUpdates: $('runtimeRecordUpdates').checked,
+        }),
       );
-      message('Runtime profile saved with version checking.');
+      message('Runtime profile saved and event registration verified.');
+    });
+  $('unregisterRuntime').onclick = () => {
+    $('unregisterConfirm').hidden = false;
+  };
+  $('cancelUnregister').onclick = () => {
+    $('unregisterConfirm').hidden = true;
+  };
+  $('confirmUnregister').onclick = () =>
+    task(async () => {
+      $('unregisterConfirm').hidden = true;
+      runtimeResult(await runtimeCommand({ Command: 'Unregister' }));
+      message('All Documents event registrations were removed.');
     });
   $('loadOperations').onclick = () =>
     task(async () => {
