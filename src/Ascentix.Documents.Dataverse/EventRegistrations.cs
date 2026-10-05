@@ -35,10 +35,12 @@ public static class EventRegistrations
         "Ascentix.Documents.Plugins.TeamMembershipInvalidationPlugin";
 
     /// <summary>
-    /// Newly added tables per Save. Each new table creates and verifies its steps inside one
-    /// custom API call, which Dataverse stops after 2 minutes. Value measured in a development environment.
+    /// Newly registered tables per call. Each new table creates and verifies its event steps
+    /// inside one custom API call, which Dataverse stops after 2 minutes. Measured in DEV on
+    /// 2026-10-05: about 0.6 s per new table plus about 5 s fixed (10 tables 11.1 s, 25 tables
+    /// 20.1 s), so 90 tables take about 59 s, half of the limit.
     /// </summary>
-    public const int MaxNewTablesPerSave = 25;
+    public const int MaxNewTablesPerSave = 90;
 
     private const string Step = "sdkmessageprocessingstep";
 
