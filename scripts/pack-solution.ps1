@@ -39,6 +39,17 @@ foreach ($name in $assets) {
 }
 & node (Join-Path $PSScriptRoot 'verify-flows.cjs') (Join-Path $stage 'Workflows')
 if ($LASTEXITCODE -ne 0) { throw 'Solution flow validation failed.' }
+foreach ($stepFile in Get-ChildItem -LiteralPath (Join-Path $stage 'SdkMessageProcessingSteps') -Filter '*.xml') {
+    [xml]$step = Get-Content -LiteralPath $stepFile.FullName -Raw
+    $node = $step.SdkMessageProcessingStep
+    if ($node.Name -notlike 'Ascentix Documents: guard *' -or $node.ImpersonatingUserIdName) {
+        throw "Package contract: only guard steps without impersonation may ship ($($node.Name))."
+    }
+}
+foreach ($flow in Get-ChildItem -LiteralPath (Join-Path $stage 'Workflows') -Filter '*.data.xml') {
+    [xml]$data = Get-Content -LiteralPath $flow.FullName -Raw
+    if ($data.Workflow.StateCode -ne '0') { throw "Package contract: flows must ship Off ($($flow.Name))." }
+}
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 function Read-Entry([IO.Compression.ZipArchiveEntry]$Entry) {
     $reader = [IO.StreamReader]::new($Entry.Open())

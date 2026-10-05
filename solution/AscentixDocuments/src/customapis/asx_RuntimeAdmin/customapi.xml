@@ -1,8 +1,8 @@
-<customapi uniquename="asx_RuntimeAdmin">
+﻿<customapi uniquename="asx_RuntimeAdmin">
   <allowedcustomprocessingsteptype>0</allowedcustomprocessingsteptype>
   <bindingtype>0</bindingtype>
-  <description default="Owned by standalone Ascentix Documents development setup v1">
-    <label description="Owned by standalone Ascentix Documents development setup v1" languagecode="1033" />
+  <description default="Ascentix Documents">
+    <label description="Ascentix Documents" languagecode="1033" />
   </description>
   <displayname default="RuntimeAdmin">
     <label description="RuntimeAdmin" languagecode="1033" />
