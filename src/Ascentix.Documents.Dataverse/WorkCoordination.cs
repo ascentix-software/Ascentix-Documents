@@ -204,15 +204,9 @@ public static class WorkCoordination
         if (request.HttpStatus == 429 || request.HttpStatus >= 500)
         {
             var budget = Budget(store);
-            DateTime pause;
-            try
-            {
-                pause = WorkerCoordinator.RetryAt(now, 1, request.RetryAfter);
-            }
-            catch (EvaluationBlockedException)
-            {
-                pause = now.AddDays(7);
-            }
+            // RetryAt never throws and caps an honored Retry-After at 15 minutes, so a long or
+            // malformed hint pauses shared SharePoint work for at most one re-check interval.
+            var pause = WorkerCoordinator.RetryAt(now, 1, request.RetryAfter);
             if (pause > budget.Value.PauseUntilUtc)
                 budget.Value.PauseUntilUtc = pause;
             budget.Value.PaceSeconds = Math.Min(4, Math.Max(1, budget.Value.PaceSeconds) * 2);

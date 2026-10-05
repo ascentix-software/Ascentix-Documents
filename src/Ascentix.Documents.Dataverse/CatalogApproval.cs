@@ -723,7 +723,7 @@ public sealed class CatalogWorker
             throw new EvaluationBlockedException("Catalog probe requires a transaction.");
         var op = store.Require<CatalogProbe>("asx_operation", request.Key);
         if (request.Command == "FailUnclaimed")
-            return store.FailUnclaimed<CatalogProbe>(request.Key);
+            return store.FailUnclaimed<CatalogProbe>(request.Key, request, clock());
         if (request.Command == "Retry" || request.Command == "Cancel")
         {
             var active = store.Find<DispatcherDocument>(
@@ -840,6 +840,13 @@ public sealed class CatalogWorker
         }
         if (request.Command == "Fail")
         {
+            if (TransientFailure.Is(request))
+                return Wait(op, claim, null, request.StatusCode, request.ErrorCode);
+            // A notice left by an earlier temporary wait is not the cause of this failure.
+            if (
+                op.Value.ErrorCode?.StartsWith("Waiting to retry", StringComparison.Ordinal) == true
+            )
+                op.Value.ErrorCode = null;
             op.Value.ErrorCode =
                 op.Value.ErrorCode
                 ?? "Catalog worker failed before approval. Inspect the failed flow action, then retry after repair.";
@@ -903,20 +910,7 @@ public sealed class CatalogWorker
         )
             throw new EvaluationBlockedException("Stale or unsupported catalog observation.");
         if (request.HttpStatus == 429 || request.HttpStatus >= 500)
-        {
-            op.Value.RetryCount++;
-            op.Value.Status = op.Value.RetryCount > 5 ? "Blocked" : "RetryWait";
-            op.Value.ErrorCode =
-                op.Value.RetryCount > 5 ? "CatalogReadRetryLimit" : "TransientReadFailure";
-            op.Value.NextAttemptUtc = WorkerCoordinator.RetryAt(
-                clock(),
-                op.Value.RetryCount,
-                request.RetryAfter
-            );
-            store.Save(op);
-            Release(claim);
-            return new WorkerResult { Status = op.Value.Status, Key = request.Key };
-        }
+            return Wait(op, claim, request.RetryAfter, request.HttpStatus, null);
         try
         {
             switch (op.Value.ProbeKind)
@@ -1245,6 +1239,28 @@ public sealed class CatalogWorker
             SiteUrl = op.WebUrl,
             Http = new HttpIntent { RelativeUri = endpoint },
         };
+
+    /// <summary>
+    /// Waits after a temporary failure with no attempt cap and releases the writer slot.
+    /// </summary>
+    private WorkerResult Wait(
+        StoredRow<CatalogProbe> op,
+        StoredRow<DispatcherDocument> claim,
+        string? retryAfter,
+        int? statusCode,
+        string? errorCode
+    )
+    {
+        DocumentStore.Wait(op.Value, statusCode, errorCode, retryAfter, clock());
+        store.Save(op);
+        Release(claim);
+        return new WorkerResult
+        {
+            Status = "RetryWait",
+            Key = op.Value.Key,
+            Notices = new[] { op.Value.ErrorCode! },
+        };
+    }
 
     private void Release(StoredRow<DispatcherDocument> claim)
     {

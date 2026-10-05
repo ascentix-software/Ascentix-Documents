@@ -89,7 +89,8 @@ public sealed class RecordInspection
 
     /// <summary>
     /// Reports a never-planned record as Blocked when its newest Blocked or Pending outbox row for
-    /// this template is Blocked, so a newer Pending request wins. Rows are found through the
+    /// this template is Blocked, so a newer Pending request wins, and as WaitingToRetry when that
+    /// row is Pending with a next attempt after a temporary failure. Rows are found through the
     /// indexed asx_recordid column; rows written before that column was populated are found once
     /// they are retried.
     /// </summary>
@@ -118,6 +119,14 @@ public sealed class RecordInspection
                     || job.SecurityTeamId != Guid.Empty
                 )
                     continue;
+                // A Pending row with a next attempt is waiting after a temporary failure.
+                if (job.Status == "Pending" && job.NextAttemptUtc != null)
+                    return new WorkerResult
+                    {
+                        Status = "WaitingToRetry",
+                        Key = job.Key,
+                        Notices = job.Notices,
+                    };
                 return job.Status != "Blocked"
                     ? null
                     : new WorkerResult

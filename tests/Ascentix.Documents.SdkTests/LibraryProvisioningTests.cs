@@ -68,6 +68,52 @@ public sealed class LibraryProvisioningTests
     }
 
     [Fact]
+    public void ThrottledSetupReadsKeepWaitingWithNoAttemptCap()
+    {
+        var f = new Fixture();
+        var queued = f.Queue();
+        for (int attempt = 1; attempt <= 7; attempt++)
+        {
+            var work = f.Call("Claim", new WorkerResult { Key = queued.Key });
+            Assert.Equal("Read", work.Status);
+            Assert.Equal("RetryWait", f.Call("Observe", work, "{}", 503).Status);
+            var op = f.Store.Require<LibrarySetup>("asx_operation", queued.Key);
+            Assert.Equal(attempt, op.Value.RetryCount);
+            Assert.Equal(
+                "Waiting to retry after a temporary error (HTTP 503); attempt " + attempt + ".",
+                op.Value.ErrorCode
+            );
+            op.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+            f.Store.Save(op);
+        }
+    }
+
+    [Fact]
+    public void TransientSetupDriveFailureWaitsAndGenuineOneBlocks()
+    {
+        var f = new Fixture();
+        var queued = f.Queue();
+        var work = f.Call("Claim", new WorkerResult { Key = queued.Key });
+        var fail = new WorkerRequest
+        {
+            Command = "Fail",
+            Key = queued.Key,
+            RunId = "library-test",
+            Token = work.Token,
+            StatusCode = 429,
+        };
+        Assert.Equal("RetryWait", f.Service.Transaction(() => f.Worker.Execute(fail, true)).Status);
+        var op = f.Store.Require<LibrarySetup>("asx_operation", queued.Key);
+        op.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+        f.Store.Save(op);
+        work = f.Call("Claim", new WorkerResult { Key = queued.Key });
+        fail.Token = work.Token;
+        fail.StatusCode = 400;
+        fail.ErrorCode = "0x80040265";
+        Assert.Equal("Blocked", f.Service.Transaction(() => f.Worker.Execute(fail, true)).Status);
+    }
+
+    [Fact]
     public void UnknownCreationIsQuarantinedWithoutDeletingOrAdoptingContent()
     {
         var f = new Fixture { UnknownCreate = true };
@@ -319,7 +365,7 @@ public sealed class LibraryProvisioningTests
             throw new Exception("Library setup did not terminate");
         }
 
-        private WorkerResult Call(
+        public WorkerResult Call(
             string command,
             WorkerResult work,
             string? body = null,

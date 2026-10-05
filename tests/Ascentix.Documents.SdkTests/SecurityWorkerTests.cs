@@ -354,6 +354,73 @@ public sealed class SecurityWorkerTests
     }
 
     [Fact]
+    public void ThrottledSecurityReadsKeepWaitingWithNoAttemptCap()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        for (int attempt = 1; attempt <= 7; attempt++)
+        {
+            var work = f.Start();
+            Assert.Equal("Read", work.Status);
+            Assert.Equal("RetryWait", f.Call("Observe", work, status: 429).Status);
+            var op = f.Store.Require<SecurityOperation>("asx_operation", f.Key);
+            Assert.Equal(attempt, op.Value.RetryCount);
+            Assert.Equal(
+                "Waiting to retry after a temporary error (HTTP 429); attempt " + attempt + ".",
+                op.Value.ErrorCode
+            );
+            op.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+            f.Store.Save(op);
+        }
+        Assert.Equal("Applied", f.Drive().Status);
+    }
+
+    [Fact]
+    public void TransientSecurityFailuresWaitAndGenuineOnesBlock()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        var unclaimed = f.Service.Transaction(() =>
+            new SecurityWorker(f.Service).Execute(
+                new WorkerRequest
+                {
+                    Command = "FailUnclaimed",
+                    Key = f.Key,
+                    StatusCode = 503,
+                },
+                true
+            )
+        );
+        Assert.Equal("RetryWait", unclaimed.Status);
+        var op = f.Store.Require<SecurityOperation>("asx_operation", f.Key);
+        op.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+        f.Store.Save(op);
+        var work = f.Start();
+        var fail = new WorkerRequest
+        {
+            Command = "Fail",
+            Key = f.Key,
+            RunId = "security/run-1",
+            Token = work.Token,
+            StatusCode = 0,
+        };
+        Assert.Equal(
+            "RetryWait",
+            f.Service.Transaction(() => new SecurityWorker(f.Service).Execute(fail, true)).Status
+        );
+        op = f.Store.Require<SecurityOperation>("asx_operation", f.Key);
+        op.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+        f.Store.Save(op);
+        fail.Token = f.Start().Token;
+        fail.StatusCode = 400;
+        fail.ErrorCode = "0x80040265";
+        Assert.Equal(
+            "Blocked",
+            f.Service.Transaction(() => new SecurityWorker(f.Service).Execute(fail, true)).Status
+        );
+    }
+
+    [Fact]
     public void UnknownSecurityWriteCannotRepeatOrReleaseTheDispatcher()
     {
         var f = new Fixture();

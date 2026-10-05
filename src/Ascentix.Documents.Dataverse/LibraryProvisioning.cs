@@ -226,7 +226,7 @@ public sealed class LibraryProvisioning
             throw new EvaluationBlockedException("Library setup requires a transaction.");
         var op = store.Require<LibrarySetup>("asx_operation", request.Key);
         if (request.Command == "FailUnclaimed")
-            return store.FailUnclaimed<LibrarySetup>(request.Key);
+            return store.FailUnclaimed<LibrarySetup>(request.Key, request, clock());
         if (request.Command == "Retry" || request.Command == "Cancel")
         {
             var active = store.Find<DispatcherDocument>(
@@ -353,7 +353,14 @@ public sealed class LibraryProvisioning
             };
         }
         if (request.Command == "Fail")
+        {
+            if (
+                TransientFailure.Is(request)
+                && !(op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)
+            )
+                return Wait(op, lease, null, request.StatusCode, request.ErrorCode);
             return Block(op, lease, "Library setup interrupted. Existing content was preserved.");
+        }
         if (request.Command == "PrepareCreate")
         {
             if (
@@ -423,17 +430,7 @@ public sealed class LibraryProvisioning
         {
             if (op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)
                 return Block(op, lease, "Library write is unresolved.");
-            if (++op.Value.RetryCount > 5)
-                return Block(op, lease, "LibraryReadRetryLimit");
-            op.Value.Status = "RetryWait";
-            op.Value.NextAttemptUtc = WorkerCoordinator.RetryAt(
-                clock(),
-                op.Value.RetryCount,
-                request.RetryAfter
-            );
-            store.Save(op);
-            Release(lease);
-            return new WorkerResult { Status = "RetryWait", Key = request.Key };
+            return Wait(op, lease, request.RetryAfter, request.HttpStatus, null);
         }
         try
         {
@@ -707,6 +704,28 @@ public sealed class LibraryProvisioning
             Key = op.Value.Key,
             Status = unknown ? "Quarantined" : "Blocked",
             Notices = new[] { issue },
+        };
+    }
+
+    /// <summary>
+    /// Waits after a temporary failure with no attempt cap and releases the writer slot.
+    /// </summary>
+    private WorkerResult Wait(
+        StoredRow<LibrarySetup> op,
+        StoredRow<DispatcherDocument> lease,
+        string? retryAfter,
+        int? statusCode,
+        string? errorCode
+    )
+    {
+        DocumentStore.Wait(op.Value, statusCode, errorCode, retryAfter, clock());
+        store.Save(op);
+        Release(lease);
+        return new WorkerResult
+        {
+            Status = "RetryWait",
+            Key = op.Value.Key,
+            Notices = new[] { op.Value.ErrorCode! },
         };
     }
 

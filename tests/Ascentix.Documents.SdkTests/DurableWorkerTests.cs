@@ -549,18 +549,21 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
-    public void RetryAfterHonorsServerDelayAndRejectsUnboundedInput()
+    public void RetryAfterHonorsServerDelayUpToTheFifteenMinuteCap()
     {
         var now = new DateTime(2026, 9, 8, 8, 0, 0, DateTimeKind.Utc);
-        Assert.Equal(now.AddHours(1), WorkerCoordinator.RetryAt(now, 1, "3600"));
+        Assert.Equal(now.AddMinutes(10), WorkerCoordinator.RetryAt(now, 1, "600"));
+        Assert.Equal(now.AddMinutes(15), WorkerCoordinator.RetryAt(now, 1, "3600"));
         Assert.Equal(
-            now.AddMinutes(30),
+            now.AddMinutes(12),
+            WorkerCoordinator.RetryAt(now, 1, now.AddMinutes(12).ToString("r"))
+        );
+        Assert.Equal(
+            now.AddMinutes(15),
             WorkerCoordinator.RetryAt(now, 1, now.AddMinutes(30).ToString("r"))
         );
         Assert.Equal(now.AddSeconds(60), WorkerCoordinator.RetryAt(now, 2, "1"));
-        Assert.Throws<EvaluationBlockedException>(() =>
-            WorkerCoordinator.RetryAt(now, 1, "999999999999")
-        );
+        Assert.Equal(now.AddMinutes(15), WorkerCoordinator.RetryAt(now, 1, "999999999999"));
     }
 
     [Fact]

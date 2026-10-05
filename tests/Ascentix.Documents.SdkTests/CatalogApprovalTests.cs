@@ -397,7 +397,7 @@ public sealed class CatalogApprovalTests
     }
 
     [Fact]
-    public void ThrottledCatalogReadsWaitUntilRetryAfterAndStopAfterFiveRetries()
+    public void ThrottledCatalogReadsWaitUntilRetryAfterWithNoAttemptCap()
     {
         var f = new Fixture();
         var queued = f.Admin.Execute(
@@ -411,7 +411,7 @@ public sealed class CatalogApprovalTests
             },
             true
         );
-        for (int i = 0; i < 6; i++)
+        for (int i = 0; i < 8; i++)
         {
             var work = f.Worker.Execute(
                 new WorkerRequest
@@ -437,7 +437,13 @@ public sealed class CatalogApprovalTests
                 },
                 true
             );
-            Assert.Equal(i == 5 ? "Blocked" : "RetryWait", result.Status);
+            Assert.Equal("RetryWait", result.Status);
+            Assert.Contains(
+                "attempt " + (i + 1) + ".",
+                new DocumentStore(f.Service)
+                    .Require<CatalogProbe>("asx_operation", queued.Key)
+                    .Value.ErrorCode
+            );
             Assert.Equal(
                 result.Status,
                 f.Worker.Execute(

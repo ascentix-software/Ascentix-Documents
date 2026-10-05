@@ -195,10 +195,11 @@ public sealed class RecordInspectionTests
     }
 
     [Fact]
-    public void ExcessiveDateRetryAfterRequiresReviewJustLikeExcessiveSeconds()
+    public void ExcessiveDateRetryAfterIsCappedJustLikeExcessiveSeconds()
     {
         var now = new DateTime(2026, 9, 8, 12, 0, 0, DateTimeKind.Utc);
-        Assert.Throws<EvaluationBlockedException>(() =>
+        Assert.Equal(
+            now.AddMinutes(15),
             WorkerCoordinator.RetryAt(
                 now,
                 1,

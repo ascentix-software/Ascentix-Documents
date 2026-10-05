@@ -69,6 +69,14 @@ public sealed class OutboxDocument : StoredDocument
 
     [DataMember]
     public string[] Notices { get; set; } = Array.Empty<string>();
+
+    // A Pending row that failed temporarily waits until this UTC time (indexed as
+    // asx_nextattempt) and counts its waits in Attempts. A successful Plan clears both.
+    [DataMember]
+    public DateTime? NextAttemptUtc { get; set; }
+
+    [DataMember]
+    public int Attempts { get; set; }
 }
 
 [DataContract]
@@ -322,6 +330,18 @@ public sealed class WorkerRequest
 
     [DataMember]
     public string? Evidence { get; set; }
+
+    // The failed flow action's HTTP status, error code and message, sent by the flow's failure
+    // branches to FailOutbox, FailUnclaimed and Fail. A flow that sends none of them keeps
+    // the earlier behavior and blocks.
+    [DataMember]
+    public int? StatusCode { get; set; }
+
+    [DataMember]
+    public string? ErrorCode { get; set; }
+
+    [DataMember]
+    public string? Error { get; set; }
 }
 
 [DataContract]

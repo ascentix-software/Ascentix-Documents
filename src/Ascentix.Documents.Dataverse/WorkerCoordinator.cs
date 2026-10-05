@@ -63,7 +63,11 @@ public sealed class WorkerCoordinator
             case "Queue":
                 return Queue(request);
             case "ListOutbox":
-                return new WorkerResult { Status = "Page", Keys = store.Pending("asx_outbox") };
+                return new WorkerResult
+                {
+                    Status = "Page",
+                    Keys = store.Pending("asx_outbox", now: clock()),
+                };
             case "ListOperations":
                 return new WorkerResult
                 {
@@ -93,7 +97,7 @@ public sealed class WorkerCoordinator
             case "Replan":
                 return Replan(request);
             case "FailUnclaimed":
-                return store.FailUnclaimed<OperationDocument>(request.Key);
+                return store.FailUnclaimed<OperationDocument>(request.Key, request, clock());
             case "FailOutbox":
                 return FailOutbox(request);
             case "RetryOutbox":
@@ -165,6 +169,15 @@ public sealed class WorkerCoordinator
     private WorkerResult Plan(string key)
     {
         var job = store.Require<OutboxDocument>("asx_outbox", key);
+        // Any save of this row below ends an earlier wait after a temporary failure; a Plan that
+        // fails again rolls back and keeps it.
+        if (job.Value.NextAttemptUtc != null || job.Value.Attempts != 0)
+        {
+            job.Value.NextAttemptUtc = null;
+            job.Value.Attempts = 0;
+            if (job.Value.Status == "Pending")
+                job.Value.Notices = Array.Empty<string>();
+        }
         if (job.Value.RelatedRecordId != Guid.Empty)
             return new TargetedReplan(
                 service,
@@ -530,7 +543,13 @@ public sealed class WorkerCoordinator
                 operation.Value.ProbeKind == "FinalAcl" ? "FinalParent" : "Parent"
             );
         if (request.HttpStatus == 429 || request.HttpStatus >= 500 || request.HttpStatus == 0)
-            return ScheduleRetry(operation, dispatcher, request.RetryAfter);
+            return ScheduleRetry(
+                operation,
+                dispatcher,
+                request.RetryAfter,
+                request.HttpStatus,
+                null
+            );
         try
         {
             switch (operation.Value.ProbeKind)
@@ -855,58 +874,65 @@ public sealed class WorkerCoordinator
         return Done(store.Require<OperationDocument>("asx_operation", request.Key));
     }
 
+    /// <summary>
+    /// Waits after a temporary failure (a throttled or failed read, or a temporary Dataverse
+    /// failure reported by the flow). There is no attempt cap; the notice shows the attempt
+    /// count and the last cause, and an operator can still Retry or Cancel the waiting work.
+    /// </summary>
     private WorkerResult ScheduleRetry(
         StoredRow<OperationDocument> operation,
         StoredRow<DispatcherDocument> dispatcher,
-        string? retryAfter
+        string? retryAfter,
+        int? statusCode,
+        string? errorCode
     )
     {
         if (operation.Value.ExternalSubmitted && !operation.Value.ExternalResponseKnown)
             return Block(operation, dispatcher, "ReadAfterUnknownWrite");
-        if (++operation.Value.RetryCount > 5)
-            return Block(operation, dispatcher, "RetryLimit");
-        operation.Value.Status = "RetryWait";
-        operation.Value.NextAttemptUtc = RetryAt(clock(), operation.Value.RetryCount, retryAfter);
-        operation.Value.ProbeId = Guid.Empty;
-        operation.Value.ErrorCode = "TransientReadFailure";
+        DocumentStore.Wait(operation.Value, statusCode, errorCode, retryAfter, clock());
         store.Save(operation);
         Release(dispatcher);
         return new WorkerResult { Status = "RetryWait", Key = operation.Value.Key };
     }
 
+    // The first wait. Dataverse service protection measures a 5-minute window and SharePoint
+    // throttling clears in seconds to minutes, so 30 seconds lets a short spike pass without
+    // adding visible delay to work that only hit a blip.
+    public const int FirstRetrySeconds = 30;
+
+    // The longest single wait, including an honored Retry-After. Re-checking every 15 minutes
+    // costs one request and never strands work behind a long or malformed server hint.
+    public const int MaxRetrySeconds = 900;
+
+    /// <summary>
+    /// The next attempt time: exponential from 30 seconds, each interval capped at 15 minutes.
+    /// A usable Retry-After (seconds or an HTTP date) lengthens the wait up to that same cap; an
+    /// unparseable, negative or very long one never throws and falls back to the backoff.
+    /// </summary>
     public static DateTime RetryAt(DateTime now, int attempt, string? retryAfter)
     {
-        var earliest = now.AddSeconds(Math.Min(900, 30 * Math.Pow(2, attempt - 1)));
+        // Clamping the exponent only keeps Math.Pow finite; the 15-minute cap applies first.
+        double backoff = FirstRetrySeconds * Math.Pow(2, Math.Max(0, Math.Min(attempt, 31) - 1));
+        var earliest = now.AddSeconds(Math.Min(MaxRetrySeconds, backoff));
+        var cap = now.AddSeconds(MaxRetrySeconds);
         if (string.IsNullOrWhiteSpace(retryAfter))
             return earliest;
+        var text = retryAfter!.Trim();
         DateTime requested;
-        if (
-            long.TryParse(
-                retryAfter,
-                NumberStyles.None,
-                CultureInfo.InvariantCulture,
-                out var seconds
-            )
-            && seconds >= 0
-            && seconds <= 604800
-        )
-            requested = now.AddSeconds(seconds);
+        if (long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds))
+            requested = seconds >= MaxRetrySeconds ? cap : now.AddSeconds(seconds);
         else if (
             DateTimeOffset.TryParseExact(
-                retryAfter,
+                text,
                 "r",
                 CultureInfo.InvariantCulture,
                 DateTimeStyles.AssumeUniversal,
                 out var date
             )
         )
-            requested = date.UtcDateTime;
+            requested = date.UtcDateTime > cap ? cap : date.UtcDateTime;
         else
-            throw new EvaluationBlockedException(
-                "Invalid or excessive Retry-After requires operator review."
-            );
-        if (requested > now.AddDays(7))
-            throw new EvaluationBlockedException("Excessive Retry-After requires operator review.");
+            return earliest;
         return requested > earliest ? requested : earliest;
     }
 
@@ -986,10 +1012,17 @@ public sealed class WorkerCoordinator
     private WorkerResult RetryOutbox(WorkerRequest request)
     {
         var job = store.Require<OutboxDocument>("asx_outbox", request.Key);
-        if (job.Value.Status == "Blocked")
+        // A row waiting after a temporary failure is Pending with a next attempt; Retry ends
+        // the wait so it plans on the next dispatch.
+        if (
+            job.Value.Status == "Blocked"
+            || (job.Value.Status == "Pending" && job.Value.NextAttemptUtc != null)
+        )
         {
             job.Value.Status = "Pending";
             job.Value.Notices = Array.Empty<string>();
+            job.Value.NextAttemptUtc = null;
+            job.Value.Attempts = 0;
             store.Save(job);
         }
         return new WorkerResult
@@ -1005,17 +1038,41 @@ public sealed class WorkerCoordinator
         var job = store.Require<OutboxDocument>("asx_outbox", request.Key);
         if (job.Value.Status == "Pending")
         {
-            job.Value.Status = "Blocked";
-            job.Value.Notices = new[] { PlanningFailedNotice };
+            if (TransientFailure.Is(request))
+            {
+                // Stays Pending; ListOutbox skips it until the next attempt is due.
+                job.Value.Attempts++;
+                job.Value.NextAttemptUtc = RetryAt(clock(), job.Value.Attempts, null);
+                job.Value.Notices = new[] { TransientFailure.Notice(request, job.Value.Attempts) };
+            }
+            else
+            {
+                job.Value.Status = "Blocked";
+                job.Value.NextAttemptUtc = null;
+                job.Value.Notices = new[] { PlanningFailedNotice };
+            }
             store.Save(job);
         }
-        return new WorkerResult { Status = job.Value.Status, Key = request.Key };
+        return new WorkerResult
+        {
+            Status = job.Value.Status,
+            Key = request.Key,
+            Notices = job.Value.Notices,
+        };
     }
 
     private WorkerResult Fail(WorkerRequest request)
     {
         var dispatcher = Assert(request);
         var operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        if (TransientFailure.Is(request))
+            return ScheduleRetry(
+                operation,
+                dispatcher,
+                null,
+                request.StatusCode,
+                request.ErrorCode
+            );
         return Block(operation, dispatcher, "WorkerFailed");
     }
 

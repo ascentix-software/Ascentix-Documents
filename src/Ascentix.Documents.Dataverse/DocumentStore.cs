@@ -222,6 +222,7 @@ public sealed class DocumentStore
     {
         target["asx_recordid"] = work.RecordId == Guid.Empty ? null : work.RecordId.ToString("D");
         target["asx_table"] = string.IsNullOrEmpty(work.Table) ? null : work.Table;
+        target["asx_nextattempt"] = work.NextAttemptUtc;
     }
 
     private static void Index(RecordPlanDocument selection, Entity target)
@@ -239,6 +240,16 @@ public sealed class DocumentStore
     }
 
     public WorkerResult FailUnclaimed<T>(string key)
+        where T : OperationDocument => FailUnclaimed<T>(key, new WorkerRequest(), DateTime.UtcNow);
+
+    /// <summary>
+    /// Records a Claim call that failed before any external request. A temporary failure waits
+    /// in RetryWait with backoff; any other failure, or one a flow did not describe, blocks.
+    /// </summary>
+    /// <param name="key">The operation key.</param>
+    /// <param name="failure">The failed action's status, error code and message from the flow.</param>
+    /// <param name="now">The UTC time the backoff starts from.</param>
+    public WorkerResult FailUnclaimed<T>(string key, WorkerRequest failure, DateTime now)
         where T : OperationDocument
     {
         var op = Require<T>("asx_operation", key);
@@ -247,12 +258,36 @@ public sealed class DocumentStore
             return new WorkerResult { Status = "Quarantined", Key = key };
         if (op.Value.Status == "Pending" || op.Value.Status == "RetryWait")
         {
-            op.Value.Status = "Blocked";
-            op.Value.ErrorCode =
-                "Claim failed before any external call; inspect scope, policy and configuration before retry.";
+            if (TransientFailure.Is(failure))
+                Wait(op.Value, failure.StatusCode, failure.ErrorCode, null, now);
+            else
+            {
+                op.Value.Status = "Blocked";
+                op.Value.ErrorCode =
+                    "Claim failed before any external call; inspect scope, policy and configuration before retry.";
+            }
             Save(op);
         }
         return new WorkerResult { Status = op.Value.Status, Key = key };
+    }
+
+    /// <summary>
+    /// Moves an operation to RetryWait after a temporary failure. There is no attempt cap: each
+    /// wait backs off (capped at 15 minutes) and records the attempt and cause as the notice.
+    /// </summary>
+    public static void Wait(
+        OperationDocument op,
+        int? statusCode,
+        string? errorCode,
+        string? retryAfter,
+        DateTime now
+    )
+    {
+        op.RetryCount++;
+        op.Status = "RetryWait";
+        op.NextAttemptUtc = WorkerCoordinator.RetryAt(now, op.RetryCount, retryAfter);
+        op.ProbeId = Guid.Empty;
+        op.ErrorCode = TransientFailure.Notice(statusCode, errorCode, op.RetryCount);
     }
 
     /// <summary>
@@ -286,7 +321,19 @@ public sealed class DocumentStore
             query.Criteria.AddFilter(retry);
         }
         else
+        {
             query.Criteria.AddCondition("asx_status", ConditionOperator.Equal, "Pending");
+            // Rows waiting after a temporary failure stay Pending but are not due until
+            // asx_nextattempt; rows that never failed have no value.
+            var due = new FilterExpression(LogicalOperator.Or);
+            due.AddCondition("asx_nextattempt", ConditionOperator.Null);
+            due.AddCondition(
+                "asx_nextattempt",
+                ConditionOperator.LessEqual,
+                now ?? DateTime.UtcNow
+            );
+            query.Criteria.AddFilter(due);
+        }
         if (table == "asx_operation")
             query.AddOrder("asx_priority", OrderType.Ascending);
         query.AddOrder("createdon", OrderType.Ascending);

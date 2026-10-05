@@ -54,7 +54,7 @@ public sealed class SecurityWorker
             throw new EvaluationBlockedException("Security coordination requires a transaction.");
         var op = store.Require<SecurityOperation>("asx_operation", request.Key);
         if (request.Command == "FailUnclaimed")
-            return store.FailUnclaimed<SecurityOperation>(request.Key);
+            return store.FailUnclaimed<SecurityOperation>(request.Key, request, clock());
         if (request.Command == "Claim")
             return Claim(request, op);
         if (request.Command == "Retry" || request.Command == "Cancel")
@@ -119,6 +119,11 @@ public sealed class SecurityWorker
             case "Complete":
                 return Complete(op, claim, catalog);
             case "Fail":
+                if (
+                    TransientFailure.Is(request)
+                    && !(op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)
+                )
+                    return Wait(op, claim, null, request.StatusCode, request.ErrorCode);
                 return Block(op, claim, "SecurityWorkerFailed");
             default:
                 throw new EvaluationBlockedException("Unsupported security worker command.");
@@ -272,17 +277,7 @@ public sealed class SecurityWorker
             {
                 if (op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)
                     return Block(op, claim, "UnknownSecurityWrite");
-                if (++op.Value.RetryCount > 5)
-                    return Block(op, claim, "SecurityReadRetryLimit");
-                op.Value.Status = "RetryWait";
-                op.Value.NextAttemptUtc = WorkerCoordinator.RetryAt(
-                    clock(),
-                    op.Value.RetryCount,
-                    request.RetryAfter
-                );
-                store.Save(op);
-                Release(claim);
-                return new WorkerResult { Status = "RetryWait", Key = op.Value.Key };
+                return Wait(op, claim, request.RetryAfter, request.HttpStatus, null);
             }
             switch (op.Value.ProbeKind)
             {
@@ -1013,6 +1008,28 @@ public sealed class SecurityWorker
             Status = unknown ? "Quarantined" : "Blocked",
             Key = op.Value.Key,
             Notices = new[] { error },
+        };
+    }
+
+    /// <summary>
+    /// Waits after a temporary failure with no attempt cap and releases the writer slot.
+    /// </summary>
+    private WorkerResult Wait(
+        StoredRow<SecurityOperation> op,
+        StoredRow<DispatcherDocument> claim,
+        string? retryAfter,
+        int? statusCode,
+        string? errorCode
+    )
+    {
+        DocumentStore.Wait(op.Value, statusCode, errorCode, retryAfter, clock());
+        store.Save(op);
+        Release(claim);
+        return new WorkerResult
+        {
+            Status = "RetryWait",
+            Key = op.Value.Key,
+            Notices = new[] { op.Value.ErrorCode! },
         };
     }
 
