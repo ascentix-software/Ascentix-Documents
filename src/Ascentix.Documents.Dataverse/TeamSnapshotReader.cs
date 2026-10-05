@@ -58,11 +58,18 @@ public sealed class TeamSnapshotReader
             .AddLink("teammembership", "systemuserid", "systemuserid")
             .LinkCriteria.AddCondition("teamid", ConditionOperator.Equal, teamId);
         var people = new List<TeamPerson>();
+        var names = new Dictionary<Guid, string>();
         var skipped = new List<string>();
         var ids = new HashSet<Guid>();
-        var logins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var entra = new HashSet<Guid>();
         var cookies = new HashSet<string>();
+        string Skip(string who, string reason) =>
+            "Team '"
+            + teamName
+            + "': "
+            + who
+            + " was not added to the library group because "
+            + reason
+            + ".";
         while (true)
         {
             var page = service.RetrieveMultiple(query);
@@ -82,26 +89,17 @@ public sealed class TeamSnapshotReader
                         ? "it is an application user"
                     : oid == Guid.Empty ? "it has no Microsoft Entra object ID"
                     : !Regex.IsMatch(upn, Upn) ? "its sign-in name cannot be used in SharePoint"
-                    : !entra.Add(oid) ? "another team member has the same Microsoft Entra object ID"
-                    : !logins.Add(login) ? "another team member has the same sign-in name"
                     : null;
+                string who = Clean(
+                    row.GetAttributeValue<string>("fullname"),
+                    Clean(upn, "user " + row.Id.ToString("D"))
+                );
                 if (reason != null)
                 {
-                    string who = Clean(
-                        row.GetAttributeValue<string>("fullname"),
-                        Clean(upn, "user " + row.Id.ToString("D"))
-                    );
-                    skipped.Add(
-                        "Team '"
-                            + teamName
-                            + "': "
-                            + who
-                            + " was not added to the library group because "
-                            + reason
-                            + "."
-                    );
+                    skipped.Add(Skip(who, reason));
                     continue;
                 }
+                names[row.Id] = who;
                 people.Add(
                     new TeamPerson
                     {
@@ -126,9 +124,36 @@ public sealed class TeamSnapshotReader
                 throw new EvaluationBlockedException("Incomplete or cyclic team pagination.");
             query.PageInfo.PagingCookie = page.PagingCookie;
         }
+        // Two members with one Entra object ID or one sign-in name cannot be told apart, so
+        // every member in the conflict is skipped rather than guessing which one is right.
+        var sameEntra = new HashSet<Guid>(
+            people.GroupBy(p => p.EntraId).Where(g => g.Count() > 1).Select(g => g.Key)
+        );
+        var sameLogin = new HashSet<string>(
+            people
+                .GroupBy(p => p.Login, StringComparer.OrdinalIgnoreCase)
+                .Where(g => g.Count() > 1)
+                .Select(g => g.Key),
+            StringComparer.OrdinalIgnoreCase
+        );
+        foreach (var person in people.OrderBy(p => p.UserId))
+            if (sameEntra.Contains(person.EntraId))
+                skipped.Add(
+                    Skip(
+                        names[person.UserId],
+                        "another team member has the same Microsoft Entra object ID"
+                    )
+                );
+            else if (sameLogin.Contains(person.Login))
+                skipped.Add(
+                    Skip(names[person.UserId], "another team member has the same sign-in name")
+                );
         return new TeamSnapshot
         {
-            People = people.OrderBy(p => p.UserId).ToArray(),
+            People = people
+                .Where(p => !sameEntra.Contains(p.EntraId) && !sameLogin.Contains(p.Login))
+                .OrderBy(p => p.UserId)
+                .ToArray(),
             Skipped = skipped.ToArray(),
         };
     }

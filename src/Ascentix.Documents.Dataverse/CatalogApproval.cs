@@ -116,9 +116,6 @@ public sealed class CatalogProbe : OperationDocument
     public string EntryUrl { get; set; } = "";
 
     [DataMember]
-    public AclAssignment[] Acl { get; set; } = Array.Empty<AclAssignment>();
-
-    [DataMember]
     public SecurityRoleObservation[] Roles { get; set; } = Array.Empty<SecurityRoleObservation>();
 
     [DataMember]
@@ -1107,25 +1104,8 @@ public sealed class CatalogWorker
                         },
                         false
                     );
-                    return Probe(op, claim.Value, "CatalogAcl");
-                case "CatalogAcl":
-                    var acl = SharePointObservations.Body<ODataRows<AclAssignment>>(request);
-                    if (acl.Rows == null)
-                        throw new EvaluationBlockedException("ACL page missing.");
-                    op.Value.Acl = op.Value.Acl.Concat(acl.Rows).ToArray();
-                    if (
-                        op.Value.Acl.Length > 1000
-                        || op.Value.Acl.Select(a => a.Member?.Id).Distinct().Count()
-                            != op.Value.Acl.Length
-                    )
-                        throw new EvaluationBlockedException(
-                            "ACL inventory incomplete or duplicate."
-                        );
-                    if (acl.Next != null)
-                        return Continue(op, claim.Value, acl.Next);
-                    SharePointObservations.AclHash(
-                        new ODataRows<AclAssignment> { Rows = op.Value.Acl }
-                    );
+                    // The library's role assignments are not read: approval never gates on
+                    // entries Documents does not own.
                     return Probe(op, claim.Value, "CatalogFinal");
                 default:
                     throw new EvaluationBlockedException("Unknown catalog probe.");
@@ -1164,11 +1144,7 @@ public sealed class CatalogWorker
             : "_api/web/lists(guid'"
                 + op.Value.ListId
                 + "')"
-                + (
-                    kind == "CatalogAcl"
-                        ? "/roleassignments?$select=Member/Id,Member/PrincipalType,RoleDefinitionBindings/Id,RoleDefinitionBindings/BasePermissions&$expand=Member,RoleDefinitionBindings"
-                        : "?$select=Id,HasUniqueRoleAssignments,RootFolder/UniqueId,RootFolder/ServerRelativeUrl&$expand=RootFolder"
-                );
+                + "?$select=Id,HasUniqueRoleAssignments,RootFolder/UniqueId,RootFolder/ServerRelativeUrl&$expand=RootFolder";
         if (kind == "CatalogLibraries")
             endpoint =
                 op.Value.DiscoveryEndpoint
@@ -1183,8 +1159,6 @@ public sealed class CatalogWorker
                 "_api/web/GetFolderByServerRelativePath(decodedUrl='"
                 + Uri.EscapeDataString(op.Value.AncestorPath!.Replace("'", "''"))
                 + "')?$select=UniqueId,ServerRelativeUrl";
-        if (kind == "CatalogAcl")
-            op.Value.Acl = Array.Empty<AclAssignment>();
         if (kind == "CatalogRoles")
             op.Value.Roles = Array.Empty<SecurityRoleObservation>();
         op.Value.ProbeKind = kind;

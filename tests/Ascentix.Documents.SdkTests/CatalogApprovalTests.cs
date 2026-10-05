@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Ascentix.Documents.Conditions;
 using Ascentix.Documents.Dataverse;
@@ -72,8 +73,10 @@ public sealed class CatalogApprovalTests
         );
         Assert.True(f.Service.Rows[result.CatalogId].GetAttributeValue<bool>("asx_approved"));
         Assert.False(f.Service.Rows[result.CatalogId].GetAttributeValue<bool>("asx_policyapplied"));
-        // The library ACL is not recorded: access sync never compares it.
+        // The library ACL is neither read nor recorded: approval never gates on entries
+        // Documents does not own.
         Assert.False(f.Service.Rows[result.CatalogId].Contains("asx_aclhash"));
+        Assert.DoesNotContain(f.Reads, r => r.Contains("roleassignments"));
     }
 
     [Fact]
@@ -871,6 +874,7 @@ public sealed class CatalogApprovalTests
         public bool Nested,
             UniqueFolders;
         public int AncestorReads;
+        public List<string> Reads = new List<string>();
         public Guid NestedEntry = Guid.NewGuid();
         public Guid Collection = Guid.NewGuid();
         public Guid NativeSite = Guid.NewGuid(),
@@ -939,6 +943,7 @@ public sealed class CatalogApprovalTests
                     );
                 Assert.Equal("Read", work.Status);
                 Assert.Equal("GET", work.Http!.Method);
+                Reads.Add(work.Http.RelativeUri);
                 Assert.DoesNotContain("AsxdWorkKey", work.Http.RelativeUri);
                 string body;
                 switch (work.ProbeKind)
@@ -1034,11 +1039,6 @@ public sealed class CatalogApprovalTests
                                     },
                                 },
                             }
-                        );
-                        break;
-                    case "CatalogAcl":
-                        body = Envelope(
-                            new ODataRows<AclAssignment> { Rows = Array.Empty<AclAssignment>() }
                         );
                         break;
                     default:

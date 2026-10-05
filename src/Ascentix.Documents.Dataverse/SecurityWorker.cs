@@ -112,9 +112,15 @@ public sealed class SecurityWorker
                 if (request.HttpStatus < 200 || request.HttpStatus >= 300)
                 {
                     op.Value.ExternalResponseKnown = true;
+                    // 401/403 means Documents lost its permission on the site, which no other
+                    // member would get past either, so that still stops the run.
                     if (
-                        op.Value.MutationKind != "MemberAdd"
-                        && op.Value.MutationKind != "MemberRemove"
+                        (
+                            op.Value.MutationKind != "MemberAdd"
+                            && op.Value.MutationKind != "MemberRemove"
+                        )
+                        || request.HttpStatus == 401
+                        || request.HttpStatus == 403
                     )
                         return Block(op, claim, "SecurityWriteRejected");
                     // One member SharePoint will not take is skipped; everyone else still syncs.
@@ -331,20 +337,25 @@ public sealed class SecurityWorker
                         return Probe(op, claim.Value, catalog, "SecurityContributeRole");
                     return NextTeam(op, claim.Value, catalog);
                 case "SecurityAcl":
-                    // Only the Documents group's own entry matters. Sharing links, Limited Access
-                    // entries and people added by hand belong to admins and are never compared.
-                    var acl = SharePointObservations.Body<ODataRows<AclAssignment>>(request);
-                    if (acl.Rows == null)
-                        throw new EvaluationBlockedException("Missing ACL page.");
+                    // Only the Documents group's own assignment is read. Sharing links, Limited
+                    // Access entries and people added by hand belong to admins and are never
+                    // read or compared, so library size never matters.
                     int owned = store
                         .Require<ManagedGroup>("asx_managedgroup", op.Value.GroupKey)
                         .Value.GroupId;
-                    op.Value.Acl = op
-                        .Value.Acl.Concat(acl.Rows.Where(a => a?.Member?.Id == owned))
-                        .ToArray();
-                    if (acl.Next != null)
-                        return Continue(op, claim.Value, catalog, acl.Next);
-                    return ReconcileGrant(op, claim.Value, catalog);
+                    AclAssignment? assignment = null;
+                    // getbyprincipalid answers 404 when the group has no assignment on the list.
+                    if (request.HttpStatus != 404)
+                    {
+                        assignment = SharePointObservations.Body<AclAssignment>(request);
+                        if (assignment.Member?.Id != owned)
+                            throw new EvaluationBlockedException(
+                                "SharePoint returned the role assignment of another principal."
+                            );
+                    }
+                    op.Value.Acl =
+                        assignment == null ? Array.Empty<AclAssignment>() : new[] { assignment };
+                    return ReconcileGrant(op, claim, catalog);
                 case "SecurityGroup":
                     var groups = SharePointObservations.Body<ODataRows<SiteGroup>>(request);
                     if (groups.Rows == null || groups.Next != null || groups.Rows.Length > 1)
@@ -366,10 +377,28 @@ public sealed class SecurityWorker
                     }
                     if (found == null)
                     {
-                        if (group.Value.GroupId != 0 || op.Value.ExternalSubmitted)
+                        if (op.Value.ExternalSubmitted)
                             throw new EvaluationBlockedException(
                                 "Owned group missing or create outcome unresolved."
                             );
+                        if (group.Value.GroupId != 0)
+                        {
+                            // The Documents group was deleted in SharePoint. It is Documents' own,
+                            // so it is created again; members and the grant follow the normal sync.
+                            Notice(
+                                op.Value,
+                                "Team '"
+                                    + group.Value.Title
+                                    + "': the Documents group (SharePoint ID "
+                                    + group.Value.GroupId
+                                    + ") was deleted in SharePoint. Documents created it again and restored its members and access."
+                            );
+                            group.Value.GroupId = 0;
+                            group.Value.MembershipHash = "";
+                            group.Value.Status = "Pending";
+                            store.Save(group);
+                            return Probe(op, claim.Value, catalog, "SecurityGroup");
+                        }
                         return Prepare(
                             op,
                             claim.Value,
@@ -397,11 +426,19 @@ public sealed class SecurityWorker
                         found.Id <= 0
                         || found.Type != 8
                         || (group.Value.GroupId == 0 && found.Title != group.Value.Title)
-                        || found.Description != group.Value.Marker
                         || (group.Value.GroupId != 0 && group.Value.GroupId != found.Id)
                     )
                         throw new EvaluationBlockedException(
                             "Managed group ownership or identity changed."
+                        );
+                    // Once Documents holds the group's SharePoint ID, that ID is the proof of
+                    // ownership; the description marker only matters when first adopting it.
+                    if (group.Value.GroupId != 0 && found.Description != group.Value.Marker)
+                        Notice(
+                            op.Value,
+                            "Team '"
+                                + group.Value.Title
+                                + "': the Documents group's description was changed in SharePoint. Documents keeps managing the group by its SharePoint ID."
                         );
                     if (op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)
                         return Block(op, claim, "UnknownGroupWrite");
@@ -573,12 +610,14 @@ public sealed class SecurityWorker
                     )
                 )
                 : op.Value.Members.Any(m => m.Id == op.Value.MutationMemberId);
-            // After an unknown write the readback decides: a missing change was not applied and
-            // is prepared again below from the same comparison.
-            if (!op.Value.ExternalResponseKnown || (present != adding && !op.Value.Reprobe))
+            if (!op.Value.ExternalResponseKnown)
                 throw new EvaluationBlockedException(
                     "Membership independent readback differs from the submitted change."
                 );
+            // After an unknown write the readback decides: a missing change was not applied and
+            // is prepared again below from the same comparison.
+            if (present != adding && !op.Value.Reprobe)
+                SkipUnconfirmedMember(op.Value, snapshot.Value.Observed, adding);
             op.Value.Reprobe = false;
             ClearMutation(op.Value);
         }
@@ -588,10 +627,15 @@ public sealed class SecurityWorker
         store.Save(snapshot);
         var group = store.Require<ManagedGroup>("asx_managedgroup", op.Value.GroupKey);
         var desired = snapshot.Value.Desired.Select(p => p.Login).ToArray();
-        var remove = op.Value.Members.FirstOrDefault(p =>
-            !desired.Contains(p.Login, StringComparer.OrdinalIgnoreCase)
-            && !op.Value.SkippedMembers.Contains(op.Value.GroupKey + "|#" + p.Id)
-        );
+        // Past the recordable number of skips, the rest of this group's member changes wait for
+        // the next scheduled refresh.
+        bool stopped = op.Value.SkippedMembers.Contains(op.Value.GroupKey + "|*");
+        var remove = stopped
+            ? null
+            : op.Value.Members.FirstOrDefault(p =>
+                !desired.Contains(p.Login, StringComparer.OrdinalIgnoreCase)
+                && !op.Value.SkippedMembers.Contains(op.Value.GroupKey + "|#" + p.Id)
+            );
         if (remove != null)
         {
             op.Value.MutationMemberId = remove.Id;
@@ -603,15 +647,17 @@ public sealed class SecurityWorker
                 SharePointRequests.RemoveMember(group.Value.GroupId, remove.Id)
             );
         }
-        var add = desired.FirstOrDefault(login =>
-            !op.Value.Members.Any(p =>
-                string.Equals(p.Login, login, StringComparison.OrdinalIgnoreCase)
-            )
-            && !op.Value.SkippedMembers.Contains(
-                op.Value.GroupKey + "|" + login,
-                StringComparer.OrdinalIgnoreCase
-            )
-        );
+        var add = stopped
+            ? null
+            : desired.FirstOrDefault(login =>
+                !op.Value.Members.Any(p =>
+                    string.Equals(p.Login, login, StringComparison.OrdinalIgnoreCase)
+                )
+                && !op.Value.SkippedMembers.Contains(
+                    op.Value.GroupKey + "|" + login,
+                    StringComparer.OrdinalIgnoreCase
+                )
+            );
         if (add != null)
         {
             op.Value.MutationLogin = add;
@@ -626,7 +672,14 @@ public sealed class SecurityWorker
         snapshot = store.Require<MembershipDocument>("asx_membership", op.Value.MembershipKey);
         snapshot.Value.Status = "Applied";
         store.Save(snapshot);
-        group.Value.MembershipHash = TeamSnapshotReader.Hash(snapshot.Value.Desired);
+        // A group with skipped members does not record the team's hash, so every scheduled
+        // refresh sees a difference and retries them.
+        string applied = TeamSnapshotReader.Hash(snapshot.Value.Desired);
+        group.Value.MembershipHash = op.Value.SkippedMembers.Any(k =>
+            k.StartsWith(op.Value.GroupKey + "|", StringComparison.Ordinal)
+        )
+            ? RetryHashPrefix + applied
+            : applied;
         group.Value.Status = "Applied";
         store.Save(group);
         return Probe(op, claim, catalog, "SecurityAcl");
@@ -639,18 +692,22 @@ public sealed class SecurityWorker
     /// </summary>
     private WorkerResult ReconcileGrant(
         StoredRow<SecurityOperation> op,
-        DispatcherDocument claim,
+        StoredRow<DispatcherDocument> claimRow,
         SecurityCatalog catalog
     )
     {
+        var claim = claimRow.Value;
         var entry = op.Value.Entries[op.Value.TeamIndex];
         var group = store.Require<ManagedGroup>("asx_managedgroup", op.Value.GroupKey).Value;
         string key = "grant:" + catalog.LibraryId.ToString("N") + ":" + entry.TeamId.ToString("N");
         var grant = store.Find<ManagedGrant>("asx_managedgrant", key);
         if (op.Value.Acl.Any(a => a.Member.Type != 8))
             throw new EvaluationBlockedException("Managed group principal type changed.");
+        // Limited Access (RoleTypeKind 1) is added and removed by SharePoint itself when
+        // something is shared with the group. It is not Documents' grant and is never touched.
         int[] roles = op
             .Value.Acl.SelectMany(a => a.Roles?.Rows ?? Array.Empty<AclRole>())
+            .Where(r => r.Type != LimitedAccessKind)
             .Select(r => r.Id)
             .Distinct()
             .OrderBy(r => r)
@@ -676,9 +733,16 @@ public sealed class SecurityWorker
                 );
             bool add = op.Value.MutationKind == "GrantAdd";
             if (roles.Contains(op.Value.MutationRole) != add)
-                throw new EvaluationBlockedException(
-                    "Grant independent readback did not match the submitted change."
-                );
+            {
+                // SharePoint confirmed the write but the read does not show it yet; reads can
+                // lag a write. Read again after a short wait. Three consecutive read-backs are
+                // the consistency window for one write, not a cap on work.
+                if (++op.Value.ReadbackMisses >= ReadbackWindow)
+                    throw new EvaluationBlockedException(
+                        "Grant independent readback did not match the submitted change."
+                    );
+                return Wait(op, claimRow, null, null, "GrantReadbackPending");
+            }
             if (grant == null)
                 throw new EvaluationBlockedException("Prepared managed grant receipt missing.");
             if (add)
@@ -783,6 +847,12 @@ public sealed class SecurityWorker
             )
         );
     }
+
+    // SharePoint RoleTypeKind for Limited Access.
+    private const int LimitedAccessKind = 1;
+
+    // Consecutive read-backs of one confirmed grant write before it is treated as not applied.
+    private const int ReadbackWindow = 3;
 
     private static string Levels(SecurityOperation op, int[] roles) =>
         roles.Length == 0
@@ -989,7 +1059,11 @@ public sealed class SecurityWorker
                 op.Value.Acl = Array.Empty<AclAssignment>();
                 endpoint =
                     list
-                    + "/roleassignments?$select=Member/Id,Member/PrincipalType,RoleDefinitionBindings/Id,RoleDefinitionBindings/BasePermissions&$expand=Member,RoleDefinitionBindings";
+                    + "/roleassignments/getbyprincipalid("
+                    + store
+                        .Require<ManagedGroup>("asx_managedgroup", op.Value.GroupKey)
+                        .Value.GroupId
+                    + ")?$select=Member/Id,Member/PrincipalType,RoleDefinitionBindings/Id,RoleDefinitionBindings/RoleTypeKind&$expand=Member,RoleDefinitionBindings";
                 break;
             case "SecurityGroup":
                 var group = store
@@ -1105,13 +1179,17 @@ public sealed class SecurityWorker
 
     // Bounded so the operation stays well inside the 500,000-character JSON payload limit.
     private const int NoticeLimit = 200;
+    private const int NoticeLength = 600;
+
+    // Marks a group hash that must not match the team, so the next refresh retries skips.
+    private const string RetryHashPrefix = "retry:";
 
     /// <summary>Records something an admin should see after the run, once.</summary>
     private static void Notice(SecurityOperation op, string text)
     {
         text = new string(text.Where(c => !char.IsControl(c)).ToArray());
-        if (text.Length > 600)
-            text = text.Substring(0, 600) + "...";
+        if (text.Length > NoticeLength)
+            text = text.Substring(0, NoticeLength) + "...";
         if (op.Notices.Length >= NoticeLimit)
             text = "More notices were not recorded.";
         if (op.Notices.Length > NoticeLimit || op.Notices.Contains(text, StringComparer.Ordinal))
@@ -1127,20 +1205,15 @@ public sealed class SecurityWorker
             ? op.MutationLogin
             : op.Members.FirstOrDefault(m => m.Id == op.MutationMemberId)?.Login
                 ?? "SharePoint user " + op.MutationMemberId;
-        op.SkippedMembers = op
-            .SkippedMembers.Concat(
-                new[]
-                {
-                    op.GroupKey + (adding ? "|" + op.MutationLogin : "|#" + op.MutationMemberId),
-                }
-            )
-            .ToArray();
         string title = store.Require<ManagedGroup>("asx_managedgroup", op.GroupKey).Value.Title;
+        op.SkippedCount++;
+        if (!Remember(op, adding ? "|" + op.MutationLogin : "|#" + op.MutationMemberId, title))
+            return;
         Notice(
             op,
             "SharePoint did not "
                 + (adding ? "add " : "remove ")
-                + login.Substring(login.LastIndexOf('|') + 1)
+                + Upn(login)
                 + (adding ? " to" : " from")
                 + " the group for team '"
                 + title
@@ -1149,8 +1222,82 @@ public sealed class SecurityWorker
         );
     }
 
+    /// <summary>
+    /// SharePoint accepted a member change but the group does not show it, for example because
+    /// it lists the person under a renamed sign-in name. The member is skipped with a notice;
+    /// people who appeared with the add are kept so the next pass does not remove them.
+    /// </summary>
+    private void SkipUnconfirmedMember(SecurityOperation op, SitePerson[] before, bool adding)
+    {
+        string title = store.Require<ManagedGroup>("asx_managedgroup", op.GroupKey).Value.Title;
+        string login = adding
+            ? op.MutationLogin
+            : op.Members.FirstOrDefault(m => m.Id == op.MutationMemberId)?.Login
+                ?? "SharePoint user " + op.MutationMemberId;
+        var keys = adding
+            ? new[] { "|" + op.MutationLogin }
+                .Concat(
+                    op.Members.Where(m => !before.Any(b => b.Id == m.Id)).Select(m => "|#" + m.Id)
+                )
+                .ToArray()
+            : new[] { "|#" + op.MutationMemberId };
+        op.SkippedCount++;
+        foreach (var key in keys)
+            if (!Remember(op, key, title))
+                return;
+        Notice(
+            op,
+            "Team '"
+                + title
+                + "': SharePoint accepted "
+                + (adding ? "adding " : "removing ")
+                + Upn(login)
+                + " but the group "
+                + (adding ? "does not list that sign-in name" : "still lists it")
+                + ", for example because the sign-in name changed. Documents left the group as SharePoint shows it."
+        );
+    }
+
+    private static string Upn(string login) => login.Substring(login.LastIndexOf('|') + 1);
+
+    // asx_operation.asx_payload holds at most 500,000 characters (MaxLength in
+    // asx_operation/Entity.xml, also enforced by JsonWire.Read). Skip details stop where the
+    // stored operation, plus room for the full set of notices this run can still record, would
+    // pass that column size.
+    private const int PayloadMaxLength = 500000;
+    private const int SkipDetailBudget = PayloadMaxLength - NoticeLimit * (NoticeLength + 16);
+
+    /// <summary>
+    /// Records a skipped member change for this run's group. Returns false once the details
+    /// would no longer fit the operation payload; the group then stops member changes for this
+    /// run and the next scheduled refresh retries them.
+    /// </summary>
+    private static bool Remember(SecurityOperation op, string member, string title)
+    {
+        string key = op.GroupKey + member;
+        string stop = op.GroupKey + "|*";
+        if (op.SkippedMembers.Contains(stop, StringComparer.Ordinal))
+            return false;
+        if (JsonWire.Write(op).Length + key.Length + 4 <= SkipDetailBudget)
+        {
+            op.SkippedMembers = op.SkippedMembers.Concat(new[] { key }).ToArray();
+            return true;
+        }
+        op.SkippedMembers = op.SkippedMembers.Concat(new[] { stop }).ToArray();
+        Notice(
+            op,
+            "Team '"
+                + title
+                + "': "
+                + op.SkippedCount
+                + " member changes were skipped, more than one run can record. The remaining member changes for this team are retried on the next scheduled refresh."
+        );
+        return false;
+    }
+
     private static void ClearMutation(SecurityOperation op)
     {
+        op.ReadbackMisses = 0;
         op.ExternalSubmitted = false;
         op.ExternalResponseKnown = false;
         op.Mutation = null;

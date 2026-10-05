@@ -304,6 +304,14 @@ public sealed class SecurityOperation : OperationDocument
     /// <summary>Member changes SharePoint rejected in this run, keyed by group, so they are not retried.</summary>
     [DataMember]
     public string[] SkippedMembers { get; set; } = Array.Empty<string>();
+
+    /// <summary>How many member changes were skipped in this run, including any not detailed.</summary>
+    [DataMember]
+    public int SkippedCount { get; set; }
+
+    /// <summary>Consecutive read-backs that did not yet show a confirmed grant write.</summary>
+    [DataMember]
+    public int ReadbackMisses { get; set; }
 }
 
 [DataContract]

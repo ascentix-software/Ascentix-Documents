@@ -902,6 +902,271 @@ public sealed class SecurityWorkerTests
         );
 
     [Fact]
+    public void LimitedAccessOnTheDocumentsGroupIsLeftAloneWithNoWriteOrBlock()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        f.Drive();
+        // SharePoint adds Limited Access when an item is shared with the Documents group.
+        f.SetRoles(42, f.Read.Id, Fixture.LimitedAccess);
+        f.Writes.Clear();
+        f.Queue("Read");
+        f.Drive();
+        Assert.Empty(f.Writes);
+        Assert.Empty(f.Policy().Notices);
+        Assert.Equal(new[] { f.Read.Id, Fixture.LimitedAccess }, f.Roles(42));
+    }
+
+    [Fact]
+    public void OnlyTheDocumentsGroupAssignmentIsReadSoLargeLibrariesNeedNoPaging()
+    {
+        var f = new Fixture();
+        for (int i = 0; i < 25000; i++)
+        {
+            var other = f.Grant(1000 + i, f.Read.Id);
+            other.Member.Type = 1;
+            f.Acl.Add(other);
+        }
+        f.Queue("Read");
+        f.Drive();
+        Assert.NotEmpty(f.AclReads);
+        Assert.All(
+            f.AclReads,
+            uri =>
+            {
+                Assert.Contains("/roleassignments/getbyprincipalid(42)?", uri);
+                Assert.Contains("RoleDefinitionBindings/RoleTypeKind", uri);
+                Assert.DoesNotContain("skiptoken", uri);
+            }
+        );
+        // The first read finds no assignment (404) and Documents grants it.
+        Assert.Equal(404, f.AclStatuses.First());
+        Assert.Equal(new[] { f.Read.Id }, f.Roles(42));
+    }
+
+    [Theory]
+    [InlineData(401)]
+    [InlineData(403)]
+    public void PermissionLossOnAMemberWriteBlocks(int status)
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        f.Reject = op => op.MutationKind == "MemberAdd" ? status : (int?)null;
+        var result = f.Drive(false);
+        Assert.Equal("Blocked", result.Status);
+        Assert.Contains("SecurityWriteRejected", result.Notices);
+    }
+
+    [Fact]
+    public void RejectedMemberIsRetriedByTheNextScheduledRefresh()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.AddPerson("ghost@example.com", "Ghost");
+        f.Queue("Read");
+        f.Reject = op =>
+            op.MutationKind == "MemberAdd" && op.MutationLogin.Contains("ghost") ? 400 : (int?)null;
+        f.Drive();
+        Assert.Single(f.Members);
+        Assert.Contains("ghost@example.com", f.Policy().Notices.Single());
+        f.Reject = null;
+        f.Writes.Clear();
+        var refreshed = f.Service.Transaction(() =>
+            new SecurityRefresh(f.Service, () => DateTime.UtcNow.AddDays(2)).Scan()
+        );
+        f.Key = refreshed.Keys.Single();
+        f.Drive();
+        Assert.Equal(new[] { "MemberAdd" }, f.Writes);
+        Assert.Equal(2, f.Members.Count);
+        Assert.Empty(f.Policy().Notices);
+        // Nothing is skipped now, so the next refresh has nothing to do.
+        Assert.Empty(
+            f.Service.Transaction(() =>
+                new SecurityRefresh(f.Service, () => DateTime.UtcNow.AddDays(4)).Scan()
+            ).Keys
+        );
+    }
+
+    [Fact]
+    public void RejectedMemberRemovalIsSkippedWithANotice()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        f.Drive();
+        f.Members.Add(
+            new SitePerson
+            {
+                Id = 901,
+                Login = "i:0#.f|membership|handadded@example.com",
+                Type = 1,
+            }
+        );
+        f.Reject = op => op.MutationKind == "MemberRemove" ? 404 : (int?)null;
+        f.Queue("Read");
+        f.Drive();
+        Assert.Contains(f.Members, m => m.Id == 901);
+        var notice = f.Policy().Notices.Single();
+        Assert.Contains("did not remove handadded@example.com", notice);
+        Assert.Contains("The user does not exist or is not unique.", notice);
+    }
+
+    [Fact]
+    public void MemberSharePointStoresUnderAnotherSignInNameIsSkippedAndKept()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        // SharePoint accepts the add but lists the person under a renamed sign-in name.
+        f.Mutate = op =>
+        {
+            if (op.MutationKind != "MemberAdd")
+                return false;
+            f.Members.Add(
+                new SitePerson
+                {
+                    Id = 77,
+                    Login = "i:0#.f|membership|person.renamed@example.com",
+                    Type = 1,
+                }
+            );
+            return true;
+        };
+        f.Drive();
+        Assert.Contains(f.Members, m => m.Id == 77);
+        Assert.Equal(new[] { "MemberAdd" }, f.Writes.Where(w => w.StartsWith("Member")));
+        Assert.Contains("person@example.com", f.Policy().Notices.Single());
+    }
+
+    [Fact]
+    public void GrantMissingAfterASuccessfulWriteWaitsAndReadsAgain()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        bool delayed = true;
+        f.Mutate = op => op.MutationKind == "GrantAdd" && delayed;
+        var work = f.Drive(false);
+        Assert.Equal("RetryWait", work.Status);
+        // SharePoint shows the grant on the next read.
+        delayed = false;
+        f.SetRoles(42, f.Read.Id);
+        Due(f);
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Equal(1, f.Writes.Count(w => w == "GrantAdd"));
+    }
+
+    [Fact]
+    public void GrantStillMissingOnTheThirdReadBackBlocks()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        f.Mutate = op => op.MutationKind == "GrantAdd";
+        Assert.Equal("RetryWait", f.Drive(false).Status);
+        Due(f);
+        Assert.Equal("RetryWait", f.Drive(false).Status);
+        Due(f);
+        var blocked = f.Drive(false);
+        Assert.Equal("Blocked", blocked.Status);
+        Assert.Contains("Grant independent readback", blocked.Notices.Single());
+        Assert.Equal(1, f.Writes.Count(w => w == "GrantAdd"));
+    }
+
+    private static void Due(Fixture f)
+    {
+        var op = f.Store.Require<SecurityOperation>("asx_operation", f.Key);
+        op.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+        f.Store.Save(op);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void TeamMembersSharingAnIdentityAreAllSkipped(bool sameEntra)
+    {
+        var f = new Fixture();
+        f.AddUser();
+        var entra = Guid.NewGuid();
+        f.AddPerson(
+            sameEntra ? "one@example.com" : "twin@example.com",
+            "Twin One",
+            sameEntra ? entra : (Guid?)null
+        );
+        f.AddPerson("twin@example.com", "Twin Two", sameEntra ? entra : (Guid?)null);
+        var snapshot = new TeamSnapshotReader(f.Service).Snapshot(f.Team);
+        Assert.Equal("i:0#.f|membership|person@example.com", snapshot.People.Single().Login);
+        Assert.Equal(2, snapshot.Skipped.Length);
+        Assert.Contains(snapshot.Skipped, n => n.Contains("Twin One"));
+        Assert.Contains(snapshot.Skipped, n => n.Contains("Twin Two"));
+    }
+
+    [Fact]
+    public void DocumentsGroupDeletedInSharePointIsRecreatedWithANotice()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        f.Drive();
+        f.Group = null;
+        f.Members.Clear();
+        f.SetRoles(42);
+        f.Writes.Clear();
+        f.Queue("Read");
+        f.Drive();
+        Assert.Equal(new[] { "GroupCreate", "MemberAdd", "GrantAdd" }, f.Writes);
+        Assert.Equal(43, f.Group!.Id);
+        Assert.Equal(new[] { f.Read.Id }, f.Roles(43));
+        Assert.Single(f.Members);
+        Assert.Contains("deleted", f.Policy().Notices.Single());
+    }
+
+    [Fact]
+    public void DocumentsGroupDescriptionEditedInSharePointKeepsTheGroupWithANotice()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        f.Drive();
+        f.Group!.Description = "Edited by an admin";
+        f.Writes.Clear();
+        f.Queue("Read");
+        f.Drive();
+        Assert.Empty(f.Writes);
+        Assert.Contains("description", f.Policy().Notices.Single());
+    }
+
+    [Fact]
+    public void SkipDetailsStopAtThePayloadSizeAndTheRestWaitForTheNextRefresh()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        f.Drive();
+        // People added by hand with long sign-in names make the run's stored operation large.
+        for (int i = 0; i < 800; i++)
+            f.Members.Add(
+                new SitePerson
+                {
+                    Id = 1000 + i,
+                    Login = "i:0#.f|membership|" + new string('a', 420) + i + "@example.com",
+                    Type = 1,
+                }
+            );
+        f.Reject = op => op.MutationKind == "MemberRemove" ? 400 : (int?)null;
+        f.Writes.Clear();
+        f.Queue("Read");
+        f.Drive();
+        Assert.Equal(new[] { "RejectedMemberRemove" }, f.Writes);
+        Assert.Contains(f.Policy().Notices, n => n.Contains("more than one run can record"));
+        Assert.True(f.Operation().SkippedCount == 1);
+        var group = f
+            .Store.Require<ManagedGroup>(
+                "asx_managedgroup",
+                "group:" + f.Site.ToString("N") + ":" + f.Team.ToString("N")
+            )
+            .Value;
+        Assert.StartsWith("retry:", group.MembershipHash);
+    }
+
+    [Fact]
     public void ChangedTeamSnapshotBlocksBeforeMembershipRemoval()
     {
         var f = new Fixture();
@@ -1542,6 +1807,18 @@ public sealed class SecurityWorkerTests
         public List<SitePerson> Members = new List<SitePerson>();
         public SiteGroup? Group;
         public List<string> Writes = new List<string>();
+        public List<string> AclReads = new List<string>();
+        public List<int> AclStatuses = new List<int>();
+        public int NextGroupId = 42;
+
+        /// <summary>Answers a member or grant write with this HTTP status instead of applying it.</summary>
+        public Func<SecurityOperation, int?>? Reject;
+
+        /// <summary>Applies a write differently from SharePoint's normal behavior; true when handled.</summary>
+        public Func<SecurityOperation, bool>? Mutate;
+        public const int LimitedAccess = 1073741825;
+        public const string RejectedBody =
+            "{\"error\":{\"code\":\"-2146232832, Microsoft.SharePoint.SPException\",\"message\":{\"lang\":\"en-US\",\"value\":\"The user does not exist or is not unique.\"}}}";
 
         public Fixture()
         {
@@ -1720,7 +1997,29 @@ public sealed class SecurityWorkerTests
                     );
                     break;
                 case "SecurityAcl":
-                    body = Envelope(new ODataRows<AclAssignment> { Rows = Acl.ToArray() });
+                    AclReads.Add(work.Http!.RelativeUri);
+                    var principal = System.Text.RegularExpressions.Regex.Match(
+                        work.Http.RelativeUri,
+                        @"getbyprincipalid\((\d+)\)"
+                    );
+                    if (!principal.Success)
+                    {
+                        body = Envelope(new ODataRows<AclAssignment> { Rows = Acl.ToArray() });
+                        break;
+                    }
+                    var assignment = Acl.SingleOrDefault(a =>
+                        a.Member.Id == int.Parse(principal.Groups[1].Value)
+                    );
+                    // SharePoint answers 404 when the principal has no assignment on the list.
+                    AclStatuses.Add(assignment == null ? 404 : 200);
+                    if (assignment == null)
+                        return Call(
+                            "Observe",
+                            work,
+                            "{\"error\":{\"code\":\"-2146232832\",\"message\":{\"lang\":\"en-US\",\"value\":\"Can not find the principal with id.\"}}}",
+                            404
+                        );
+                    body = Envelope(assignment);
                     break;
                 case "SecurityGroup":
                     body = Envelope(
@@ -1739,6 +2038,12 @@ public sealed class SecurityWorkerTests
             return Call("Observe", work, body);
         }
 
+        public int TypeOf(int role) =>
+            role == Read.Id ? 2
+            : role == Contribute.Id ? 3
+            : role == LimitedAccess ? 1
+            : 0;
+
         public AclAssignment Grant(int group, int role)
         {
             var permission = role == Read.Id ? Read : Contribute;
@@ -1752,6 +2057,7 @@ public sealed class SecurityWorkerTests
                         new AclRole
                         {
                             Id = role,
+                            Type = TypeOf(role),
                             Permissions = new PermissionMask
                             {
                                 High = permission.High,
@@ -1779,6 +2085,7 @@ public sealed class SecurityWorkerTests
                 .Select(role => new AclRole
                 {
                     Id = role,
+                    Type = TypeOf(role),
                     Permissions = new PermissionMask { High = "0", Low = "0" },
                 })
                 .ToArray();
@@ -1797,7 +2104,7 @@ public sealed class SecurityWorkerTests
                         .Value;
                     Group = new SiteGroup
                     {
-                        Id = 42,
+                        Id = NextGroupId++,
                         Title = owned.Title,
                         Description = owned.Marker,
                         Type = 8,
@@ -1817,10 +2124,16 @@ public sealed class SecurityWorkerTests
                     Members.RemoveAll(p => p.Id == operation.MutationMemberId);
                     break;
                 case "GrantAdd":
-                    SetRoles(42, Roles(42).Concat(new[] { operation.MutationRole }).ToArray());
+                    SetRoles(
+                        Group!.Id,
+                        Roles(Group.Id).Concat(new[] { operation.MutationRole }).ToArray()
+                    );
                     break;
                 case "GrantRemove":
-                    SetRoles(42, Roles(42).Where(r => r != operation.MutationRole).ToArray());
+                    SetRoles(
+                        Group!.Id,
+                        Roles(Group.Id).Where(r => r != operation.MutationRole).ToArray()
+                    );
                     break;
                 default:
                     throw new Exception(operation.MutationKind);
@@ -1841,7 +2154,18 @@ public sealed class SecurityWorkerTests
                         work = Call("PrepareCreate", work);
                         break;
                     case "Create":
-                        Apply();
+                        var op = Operation();
+                        var rejected = Reject?.Invoke(op);
+                        if (rejected != null)
+                        {
+                            Writes.Add("Rejected" + op.MutationKind);
+                            work = Call("CreateResponse", work, RejectedBody, rejected.Value);
+                            break;
+                        }
+                        if (Mutate?.Invoke(op) == true)
+                            Writes.Add(op.MutationKind);
+                        else
+                            Apply();
                         work = Call("CreateResponse", work, status: 200);
                         break;
                     case "Verified":

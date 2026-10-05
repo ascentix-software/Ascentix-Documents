@@ -131,6 +131,10 @@ public sealed class AclRole
     [DataMember(Name = "Id")]
     public int Id { get; set; }
 
+    /// <summary>SharePoint's RoleTypeKind; 1 is Limited Access, which SharePoint manages itself.</summary>
+    [DataMember(Name = "RoleTypeKind")]
+    public int Type { get; set; }
+
     [DataMember(Name = "BasePermissions")]
     public PermissionMask Permissions { get; set; } = null!;
 }
