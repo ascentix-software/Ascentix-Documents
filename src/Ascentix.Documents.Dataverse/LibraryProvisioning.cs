@@ -569,7 +569,8 @@ public sealed class LibraryProvisioning
                     );
                 case "Acl":
                     var acl = SharePointObservations.Body<ODataRows<AclAssignment>>(request);
-                    var hash = SharePointObservations.AclHash(acl);
+                    // Validates that the page is complete; the ACL itself is not recorded.
+                    SharePointObservations.AclHash(acl);
                     if (
                         !acl.Rows.Any(a =>
                             a.Member.Id == op.Value.OwnerGroup
@@ -592,7 +593,7 @@ public sealed class LibraryProvisioning
                                     + ")",
                             }
                         );
-                    return Register(op, lease, hash);
+                    return Register(op, lease);
                 default:
                     throw new EvaluationBlockedException("Unknown library setup phase.");
             }
@@ -607,11 +608,7 @@ public sealed class LibraryProvisioning
         }
     }
 
-    private WorkerResult Register(
-        StoredRow<LibrarySetup> op,
-        StoredRow<DispatcherDocument> lease,
-        string hash
-    )
+    private WorkerResult Register(StoredRow<LibrarySetup> op, StoredRow<DispatcherDocument> lease)
     {
         var v = op.Value;
         var folder = v.Library!.Root;
@@ -635,7 +632,6 @@ public sealed class LibraryProvisioning
             ["asx_nativeparentid"] = new EntityReference("sharepointdocumentlocation", nativeId),
             ["asx_approved"] = true,
             ["asx_policyapplied"] = false,
-            ["asx_aclhash"] = hash,
             ["asx_readrole"] = JsonWire.Write(v.ReadRole),
             ["asx_contributerole"] = JsonWire.Write(v.ContributeRole),
         };

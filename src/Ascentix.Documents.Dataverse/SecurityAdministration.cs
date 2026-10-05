@@ -1,6 +1,5 @@
 using System;
 using System.Linq;
-using System.Text.RegularExpressions;
 using Ascentix.Documents.Conditions;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
@@ -25,7 +24,6 @@ public sealed class SecurityCatalog
                 "asx_listid",
                 "asx_entryurl",
                 "asx_approved",
-                "asx_aclhash",
                 "asx_policyrevision",
                 "asx_policyapplied",
                 "asx_readrole",
@@ -64,8 +62,7 @@ public sealed class SecurityCatalog
         IOrganizationService service,
         Entity old,
         Guid generation,
-        bool applied,
-        string? hash = null
+        bool applied
     )
     {
         if (string.IsNullOrEmpty(old.RowVersion))
@@ -76,8 +73,6 @@ public sealed class SecurityCatalog
             ["asx_policyrevision"] = generation.ToString("D"),
             ["asx_policyapplied"] = applied,
         };
-        if (hash != null)
-            target["asx_aclhash"] = hash;
         service.Execute(
             new UpdateRequest
             {
@@ -287,11 +282,6 @@ public sealed class SecurityAdministration
         }
         if (dispatcher != null)
             store.Save(dispatcher);
-        string baseline = TemplateStore.Text(catalog.Library, "asx_aclhash");
-        if (!Regex.IsMatch(baseline, "\\A[a-f0-9]{64}\\z"))
-            throw new EvaluationBlockedException(
-                "A reviewed complete library ACL baseline is required."
-            );
         var desired = workerRefresh ? existing.Value.Approved : existing.Value.Desired;
         var entries = desired
             .Concat(
@@ -317,7 +307,6 @@ public sealed class SecurityAdministration
         existing.Value.Generation = generation;
         existing.Value.Queued = entries;
         existing.Value.OperationKey = operationKey;
-        existing.Value.BaselineHash = baseline;
         existing.Value.Status = "Queued";
         store.Save(existing);
         store.Create(
@@ -335,7 +324,6 @@ public sealed class SecurityAdministration
                 Entries = entries,
                 ReadRole = existing.Value.ApprovedReadRole,
                 ContributeRole = existing.Value.ApprovedContributeRole,
-                BaselineHash = baseline,
             }
         );
         foreach (var entry in entries)

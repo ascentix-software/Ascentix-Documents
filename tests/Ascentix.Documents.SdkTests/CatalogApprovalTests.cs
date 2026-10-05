@@ -72,10 +72,8 @@ public sealed class CatalogApprovalTests
         );
         Assert.True(f.Service.Rows[result.CatalogId].GetAttributeValue<bool>("asx_approved"));
         Assert.False(f.Service.Rows[result.CatalogId].GetAttributeValue<bool>("asx_policyapplied"));
-        Assert.Equal(
-            64,
-            f.Service.Rows[result.CatalogId].GetAttributeValue<string>("asx_aclhash").Length
-        );
+        // The library ACL is not recorded: access sync never compares it.
+        Assert.False(f.Service.Rows[result.CatalogId].Contains("asx_aclhash"));
     }
 
     [Fact]

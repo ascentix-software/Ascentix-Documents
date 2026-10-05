@@ -155,7 +155,7 @@ public sealed class SecurityWorkerTests
             )
         );
         Assert.Null(f.Store.Find<TeamRegistration>("asx_teamregistration", key));
-        f.Service.Rows[f.Library]["asx_aclhash"] = "invalid";
+        f.FailTeamRead();
         Assert.Throws<EvaluationBlockedException>(() =>
             f.Service.Transaction(() =>
                 f.Admin.Execute(
@@ -244,7 +244,7 @@ public sealed class SecurityWorkerTests
     public void ApplyPolicyRollsBackDraftWhenQueueValidationFails()
     {
         var f = new Fixture();
-        f.Service.Rows[f.Library]["asx_aclhash"] = "invalid";
+        f.FailTeamRead();
         Assert.Throws<EvaluationBlockedException>(() =>
             f.Service.Transaction(() =>
                 f.Admin.Execute(
@@ -596,26 +596,44 @@ public sealed class SecurityWorkerTests
     }
 
     [Fact]
-    public void ForeignGrantOnOwnedPrincipalIsNeverAdopted()
+    public void SharingEntriesAndHandAddedPeopleOnTheLibraryNeverBlockTeamSync()
     {
         var f = new Fixture();
-        f.Acl.Add(f.Grant(42, 2));
-        f.ResetBaseline();
+        f.AddUser();
         f.Queue("Read");
-        var result = f.Drive(false);
-        Assert.Equal("Blocked", result.Status);
-        Assert.Contains("Unowned", result.Notices.Single());
-        Assert.DoesNotContain("GrantRemove", f.Writes);
-        Assert.DoesNotContain("GrantAdd", f.Writes);
-    }
-
-    [Fact]
-    public void OtherAclMutationDuringOurGrantBlocksApplied()
-    {
-        var f = new Fixture();
-        f.Queue("Read");
+        f.Drive();
+        // A file share adds a Limited Access entry and an admin adds a person by hand.
+        var limited = new AclAssignment
+        {
+            Member = new AclMember { Id = 501, Type = 1 },
+            Roles = new ODataRows<AclRole>
+            {
+                Rows = new[]
+                {
+                    new AclRole
+                    {
+                        Id = 1073741825,
+                        Permissions = new PermissionMask { High = "0", Low = "0" },
+                    },
+                },
+            },
+        };
+        var handAdded = f.Grant(502, f.Contribute.Id);
+        handAdded.Member.Type = 1;
+        f.Acl.Add(limited);
+        f.Acl.Add(handAdded);
+        f.Service.Seed(
+            new Entity("systemuser", Guid.NewGuid())
+            {
+                ["domainname"] = "second@example.com",
+                ["azureactivedirectoryobjectid"] = Guid.NewGuid(),
+                ["isdisabled"] = false,
+            }
+        );
+        f.Writes.Clear();
+        f.Queue("Contribute");
         var work = f.Start();
-        for (int i = 0; i < 50; i++)
+        for (int i = 0; i < 200 && work.Status != "Applied" && work.Status != "Blocked"; i++)
         {
             if (work.Status == "Read")
                 work = f.Observe(work);
@@ -625,16 +643,35 @@ public sealed class SecurityWorkerTests
             {
                 string kind = f.Operation().MutationKind;
                 f.Apply();
+                // Another share lands while Documents is writing its own grant.
                 if (kind == "GrantAdd")
-                    f.Acl.Add(f.Grant(99, 2));
+                    f.Acl.Add(f.Grant(503, f.Read.Id));
                 work = f.Call("CreateResponse", work, status: 200);
             }
-            else
-                break;
+            else if (work.Status == "Verified")
+                work = f.Call("Complete", work);
         }
-        Assert.Equal("Blocked", work.Status);
-        Assert.Contains("beyond", work.Notices.Single());
-        Assert.False(f.Service.Rows[f.Library].GetAttributeValue<bool>("asx_policyapplied"));
+        Assert.True(work.Status == "Applied", string.Join(" ", work.Notices));
+        Assert.Equal(2, f.Members.Count);
+        Assert.Equal(3, f.Acl.Single(a => a.Member.Id == 42).Roles.Rows.Single().Id);
+        Assert.Contains(f.Acl, a => a.Member.Id == 501);
+        Assert.Contains(f.Acl, a => a.Member.Id == 502);
+        Assert.Contains(f.Acl, a => a.Member.Id == 503);
+        Assert.Equal(new[] { "MemberAdd", "GrantRemove", "GrantAdd" }, f.Writes);
+        Assert.True(f.Service.Rows[f.Library].GetAttributeValue<bool>("asx_policyapplied"));
+    }
+
+    [Fact]
+    public void ForeignGrantOnOwnedPrincipalIsNeverAdopted()
+    {
+        var f = new Fixture();
+        f.Acl.Add(f.Grant(42, 2));
+        f.Queue("Read");
+        var result = f.Drive(false);
+        Assert.Equal("Blocked", result.Status);
+        Assert.Contains("Unowned", result.Notices.Single());
+        Assert.DoesNotContain("GrantRemove", f.Writes);
+        Assert.DoesNotContain("GrantAdd", f.Writes);
     }
 
     [Fact]
@@ -1298,7 +1335,6 @@ public sealed class SecurityWorkerTests
                     ["asx_approved"] = true,
                 }
             );
-            ResetBaseline();
             Service.Seed(
                 new Entity("team", Team)
                 {
@@ -1329,10 +1365,12 @@ public sealed class SecurityWorkerTests
                 }
             );
 
-        public void ResetBaseline() =>
-            Service.Rows[Library]["asx_aclhash"] = SharePointObservations.AclHash(
-                new ODataRows<AclAssignment> { Rows = Acl.ToArray() }
-            );
+        // Makes the team read fail after registration so the whole request must roll back.
+        public void FailTeamRead() =>
+            Service.QueryHook = query =>
+                query.EntityName == "systemuser"
+                    ? new EntityCollection { MoreRecords = true }
+                    : null;
 
         public PolicyDocument Policy() =>
             Store.Require<PolicyDocument>("asx_policy", "policy:" + Library.ToString("N")).Value;
@@ -1435,9 +1473,7 @@ public sealed class SecurityWorkerTests
                         }
                     );
                     break;
-                case "SecurityBaseline":
                 case "SecurityAcl":
-                case "SecurityFinal":
                     body = Envelope(new ODataRows<AclAssignment> { Rows = Acl.ToArray() });
                     break;
                 case "SecurityGroup":
@@ -1503,7 +1539,7 @@ public sealed class SecurityWorkerTests
                     Members.Add(
                         new SitePerson
                         {
-                            Id = 7,
+                            Id = Members.Count == 0 ? 7 : Members.Max(m => m.Id) + 1,
                             Login = operation.MutationLogin,
                             Type = 1,
                         }

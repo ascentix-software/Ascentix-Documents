@@ -178,13 +178,7 @@ public sealed class SecurityWorker
         policy.Value.Status = "NeedsReview";
         store.Save(policy);
         var catalog = new SecurityCatalog(service, op.Value.LibraryId);
-        SecurityCatalog.UpdateLibrary(
-            service,
-            catalog.Library,
-            op.Value.PolicyRevision,
-            false,
-            op.Value.BaselineHash
-        );
+        SecurityCatalog.UpdateLibrary(service, catalog.Library, op.Value.PolicyRevision, false);
         return new WorkerResult { Status = "Cancelled", Key = op.Value.Key };
     }
 
@@ -325,51 +319,24 @@ public sealed class SecurityWorker
                             "Reviewed role ID/type/permission mask changed."
                         );
                     SecurityAdministration.ValidateRole(expected, read);
-                    return Probe(
-                        op,
-                        claim.Value,
-                        catalog,
-                        read ? "SecurityContributeRole" : "SecurityBaseline"
-                    );
-                case "SecurityBaseline":
+                    if (read)
+                        return Probe(op, claim.Value, catalog, "SecurityContributeRole");
+                    return NextTeam(op, claim.Value, catalog);
                 case "SecurityAcl":
-                case "SecurityFinal":
+                    // Only the Documents group's own entry matters. Sharing links, Limited Access
+                    // entries and people added by hand belong to admins and are never compared.
                     var acl = SharePointObservations.Body<ODataRows<AclAssignment>>(request);
                     if (acl.Rows == null)
                         throw new EvaluationBlockedException("Missing ACL page.");
-                    op.Value.Acl = op.Value.Acl.Concat(acl.Rows).ToArray();
-                    if (
-                        op.Value.Acl.Length > 1000
-                        || op.Value.Acl.Select(a => a.Member?.Id).Distinct().Count()
-                            != op.Value.Acl.Length
-                    )
-                        throw new EvaluationBlockedException("Incomplete or duplicate ACL pages.");
+                    int owned = store
+                        .Require<ManagedGroup>("asx_managedgroup", op.Value.GroupKey)
+                        .Value.GroupId;
+                    op.Value.Acl = op
+                        .Value.Acl.Concat(acl.Rows.Where(a => a?.Member?.Id == owned))
+                        .ToArray();
                     if (acl.Next != null)
                         return Continue(op, claim.Value, catalog, acl.Next);
-                    string hash = SharePointObservations.AclHash(
-                        new ODataRows<AclAssignment> { Rows = op.Value.Acl }
-                    );
-                    if (op.Value.ProbeKind == "SecurityBaseline")
-                    {
-                        if (hash != op.Value.BaselineHash)
-                            throw new EvaluationBlockedException(
-                                "Library ACL differs from the reviewed preservation baseline."
-                            );
-                        return NextTeam(op, claim.Value, catalog);
-                    }
-                    if (op.Value.ProbeKind == "SecurityFinal")
-                    {
-                        if (hash != op.Value.BaselineHash)
-                            throw new EvaluationBlockedException(
-                                "Library ACL drifted before completion."
-                            );
-                        foreach (var entry in op.Value.Entries)
-                            VerifyMembership(op.Value, entry.TeamId);
-                        op.Value.Status = "Verified";
-                        store.Save(op);
-                        return Result(op.Value, claim.Value, "Verified", catalog);
-                    }
-                    return ReconcileGrant(op, claim.Value, catalog, hash);
+                    return ReconcileGrant(op, claim.Value, catalog);
                 case "SecurityGroup":
                     var groups = SharePointObservations.Body<ODataRows<SiteGroup>>(request);
                     if (groups.Rows == null || groups.Next != null || groups.Rows.Length > 1)
@@ -478,7 +445,14 @@ public sealed class SecurityWorker
     )
     {
         if (op.Value.TeamIndex >= op.Value.Entries.Length)
-            return Probe(op, claim, catalog, "SecurityFinal");
+        {
+            // Each team's group and grant were read back after its last write.
+            foreach (var done in op.Value.Entries)
+                VerifyMembership(op.Value, done.TeamId);
+            op.Value.Status = "Verified";
+            store.Save(op);
+            return Result(op.Value, claim, "Verified", catalog);
+        }
         var entry = op.Value.Entries[op.Value.TeamIndex];
         string groupKey =
             "group:" + catalog.SiteId.ToString("N") + ":" + entry.TeamId.ToString("N");
@@ -606,39 +580,38 @@ public sealed class SecurityWorker
     private WorkerResult ReconcileGrant(
         StoredRow<SecurityOperation> op,
         DispatcherDocument claim,
-        SecurityCatalog catalog,
-        string hash
+        SecurityCatalog catalog
     )
     {
         var entry = op.Value.Entries[op.Value.TeamIndex];
         var group = store.Require<ManagedGroup>("asx_managedgroup", op.Value.GroupKey).Value;
         string key = "grant:" + catalog.LibraryId.ToString("N") + ":" + entry.TeamId.ToString("N");
         var grant = store.Find<ManagedGrant>("asx_managedgrant", key);
-        var actual = op.Value.Acl.SingleOrDefault(a => a.Member.Id == group.GroupId);
-        if (actual != null && actual.Member.Type != 8)
+        if (op.Value.Acl.Any(a => a.Member.Type != 8))
             throw new EvaluationBlockedException("Managed group principal type changed.");
-        int[] roles = actual?.Roles.Rows.Select(r => r.Id).ToArray() ?? Array.Empty<int>();
+        int[] roles = op
+            .Value.Acl.SelectMany(a => a.Roles?.Rows ?? Array.Empty<AclRole>())
+            .Select(r => r.Id)
+            .Distinct()
+            .ToArray();
+        bool grantWrite = op.Value.MutationKind.StartsWith("Grant", StringComparison.Ordinal);
         if (
             op.Value.Reprobe
-            && op.Value.MutationKind.StartsWith("Grant", StringComparison.Ordinal)
-            && hash == op.Value.BaselineHash
-            && hash != op.Value.ExpectedAclHash
+            && grantWrite
+            && roles.Contains(op.Value.MutationRole) != (op.Value.MutationKind == "GrantAdd")
         )
         {
-            // Read back after an unknown write: the ACL is unchanged, so the grant change was
-            // not applied. The comparison below prepares it again.
+            // Read back after an unknown write: the grant change was not applied. The comparison
+            // below prepares it again.
             op.Value.Reprobe = false;
             ClearMutation(op.Value);
+            grantWrite = false;
         }
-        if (op.Value.MutationKind.StartsWith("Grant", StringComparison.Ordinal))
+        if (grantWrite)
         {
             if (!op.Value.ExternalResponseKnown)
                 throw new EvaluationBlockedException(
                     "Unknown grant write requires controlled recovery."
-                );
-            if (hash != op.Value.ExpectedAclHash)
-                throw new EvaluationBlockedException(
-                    "ACL changed beyond the one prepared owned grant mutation."
                 );
             bool add = op.Value.MutationKind == "GrantAdd";
             if (roles.Contains(op.Value.MutationRole) != add)
@@ -655,8 +628,6 @@ public sealed class SecurityWorker
             ClearMutation(op.Value);
             grant = store.Require<ManagedGrant>("asx_managedgrant", key);
         }
-        else if (hash != op.Value.BaselineHash)
-            throw new EvaluationBlockedException("ACL changed outside the current managed write.");
         if (
             roles.Length > 1
             || (
@@ -675,8 +646,6 @@ public sealed class SecurityWorker
             throw new EvaluationBlockedException(
                 "Managed grant disappeared outside reconciliation."
             );
-        // Preserve the entire independently observed ACL after each owned transition. Final read must match it.
-        op.Value.BaselineHash = hash;
         int desired =
             entry.Access == "Read" ? op.Value.ReadRole.Id
             : entry.Access == "Contribute" ? op.Value.ContributeRole.Id
@@ -708,36 +677,6 @@ public sealed class SecurityWorker
                 );
             }
             op.Value.MutationRole = current != 0 ? current : desired;
-            var after = op.Value.Acl.Where(a => a.Member.Id != group.GroupId).ToList();
-            if (current == 0)
-            {
-                var permission =
-                    desired == op.Value.ReadRole.Id ? op.Value.ReadRole : op.Value.ContributeRole;
-                after.Add(
-                    new AclAssignment
-                    {
-                        Member = new AclMember { Id = group.GroupId, Type = 8 },
-                        Roles = new ODataRows<AclRole>
-                        {
-                            Rows = new[]
-                            {
-                                new AclRole
-                                {
-                                    Id = desired,
-                                    Permissions = new PermissionMask
-                                    {
-                                        High = permission.High,
-                                        Low = permission.Low,
-                                    },
-                                },
-                            },
-                        },
-                    }
-                );
-            }
-            op.Value.ExpectedAclHash = SharePointObservations.AclHash(
-                new ODataRows<AclAssignment> { Rows = after.ToArray() }
-            );
             return Prepare(
                 op,
                 claim,
@@ -751,14 +690,6 @@ public sealed class SecurityWorker
                 )
             );
         }
-        op.Value.Residual = op
-            .Value.Acl.Where(a => a.Member.Id != group.GroupId)
-            .Select(a =>
-                "Other library principal "
-                + a.Member.Id
-                + " may retain access; item shares, links and site administrators are not exhaustively evaluated."
-            )
-            .ToArray();
         op.Value.TeamIndex++;
         return NextTeam(op, claim, catalog);
     }
@@ -791,14 +722,10 @@ public sealed class SecurityWorker
         policy.Value.Queued = Array.Empty<PolicyEntry>();
         policy.Value.OperationKey = null;
         policy.Value.Status = "Applied";
-        policy.Value.ResidualAccess = op
-            .Value.Residual.Concat(
-                new[]
-                {
-                    "Managed access is verified at library scope; effective user access may remain through other groups, direct shares, links, item scopes or site administration.",
-                }
-            )
-            .ToArray();
+        policy.Value.ResidualAccess = new[]
+        {
+            "Documents manages only its own team groups and their grants on this library. People may still have access through other groups, direct shares, links, item permissions or site administration.",
+        };
         store.Save(policy);
         foreach (var entry in policy.Value.Applied)
         {
@@ -831,13 +758,7 @@ public sealed class SecurityWorker
             setup.Value.CompletedUtc = clock();
             store.Save(setup);
         }
-        SecurityCatalog.UpdateLibrary(
-            service,
-            catalog.Library,
-            op.Value.PolicyRevision,
-            true,
-            op.Value.BaselineHash
-        );
+        SecurityCatalog.UpdateLibrary(service, catalog.Library, op.Value.PolicyRevision, true);
         op.Value.Status = "Applied";
         store.Save(op);
         Audit(op.Value.Key, claim.Value.RunId!, "PolicyApplied");
@@ -961,9 +882,7 @@ public sealed class SecurityWorker
                     )
                     + ")?$select=Id,RoleTypeKind,BasePermissions";
                 break;
-            case "SecurityBaseline":
             case "SecurityAcl":
-            case "SecurityFinal":
                 op.Value.Acl = Array.Empty<AclAssignment>();
                 endpoint =
                     list

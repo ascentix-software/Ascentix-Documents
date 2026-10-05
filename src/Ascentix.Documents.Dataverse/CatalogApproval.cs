@@ -568,9 +568,6 @@ public sealed class CatalogAdministration
                 ),
                 ["asx_approved"] = true,
                 ["asx_policyapplied"] = false,
-                ["asx_aclhash"] = SharePointObservations.AclHash(
-                    new ODataRows<AclAssignment> { Rows = value.Acl }
-                ),
                 ["asx_readrole"] = RoleJson(value, 2),
                 ["asx_contributerole"] = RoleJson(value, 3),
             };
@@ -596,10 +593,7 @@ public sealed class CatalogAdministration
                 );
             foreach (
                 var pair in target.Attributes.Where(p =>
-                    p.Key != "asx_name"
-                    && p.Key != "asx_approved"
-                    && p.Key != "asx_policyapplied"
-                    && p.Key != "asx_aclhash"
+                    p.Key != "asx_name" && p.Key != "asx_approved" && p.Key != "asx_policyapplied"
                 )
             )
                 if (!Equals(old.Contains(pair.Key) ? old[pair.Key] : null, pair.Value))
@@ -622,10 +616,7 @@ public sealed class CatalogAdministration
                 ["asx_approved"] = true,
             };
             if (isLibrary)
-            {
                 update["asx_policyapplied"] = false;
-                update["asx_aclhash"] = target["asx_aclhash"];
-            }
             service.Execute(
                 new UpdateRequest
                 {

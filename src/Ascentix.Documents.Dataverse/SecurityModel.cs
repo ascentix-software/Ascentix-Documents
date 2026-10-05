@@ -102,9 +102,6 @@ public sealed class PolicyDocument : StoredDocument
     public PolicyRole ContributeRole { get; set; } = new PolicyRole();
 
     [DataMember]
-    public string BaselineHash { get; set; } = "";
-
-    [DataMember]
     public string[] ResidualAccess { get; set; } = Array.Empty<string>();
 }
 
@@ -239,12 +236,6 @@ public sealed class SecurityOperation : OperationDocument
     public PolicyRole ContributeRole { get; set; } = new PolicyRole();
 
     [DataMember]
-    public string BaselineHash { get; set; } = "";
-
-    [DataMember]
-    public string ExpectedAclHash { get; set; } = "";
-
-    [DataMember]
     public int MutationMemberId { get; set; }
 
     [DataMember]
@@ -291,9 +282,6 @@ public sealed class SecurityOperation : OperationDocument
 
     [DataMember]
     public int MutationRole { get; set; }
-
-    [DataMember]
-    public string[] Residual { get; set; } = Array.Empty<string>();
 }
 
 [DataContract]
