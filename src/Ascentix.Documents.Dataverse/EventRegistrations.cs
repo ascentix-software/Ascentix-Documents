@@ -89,9 +89,9 @@ public static class EventRegistrations
     }
 
     /// <summary>
-    /// Deletes only the record-invalidation steps of one table: steps owned by that handler whose
-    /// message filter targets the table. Resolved by filter id rather than step name, and without
-    /// inspecting any other table, so a table dropped from the environment can still be removed.
+    /// Deletes only the record-invalidation steps of one table, matched by the exact step name the
+    /// plan gives them. No sdkmessagefilter query is made: Dataverse faults on a filter condition
+    /// for a table that no longer exists, and a deleted table must remain removable.
     /// </summary>
     public static int RemoveTableSteps(IOrganizationService service, string table)
     {
@@ -104,42 +104,21 @@ public static class EventRegistrations
             )
         );
         if (handlers.Count != 1)
-            throw new EvaluationBlockedException(
-                "Exactly one installed plug-in type " + RecordHandler + " is required."
-            );
-        var filters = new QueryExpression("sdkmessagefilter")
-        {
-            ColumnSet = new ColumnSet("primaryobjecttypecode"),
-        };
-        filters.Criteria.AddCondition("primaryobjecttypecode", ConditionOperator.Equal, table);
-        var filterIds = All(service, filters).Select(r => (object)r.Id).ToArray();
-        if (filterIds.Length == 0)
             return 0;
-        var steps = All(
-            service,
-            In(
-                new QueryExpression(Step)
-                {
-                    ColumnSet = new ColumnSet("eventhandler", "sdkmessagefilterid"),
-                    Criteria =
-                    {
-                        Conditions =
-                        {
-                            new ConditionExpression(
-                                "eventhandler",
-                                ConditionOperator.Equal,
-                                handlers[0].Id
-                            ),
-                        },
-                    },
-                },
-                "sdkmessagefilterid",
-                filterIds
-            )
+        var names = new HashSet<string>(
+            EventRegistrationPlan.RecordMessages.Select(m =>
+                "Ascentix Documents: event " + m + " " + table
+            ),
+            StringComparer.Ordinal
         );
-        foreach (var step in steps)
+        var query = new QueryExpression(Step) { ColumnSet = new ColumnSet("name") };
+        query.Criteria.AddCondition("eventhandler", ConditionOperator.Equal, handlers[0].Id);
+        var owned = All(service, query)
+            .Where(s => names.Contains(s.GetAttributeValue<string>("name") ?? ""))
+            .ToList();
+        foreach (var step in owned)
             service.Delete(Step, step.Id);
-        return steps.Count;
+        return owned.Count;
     }
 
     private static RegistrationSummary Summary(

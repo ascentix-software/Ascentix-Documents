@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Query;
@@ -55,7 +56,20 @@ internal sealed class StepService : IOrganizationService
     public Entity Retrieve(string name, Guid id, ColumnSet columns) =>
         Memory.Retrieve(name, id, columns);
 
-    public EntityCollection RetrieveMultiple(QueryBase query) => Memory.RetrieveMultiple(query);
+    public EntityCollection RetrieveMultiple(QueryBase query)
+    {
+        // Dataverse faults when an EntityName condition names a table that no longer exists in metadata.
+        if (
+            query is QueryExpression q
+            && q.EntityName == "sdkmessagefilter"
+            && q.Criteria.Conditions.Any(c =>
+                c.AttributeName == "primaryobjecttypecode"
+                && c.Values.Any(v => v is string s && MissingTables.Contains(s))
+            )
+        )
+            throw new InvalidOperationException("simulated EntityName conversion fault");
+        return Memory.RetrieveMultiple(query);
+    }
 
     public void Associate(string n, Guid id, Relationship r, EntityReferenceCollection e) =>
         throw new NotSupportedException();
