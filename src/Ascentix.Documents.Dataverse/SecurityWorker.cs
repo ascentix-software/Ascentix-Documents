@@ -176,6 +176,11 @@ public sealed class SecurityWorker
                 op.Value.Reprobe = true;
                 op.Value.ExternalResponseKnown = true;
             }
+            // A write still pending after read-back misses is read again from scratch: if it is
+            // still not there it is prepared and written again.
+            if (op.Value.ExternalSubmitted)
+                op.Value.Reprobe = true;
+            op.Value.ReadbackMisses = 0;
             op.Value.Status = "Pending";
             op.Value.NextAttemptUtc = null;
             op.Value.RetryCount = 0;

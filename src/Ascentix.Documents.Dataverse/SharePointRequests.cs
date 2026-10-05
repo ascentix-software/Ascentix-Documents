@@ -170,12 +170,6 @@ public static class SharePointRequests
         };
     }
 
-    public static HttpIntent ReadLibraryAssignments(SharePointTarget target) =>
-        new HttpIntent
-        {
-            RelativeUri = List(target) + "/roleassignments?$expand=Member,RoleDefinitionBindings",
-        };
-
     public static HttpIntent ChangeOwnedGrant(
         SharePointTarget target,
         int ownedGroupId,

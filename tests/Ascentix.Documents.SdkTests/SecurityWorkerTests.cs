@@ -1072,6 +1072,25 @@ public sealed class SecurityWorkerTests
         Assert.Equal(1, f.Writes.Count(w => w == "GrantAdd"));
     }
 
+    [Fact]
+    public void RetryAfterReadBackMissesReadsAgainAndWritesTheGrantAgain()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        f.Mutate = op => op.MutationKind == "GrantAdd";
+        Assert.Equal("RetryWait", f.Drive(false).Status);
+        Due(f);
+        Assert.Equal("RetryWait", f.Drive(false).Status);
+        Due(f);
+        Assert.Equal("Blocked", f.Drive(false).Status);
+        f.Mutate = null;
+        Assert.Equal("Pending", Manage(f, "Retry").Status);
+        Assert.Equal(0, f.Operation().ReadbackMisses);
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Equal(2, f.Writes.Count(w => w == "GrantAdd"));
+        Assert.Equal(new[] { f.Read.Id }, f.Roles(42));
+    }
+
     private static void Due(Fixture f)
     {
         var op = f.Store.Require<SecurityOperation>("asx_operation", f.Key);
