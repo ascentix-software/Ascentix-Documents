@@ -70,27 +70,35 @@ public static class RuntimeAdministration
         RuntimeProfile.ValidateHosts(request.SharePointHosts);
         ValidateWorker(service, request.WorkerId);
         WorkCoordination.RequireIdle(service);
-        foreach (var table in request.Tables)
-            service.Execute(
-                new RetrieveEntityRequest
-                {
-                    LogicalName = table,
-                    EntityFilters = Microsoft.Xrm.Sdk.Metadata.EntityFilters.Entity,
-                }
-            );
-        var current = RuntimeTables.Effective(service, old).Tables;
-        int added = request.Tables.Count(t => !current.Contains(t, StringComparer.Ordinal));
-        if (added > EventRegistrations.MaxNewTablesPerSave)
-            throw new EvaluationBlockedException(
-                "Add at most "
-                    + EventRegistrations.MaxNewTablesPerSave
-                    + " new tables per Save. Each new table registers its event steps inside one server operation, which Dataverse limits to 2 minutes."
-            );
         RuntimeTables.Replace(service, old.Id, request.Tables);
-        EventRegistrations.Reconcile(
+        // Register in batches: each new table's steps are created inside this one call, which Dataverse stops after 2 minutes.
+        var probe = EventRegistrations.Inspect(
             service,
             request.WorkerId,
             request.Tables,
+            request.ProcessRecordUpdates
+        );
+        var registerNow = request.Tables;
+        if (probe.Error == null)
+        {
+            var ready = new System.Collections.Generic.HashSet<string>(
+                probe.Readiness.Where(r => r.Status == "Ready").Select(r => r.Scope),
+                StringComparer.Ordinal
+            );
+            var firstPending = new System.Collections.Generic.HashSet<string>(
+                request
+                    .Tables.Where(t => !ready.Contains(t))
+                    .Take(EventRegistrations.MaxNewTablesPerSave),
+                StringComparer.Ordinal
+            );
+            registerNow = request
+                .Tables.Where(t => ready.Contains(t) || firstPending.Contains(t))
+                .ToArray();
+        }
+        EventRegistrations.Reconcile(
+            service,
+            request.WorkerId,
+            registerNow,
             request.ProcessRecordUpdates
         );
         service.Execute(

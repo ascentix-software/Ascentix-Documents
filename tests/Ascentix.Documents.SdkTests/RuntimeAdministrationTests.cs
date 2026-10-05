@@ -16,8 +16,13 @@ public sealed class RuntimeAdministrationTests
         internal readonly Guid Admin = Guid.NewGuid();
 
         internal Env(params string[] tables)
+            : this(tables, Array.Empty<string>()) { }
+
+        internal Env(string[] tables, string[] orgTables)
         {
-            Org = new EventRegistrationTests.Org("account", "contact", "lead");
+            Org = new EventRegistrationTests.Org(
+                new[] { "account", "contact", "lead" }.Concat(orgTables).ToArray()
+            );
             Runtime = RuntimeSeed.Seed(Org.S.Memory, Org.Worker, tables);
             var role = Guid.NewGuid();
             Org.S.Memory.Seed(
@@ -95,18 +100,76 @@ public sealed class RuntimeAdministrationTests
     }
 
     [Fact]
-    public void TooManyNewTablesInOneSaveIsRefusedWithReason()
+    public void BatchedSaveRegistersAtMostTheLimitAndLeavesTheRestPending()
+    {
+        var added = Enumerable
+            .Range(0, EventRegistrations.MaxNewTablesPerSave + 2)
+            .Select(i => "cr123_t" + i)
+            .ToArray();
+        var e = new Env(new[] { "account" }, added);
+        var got = e.Save(e.Get());
+        got.Tables = new[] { "account" }.Concat(added).ToArray();
+        var saved = e.Save(got);
+        var newScopes = saved.Registration!.Readiness.Where(r => added.Contains(r.Scope)).ToList();
+        Assert.Equal(
+            EventRegistrations.MaxNewTablesPerSave,
+            newScopes.Count(r => r.Status == "Ready")
+        );
+        Assert.Equal(2, newScopes.Count(r => r.Status == "Pending"));
+        Assert.Equal(
+            added.Length + 1,
+            e.Org.S.Memory.Rows.Values.Count(r => r.LogicalName == "asx_runtimetable")
+        );
+        var second = e.Save(saved);
+        Assert.All(second.Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+    }
+
+    [Fact]
+    public void LegacyMigrationAboveLimitIsBatched()
+    {
+        var legacy = Enumerable
+            .Range(0, EventRegistrations.MaxNewTablesPerSave + 1)
+            .Select(i => "cr123_t" + i)
+            .ToArray();
+        var e = new Env(legacy, legacy);
+        foreach (
+            var row in e
+                .Org.S.Memory.Rows.Values.Where(r => r.LogicalName == "asx_runtimetable")
+                .ToList()
+        )
+            e.Org.S.Memory.Rows.Remove(row.Id);
+        var got = e.Get();
+        Assert.False(got.Migrated);
+        var saved = e.Save(got);
+        Assert.Equal(1, saved.Registration!.Readiness.Count(r => r.Status == "Pending"));
+        var second = e.Save(saved);
+        Assert.All(second.Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+    }
+
+    [Fact]
+    public void StaleRuntimeSaveIsRefusedWithoutWrites()
     {
         var e = new Env("account");
         var got = e.Get();
-        got.Tables = Enumerable
-            .Range(0, EventRegistrations.MaxNewTablesPerSave + 1)
-            .Select(i => "cr123_t" + i)
-            .Concat(new[] { "account" })
-            .ToArray();
-        var ex = Assert.Throws<EvaluationBlockedException>(() => e.Save(got));
-        Assert.Contains(EventRegistrations.MaxNewTablesPerSave.ToString(), ex.Message);
-        Assert.Contains("2 minutes", ex.Message);
+        got.RowVersion = "stale";
+        Assert.Throws<EvaluationBlockedException>(() => e.Save(got));
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Empty(e.Org.S.Memory.Updates);
+    }
+
+    [Fact]
+    public void NonAdministratorUnregisterIsRefused()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        int steps = e.Org.Steps.Length;
+        Assert.NotEqual(0, steps);
+        var r = e.Get();
+        r.Command = "Unregister";
+        Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeAdministration.Execute(e.Org.S, r, true, Guid.NewGuid())
+        );
+        Assert.Equal(steps, e.Org.Steps.Length);
     }
 
     [Fact]
