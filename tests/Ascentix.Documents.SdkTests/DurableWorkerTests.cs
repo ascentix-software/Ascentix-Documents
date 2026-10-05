@@ -344,6 +344,26 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
+    public void InFlightWorkForARemovedTableStopsBeforeItsNextWrite()
+    {
+        var f = new Fixture();
+        f.AllowedTables = new[] { "account" };
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+        f.AllowedTables = new[] { "contact" };
+        var stopped = Assert.Throws<EvaluationBlockedException>(() =>
+            f.Call("PrepareCreate", work)
+        );
+        Assert.Contains("outside the approved runtime scope", stopped.Message);
+        Assert.False(
+            f.Store.Require<OperationDocument>(
+                "asx_operation",
+                f.Operation.Key
+            ).Value.ExternalSubmitted
+        );
+    }
+
+    [Fact]
     public void WorkerSourceScopeIsCheckedBeforeReadingQueuedBusinessRecord()
     {
         var fixture = new Fixture(seedBinding: false);
@@ -1346,7 +1366,11 @@ public sealed class DurableWorkerTests
     {
         public MemoryService Service { get; } = new MemoryService();
         public DocumentStore Store => new DocumentStore(Service);
-        public WorkerCoordinator Coordinator => new WorkerCoordinator(Service, () => Now);
+        public WorkerCoordinator Coordinator =>
+            new WorkerCoordinator(Service, () => Now, AllowedTables);
+
+        /// <summary>The enabled tables the worker API passes in; null means no scope check.</summary>
+        public string[]? AllowedTables;
         public DateTime Now = new DateTime(2026, 9, 8, 8, 0, 0, DateTimeKind.Utc);
         public Guid TemplateId { get; } = Guid.NewGuid();
         public Guid RevisionId { get; } = Guid.NewGuid();

@@ -76,6 +76,8 @@ public static class RuntimeAdministration
             return ChangeTable(service, old, request);
         if (string.IsNullOrEmpty(request.RowVersion) || old.RowVersion != request.RowVersion)
             throw new EvaluationBlockedException("Refresh the runtime profile before saving.");
+        if (TogglesOnly(old, request))
+            return Toggle(service, old, request);
         RuntimeProfile.ValidateHosts(request.SharePointHosts);
         ValidateWorker(service, request.WorkerId);
         // Save never changes the table list; tables are added and removed one at a time.
@@ -125,6 +127,112 @@ public static class RuntimeAdministration
             }
         );
         return Get(service, Profile(service));
+    }
+
+    /// <summary>
+    /// Whether a Save changes only Enabled and/or ProcessRecordUpdates: the worker and the
+    /// SharePoint hosts are unchanged. Save never changes the table list.
+    /// </summary>
+    /// <param name="old">The stored runtime row.</param>
+    /// <param name="request">The Save request.</param>
+    /// <returns>True when at least one of the two settings changes and nothing else does.</returns>
+    private static bool TogglesOnly(Entity old, RuntimeRequest request)
+    {
+        bool changed =
+            request.Enabled != old.GetAttributeValue<bool>("asx_enabled")
+            || request.ProcessRecordUpdates
+                != old.GetAttributeValue<bool>("asx_processrecordupdates");
+        if (!changed)
+            return false;
+        if (
+            !Guid.TryParse(old.GetAttributeValue<string>("asx_workeruserid"), out var worker)
+            || worker != request.WorkerId
+        )
+            return false;
+        string[] hosts;
+        try
+        {
+            hosts = JsonWire.Read<string[]>(
+                old.GetAttributeValue<string>("asx_sharepointhosts") ?? "[]"
+            );
+        }
+        catch (EvaluationBlockedException)
+        {
+            return false;
+        }
+        catch (System.Runtime.Serialization.SerializationException)
+        {
+            return false;
+        }
+        return (request.SharePointHosts ?? Array.Empty<string>()).SequenceEqual(
+            hosts ?? Array.Empty<string>(),
+            StringComparer.OrdinalIgnoreCase
+        );
+    }
+
+    /// <summary>
+    /// Pauses, resumes or switches record-update processing at once. It does not wait for active
+    /// writers and does not check the worker, hosts or tables first, so an administrator can always
+    /// stop processing. Only the record Update steps change, to follow ProcessRecordUpdates. A
+    /// resume reports worker, host and table problems in the result instead of refusing.
+    /// </summary>
+    /// <param name="service">The administrator's organization service.</param>
+    /// <param name="old">The stored runtime row.</param>
+    /// <param name="request">The Save request.</param>
+    /// <returns>The saved runtime profile with its registration readiness.</returns>
+    private static RuntimeRequest Toggle(
+        IOrganizationService service,
+        Entity old,
+        RuntimeRequest request
+    )
+    {
+        bool resuming = request.Enabled && !old.GetAttributeValue<bool>("asx_enabled");
+        if (request.ProcessRecordUpdates != old.GetAttributeValue<bool>("asx_processrecordupdates"))
+            EventRegistrations.SetUpdateSteps(service, request.ProcessRecordUpdates);
+        service.Execute(
+            new UpdateRequest
+            {
+                Target = new Entity("asx_runtime", old.Id)
+                {
+                    RowVersion = old.RowVersion,
+                    ["asx_enabled"] = request.Enabled,
+                    ["asx_processrecordupdates"] = request.ProcessRecordUpdates,
+                },
+                ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+            }
+        );
+        var result = Get(service, Profile(service));
+        if (resuming)
+            ReportProblems(service, result);
+        return result;
+    }
+
+    /// <summary>
+    /// Adds worker and host problems to the readiness result's error text without refusing.
+    /// Table readiness is already part of the result.
+    /// </summary>
+    /// <param name="service">The administrator's organization service.</param>
+    /// <param name="result">The runtime profile returned to the administrator.</param>
+    private static void ReportProblems(IOrganizationService service, RuntimeRequest result)
+    {
+        var problems = new System.Collections.Generic.List<string>();
+        if (!string.IsNullOrEmpty(result.Registration?.Error))
+            problems.Add(result.Registration!.Error!);
+        try
+        {
+            RuntimeProfile.ValidateHosts(result.SharePointHosts);
+        }
+        catch (EvaluationBlockedException ex)
+        {
+            problems.Add(ex.Message);
+        }
+        var worker = WorkerProblem(service, result.WorkerId);
+        if (worker != null && !problems.Contains(worker))
+            problems.Add(worker);
+        if (problems.Count == 0)
+            return;
+        result.Registration ??= new RegistrationSummary();
+        result.Registration.Error = string.Join(" ", problems);
     }
 
     /// <summary>
@@ -205,7 +313,8 @@ public static class RuntimeAdministration
         }
         else
         {
-            WorkCoordination.RequireIdle(service);
+            // No wait for active writers: in-flight work for a removed table stops at its next
+            // worker step, before any SharePoint write, because the table is out of scope.
             tables = current
                 .Tables.Where(t => !string.Equals(t, table, StringComparison.Ordinal))
                 .ToArray();
@@ -275,18 +384,33 @@ public static class RuntimeAdministration
 
     private static void ValidateWorker(IOrganizationService service, Guid worker)
     {
+        var problem = WorkerProblem(service, worker);
+        if (problem != null)
+            throw new EvaluationBlockedException(problem);
+    }
+
+    /// <summary>Describes why a worker cannot run Documents work, without throwing.</summary>
+    /// <param name="service">The administrator's organization service.</param>
+    /// <param name="worker">The configured worker user ID.</param>
+    /// <returns>The problem, or null when the worker is an enabled application user.</returns>
+    private static string? WorkerProblem(IOrganizationService service, Guid worker)
+    {
         if (worker == Guid.Empty)
-            throw new EvaluationBlockedException("Select the worker application user.");
-        var user = service.Retrieve(
-            "systemuser",
-            worker,
-            new ColumnSet("isdisabled", "applicationid")
-        );
+            return "Select the worker application user.";
+        // A query, unlike Retrieve, returns no row instead of faulting for an unknown user.
+        var query = new QueryExpression("systemuser")
+        {
+            ColumnSet = new ColumnSet("isdisabled", "applicationid"),
+            TopCount = 1,
+        };
+        query.Criteria.AddCondition("systemuserid", ConditionOperator.Equal, worker);
+        var user = service.RetrieveMultiple(query).Entities.FirstOrDefault();
+        if (user == null)
+            return "The worker user was not found. Select an enabled worker application user.";
         if (user.GetAttributeValue<bool>("isdisabled"))
-            throw new EvaluationBlockedException("Worker identity is disabled.");
+            return "Worker identity is disabled.";
         if (user.GetAttributeValue<Guid>("applicationid") == Guid.Empty)
-            throw new EvaluationBlockedException(
-                "The worker must be an application user; human users are not accepted."
-            );
+            return "The worker must be an application user; human users are not accepted.";
+        return null;
     }
 }

@@ -1596,7 +1596,7 @@
           ProcessRecordUpdates: $('runtimeRecordUpdates').checked,
         }),
       );
-      message('Runtime profile saved and event registration verified.');
+      message('Runtime profile saved. The readiness list shows anything that needs attention.');
     });
   $('unregisterRuntime').onclick = () => {
     $('unregisterConfirm').hidden = false;

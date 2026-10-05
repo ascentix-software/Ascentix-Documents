@@ -70,6 +70,32 @@ public sealed class RuntimeAdministrationTests
         internal int StepsFor(string table) =>
             Org.Steps.Count(s => s.GetAttributeValue<string>("name").EndsWith(" " + table));
 
+        /// <summary>Records one active site writer in the shared connection budget.</summary>
+        internal void ActiveWriter()
+        {
+            var store = new DocumentStore(Org.S.Memory);
+            if (store.Find<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey) == null)
+                store.Create(
+                    "asx_claim",
+                    new ConnectionBudget { Key = WorkCoordination.BudgetKey, Status = "Budget" }
+                );
+            var budget = store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey);
+            budget.Value.Writers = new[] { "site" };
+            store.Save(budget);
+        }
+
+        /// <summary>Whether the Update event step of a table is active.</summary>
+        internal bool UpdateStepActive(string table) =>
+            (
+                Org.Steps.Single(s =>
+                        s.GetAttributeValue<string>("name")
+                        == "Ascentix Documents: event Update " + table
+                    )
+                    .GetAttributeValue<OptionSetValue>("statecode")
+                    ?.Value
+                ?? 0
+            ) == 0;
+
         internal void ClearRows()
         {
             foreach (
@@ -221,18 +247,154 @@ public sealed class RuntimeAdministrationTests
     }
 
     [Fact]
-    public void RemoveTableIsRefusedWhileAWriterIsActive()
+    public void RemoveTableSucceedsWhileAWriterIsActive()
     {
         var e = new Env("account", "contact");
         e.Save(e.Get());
-        var store = new DocumentStore(e.Org.S.Memory);
-        var budget = store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey);
-        budget.Value.Writers = new[] { "site" };
-        store.Save(budget);
-        e.Org.S.Writes.Clear();
-        Assert.Throws<EvaluationBlockedException>(() => e.Change("RemoveTable", "contact"));
-        Assert.Empty(e.Org.S.Writes);
-        Assert.Equal(new[] { "account", "contact" }, e.Rows());
+        e.ActiveWriter();
+        var got = e.Change("RemoveTable", "contact");
+        Assert.Equal(new[] { "account" }, got.Tables);
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Equal(0, e.StepsFor("contact"));
+    }
+
+    [Fact]
+    public void PauseSucceedsWhileAWriterIsActive()
+    {
+        var e = new Env("account");
+        var running = e.Get();
+        running.Enabled = true;
+        e.Save(running);
+        e.ActiveWriter();
+        var pause = e.Get();
+        pause.Enabled = false;
+        var paused = e.Save(pause);
+        Assert.False(paused.Enabled);
+        Assert.False(e.Org.S.Memory.Rows[e.Runtime].GetAttributeValue<bool>("asx_enabled"));
+    }
+
+    [Theory]
+    [InlineData("WorkerDisabled")]
+    [InlineData("TableUnreadable")]
+    [InlineData("NoSystemJobsRead")]
+    public void PauseSucceedsWhateverTheWorkerAndTableState(string problem)
+    {
+        var e = new Env("account");
+        var running = e.Get();
+        running.Enabled = true;
+        e.Save(running);
+        if (problem == "WorkerDisabled")
+            e.Org.S.Memory.Rows[e.Org.Worker]["isdisabled"] = true;
+        if (problem == "TableUnreadable")
+            e.Org.S.WorkerReadDepth["account"] = Microsoft.Crm.Sdk.Messages.PrivilegeDepth.Basic;
+        if (problem == "NoSystemJobsRead")
+            e.Org.S.WorkerLacksSystemJobs = true;
+        int stepWrites = e.Org.S.StepWrites;
+        var pause = e.Get();
+        pause.Enabled = false;
+        var paused = e.Save(pause);
+        Assert.False(paused.Enabled);
+        Assert.Equal(stepWrites, e.Org.S.StepWrites);
+    }
+
+    [Fact]
+    public void ResumeWithAnUnreadableTableSucceedsAndReportsReadiness()
+    {
+        var e = new Env("account", "contact");
+        e.Save(e.Get());
+        e.ActiveWriter();
+        e.Org.S.WorkerReadDepth["contact"] = Microsoft.Crm.Sdk.Messages.PrivilegeDepth.Basic;
+        var resume = e.Get();
+        resume.Enabled = true;
+        var resumed = e.Save(resume);
+        Assert.True(resumed.Enabled);
+        Assert.Equal(
+            "WorkerCannotRead",
+            resumed.Registration!.Readiness.Single(r => r.Scope == "contact").Status
+        );
+    }
+
+    [Fact]
+    public void ResumeWithADisabledWorkerSucceedsAndReportsIt()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        e.Org.S.Memory.Rows[e.Org.Worker]["isdisabled"] = true;
+        var resume = e.Get();
+        resume.Enabled = true;
+        var resumed = e.Save(resume);
+        Assert.True(resumed.Enabled);
+        Assert.Contains("disabled", resumed.Registration!.Error);
+    }
+
+    [Fact]
+    public void RecordUpdatesToggleOnlyTheUpdateStepsWhileAWriterIsActive()
+    {
+        var e = new Env("account", "contact");
+        e.Save(e.Get());
+        Assert.True(e.UpdateStepActive("account"));
+        e.ActiveWriter();
+        e.Org.S.WorkerLacksSystemJobs = true;
+        var off = e.Get();
+        off.ProcessRecordUpdates = false;
+        var saved = e.Save(off);
+        Assert.False(saved.ProcessRecordUpdates);
+        Assert.False(e.UpdateStepActive("account"));
+        Assert.False(e.UpdateStepActive("contact"));
+        Assert.All(
+            e.Org.Steps.Where(s =>
+                !s.GetAttributeValue<string>("name").StartsWith("Ascentix Documents: event Update")
+            ),
+            s => Assert.Equal(0, s.GetAttributeValue<OptionSetValue>("statecode")?.Value ?? 0)
+        );
+        e.Org.S.WorkerLacksSystemJobs = false;
+        Assert.All(e.Get().Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+        var on = e.Get();
+        on.ProcessRecordUpdates = true;
+        e.Save(on);
+        Assert.True(e.UpdateStepActive("account"));
+        Assert.True(e.UpdateStepActive("contact"));
+    }
+
+    [Fact]
+    public void SaveThatChangesTheWorkerStillRequiresIdleAndRevalidates()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        var other = Guid.NewGuid();
+        e.Org.S.Memory.Seed(
+            new Entity("systemuser", other)
+            {
+                ["isdisabled"] = false,
+                ["applicationid"] = Guid.NewGuid(),
+            }
+        );
+        e.ActiveWriter();
+        var change = e.Get();
+        change.WorkerId = other;
+        change.Enabled = true;
+        var busy = Assert.Throws<EvaluationBlockedException>(() => e.Save(change));
+        Assert.Contains("active writers", busy.Message);
+        e.Org.S.Memory.Rows[other]["isdisabled"] = true;
+        var disabled = Assert.Throws<EvaluationBlockedException>(() => e.Save(change));
+        Assert.Contains("disabled", disabled.Message);
+        Assert.False(e.Get().Enabled);
+    }
+
+    [Fact]
+    public void SaveThatChangesTheHostsStillRequiresIdleAndRevalidates()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        e.ActiveWriter();
+        var change = e.Get();
+        change.SharePointHosts = new[] { "other.sharepoint.com" };
+        change.Enabled = true;
+        var busy = Assert.Throws<EvaluationBlockedException>(() => e.Save(change));
+        Assert.Contains("active writers", busy.Message);
+        change.SharePointHosts = new[] { "https://other.sharepoint.com/sites/x" };
+        Assert.Throws<EvaluationBlockedException>(() => e.Save(change));
+        Assert.False(e.Get().Enabled);
     }
 
     [Fact]

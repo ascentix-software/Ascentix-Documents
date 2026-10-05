@@ -119,6 +119,54 @@ public static class EventRegistrations
     /// </summary>
     public static int RemoveTableSteps(IOrganizationService service, string table)
     {
+        var names = new HashSet<string>(
+            EventRegistrationPlan.RecordMessages.Select(m =>
+                "Ascentix Documents: event " + m + " " + table
+            ),
+            StringComparer.Ordinal
+        );
+        var owned = RecordSteps(service)
+            .Where(s => names.Contains(s.GetAttributeValue<string>("name") ?? ""))
+            .ToList();
+        foreach (var step in owned)
+            service.Delete(Step, step.Id);
+        return owned.Count;
+    }
+
+    /// <summary>
+    /// Turns the record Update event steps on or off to match the record-updates setting. Steps are
+    /// matched by the name the plan gives them. Nothing is registered or deleted and the worker is
+    /// not checked, so the setting can change while the worker or a table has a problem.
+    /// </summary>
+    /// <param name="service">The administrator's organization service.</param>
+    /// <param name="active">True when record updates are processed.</param>
+    /// <returns>The number of steps whose state changed.</returns>
+    public static int SetUpdateSteps(IOrganizationService service, bool active)
+    {
+        const string prefix = "Ascentix Documents: event Update ";
+        var changed = RecordSteps(service, "statecode")
+            .Select(Map)
+            .Where(s => s.Name.StartsWith(prefix, StringComparison.Ordinal) && s.Active != active)
+            .ToList();
+        foreach (var step in changed)
+            service.Update(
+                new Entity(Step, step.Id)
+                {
+                    ["statecode"] = new OptionSetValue(active ? 0 : 1),
+                    ["statuscode"] = new OptionSetValue(active ? 1 : 2),
+                }
+            );
+        return changed.Count;
+    }
+
+    /// <summary>
+    /// The steps of the record-invalidation handler, found without an sdkmessagefilter query.
+    /// </summary>
+    /// <param name="service">The organization service.</param>
+    /// <param name="columns">Step columns to read in addition to the name.</param>
+    /// <returns>The steps, or none when the handler is not installed exactly once.</returns>
+    private static List<Entity> RecordSteps(IOrganizationService service, params string[] columns)
+    {
         var handlers = All(
             service,
             In(
@@ -128,21 +176,13 @@ public static class EventRegistrations
             )
         );
         if (handlers.Count != 1)
-            return 0;
-        var names = new HashSet<string>(
-            EventRegistrationPlan.RecordMessages.Select(m =>
-                "Ascentix Documents: event " + m + " " + table
-            ),
-            StringComparer.Ordinal
-        );
-        var query = new QueryExpression(Step) { ColumnSet = new ColumnSet("name") };
+            return new List<Entity>();
+        var query = new QueryExpression(Step)
+        {
+            ColumnSet = new ColumnSet(new[] { "name" }.Concat(columns).ToArray()),
+        };
         query.Criteria.AddCondition("eventhandler", ConditionOperator.Equal, handlers[0].Id);
-        var owned = All(service, query)
-            .Where(s => names.Contains(s.GetAttributeValue<string>("name") ?? ""))
-            .ToList();
-        foreach (var step in owned)
-            service.Delete(Step, step.Id);
-        return owned.Count;
+        return All(service, query);
     }
 
     private static RegistrationSummary Summary(

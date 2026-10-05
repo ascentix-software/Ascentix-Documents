@@ -473,6 +473,12 @@ async function change(n, value) {
   await nodes.saveRuntime.onclick();
   assert.equal(runtimeSaves.at(-1).ProcessRecordUpdates, true);
   assert.equal('Tables' in runtimeSaves.at(-1), false, 'Save no longer sends Tables');
+  assert.doesNotMatch(
+    nodes.status.textContent,
+    /registration verified/,
+    'A pause or resume does not verify registration',
+  );
+  assert.match(nodes.status.textContent, /Runtime profile saved/);
   assert.match(nodes.runtimeReadiness.textContent, /account.*Ready/);
   assert.equal(nodes.runtimePending.hidden, true);
   await nodes.unregisterRuntime.onclick();
