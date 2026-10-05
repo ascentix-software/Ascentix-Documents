@@ -415,6 +415,49 @@ public sealed class TransientFailureTests
     }
 
     [Fact]
+    public void ThrottledFolderCreateWasNotExecutedSoItWaitsAndCreatesLater()
+    {
+        var f = new DurableWorkerTests.Fixture();
+        var absent = f.Observe(f.Preflight(f.Claim()), "{}");
+        Assert.Equal("ReadyToCreate", absent.Status);
+        var prepared = f.Call("PrepareCreate", absent);
+        Assert.Equal("Create", prepared.Status);
+        var request = new WorkerRequest
+        {
+            Command = "CreateResponse",
+            Key = f.Operation.Key,
+            RunId = "run-1",
+            Token = prepared.Token,
+            HttpStatus = 429,
+            RetryAfter = "120",
+        };
+        var throttled = f.Service.Transaction(() =>
+        {
+            Assert.Null(WorkCoordination.Response(f.Service, request, f.Now));
+            return f.Coordinator.Execute(request, true);
+        });
+        Assert.Equal("RetryWait", throttled.Status);
+        var op = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.False(op.ExternalSubmitted);
+        Assert.False(op.ExternalResponseKnown);
+        Assert.Equal(f.Now.AddMinutes(2), op.NextAttemptUtc);
+        Assert.Contains("HTTP 429", op.ErrorCode);
+        var writer = f.Store.Require<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(f.Service, f.Operation.Key)
+        );
+        Assert.Null(writer.Value.RunId);
+        Assert.False(writer.Value.HttpOutstanding);
+        Assert.Empty(
+            f.Store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey).Value.Writers
+        );
+        f.Now = f.Now.AddMinutes(2);
+        var again = f.Observe(f.Preflight(f.Claim("run-2")), "{}");
+        Assert.Equal("ReadyToCreate", again.Status);
+        Assert.Equal("Create", f.Call("PrepareCreate", again).Status);
+    }
+
+    [Fact]
     public void HugeOrBadRetryAfterNeverPausesSharedWorkForDays()
     {
         foreach (var retryAfter in new[] { "999999999999", "garbage" })

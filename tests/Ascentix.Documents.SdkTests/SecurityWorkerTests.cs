@@ -421,6 +421,36 @@ public sealed class SecurityWorkerTests
     }
 
     [Fact]
+    public void ThrottledSecurityWriteWasNotExecutedSoItWaitsAndRetries()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        var work = f.Start();
+        while (work.Status == "Read")
+            work = f.Observe(work);
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        var throttled = f.Call("CreateResponse", work, status: 429);
+        Assert.Equal("RetryWait", throttled.Status);
+        var op = f.Operation();
+        Assert.False(op.ExternalSubmitted);
+        Assert.False(op.ExternalResponseKnown);
+        Assert.Null(op.Mutation);
+        Assert.Contains("HTTP 429", op.ErrorCode);
+        Assert.Null(
+            f.Store.Require<DispatcherDocument>(
+                "asx_claim",
+                WorkCoordination.Operation(f.Service, f.Key)
+            ).Value.RunId
+        );
+        Assert.Empty(f.Writes);
+        var stored = f.Store.Require<SecurityOperation>("asx_operation", f.Key);
+        stored.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+        f.Store.Save(stored);
+        Assert.Equal("Applied", f.Drive().Status);
+    }
+
+    [Fact]
     public void UnknownSecurityWriteCannotRepeatOrReleaseTheDispatcher()
     {
         var f = new Fixture();

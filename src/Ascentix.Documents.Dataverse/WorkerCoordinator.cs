@@ -800,6 +800,16 @@ public sealed class WorkerCoordinator
             throw new EvaluationBlockedException(
                 "No outstanding prepared create response is expected."
             );
+        if (request.HttpStatus == 429)
+        {
+            // SharePoint does not execute a throttled request, so no folder was created. The
+            // write is no longer outstanding; after the wait the job re-reads and creates again.
+            operation.Value.ExternalSubmitted = false;
+            operation.Value.ExternalResponseKnown = false;
+            operation.Value.AbsenceVerified = false;
+            Audit(request.Key, request.RunId, "ExternalThrottled");
+            return ScheduleRetry(operation, dispatcher, request.RetryAfter, 429, null);
+        }
         if (request.HttpStatus == 0 || request.HttpStatus == 408 || request.HttpStatus >= 500)
             return new WorkerResult
             {

@@ -379,12 +379,15 @@ public sealed class LibraryProvisioning
         {
             if (!op.Value.ExternalSubmitted || op.Value.ExternalResponseKnown)
                 throw new EvaluationBlockedException("No library mutation is outstanding.");
-            if (
-                request.HttpStatus == 0
-                || request.HttpStatus == 408
-                || request.HttpStatus == 429
-                || request.HttpStatus >= 500
-            )
+            if (request.HttpStatus == 429)
+            {
+                // SharePoint does not execute a throttled request, so nothing was created or
+                // changed. After the wait, setup re-reads and prepares the same change again.
+                op.Value.ExternalSubmitted = false;
+                op.Value.ExternalResponseKnown = false;
+                return Wait(op, lease, request.RetryAfter, 429, null);
+            }
+            if (request.HttpStatus == 0 || request.HttpStatus == 408 || request.HttpStatus >= 500)
                 return Block(
                     op,
                     lease,

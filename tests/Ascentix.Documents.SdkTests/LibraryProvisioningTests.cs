@@ -114,6 +114,30 @@ public sealed class LibraryProvisioningTests
     }
 
     [Fact]
+    public void ThrottledLibraryCreateWasNotExecutedSoItWaitsAndCreatesOnce()
+    {
+        var f = new Fixture { ThrottledCreates = 1 };
+        var queued = f.Queue();
+        Assert.Equal("RetryWait", f.Run(queued.Key).Status);
+        var op = f.Store.Require<LibrarySetup>("asx_operation", queued.Key);
+        Assert.False(op.Value.ExternalSubmitted);
+        Assert.False(op.Value.ExternalResponseKnown);
+        Assert.Equal(Guid.Empty, op.Value.ListId);
+        Assert.Contains("HTTP 429", op.Value.ErrorCode);
+        Assert.Null(
+            f.Store.Require<DispatcherDocument>(
+                "asx_claim",
+                WorkCoordination.Operation(f.Service, queued.Key)
+            ).Value.RunId
+        );
+        op.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+        f.Store.Save(op);
+        Assert.Equal("AccessPending", f.Run(queued.Key).Status);
+        Assert.Equal(2, f.Posts.Count(p => p == "_api/web/lists"));
+        Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
+    }
+
+    [Fact]
     public void UnknownCreationIsQuarantinedWithoutDeletingOrAdoptingContent()
     {
         var f = new Fixture { UnknownCreate = true };
@@ -191,6 +215,7 @@ public sealed class LibraryProvisioningTests
             Unique,
             OwnerAccess,
             UnknownCreate;
+        public int ThrottledCreates;
         public List<string> Posts = new List<string>();
 
         public Fixture()
@@ -249,6 +274,13 @@ public sealed class LibraryProvisioningTests
                     string body = "{}";
                     if (work.Http.RelativeUri == "_api/web/lists")
                     {
+                        if (ThrottledCreates > 0)
+                        {
+                            // SharePoint refuses a throttled request without executing it.
+                            ThrottledCreates--;
+                            work = Call("CreateResponse", work, "{}", 429);
+                            continue;
+                        }
                         Exists = true;
                         status = UnknownCreate ? 0 : 201;
                         body = Body(new CreatedLibrary { Id = List, Title = "Documents" });

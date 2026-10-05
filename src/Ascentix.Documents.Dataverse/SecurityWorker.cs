@@ -95,10 +95,17 @@ public sealed class SecurityWorker
                     throw new EvaluationBlockedException(
                         "No matching outstanding security mutation."
                     );
+                if (request.HttpStatus == 429)
+                {
+                    // SharePoint does not execute a throttled request, so nothing changed. The
+                    // mutation is dropped and re-derived from fresh reads after the wait.
+                    Audit(op.Value.Key, request.RunId, "Throttled:" + op.Value.MutationKind);
+                    ClearMutation(op.Value);
+                    return Wait(op, claim, request.RetryAfter, 429, null);
+                }
                 if (
                     request.HttpStatus == 0
                     || request.HttpStatus == 408
-                    || request.HttpStatus == 429
                     || request.HttpStatus >= 500
                 )
                     return Block(op, claim, "AmbiguousSecurityWrite");
