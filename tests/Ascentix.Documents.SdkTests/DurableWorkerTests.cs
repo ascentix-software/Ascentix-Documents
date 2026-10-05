@@ -359,16 +359,7 @@ public sealed class DurableWorkerTests
         var fixture = new Fixture();
         Assert.Throws<EvaluationBlockedException>(() => RuntimeProfile.Read(fixture.Service));
         var worker = Guid.NewGuid();
-        fixture.Service.Seed(
-            new Entity("asx_runtime", Guid.NewGuid())
-            {
-                ["asx_name"] = "Default",
-                ["asx_workeruserid"] = worker.ToString(),
-                ["asx_enabled"] = false,
-                ["asx_allowedtables"] = "[\"account\"]",
-                ["asx_sharepointhosts"] = "[\"example.sharepoint.com\"]",
-            }
-        );
+        RuntimeSeed.Seed(fixture.Service, worker, "account");
         var profile = RuntimeProfile.Read(fixture.Service);
         Assert.Equal(worker, profile.WorkerId);
         Assert.False(profile.Enabled);

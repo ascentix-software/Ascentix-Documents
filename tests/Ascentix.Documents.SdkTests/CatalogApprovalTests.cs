@@ -171,15 +171,7 @@ public sealed class CatalogApprovalTests
     public void RuntimeTransportGateRejectsUnapprovedSiteAndMutationMethods()
     {
         var f = new Fixture();
-        f.Service.Seed(
-            new Entity("asx_runtime", Guid.NewGuid())
-            {
-                ["asx_name"] = "Default",
-                ["asx_workeruserid"] = Guid.NewGuid().ToString(),
-                ["asx_allowedtables"] = "[\"account\"]",
-                ["asx_sharepointhosts"] = "[\"example.sharepoint.com\"]",
-            }
-        );
+        RuntimeSeed.Seed(f.Service, Guid.NewGuid(), "account");
         var profile = RuntimeProfile.Read(f.Service);
         var intent = new WorkerResult
         {

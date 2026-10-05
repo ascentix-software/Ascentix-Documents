@@ -16,7 +16,15 @@ public sealed class RuntimeProfile
     public string[] SharePointHosts { get; private set; } = Array.Empty<string>();
     public string[] Tables { get; private set; } = Array.Empty<string>();
 
-    public static RuntimeProfile Read(IOrganizationService service)
+    public static RuntimeProfile Read(IOrganizationService service) => Load(service, true);
+
+    /// <summary>
+    /// Minimal profile for event capture and the outbox guard: worker, tables and update flag only.
+    /// SharePoint hosts are neither read nor validated, so host configuration cannot stop capture.
+    /// </summary>
+    public static RuntimeProfile ReadCapture(IOrganizationService service) => Load(service, false);
+
+    private static RuntimeProfile Load(IOrganizationService service, bool hosts)
     {
         var query = new QueryExpression("asx_runtime")
         {
@@ -36,15 +44,18 @@ public sealed class RuntimeProfile
                 "An explicit approved runtime profile is required."
             );
         var row = rows.Entities[0];
-        var hosts = JsonWire.Read<string[]>(row.GetAttributeValue<string>("asx_sharepointhosts"));
-        ValidateHosts(hosts);
-        var tables = JsonWire.Read<string[]>(row.GetAttributeValue<string>("asx_allowedtables"));
+        var siteHosts = Array.Empty<string>();
+        if (hosts)
+        {
+            siteHosts = JsonWire.Read<string[]>(
+                row.GetAttributeValue<string>("asx_sharepointhosts")
+            );
+            ValidateHosts(siteHosts);
+        }
+        var tables = RuntimeTables.Effective(service, row).Tables;
         if (
             !Guid.TryParse(row.GetAttributeValue<string>("asx_workeruserid"), out var worker)
             || worker == Guid.Empty
-            || tables == null
-            || tables.Length < 1
-            || tables.Length > 50
             || tables.Distinct(StringComparer.Ordinal).Count() != tables.Length
         )
             throw new EvaluationBlockedException("Runtime identity/source scope is incomplete.");
@@ -56,7 +67,7 @@ public sealed class RuntimeProfile
             Enabled = row.GetAttributeValue<bool>("asx_enabled"),
             ProcessRecordUpdates = row.GetAttributeValue<bool>("asx_processrecordupdates"),
             Tables = tables,
-            SharePointHosts = hosts,
+            SharePointHosts = siteHosts,
             service = service,
         };
     }

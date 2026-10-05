@@ -122,7 +122,7 @@ public sealed class LifecycleTests
         new RecordInvalidationPlugin().Execute(
             new Provider(f, Event(f, message, new ParameterCollection()))
         );
-        Assert.Equal(new[] { "asx_runtime" }, reads);
+        Assert.Equal(new[] { "asx_runtime", "asx_runtimetable" }, reads);
         Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_outbox");
         new RecordInvalidationPlugin().Execute(
             new Provider(f, Event(f, "Create", new ParameterCollection()))
@@ -331,16 +331,7 @@ public sealed class LifecycleTests
     {
         var f = new DurableWorkerTests.Fixture(seedBinding: false);
         f.SeedTemplate();
-        f.Service.Seed(
-            new Entity("asx_runtime", Guid.NewGuid())
-            {
-                ["asx_name"] = "Default",
-                ["asx_processrecordupdates"] = true,
-                ["asx_workeruserid"] = f.RecordId.ToString(),
-                ["asx_allowedtables"] = "[\"account\"]",
-                ["asx_sharepointhosts"] = "[\"example.sharepoint.com\"]",
-            }
-        );
+        RuntimeSeed.Seed(f.Service, f.RecordId, "account");
         return f;
     }
 

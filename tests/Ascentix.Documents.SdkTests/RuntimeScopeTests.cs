@@ -11,15 +11,7 @@ public sealed class RuntimeScopeTests
     private static DurableWorkerTests.MemoryService Service()
     {
         var s = new DurableWorkerTests.MemoryService();
-        s.Seed(
-            new Entity("asx_runtime", Guid.NewGuid())
-            {
-                ["asx_name"] = "Default",
-                ["asx_workeruserid"] = Guid.NewGuid().ToString(),
-                ["asx_allowedtables"] = "[\"account\"]",
-                ["asx_sharepointhosts"] = "[\"example.sharepoint.com\"]",
-            }
-        );
+        RuntimeSeed.Seed(s, Guid.NewGuid(), "account");
         return s;
     }
 

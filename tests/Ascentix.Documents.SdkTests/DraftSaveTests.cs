@@ -54,16 +54,8 @@ public sealed class DraftSaveTests
         var f = new DurableWorkerTests.Fixture(seedBinding: false);
         f.SeedTemplate();
         var worker = Guid.NewGuid();
-        f.Service.Seed(
-            new Entity("asx_runtime", Guid.NewGuid())
-            {
-                ["asx_name"] = "Default",
-                ["asx_workeruserid"] = worker.ToString(),
-                ["asx_enabled"] = true,
-                ["asx_allowedtables"] = "[\"account\"]",
-                ["asx_sharepointhosts"] = "[\"example.sharepoint.com\"]",
-            }
-        );
+        var runtimeRow = RuntimeSeed.Seed(f.Service, worker, "account");
+        f.Service.Rows[runtimeRow]["asx_enabled"] = true;
         var second = Guid.NewGuid();
         f.Service.Seed(
             new Entity("asx_template", second)
