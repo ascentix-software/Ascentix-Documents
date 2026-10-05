@@ -112,7 +112,9 @@ public sealed class RuntimeScopeTests
         foreach (var row in s.Rows.Values)
             if (row.LogicalName == "asx_runtime")
                 row.Attributes.Remove("asx_sharepointhosts");
-        Assert.Empty(RuntimeAdministration.Execute(s, new RuntimeRequest(), true).SharePointHosts);
+        Assert.Empty(
+            RuntimeAdministration.Execute(s, new RuntimeRequest(), true, Guid.Empty).SharePointHosts
+        );
         Assert.ThrowsAny<Exception>(() => RuntimeProfile.Read(s));
     }
 }

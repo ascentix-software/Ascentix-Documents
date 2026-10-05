@@ -1,7 +1,6 @@
 using System;
 using System.Linq;
 using System.Runtime.Serialization;
-using System.Text.RegularExpressions;
 using Ascentix.Documents.Conditions;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
@@ -32,6 +31,12 @@ public sealed class RuntimeRequest
 
     [DataMember]
     public string[] Tables { get; set; } = Array.Empty<string>();
+
+    [DataMember]
+    public bool Migrated { get; set; }
+
+    [DataMember]
+    public RegistrationSummary? Registration { get; set; }
 }
 
 public static class RuntimeAdministration
@@ -39,11 +44,75 @@ public static class RuntimeAdministration
     public static RuntimeRequest Execute(
         IOrganizationService service,
         RuntimeRequest request,
-        bool transaction
+        bool transaction,
+        Guid caller
     )
     {
         if (!transaction)
             throw new EvaluationBlockedException("Runtime configuration requires a transaction.");
+        var old = Profile(service);
+        if (request.Command == "Get")
+            return Get(service, old);
+        if (request.Command != "Save" && request.Command != "Unregister")
+            throw new EvaluationBlockedException("Unsupported runtime command.");
+        if (!AdministratorCheck.IsSystemAdministrator(service, caller))
+            throw new EvaluationBlockedException(
+                "Registering events requires System Administrator."
+            );
+        if (request.Command == "Unregister")
+        {
+            EventRegistrations.Unregister(service);
+            return Get(service, old);
+        }
+        if (string.IsNullOrEmpty(request.RowVersion) || old.RowVersion != request.RowVersion)
+            throw new EvaluationBlockedException("Refresh the runtime profile before saving.");
+        RuntimeTables.Validate(request.Tables);
+        RuntimeProfile.ValidateHosts(request.SharePointHosts);
+        ValidateWorker(service, request.WorkerId);
+        WorkCoordination.RequireIdle(service);
+        foreach (var table in request.Tables)
+            service.Execute(
+                new RetrieveEntityRequest
+                {
+                    LogicalName = table,
+                    EntityFilters = Microsoft.Xrm.Sdk.Metadata.EntityFilters.Entity,
+                }
+            );
+        var current = RuntimeTables.Effective(service, old).Tables;
+        int added = request.Tables.Count(t => !current.Contains(t, StringComparer.Ordinal));
+        if (added > EventRegistrations.MaxNewTablesPerSave)
+            throw new EvaluationBlockedException(
+                "Add at most "
+                    + EventRegistrations.MaxNewTablesPerSave
+                    + " new tables per Save. Each new table registers its event steps inside one server operation, which Dataverse limits to 2 minutes."
+            );
+        RuntimeTables.Replace(service, old.Id, request.Tables);
+        EventRegistrations.Reconcile(
+            service,
+            request.WorkerId,
+            request.Tables,
+            request.ProcessRecordUpdates
+        );
+        service.Execute(
+            new UpdateRequest
+            {
+                Target = new Entity("asx_runtime", old.Id)
+                {
+                    RowVersion = old.RowVersion,
+                    ["asx_workeruserid"] = request.WorkerId.ToString("D"),
+                    ["asx_enabled"] = request.Enabled,
+                    ["asx_processrecordupdates"] = request.ProcessRecordUpdates,
+                    ["asx_allowedtables"] = "[]",
+                    ["asx_sharepointhosts"] = JsonWire.Write(request.SharePointHosts),
+                },
+                ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+            }
+        );
+        return Get(service, Profile(service));
+    }
+
+    private static Entity Profile(IOrganizationService service)
+    {
         var query = new QueryExpression("asx_runtime")
         {
             ColumnSet = new ColumnSet(
@@ -61,71 +130,46 @@ public static class RuntimeAdministration
             throw new EvaluationBlockedException(
                 "Exactly one installed runtime profile is required."
             );
-        var old = rows.Entities[0];
-        if (request.Command == "Get")
-            return new RuntimeRequest
-            {
-                Command = "Get",
-                RowVersion = old.RowVersion,
-                WorkerId = Guid.Parse(TemplateStore.Text(old, "asx_workeruserid")),
-                Enabled = old.GetAttributeValue<bool>("asx_enabled"),
-                ProcessRecordUpdates = old.GetAttributeValue<bool>("asx_processrecordupdates"),
-                SharePointHosts = JsonWire.Read<string[]>(
-                    old.GetAttributeValue<string>("asx_sharepointhosts") ?? "[]"
-                ),
-                Tables = JsonWire.Read<string[]>(TemplateStore.Text(old, "asx_allowedtables")),
-            };
-        if (
-            request.Command != "Save"
-            || string.IsNullOrEmpty(request.RowVersion)
-            || old.RowVersion != request.RowVersion
-        )
-            throw new EvaluationBlockedException("Refresh the runtime profile before saving.");
-        if (
-            request.WorkerId == Guid.Empty
-            || request.Tables == null
-            || request.Tables.Length < 1
-            || request.Tables.Length > 50
-            || request.Tables.Distinct().Count() != request.Tables.Length
-            || request.Tables.Any(t => !Regex.IsMatch(t, "\\A[a-z][a-z0-9_]{0,99}\\z"))
-        )
-            throw new EvaluationBlockedException(
-                "Explicit worker and source table allowlist required."
-            );
-        RuntimeProfile.ValidateHosts(request.SharePointHosts);
-        var worker = service.Retrieve("systemuser", request.WorkerId, new ColumnSet("isdisabled"));
-        if (worker.GetAttributeValue<bool>("isdisabled"))
+        return rows.Entities[0];
+    }
+
+    private static RuntimeRequest Get(IOrganizationService service, Entity old)
+    {
+        var worker = Guid.TryParse(TemplateStore.Text(old, "asx_workeruserid"), out var id)
+            ? id
+            : Guid.Empty;
+        var tables = RuntimeTables.Effective(service, old);
+        bool updates = old.GetAttributeValue<bool>("asx_processrecordupdates");
+        return new RuntimeRequest
+        {
+            Command = "Get",
+            RowVersion = old.RowVersion,
+            WorkerId = worker,
+            Enabled = old.GetAttributeValue<bool>("asx_enabled"),
+            ProcessRecordUpdates = updates,
+            SharePointHosts = JsonWire.Read<string[]>(
+                old.GetAttributeValue<string>("asx_sharepointhosts") ?? "[]"
+            ),
+            Tables = tables.Tables,
+            Migrated = tables.Migrated,
+            Registration = EventRegistrations.Inspect(service, worker, tables.Tables, updates),
+        };
+    }
+
+    private static void ValidateWorker(IOrganizationService service, Guid worker)
+    {
+        if (worker == Guid.Empty)
+            throw new EvaluationBlockedException("Select the worker application user.");
+        var user = service.Retrieve(
+            "systemuser",
+            worker,
+            new ColumnSet("isdisabled", "applicationid")
+        );
+        if (user.GetAttributeValue<bool>("isdisabled"))
             throw new EvaluationBlockedException("Worker identity is disabled.");
-        WorkCoordination.RequireIdle(service);
-        foreach (var table in request.Tables)
-            service.Execute(
-                new RetrieveEntityRequest
-                {
-                    LogicalName = table,
-                    EntityFilters = Microsoft.Xrm.Sdk.Metadata.EntityFilters.Entity,
-                }
+        if (user.GetAttributeValue<Guid>("applicationid") == Guid.Empty)
+            throw new EvaluationBlockedException(
+                "The worker must be an application user; human users are not accepted."
             );
-        RecordUpdateRegistrations.Apply(
-            service,
-            request.WorkerId,
-            request.Tables,
-            request.ProcessRecordUpdates
-        );
-        service.Execute(
-            new UpdateRequest
-            {
-                Target = new Entity("asx_runtime", old.Id)
-                {
-                    RowVersion = old.RowVersion,
-                    ["asx_workeruserid"] = request.WorkerId.ToString("D"),
-                    ["asx_enabled"] = request.Enabled,
-                    ["asx_processrecordupdates"] = request.ProcessRecordUpdates,
-                    ["asx_allowedtables"] = JsonWire.Write(request.Tables),
-                    ["asx_sharepointhosts"] = JsonWire.Write(request.SharePointHosts),
-                },
-                ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
-            }
-        );
-        return Execute(service, new RuntimeRequest(), true);
     }
 }

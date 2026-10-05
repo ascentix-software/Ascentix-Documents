@@ -47,7 +47,8 @@ public sealed class RuntimeAdminApi : IPlugin
             RuntimeAdministration.Execute(
                 service,
                 JsonWire.Read<RuntimeRequest>((string)context.InputParameters["Request"]),
-                context.IsInTransaction
+                context.IsInTransaction,
+                context.UserId
             )
         );
     }
