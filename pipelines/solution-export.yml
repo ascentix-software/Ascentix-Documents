@@ -27,11 +27,21 @@ jobs:
           Managed: false
           AsyncOperation: true
           MaxAsyncWaitTime: 30
+      - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.export-solution.PowerPlatformExportSolution@2
+        inputs:
+          authenticationType: PowerPlatformSPN
+          PowerPlatformSPN: Ascentix Documents DEV
+          Environment: $(DocumentsDevUrl)
+          SolutionName: AscentixDocuments
+          SolutionOutputFile: $(Build.ArtifactStagingDirectory)/AscentixDocuments_managed.zip
+          Managed: true
+          AsyncOperation: true
+          MaxAsyncWaitTime: 30
       - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.unpack-solution.PowerPlatformUnpackSolution@2
         inputs:
           SolutionInputFile: $(Build.ArtifactStagingDirectory)/AscentixDocuments.zip
           SolutionTargetFolder: solution/AscentixDocuments/src
-          SolutionType: Unmanaged
+          SolutionType: Both
       - pwsh: |
           $ErrorActionPreference = 'Stop'
           git config core.longpaths true
