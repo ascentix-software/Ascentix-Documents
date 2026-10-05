@@ -182,9 +182,6 @@
       <RootComponent type="92" id="{f885eca0-dbac-f111-aaab-70a8a50cc3fd}" behavior="0" />
       <RootComponent type="92" id="{fcb5f4a7-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
       <RootComponent type="92" id="{ffb5f4a7-dbac-f111-aaab-7ced8d35c3dd}" behavior="0" />
-      <RootComponent type="92" id="{b526baf7-d745-4eb5-bad2-106176a3cd1a}" behavior="0" />
-      <RootComponent type="92" id="{48553435-9812-425b-94ec-86405e3ab90c}" behavior="0" />
-      <RootComponent type="92" id="{7f669091-a277-476f-9452-c508c144061a}" behavior="0" />
     </RootComponents>
     <MissingDependencies>
       <MissingDependency>
