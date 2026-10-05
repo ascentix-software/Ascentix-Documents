@@ -57,6 +57,7 @@
     <RolePrivilege name="prvReadasx_source" level="Global" />
     <RolePrivilege name="prvReadasx_teamregistration" level="Global" />
     <RolePrivilege name="prvReadasx_template" level="Global" />
+    <RolePrivilege name="prvReadAsyncOperation" level="Basic" />
     <RolePrivilege name="prvReadAttribute" level="Global" />
     <RolePrivilege name="prvReadSharePointData" level="Global" />
     <RolePrivilege name="prvReadSharePointDocument" level="Global" />
