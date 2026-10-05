@@ -562,6 +562,11 @@ async function change(n, value) {
     assert.deepEqual(retried, [{ Command: 'RetryOutbox', Key: 'request:aaa' }]);
     assert.equal(retry.disabled, true);
     assert.match(nodes.status.textContent, /queued for planning again/i);
+    xrm.WebApi.retrieveMultipleRecords = async () => ({ entities: [] });
+    await nodes.loadBlockedRecords.onclick();
+    assert.equal(nodes.blockedRecords.children.length, 0);
+    assert.equal(nodes.moreBlockedRecords.hidden, true);
+    assert.equal(nodes.status.textContent, 'No blocked records.');
   }
   {
     // Tables panel: enabled tables come from asx_runtimetable; add, remove and enable are server commands.

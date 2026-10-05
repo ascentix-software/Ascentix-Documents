@@ -1737,6 +1737,7 @@
       ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
       : null;
     $('moreBlockedRecords').hidden = !blockedRecords.next;
+    if (!append && !result.entities.length) message('No blocked records.');
   }
   $('loadBlockedRecords').onclick = () =>
     task(() =>

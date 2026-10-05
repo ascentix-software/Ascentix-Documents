@@ -88,19 +88,21 @@ public sealed class RecordInspection
     }
 
     /// <summary>
-    /// Finds the most recent Blocked outbox row for a record that has never been planned. Outbox
-    /// rows do not index the record, so this pages through Blocked rows only; Blocked is the
-    /// exception state, not the queue.
+    /// Reports a never-planned record as Blocked when its newest Blocked or Pending outbox row for
+    /// this template is Blocked, so a newer Pending request wins. Rows are found through the
+    /// indexed asx_recordid column; rows written before that column was populated are found once
+    /// they are retried.
     /// </summary>
     private static WorkerResult? Blocked(IOrganizationService service, Guid template, Guid record)
     {
         var query = new QueryExpression("asx_outbox")
         {
-            ColumnSet = new ColumnSet("asx_payload"),
+            ColumnSet = new ColumnSet("asx_payload", "createdon"),
             PageInfo = new PagingInfo { Count = 5000, PageNumber = 1 },
         };
-        query.Criteria.AddCondition("asx_status", ConditionOperator.Equal, "Blocked");
-        query.AddOrder("modifiedon", OrderType.Descending);
+        query.Criteria.AddCondition("asx_recordid", ConditionOperator.Equal, record.ToString("D"));
+        query.Criteria.AddCondition("asx_status", ConditionOperator.In, "Blocked", "Pending");
+        query.AddOrder("createdon", OrderType.Descending);
         while (true)
         {
             var page = service.RetrieveMultiple(query);
@@ -110,13 +112,15 @@ public sealed class RecordInspection
                     row.GetAttributeValue<string>("asx_payload")
                 );
                 if (
-                    job.Status == "Blocked"
-                    && job.TemplateId == template
-                    && job.RecordId == record
-                    && job.RelatedRecordId == Guid.Empty
-                    && job.SecurityTeamId == Guid.Empty
+                    job.TemplateId != template
+                    || job.RecordId != record
+                    || job.RelatedRecordId != Guid.Empty
+                    || job.SecurityTeamId != Guid.Empty
                 )
-                    return new WorkerResult
+                    continue;
+                return job.Status != "Blocked"
+                    ? null
+                    : new WorkerResult
                     {
                         Status = "Blocked",
                         Key = job.Key,

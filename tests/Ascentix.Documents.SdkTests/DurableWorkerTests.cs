@@ -1094,6 +1094,27 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
+    public void OutboxRowsIndexTheirRecordAndTable()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        var key = f.BlockRecord();
+        var row = f.Service.Rows[f.Store.Require<OutboxDocument>("asx_outbox", key).Row.Id];
+        Assert.Equal(f.RecordId.ToString("D"), row.GetAttributeValue<string>("asx_recordid"));
+        Assert.Equal("account", row.GetAttributeValue<string>("asx_table"));
+        Assert.Contains(f.Service.Updates, u => u.Target.Contains("asx_recordid"));
+        f.Store.Create(
+            "asx_outbox",
+            new OutboxDocument { Key = "team-event:index", SecurityTeamId = Guid.NewGuid() }
+        );
+        var team = f.Service.Rows[
+            f.Store.Require<OutboxDocument>("asx_outbox", "team-event:index").Row.Id
+        ];
+        Assert.Null(team.GetAttributeValue<string>("asx_recordid"));
+        Assert.Null(team.GetAttributeValue<string>("asx_table"));
+    }
+
+    [Fact]
     public void RetryOutboxReturnsABlockedRowToPendingAndClearsItsNotices()
     {
         var f = new Fixture(seedBinding: false);
@@ -1375,7 +1396,6 @@ public sealed class DurableWorkerTests
                 Key = Binding.Key + ":revision:" + RevisionId.ToString("N"),
                 Folders = new[] { Binding },
                 RevisionId = RevisionId,
-                PolicyRevision = policy,
             };
             Service.Seed(
                 new Entity("asx_template", TemplateId)

@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Ascentix.Documents.Conditions;
 using Ascentix.Documents.Dataverse;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Query;
 using Xunit;
 
 namespace Ascentix.Documents.SdkTests;
@@ -94,6 +96,80 @@ public sealed class RecordInspectionTests
         );
         Assert.Equal(
             "Pending",
+            RecordInspection.Read(f.Service, request, new[] { "account" }).Status
+        );
+    }
+
+    [Fact]
+    public void InspectionFindsBlockedRowsByTheIndexedRecordColumn()
+    {
+        var f = new DurableWorkerTests.Fixture(seedBinding: false);
+        f.SeedTemplate();
+        var key = f.BlockRecord();
+        var queries = new List<QueryExpression>();
+        f.Service.QueryHook = q =>
+        {
+            if (q.EntityName == "asx_outbox")
+                queries.Add(q);
+            return null;
+        };
+        var request = new WorkerRequest { TemplateId = f.TemplateId, RecordId = f.RecordId };
+        Assert.Equal(
+            "Blocked",
+            RecordInspection.Read(f.Service, request, new[] { "account" }).Status
+        );
+        var lookup = queries.Single(q =>
+            q.ColumnSet.Columns.Contains("asx_payload") && q.TopCount == null
+        );
+        Assert.Contains(
+            lookup.Criteria.Conditions,
+            c =>
+                c.AttributeName == "asx_recordid"
+                && c.Operator == ConditionOperator.Equal
+                && (string)c.Values[0] == f.RecordId.ToString("D")
+        );
+        // A row written before the column was populated is not found until it is retried.
+        f.Service.QueryHook = null;
+        var row = f.Store.Require<OutboxDocument>("asx_outbox", key).Row;
+        f.Service.Rows[row.Id].Attributes.Remove("asx_recordid");
+        Assert.Equal(
+            "NotPlanned",
+            RecordInspection.Read(f.Service, request, new[] { "account" }).Status
+        );
+        Assert.Equal(
+            "Pending",
+            f.Execute(new WorkerRequest { Command = "RetryOutbox", Key = key }).Status
+        );
+        f.Service.Rows[f.LibraryId]["asx_approved"] = false;
+        Assert.Throws<EvaluationBlockedException>(() =>
+            f.Execute(new WorkerRequest { Command = "Plan", Key = key })
+        );
+        f.Execute(new WorkerRequest { Command = "FailOutbox", Key = key });
+        Assert.Equal(
+            "Blocked",
+            RecordInspection.Read(f.Service, request, new[] { "account" }).Status
+        );
+    }
+
+    [Fact]
+    public void NewerPendingRequestWinsOverAnOlderBlockedRow()
+    {
+        var f = new DurableWorkerTests.Fixture(seedBinding: false);
+        f.SeedTemplate();
+        f.BlockRecord();
+        var request = new WorkerRequest { TemplateId = f.TemplateId, RecordId = f.RecordId };
+        var queued = f.Execute(
+            new WorkerRequest
+            {
+                Command = "Queue",
+                TemplateId = f.TemplateId,
+                RecordId = f.RecordId,
+                RequestId = Guid.NewGuid(),
+            }
+        );
+        Assert.Equal("Pending", queued.Status);
+        Assert.Equal(
+            "NotPlanned",
             RecordInspection.Read(f.Service, request, new[] { "account" }).Status
         );
     }

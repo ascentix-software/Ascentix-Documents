@@ -21,10 +21,8 @@ public sealed class ApprovedLibrary
     public Guid WebId { get; set; }
     public Guid ListId { get; set; }
     public Guid EntryId { get; set; }
-    public Guid PolicyRevision { get; set; }
     public string EntryUrl { get; set; } = "";
     public bool Approved { get; set; }
-    public bool PolicyApplied { get; set; }
 }
 
 public sealed class FolderNode
@@ -175,7 +173,7 @@ public static class TemplateValidator
                 throw new EvaluationBlockedException("Invalid destination section.");
             var lib = section.Library;
             // Folders inherit the library's permissions, so the library's policy-update state
-            // (PolicyApplied, PolicyRevision) never gates planning. Only suspension does.
+            // never gates planning. Only suspension does.
             if (
                 !lib.Approved
                 || lib.ApprovalId == Guid.Empty

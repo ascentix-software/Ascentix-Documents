@@ -156,6 +156,8 @@ public sealed class DocumentStore
         }
         if (value is RecordPlanDocument selection)
             Index(selection, entity);
+        if (value is OutboxDocument work)
+            Index(work, entity);
         service.Create(entity);
     }
 
@@ -199,6 +201,8 @@ public sealed class DocumentStore
         }
         if (row.Value is RecordPlanDocument selection)
             Index(selection, target);
+        if (row.Value is OutboxDocument work)
+            Index(work, target);
         if (row.Value is DispatcherDocument writer)
             WorkCoordination.SaveWriter(service, writer);
         service.Execute(
@@ -208,6 +212,16 @@ public sealed class DocumentStore
                 ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
             }
         );
+    }
+
+    /// <summary>
+    /// Indexes an outbox row by its business record so a record's Blocked or Pending rows can be
+    /// found without reading every payload. Team and targeted rows carry no record.
+    /// </summary>
+    private static void Index(OutboxDocument work, Entity target)
+    {
+        target["asx_recordid"] = work.RecordId == Guid.Empty ? null : work.RecordId.ToString("D");
+        target["asx_table"] = string.IsNullOrEmpty(work.Table) ? null : work.Table;
     }
 
     private static void Index(RecordPlanDocument selection, Entity target)

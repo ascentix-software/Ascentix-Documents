@@ -144,10 +144,8 @@ public sealed class AdapterTests
                     WebId = Guid.NewGuid(),
                     ListId = Guid.NewGuid(),
                     EntryId = Guid.NewGuid(),
-                    PolicyRevision = Guid.NewGuid(),
                     EntryUrl = "https://example.sharepoint.com/sites/proto/General",
                     Approved = true,
-                    PolicyApplied = true,
                 },
                 Nodes = new List<FolderNode>
                 {

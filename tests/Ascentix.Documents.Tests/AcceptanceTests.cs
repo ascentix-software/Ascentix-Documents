@@ -63,10 +63,8 @@ public class AcceptanceTests
                         WebId = Guid.NewGuid(),
                         ListId = Guid.NewGuid(),
                         EntryId = Guid.NewGuid(),
-                        PolicyRevision = Guid.NewGuid(),
                         EntryUrl = "https://example.sharepoint.com/sites/proto/" + key,
                         Approved = true,
-                        PolicyApplied = true,
                     },
                     Nodes = new List<FolderNode>
                     {
@@ -246,15 +244,6 @@ public class AcceptanceTests
         template = Template();
         template.Destinations[0].Library.EntryId = Guid.Empty;
         Assert.Throws<EvaluationBlockedException>(() => TemplateValidator.Validate(template));
-    }
-
-    [Fact]
-    public void PolicyUpdateStateDoesNotBlockAnApprovedDestination()
-    {
-        var template = Template();
-        template.Destinations[0].Library.PolicyApplied = false;
-        template.Destinations[0].Library.PolicyRevision = Guid.Empty;
-        TemplateValidator.Validate(template);
     }
 
     [Theory]
