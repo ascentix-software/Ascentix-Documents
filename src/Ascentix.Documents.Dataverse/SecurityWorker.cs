@@ -139,26 +139,29 @@ public sealed class SecurityWorker
 
     private WorkerResult Manage(WorkerRequest request, StoredRow<SecurityOperation> op)
     {
-        var active = store.Find<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(service, request.Key)
-        );
-        if (
-            active?.Value.OperationKey == op.Value.Key
-            || (
-                op.Value.ExternalSubmitted
-                && (!op.Value.ExternalResponseKnown || request.Command == "Cancel")
-            )
-        )
-            throw new EvaluationBlockedException(
-                "Active/submitted security work requires controlled reconciliation."
-            );
+        // A live claim belongs to a running flow. Once it expires the operator may Retry or
+        // Cancel: Cancel never deletes anything in SharePoint, and the next run reads back any
+        // write whose outcome is unknown before writing again.
+        bool released = store.ReleaseExpired(op.Value.Key, clock(), request.Command);
+        bool unknown = op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
         if (op.Value.Status == "Applied")
             return new WorkerResult { Status = "Applied", Key = op.Value.Key };
         if (request.Command == "Retry")
         {
-            if (op.Value.Status != "Blocked" && op.Value.Status != "RetryWait")
-                throw new EvaluationBlockedException("Only blocked/waiting work can retry.");
+            if (
+                op.Value.Status != "Blocked"
+                && op.Value.Status != "RetryWait"
+                && !released
+                && !unknown
+            )
+                throw new EvaluationBlockedException(
+                    "Only blocked, waiting or interrupted work can retry."
+                );
+            if (unknown)
+            {
+                op.Value.Reprobe = true;
+                op.Value.ExternalResponseKnown = true;
+            }
             op.Value.Status = "Pending";
             op.Value.NextAttemptUtc = null;
             op.Value.RetryCount = 0;

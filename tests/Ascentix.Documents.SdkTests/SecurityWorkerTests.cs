@@ -517,6 +517,61 @@ public sealed class SecurityWorkerTests
         Assert.Equal(2, f.Acl.Single(a => a.Member.Id == 42).Roles.Rows.Single().Id);
     }
 
+    private static WorkerResult Manage(Fixture f, string command) =>
+        f.Service.Transaction(() =>
+            new SecurityWorker(f.Service).Execute(
+                new WorkerRequest { Command = command, Key = f.Key },
+                true
+            )
+        );
+
+    [Fact]
+    public void CancelWaitsForALiveClaimAndWorksAfterItExpires()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        Assert.Equal("Read", f.Start().Status);
+        Assert.ThrowsAny<Exception>(() => Manage(f, "Cancel"));
+        ExpireClaim(f);
+        Assert.Equal("Cancelled", Manage(f, "Cancel").Status);
+        Assert.Null(
+            f.Store.Require<DispatcherDocument>(
+                "asx_claim",
+                WorkCoordination.Operation(f.Service, f.Key)
+            ).Value.RunId
+        );
+    }
+
+    [Fact]
+    public void RetryAndCancelWorkAfterAnUnknownWriteOnceTheClaimExpires()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        var work = f.Start();
+        while (work.Status == "Read")
+            work = f.Observe(work);
+        work = f.Call("PrepareCreate", work);
+        var kind = f.Operation().MutationKind;
+        f.Apply();
+        Assert.Equal("Quarantined", f.Call("CreateResponse", work, status: 0).Status);
+        Assert.ThrowsAny<Exception>(() => Manage(f, "Retry"));
+        ExpireClaim(f);
+        Assert.Equal("Pending", Manage(f, "Retry").Status);
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Equal(1, f.Writes.Count(w => w == kind));
+
+        var g = new Fixture();
+        g.Queue("Read");
+        work = g.Start();
+        while (work.Status == "Read")
+            work = g.Observe(work);
+        work = g.Call("PrepareCreate", work);
+        Assert.Equal("Quarantined", g.Call("CreateResponse", work, status: 0).Status);
+        ExpireClaim(g);
+        Assert.Equal("Cancelled", Manage(g, "Cancel").Status);
+        Assert.Equal("NeedsReview", g.Policy().Status);
+    }
+
     [Fact]
     public void UnknownSecurityWriteCannotRepeatOrReleaseTheDispatcher()
     {

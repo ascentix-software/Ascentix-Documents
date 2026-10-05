@@ -313,7 +313,17 @@ public sealed class LibraryProvisioning
                     !claim.Value.RecoveryPermitted
                     && (claim.Value.LeaseUntilUtc > clock() || unknownWrite)
                 )
+                {
+                    if (unknownWrite && claim.Value.LeaseUntilUtc <= clock())
+                    {
+                        op.Value.Status = "RecoveryRequired";
+                        op.Value.ErrorCode =
+                            op.Value.ErrorCode
+                            ?? "Library request outcome is unknown. Reconcile the original run before retry.";
+                        store.Save(op);
+                    }
                     return new WorkerResult { Status = "Quarantined", Key = request.Key };
+                }
                 claim.Value.HttpOutstanding = false;
                 if (
                     unknownWrite
@@ -714,7 +724,9 @@ public sealed class LibraryProvisioning
     {
         op.Value.ErrorCode = issue;
         bool unknown = op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
-        op.Value.Status = unknown ? "ExternalUnknown" : "Blocked";
+        // An unknown library write needs operator recovery with evidence: a second create could
+        // make a duplicate library. RecoveryRequired keeps it off the dispatch page meanwhile.
+        op.Value.Status = unknown ? "RecoveryRequired" : "Blocked";
         store.Save(op);
         if (!unknown)
             Release(claim);

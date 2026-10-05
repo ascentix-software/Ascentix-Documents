@@ -91,6 +91,93 @@ public sealed class UnknownOutcomeTests
     }
 
     [Fact]
+    public void RecoveryRequiredLibraryWorkDoesNotStarveNewerWork()
+    {
+        var service = new DurableWorkerTests.MemoryService();
+        var store = new DocumentStore(service);
+        for (int i = 0; i < 25; i++)
+            store.Create(
+                "asx_operation",
+                new LibrarySetup
+                {
+                    Key = "librarycreate:" + i,
+                    Status = "RecoveryRequired",
+                    Name = "Library " + i,
+                }
+            );
+        store.Create("asx_operation", new OperationDocument { Key = "folderjob:newer" });
+        Assert.Equal(new[] { "folderjob:newer" }, store.Pending("asx_operation"));
+    }
+
+    [Fact]
+    public void AnExpiredRowThatCannotBeClaimedBacksOffAndReleasesItsSlot()
+    {
+        var f = new DurableWorkerTests.Fixture();
+        Assert.Equal("Read", f.Claim().Status);
+        f.Service.Rows[f.LibraryId]["asx_approved"] = false;
+        var fail = new WorkerRequest
+        {
+            Command = "FailUnclaimed",
+            Key = f.Operation.Key,
+            StatusCode = 400,
+            ErrorCode = "0x80040265",
+            Error = "Site or library is suspended.",
+        };
+        // While the run's claim is live, nothing changes.
+        Assert.Equal("Quarantined", f.Execute(fail).Status);
+        f.Now = f.Now.AddMinutes(6);
+        Assert.Contains(
+            f.Operation.Key,
+            f.Execute(new WorkerRequest { Command = "ListOperations" }).Keys
+        );
+        Assert.ThrowsAny<Exception>(() => f.Claim("run-2"));
+        Assert.Equal("RetryWait", f.Execute(fail).Status);
+        var op = Op(f);
+        Assert.Equal(f.Now.AddSeconds(30), op.NextAttemptUtc);
+        Assert.Contains("suspended", op.ErrorCode);
+        Assert.Contains("attempt 1", op.ErrorCode);
+        Assert.Null(Writer(f).RunId);
+        Assert.Empty(
+            f.Store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey).Value.Writers
+        );
+        Assert.DoesNotContain(
+            f.Operation.Key,
+            f.Execute(new WorkerRequest { Command = "ListOperations" }).Keys
+        );
+        f.Now = f.Now.AddSeconds(30);
+        Assert.Contains(
+            f.Operation.Key,
+            f.Execute(new WorkerRequest { Command = "ListOperations" }).Keys
+        );
+    }
+
+    [Fact]
+    public void AnExpiredUnknownCreateThatCannotBeClaimedRereadsLater()
+    {
+        var f = new DurableWorkerTests.Fixture();
+        TimedOutCreate(f);
+        f.Now = f.Now.AddMinutes(6);
+        var result = f.Execute(
+            new WorkerRequest
+            {
+                Command = "FailUnclaimed",
+                Key = f.Operation.Key,
+                StatusCode = 503,
+            }
+        );
+        Assert.Equal("RetryWait", result.Status);
+        Assert.True(Op(f).Reprobe);
+        Assert.Null(Writer(f).RunId);
+        f.Now = f.Now.AddMinutes(1);
+        var verified = f.ObserveAndFinalize(
+            f.Preflight(f.Claim("run-2")),
+            f.Item(Guid.NewGuid(), null)
+        );
+        Assert.Equal("Applied", f.Call("Complete", verified).Status);
+        Assert.Single(f.Results, r => r.Status == "Create");
+    }
+
+    [Fact]
     public void FolderCreateTimeoutWithNoFolderCreatesItOnce()
     {
         var f = new DurableWorkerTests.Fixture();

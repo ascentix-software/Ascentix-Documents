@@ -546,6 +546,49 @@ public sealed class CatalogApprovalTests
         );
     }
 
+    [Theory]
+    [InlineData("Retry", "Pending")]
+    [InlineData("Cancel", "Cancelled")]
+    public void ProbeRetryAndCancelWorkOnceTheClaimExpires(string command, string status)
+    {
+        var f = new Fixture();
+        var queued = f.Admin.Execute(
+            new CatalogRequest
+            {
+                Command = "AddSite",
+                Key = null!,
+                NativeSiteId = f.NativeSite,
+                Name = "Site",
+                RequestId = Guid.NewGuid(),
+            },
+            true
+        );
+        var work = f.Worker.Execute(
+            new WorkerRequest
+            {
+                Command = "Claim",
+                Key = queued.Key,
+                RunId = "run",
+            },
+            true
+        );
+        Assert.Equal("Read", work.Status);
+        var manage = new WorkerRequest { Command = command, Key = queued.Key };
+        Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() => f.Worker.Execute(manage, true))
+        );
+        f.Now = f.Now.AddMinutes(6);
+        Assert.Equal(status, f.Service.Transaction(() => f.Worker.Execute(manage, true)).Status);
+        Assert.Null(
+            new DocumentStore(f.Service)
+                .Require<DispatcherDocument>(
+                    "asx_claim",
+                    WorkCoordination.Operation(f.Service, queued.Key)
+                )
+                .Value.RunId
+        );
+    }
+
     private static string Envelope<T>(T value) =>
         JsonWire.Write(new ODataEnvelope<T> { Data = value });
 

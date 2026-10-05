@@ -56,6 +56,10 @@ public static class TransientFailure
     /// <returns>True when the call should wait and retry; false when it should block.</returns>
     public static bool Is(int? statusCode, string? errorCode, string? error)
     {
+        // The flow's drive branch reports DriveFailed when no Dataverse action failed (an
+        // expression error, a failed variable step or a loop limit): not temporary.
+        if (string.Equals(errorCode?.Trim(), DriveFailed, StringComparison.Ordinal))
+            return false;
         var code = Parse(errorCode);
         if (code.HasValue)
         {
@@ -70,6 +74,10 @@ public static class TransientFailure
             if (GenuineCodes.Contains(code.Value))
                 return false;
         }
+        // Some permanent faults also look temporary here: a 5xx without a known code, or a
+        // ConcurrencyVersionMismatch that a product bug repeats on every attempt. They keep
+        // backing off rather than blocking, but never silently: the notice names the cause and
+        // counts the attempts, and an operator can Cancel the work at any time.
         switch (statusCode ?? 0)
         {
             case 0: // No response: connector timeout or cancellation.
@@ -105,6 +113,18 @@ public static class TransientFailure
 
     public static string Notice(WorkerRequest request, int attempt) =>
         Notice(request.StatusCode, request.ErrorCode, attempt);
+
+    public const string DriveFailed = "DriveFailed";
+
+    /// <summary>The failed call's status, code and a bounded message, for a visible notice.</summary>
+    public static string Cause(int? statusCode, string? errorCode, string? error)
+    {
+        var cause = Describe(statusCode, errorCode);
+        if (string.IsNullOrWhiteSpace(error))
+            return cause;
+        var clean = new string(error!.Trim().Where(c => !char.IsControl(c)).Take(200).ToArray());
+        return cause + ": " + clean;
+    }
 
     private static string Describe(int? statusCode, string? errorCode)
     {

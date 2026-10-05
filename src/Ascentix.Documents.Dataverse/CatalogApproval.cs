@@ -719,14 +719,11 @@ public sealed class CatalogWorker
             return store.FailUnclaimed<CatalogProbe>(request.Key, request, clock());
         if (request.Command == "Retry" || request.Command == "Cancel")
         {
-            var active = store.Find<DispatcherDocument>(
-                "asx_claim",
-                WorkCoordination.Operation(service, request.Key)
-            );
-            if (active?.Value.OperationKey == request.Key)
-                throw new EvaluationBlockedException("Active probe requires controlled recovery.");
+            // Probes only read, so Retry and Cancel are always safe once the claim expires.
+            bool released = store.ReleaseExpired(request.Key, clock(), request.Command);
             if (
-                op.Value.Status != "Blocked"
+                !released
+                && op.Value.Status != "Blocked"
                 && op.Value.Status != "Pending"
                 && op.Value.Status != "RetryWait"
             )

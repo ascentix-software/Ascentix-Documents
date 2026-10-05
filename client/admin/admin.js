@@ -1818,7 +1818,7 @@
       ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
       : null;
     $('moreBlockedJobs').hidden = !blockedJobs.next;
-    if (!append && !result.entities.length) message('No blocked folder jobs.');
+    if (!append && !result.entities.length) message('No blocked jobs.');
   }
   $('loadBlockedJobs').onclick = () =>
     task(() =>

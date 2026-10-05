@@ -144,7 +144,7 @@ public sealed class LibraryProvisioningTests
         var queued = f.Queue();
         Assert.Equal("Quarantined", f.Run(queued.Key).Status);
         Assert.Single(f.Posts);
-        Assert.Equal("ExternalUnknown", f.Worker.Inspect(queued.Key).Status);
+        Assert.Equal("RecoveryRequired", f.Worker.Inspect(queued.Key).Status);
         // An expired lease does not release an unknown library creation: a second create
         // could make a duplicate library, so it keeps operator recovery with evidence.
         var lease = f.Store.Require<DispatcherDocument>(
@@ -203,10 +203,16 @@ public sealed class LibraryProvisioningTests
                 Data = new CreatedLibrary { Id = f.List, Title = "Documents" },
             }
         );
+        Assert.DoesNotContain(
+            queued.Key,
+            f.Store.Pending("asx_operation", now: DateTime.UtcNow.AddHours(1))
+        );
         Assert.Equal(
             "RecoveryPermitted",
             f.Service.Transaction(() => recovery.PermitRecovery(request, true)).Status
         );
+        // The permitted operation is listed again so the dispatcher resumes it.
+        Assert.Contains(queued.Key, f.Store.Pending("asx_operation"));
         Assert.Equal("AccessPending", f.Run(queued.Key).Status);
         Assert.Single(f.Posts, p => p == "_api/web/lists");
         Assert.DoesNotContain(f.Posts, p => p.Contains("delete"));

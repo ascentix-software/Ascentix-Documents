@@ -241,6 +241,11 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   await timers.shift()();
   assert.match(nodes['ad-provision-progress'].textContent, /Waiting for confirmation/);
   assert.doesNotMatch(nodes['ad-provision-progress'].textContent, /Administration|Needs attention/);
+  operationStatus = 'RecoveryRequired';
+  inspectIssue = 'Library request outcome is unknown. Reconcile the original run before retry.';
+  await timers.shift()();
+  assert.match(nodes['ad-provision-progress'].textContent, /Needs attention/);
+  assert.match(nodes['ad-provision-progress'].textContent, /Reconcile the original run/);
   operationStatus = 'RetryWait';
   inspectIssue = 'TransientReadFailure';
   await timers.shift()();

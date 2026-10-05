@@ -639,7 +639,9 @@ async function change(n, value) {
     assert.equal(nodes.status.textContent, 'No blocked records.');
   }
   {
-    // Blocked folder jobs: Blocked asx_operation rows, each with the operator Retry in-page.
+    // Blocked jobs: Blocked asx_operation rows of every kind, each with the operator Retry in-page.
+    assert.match(html, /<h4>Blocked jobs<\/h4>/);
+    assert.doesNotMatch(html, /Blocked folder jobs/);
     const jobRows = [
       {
         asx_payload: JSON.stringify({
@@ -705,7 +707,7 @@ async function change(n, value) {
     await nodes.loadBlockedJobs.onclick();
     assert.equal(nodes.blockedJobs.children.length, 0);
     assert.equal(nodes.moreBlockedJobs.hidden, true);
-    assert.equal(nodes.status.textContent, 'No blocked folder jobs.');
+    assert.equal(nodes.status.textContent, 'No blocked jobs.');
   }
   {
     // Tables panel: enabled tables come from asx_runtimetable; add, remove and enable are server commands.
@@ -793,7 +795,7 @@ async function change(n, value) {
     xrm.WebApi.retrieveMultipleRecords = retrieve;
   }
   console.log(
-    'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, blocked-record retry, blocked folder job retry, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
+    'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, blocked-record retry, blocked job retry, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
   );
 })().catch((e) => {
   console.error(e);

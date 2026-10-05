@@ -263,9 +263,45 @@ public sealed class DocumentStore
     {
         var op = Require<T>("asx_operation", key);
         var claim = Find<DispatcherDocument>("asx_claim", WorkCoordination.Operation(service, key));
-        if (claim?.Value.OperationKey == key || op.Value.ExternalSubmitted)
+        bool held = claim?.Value.OperationKey == key && claim.Value.RunId != null;
+        bool unknown = op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
+        // A live claim belongs to a running flow (or an operator recovery): leave it alone.
+        if (held && (claim!.Value.LeaseUntilUtc > now || claim.Value.RecoveryPermitted))
             return new WorkerResult { Status = "Quarantined", Key = key };
-        if (op.Value.Status == "Pending" || op.Value.Status == "RetryWait")
+        if (held || unknown)
+        {
+            // The run that held this job stopped and claiming it again failed. Without this the
+            // row would stay listed, fail the same way on every dispatch and keep its writer slot.
+            if (unknown && op.Value is LibrarySetup)
+            {
+                // A second library create could make a duplicate library: operator recovery.
+                op.Value.Status = "RecoveryRequired";
+                Save(op);
+                return new WorkerResult { Status = op.Value.Status, Key = key };
+            }
+            if (held)
+                ReleaseExpired(key, now, "Dispatch");
+            if (unknown)
+            {
+                // Released the same way as a takeover: the next claim reads back first.
+                op.Value.Reprobe = true;
+                op.Value.ExternalResponseKnown = true;
+            }
+            Wait(op.Value, failure.StatusCode, failure.ErrorCode, null, now);
+            op.Value.ErrorCode =
+                "The run working on this job stopped and claiming it again failed ("
+                + TransientFailure.Cause(failure.StatusCode, failure.ErrorCode, failure.Error)
+                + "); retrying after a wait, attempt "
+                + op.Value.RetryCount
+                + ".";
+            Save(op);
+            return new WorkerResult { Status = op.Value.Status, Key = key };
+        }
+        if (
+            op.Value.Status == "Pending"
+            || op.Value.Status == "RetryWait"
+            || InFlight.Contains(op.Value.Status)
+        )
         {
             if (TransientFailure.Is(failure))
                 Wait(op.Value, failure.StatusCode, failure.ErrorCode, null, now);
@@ -278,6 +314,47 @@ public sealed class DocumentStore
             Save(op);
         }
         return new WorkerResult { Status = op.Value.Status, Key = key };
+    }
+
+    /// <summary>
+    /// Releases an operation's writer claim for an operator action or a stopped run once its
+    /// 5-minute lease has expired. A live claim belongs to a running flow and is refused.
+    /// </summary>
+    /// <returns>True when an expired claim was released; false when none was held.</returns>
+    public bool ReleaseExpired(string key, DateTime now, string action)
+    {
+        var dispatcher = Find<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(service, key)
+        );
+        if (dispatcher?.Value.OperationKey != key || dispatcher.Value.RunId == null)
+            return false;
+        if (dispatcher.Value.LeaseUntilUtc > now)
+            throw new EvaluationBlockedException(
+                "A run is working on this operation. "
+                    + action
+                    + " is available when its 5-minute claim expires."
+            );
+        dispatcher.Value.HttpOutstanding = false;
+        dispatcher.Value.RunId = null;
+        dispatcher.Value.OperationKey = null;
+        dispatcher.Value.Token = Guid.Empty;
+        dispatcher.Value.RecoveryPermitted = false;
+        dispatcher.Value.Status = "Idle";
+        Save(dispatcher);
+        Create(
+            "asx_attempt",
+            new AttemptDocument
+            {
+                Key = "attempt:" + Guid.NewGuid().ToString("N"),
+                Status = "Recorded",
+                OperationKey = key,
+                RunId = action,
+                Event = "ReleaseExpiredClaim",
+                AtUtc = now,
+            }
+        );
+        return true;
     }
 
     /// <summary>
@@ -329,7 +406,9 @@ public sealed class DocumentStore
             );
             query.Criteria.AddFilter(retry);
             // Work a run left mid-step (a cancelled or timed-out flow) is listed again; Claim
-            // takes it over once its lease expires and re-reads before any write.
+            // takes it over once its lease expires and re-reads before any write. A library
+            // setup with an unknown write is RecoveryRequired, outside this set, so it never
+            // holds a page slot while it waits for the operator.
             query.Criteria.AddCondition("asx_status", ConditionOperator.In, InFlight);
         }
         else
@@ -353,17 +432,8 @@ public sealed class DocumentStore
         return service
             .RetrieveMultiple(query)
             .Entities.Select(row =>
-                JsonWire.Read<StoredDocument>(row.GetAttributeValue<string>("asx_payload"))
+                JsonWire.Read<StoredDocument>(row.GetAttributeValue<string>("asx_payload")).Key
             )
-            // A library creation with an unknown outcome waits for operator recovery: a second
-            // create could make a duplicate library.
-            .Where(work =>
-                !(
-                    work.Status == "ExternalUnknown"
-                    && work.Key.StartsWith("librarycreate:", StringComparison.Ordinal)
-                )
-            )
-            .Select(work => work.Key)
             .ToArray();
     }
 }

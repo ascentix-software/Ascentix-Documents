@@ -983,7 +983,7 @@ public sealed class WorkerCoordinator
     private WorkerResult Retry(WorkerRequest request)
     {
         var operation = store.Require<OperationDocument>("asx_operation", request.Key);
-        bool expired = ReleaseExpired(request.Key, "Retry");
+        bool expired = store.ReleaseExpired(request.Key, clock(), "Retry");
         if (operation.Value.Status == "Applied")
             return Done(operation);
         if (
@@ -1018,7 +1018,7 @@ public sealed class WorkerCoordinator
         var operation = store.Require<OperationDocument>("asx_operation", request.Key);
         // Cancel works once no run holds a live claim. A folder an earlier create may have
         // made stays in SharePoint; Cancel never deletes content.
-        ReleaseExpired(request.Key, "Cancel");
+        store.ReleaseExpired(request.Key, clock(), "Cancel");
         if (operation.Value.Status == "Applied")
             return Done(operation);
         operation.Value.Status = "Cancelled";
@@ -1027,31 +1027,6 @@ public sealed class WorkerCoordinator
         store.Save(operation);
         Audit(request.Key, "operator", "Cancel");
         return new WorkerResult { Status = "Cancelled", Key = request.Key };
-    }
-
-    /// <summary>
-    /// Releases this operation's writer claim for an operator action once its lease has expired.
-    /// A live claim belongs to a running flow and is refused.
-    /// </summary>
-    /// <returns>True when an expired claim was released.</returns>
-    private bool ReleaseExpired(string key, string action)
-    {
-        var dispatcher = store.Find<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(service, key)
-        );
-        if (dispatcher?.Value.OperationKey != key || dispatcher.Value.RunId == null)
-            return false;
-        if (dispatcher.Value.LeaseUntilUtc > clock())
-            throw new EvaluationBlockedException(
-                "A run is working on this operation. "
-                    + action
-                    + " is available when its 5-minute claim expires."
-            );
-        dispatcher.Value.HttpOutstanding = false;
-        Release(dispatcher);
-        Audit(key, "operator", "ReleaseExpiredClaim");
-        return true;
     }
 
     private WorkerResult Replan(WorkerRequest request)
@@ -1194,6 +1169,13 @@ public sealed class WorkerCoordinator
                     request.RunId,
                     "RecoveredCreateResponse:" + DocumentStore.Hash(request.ResponseBody)
                 );
+                setup = store.Require<LibrarySetup>("asx_operation", request.Key);
+            }
+            // List the permitted setup again so the dispatcher resumes it.
+            if (setup.Value.Status == "RecoveryRequired")
+            {
+                setup.Value.Status = "Pending";
+                store.Save(setup);
             }
         }
         dispatcher.Value.HttpOutstanding = false;

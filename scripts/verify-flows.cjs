@@ -104,6 +104,18 @@ function checkFlow(flow) {
             action.inputs.parameters.item.Request.includes(field),
             key + ' must pass the failure ' + field,
           );
+      // A drive that failed with no failed Dataverse action reports DriveFailed (not temporary),
+      // except when a slot wait hit its loop limit, which stays temporary.
+      if (key === 'Record_failed_operation')
+        for (const part of [
+          "'DriveFailed'",
+          "actions('Await_read_slot')",
+          "actions('Await_create_slot')",
+        ])
+          assert(
+            action.inputs.parameters.item.Request.includes(part),
+            key + ' must classify a drive failure without a failed action: ' + part,
+          );
       if (action.type === 'Until')
         assert.equal(
           action.operationOptions,

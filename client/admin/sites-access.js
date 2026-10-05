@@ -108,7 +108,7 @@
     const stages = progressStages(operation.kind);
     const done = ['Ready', 'Approved', 'Applied', 'Discovered'].includes(status);
     const stopped =
-      ['Blocked', 'Quarantined'].includes(status) ||
+      ['Blocked', 'Quarantined', 'RecoveryRequired'].includes(status) ||
       (status === 'ExternalUnknown' && !!result.Issue);
     const queued = ['Pending', 'Queued', 'Busy'].includes(status);
     const captured = ['Verified', 'Captured'].includes(status);

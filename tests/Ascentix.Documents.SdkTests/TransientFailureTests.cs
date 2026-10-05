@@ -54,6 +54,7 @@ public sealed class TransientFailureTests
     [InlineData(500, "0x8004418D", "Sandbox Worker process crashed", false)]
     [InlineData(400, "0x80060883", "ConcurrencyVersionNotProvided", false)]
     [InlineData(400, "not-a-code", null, false)]
+    [InlineData(null, "DriveFailed", null, false)]
     public void ClassifiesTemporaryAndGenuineFailures(
         int? status,
         string? code,
