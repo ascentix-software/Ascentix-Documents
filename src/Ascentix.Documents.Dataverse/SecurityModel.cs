@@ -26,6 +26,13 @@ public sealed class TeamPerson
     public string Login { get; set; } = "";
 }
 
+public sealed class TeamSnapshot
+{
+    public TeamPerson[] People { get; set; } = Array.Empty<TeamPerson>();
+
+    public string[] Skipped { get; set; } = Array.Empty<string>();
+}
+
 [DataContract]
 public sealed class PolicyEntry
 {
@@ -103,6 +110,10 @@ public sealed class PolicyDocument : StoredDocument
 
     [DataMember]
     public string[] ResidualAccess { get; set; } = Array.Empty<string>();
+
+    /// <summary>What the last access run skipped or reconciled, for admins to review.</summary>
+    [DataMember]
+    public string[] Notices { get; set; } = Array.Empty<string>();
 }
 
 [DataContract]
@@ -162,6 +173,9 @@ public sealed class MembershipDocument : StoredDocument
 
     [DataMember]
     public SitePerson[] Observed { get; set; } = Array.Empty<SitePerson>();
+
+    [DataMember]
+    public string[] Skipped { get; set; } = Array.Empty<string>();
 
     [DataMember]
     public bool Complete { get; set; }
@@ -282,6 +296,14 @@ public sealed class SecurityOperation : OperationDocument
 
     [DataMember]
     public int MutationRole { get; set; }
+
+    /// <summary>What this run skipped or reconciled; copied to the policy when it completes.</summary>
+    [DataMember]
+    public string[] Notices { get; set; } = Array.Empty<string>();
+
+    /// <summary>Member changes SharePoint rejected in this run, keyed by group, so they are not retried.</summary>
+    [DataMember]
+    public string[] SkippedMembers { get; set; } = Array.Empty<string>();
 }
 
 [DataContract]

@@ -17,7 +17,14 @@ public sealed class TeamSnapshotReader
         this.service = service;
     }
 
-    public TeamPerson[] Read(Guid teamId)
+    public TeamPerson[] Read(Guid teamId) => Snapshot(teamId).People;
+
+    /// <summary>
+    /// Reads the team's members that SharePoint can take, and lists the ones it skipped and why.
+    /// </summary>
+    /// <param name="teamId">The opted-in Dataverse owner team.</param>
+    /// <returns>The members to sync and one notice for each member that was skipped.</returns>
+    public TeamSnapshot Snapshot(Guid teamId)
     {
         var registration = new DocumentStore(service)
             .Require<TeamRegistration>("asx_teamregistration", "team:" + teamId.ToString("N"))
@@ -25,8 +32,8 @@ public sealed class TeamSnapshotReader
         if (registration.TeamId != teamId)
             throw new EvaluationBlockedException("Team registration identity mismatch.");
         if (!registration.Enabled)
-            return Array.Empty<TeamPerson>(); // Explicit opt-out tombstone; a failed native read never means an empty team.
-        var team = service.Retrieve("team", teamId, new ColumnSet("teamtype", "isdefault"));
+            return new TeamSnapshot(); // Explicit opt-out tombstone; a failed native read never means an empty team.
+        var team = service.Retrieve("team", teamId, new ColumnSet("name", "teamtype", "isdefault"));
         if (
             team.GetAttributeValue<OptionSetValue>("teamtype")?.Value != 0
             || team.GetAttributeValue<bool>("isdefault")
@@ -34,9 +41,11 @@ public sealed class TeamSnapshotReader
             throw new EvaluationBlockedException(
                 "Only opted-in, non-default manual owner teams are supported."
             );
+        string teamName = Clean(team.GetAttributeValue<string>("name"), teamId.ToString("D"));
         var query = new QueryExpression("systemuser")
         {
             ColumnSet = new ColumnSet(
+                "fullname",
                 "domainname",
                 "azureactivedirectoryobjectid",
                 "isdisabled",
@@ -49,6 +58,7 @@ public sealed class TeamSnapshotReader
             .AddLink("teammembership", "systemuserid", "systemuserid")
             .LinkCriteria.AddCondition("teamid", ConditionOperator.Equal, teamId);
         var people = new List<TeamPerson>();
+        var skipped = new List<string>();
         var ids = new HashSet<Guid>();
         var logins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var entra = new HashSet<Guid>();
@@ -62,24 +72,36 @@ public sealed class TeamSnapshotReader
                     throw new EvaluationBlockedException("Duplicate/changing membership page.");
                 if (row.GetAttributeValue<bool>("isdisabled"))
                     continue;
+                // B2B guests are supported: their domainname is the #EXT# UPN that SharePoint
+                // uses in their claims login.
                 string upn = row.GetAttributeValue<string>("domainname") ?? "";
                 Guid oid = row.GetAttributeValue<Guid>("azureactivedirectoryobjectid");
-                if (
-                    oid == Guid.Empty
-                    || row.GetAttributeValue<Guid>("applicationid") != Guid.Empty
-                    || upn.IndexOf("#EXT#", StringComparison.OrdinalIgnoreCase) >= 0
-                    || !Regex.IsMatch(
-                        upn,
-                        @"\A[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\z"
-                    )
-                    || !entra.Add(oid)
-                )
-                    throw new EvaluationBlockedException(
-                        "Unsupported or ambiguous team user identity."
-                    );
                 string login = "i:0#.f|membership|" + upn.ToLowerInvariant();
-                if (!logins.Add(login))
-                    throw new EvaluationBlockedException("Multiple users resolve to one login.");
+                string? reason =
+                    row.GetAttributeValue<Guid>("applicationid") != Guid.Empty
+                        ? "it is an application user"
+                    : oid == Guid.Empty ? "it has no Microsoft Entra object ID"
+                    : !Regex.IsMatch(upn, Upn) ? "its sign-in name cannot be used in SharePoint"
+                    : !entra.Add(oid) ? "another team member has the same Microsoft Entra object ID"
+                    : !logins.Add(login) ? "another team member has the same sign-in name"
+                    : null;
+                if (reason != null)
+                {
+                    string who = Clean(
+                        row.GetAttributeValue<string>("fullname"),
+                        Clean(upn, "user " + row.Id.ToString("D"))
+                    );
+                    skipped.Add(
+                        "Team '"
+                            + teamName
+                            + "': "
+                            + who
+                            + " was not added to the library group because "
+                            + reason
+                            + "."
+                    );
+                    continue;
+                }
                 people.Add(
                     new TeamPerson
                     {
@@ -104,7 +126,23 @@ public sealed class TeamSnapshotReader
                 throw new EvaluationBlockedException("Incomplete or cyclic team pagination.");
             query.PageInfo.PagingCookie = page.PagingCookie;
         }
-        return people.OrderBy(p => p.UserId).ToArray();
+        return new TeamSnapshot
+        {
+            People = people.OrderBy(p => p.UserId).ToArray(),
+            Skipped = skipped.ToArray(),
+        };
+    }
+
+    // An email-shaped UPN. It also matches B2B guests (name_domain#EXT#@tenant). '|' is left out
+    // because it separates the parts of a SharePoint claims login.
+    private const string Upn = @"\A[a-zA-Z0-9.!#$%&'*+/=?^_`{}~-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\z";
+
+    private static string Clean(string? value, string fallback)
+    {
+        string text = new string((value ?? "").Where(c => !char.IsControl(c)).ToArray()).Trim();
+        if (text.Length == 0)
+            return fallback;
+        return text.Length > 120 ? text.Substring(0, 120) + "..." : text;
     }
 
     public static string Hash(TeamPerson[] people)

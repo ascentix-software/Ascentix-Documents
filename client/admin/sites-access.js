@@ -343,6 +343,10 @@
             : p.result.Status === 'Applied'
               ? 'Access and team membership confirmed.'
               : p.result.Status;
+    // What the last access sync skipped or reconciled, such as members SharePoint could not take.
+    const notices = (p && p.result.Policy?.Notices) || [];
+    $('ad-access-notices').replaceChildren(...notices.map((n) => node('li', n)));
+    $('ad-access-notices').hidden = !notices.length;
     [
       'ad-validate',
       'ad-provision',

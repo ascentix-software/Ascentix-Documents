@@ -158,9 +158,22 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     RowVersion: '3',
     Policy: { Desired: applied.Entries, Applied: applied.Entries },
   };
+  policy.Policy.Notices = [
+    "Team 'Operations': Integration App was not added to the library group because it is an application user.",
+    '<b>SharePoint did not add ghost@example.com</b>',
+  ];
   nodes.access.hidden = false;
   await timers.shift()();
   assert.match(nodes['ad-change-status'].textContent, /confirmed/);
+  assert.equal(nodes['ad-access-notices'].hidden, false, 'Access notices are shown');
+  assert.equal(nodes['ad-access-notices'].children.length, 2);
+  assert.match(nodes['ad-access-notices'].textContent, /Integration App was not added/);
+  assert.equal(
+    nodes['ad-access-notices'].children[1].textContent,
+    '<b>SharePoint did not add ghost@example.com</b>',
+    'Notices are text, never markup',
+  );
+  delete policy.Policy.Notices;
   assert(refresh > 0);
   const select = nodes['ad-teams'].children[0].children[1].children[0];
   select.value = 'None';

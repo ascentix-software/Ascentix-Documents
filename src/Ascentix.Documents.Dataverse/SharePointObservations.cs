@@ -79,6 +79,33 @@ public sealed class ItemObservation
 }
 
 [DataContract]
+public sealed class SharePointErrorBody
+{
+    [DataMember(Name = "error")]
+    public SharePointError? Verbose { get; set; }
+
+    [DataMember(Name = "odata.error")]
+    public SharePointError? Light { get; set; }
+}
+
+[DataContract]
+public sealed class SharePointError
+{
+    [DataMember(Name = "code")]
+    public string? Code { get; set; }
+
+    [DataMember(Name = "message")]
+    public SharePointErrorMessage? Message { get; set; }
+}
+
+[DataContract]
+public sealed class SharePointErrorMessage
+{
+    [DataMember(Name = "value")]
+    public string? Value { get; set; }
+}
+
+[DataContract]
 public sealed class AclAssignment
 {
     [DataMember(Name = "Member")]
@@ -146,6 +173,30 @@ public static class SharePointObservations
             );
         return JsonWire.Read<ODataEnvelope<T>>(request.ResponseBody).Data
             ?? throw new EvaluationBlockedException("Missing OData body.");
+    }
+
+    /// <summary>
+    /// Reads SharePoint's error message from a rejected write, for an admin notice.
+    /// </summary>
+    /// <param name="request">The worker response carrying SharePoint's status and body.</param>
+    /// <returns>SharePoint's message, or the HTTP status when the body has none.</returns>
+    public static string ErrorMessage(WorkerRequest request)
+    {
+        string? message = null;
+        try
+        {
+            var body = JsonWire.Read<SharePointErrorBody>(request.ResponseBody ?? "");
+            message = (body.Verbose ?? body.Light)?.Message?.Value;
+        }
+        catch (Exception error)
+            when (error is EvaluationBlockedException || error is SerializationException)
+        {
+            // Not the verbose or light OData error shape; the status code is reported instead.
+        }
+        message = new string((message ?? "").Where(c => !char.IsControl(c)).ToArray()).Trim();
+        if (message.Length > 400)
+            message = message.Substring(0, 400) + "...";
+        return message.Length == 0 ? "HTTP " + request.HttpStatus + "." : message;
     }
 
     public static string AclHash(ODataRows<AclAssignment> assignments)

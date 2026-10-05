@@ -675,6 +675,111 @@ public sealed class SecurityWorkerTests
     }
 
     [Fact]
+    public void GuestTeamMemberIsAddedToTheGroupWithItsExternalSignInName()
+    {
+        var f = new Fixture();
+        f.AddPerson("Partner_Fabrikam.com#EXT#@contoso.onmicrosoft.com", "Pat Partner");
+        f.Queue("Read");
+        f.Drive();
+        Assert.Equal(
+            "i:0#.f|membership|partner_fabrikam.com#ext#@contoso.onmicrosoft.com",
+            f.Members.Single().Login
+        );
+        Assert.Empty(f.Policy().Notices);
+    }
+
+    [Fact]
+    public void MembersDocumentsCannotResolveAreSkippedWithANoticeAndTheRestSync()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.AddPerson("app@example.com", "Integration App", application: Guid.NewGuid());
+        f.AddPerson("noentra@example.com", "No Entra", entra: Guid.Empty);
+        f.AddPerson("bad|claim@example.com", "Claim Breaker");
+        f.Queue("Read");
+        var result = f.Drive();
+        Assert.Equal("person@example.com", f.Members.Single().Login.Split('|').Last());
+        var notices = f.Policy().Notices;
+        Assert.Equal(3, notices.Length);
+        Assert.Contains(notices, n => n.Contains("Integration App") && n.Contains("application"));
+        Assert.Contains(notices, n => n.Contains("No Entra") && n.Contains("Entra object ID"));
+        Assert.Contains(notices, n => n.Contains("Claim Breaker") && n.Contains("sign-in name"));
+        Assert.All(notices, n => Assert.Contains("Operations", n));
+        Assert.All(notices, n => Assert.Contains(n, result.Notices));
+    }
+
+    [Fact]
+    public void TeamSnapshotSkipsUnusableMembersInsteadOfRejectingTheTeam()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.AddPerson("app@example.com", "Integration App", application: Guid.NewGuid());
+        var snapshot = new TeamSnapshotReader(f.Service).Snapshot(f.Team);
+        Assert.Single(snapshot.People);
+        Assert.Contains("Integration App", snapshot.Skipped.Single());
+        Assert.Single(new TeamSnapshotReader(f.Service).Read(f.Team));
+    }
+
+    [Fact]
+    public void OneMemberSharePointRejectsIsSkippedWithItsMessageAndOthersAreAdded()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.AddPerson("ghost@example.com", "Ghost");
+        f.AddPerson("third@example.com", "Third");
+        f.Queue("Read");
+        var work = f.Start();
+        for (int i = 0; i < 200 && work.Status != "Applied" && work.Status != "Blocked"; i++)
+        {
+            if (work.Status == "Read")
+                work = f.Observe(work);
+            else if (work.Status == "ReadyToCreate")
+                work = f.Call("PrepareCreate", work);
+            else if (work.Status == "Create")
+            {
+                var op = f.Operation();
+                if (op.MutationKind == "MemberAdd" && op.MutationLogin.Contains("ghost"))
+                    work = f.Call(
+                        "CreateResponse",
+                        work,
+                        "{\"error\":{\"code\":\"-2146232832, Microsoft.SharePoint.SPException\",\"message\":{\"lang\":\"en-US\",\"value\":\"The user does not exist or is not unique.\"}}}",
+                        400
+                    );
+                else
+                {
+                    f.Apply();
+                    work = f.Call("CreateResponse", work, status: 200);
+                }
+            }
+            else if (work.Status == "Verified")
+                work = f.Call("Complete", work);
+        }
+        Assert.True(work.Status == "Applied", string.Join(" ", work.Notices));
+        Assert.Equal(2, f.Members.Count);
+        Assert.DoesNotContain(f.Members, m => m.Login.Contains("ghost"));
+        var notice = f.Policy().Notices.Single();
+        Assert.Contains("ghost@example.com", notice);
+        Assert.Contains("The user does not exist or is not unique.", notice);
+        Assert.Equal(1, f.Writes.Count(w => w == "GrantAdd"));
+    }
+
+    [Theory]
+    [InlineData(
+        "{\"odata.error\":{\"code\":\"-1\",\"message\":{\"lang\":\"en-US\",\"value\":\"User not found.\"}}}",
+        "User not found."
+    )]
+    [InlineData("{\"error\":{\"code\":\"-1\",\"message\":\"Plain message\"}}", "HTTP 404.")]
+    [InlineData("<html>Not found</html>", "HTTP 404.")]
+    [InlineData(null, "HTTP 404.")]
+    public void SharePointErrorMessageFallsBackToTheStatus(string? body, string expected) =>
+        Assert.Equal(
+            expected,
+            SharePointObservations.ErrorMessage(
+                new WorkerRequest { HttpStatus = 404, ResponseBody = body }
+            )
+        );
+
+    [Fact]
     public void ChangedTeamSnapshotBlocksBeforeMembershipRemoval()
     {
         var f = new Fixture();
@@ -1353,6 +1458,25 @@ public sealed class SecurityWorkerTests
                     Status = "Enabled",
                 }
             );
+        }
+
+        public void AddPerson(
+            string domain,
+            string name,
+            Guid? entra = null,
+            Guid? application = null
+        )
+        {
+            var row = new Entity("systemuser", Guid.NewGuid())
+            {
+                ["domainname"] = domain,
+                ["fullname"] = name,
+                ["azureactivedirectoryobjectid"] = entra ?? Guid.NewGuid(),
+                ["isdisabled"] = false,
+            };
+            if (application != null)
+                row["applicationid"] = application.Value;
+            Service.Seed(row);
         }
 
         public void AddUser() =>

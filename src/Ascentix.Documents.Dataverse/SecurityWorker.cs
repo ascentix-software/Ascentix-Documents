@@ -112,7 +112,15 @@ public sealed class SecurityWorker
                 if (request.HttpStatus < 200 || request.HttpStatus >= 300)
                 {
                     op.Value.ExternalResponseKnown = true;
-                    return Block(op, claim, "SecurityWriteRejected");
+                    if (
+                        op.Value.MutationKind != "MemberAdd"
+                        && op.Value.MutationKind != "MemberRemove"
+                    )
+                        return Block(op, claim, "SecurityWriteRejected");
+                    // One member SharePoint will not take is skipped; everyone else still syncs.
+                    SkipMember(op.Value, request);
+                    ClearMutation(op.Value);
+                    return Probe(op, claim.Value, catalog, "SecurityMembers");
                 }
                 op.Value.ExternalResponseKnown = true;
                 return Probe(
@@ -489,7 +497,10 @@ public sealed class SecurityWorker
             + op.Value.PolicyRevision.ToString("N")
             + ":"
             + entry.TeamId.ToString("N");
-        if (store.Find<MembershipDocument>("asx_membership", op.Value.MembershipKey) == null)
+        var membership = store.Find<MembershipDocument>("asx_membership", op.Value.MembershipKey);
+        if (membership == null)
+        {
+            var snapshot = new TeamSnapshotReader(service).Snapshot(entry.TeamId);
             store.Create(
                 "asx_membership",
                 new MembershipDocument
@@ -497,9 +508,17 @@ public sealed class SecurityWorker
                     Key = op.Value.MembershipKey,
                     GroupKey = groupKey,
                     Generation = op.Value.PolicyRevision,
-                    Desired = new TeamSnapshotReader(service).Read(entry.TeamId),
+                    Desired = snapshot.People,
+                    Skipped = snapshot.Skipped,
                 }
             );
+            membership = store.Require<MembershipDocument>(
+                "asx_membership",
+                op.Value.MembershipKey
+            );
+        }
+        foreach (var skipped in membership.Value.Skipped)
+            Notice(op.Value, skipped);
         return Probe(op, claim, catalog, "SecurityGroup");
     }
 
@@ -540,6 +559,7 @@ public sealed class SecurityWorker
         var desired = snapshot.Value.Desired.Select(p => p.Login).ToArray();
         var remove = op.Value.Members.FirstOrDefault(p =>
             !desired.Contains(p.Login, StringComparer.OrdinalIgnoreCase)
+            && !op.Value.SkippedMembers.Contains(op.Value.GroupKey + "|#" + p.Id)
         );
         if (remove != null)
         {
@@ -555,6 +575,10 @@ public sealed class SecurityWorker
         var add = desired.FirstOrDefault(login =>
             !op.Value.Members.Any(p =>
                 string.Equals(p.Login, login, StringComparison.OrdinalIgnoreCase)
+            )
+            && !op.Value.SkippedMembers.Contains(
+                op.Value.GroupKey + "|" + login,
+                StringComparer.OrdinalIgnoreCase
             )
         );
         if (add != null)
@@ -722,6 +746,7 @@ public sealed class SecurityWorker
         policy.Value.Queued = Array.Empty<PolicyEntry>();
         policy.Value.OperationKey = null;
         policy.Value.Status = "Applied";
+        policy.Value.Notices = op.Value.Notices;
         policy.Value.ResidualAccess = new[]
         {
             "Documents manages only its own team groups and their grants on this library. People may still have access through other groups, direct shares, links, item permissions or site administration.",
@@ -767,7 +792,7 @@ public sealed class SecurityWorker
         {
             Status = "Applied",
             Key = op.Value.Key,
-            Notices = policy.Value.ResidualAccess,
+            Notices = op.Value.Notices.Concat(policy.Value.ResidualAccess).ToArray(),
         };
     }
 
@@ -998,6 +1023,52 @@ public sealed class SecurityWorker
             Key = op.Value.Key,
             Notices = new[] { op.Value.ErrorCode! },
         };
+    }
+
+    // Bounded so the operation stays well inside the 500,000-character JSON payload limit.
+    private const int NoticeLimit = 200;
+
+    /// <summary>Records something an admin should see after the run, once.</summary>
+    private static void Notice(SecurityOperation op, string text)
+    {
+        text = new string(text.Where(c => !char.IsControl(c)).ToArray());
+        if (text.Length > 600)
+            text = text.Substring(0, 600) + "...";
+        if (op.Notices.Length >= NoticeLimit)
+            text = "More notices were not recorded.";
+        if (op.Notices.Length > NoticeLimit || op.Notices.Contains(text, StringComparer.Ordinal))
+            return;
+        op.Notices = op.Notices.Concat(new[] { text }).ToArray();
+    }
+
+    /// <summary>Records a member add or remove SharePoint rejected, with SharePoint's message.</summary>
+    private void SkipMember(SecurityOperation op, WorkerRequest request)
+    {
+        bool adding = op.MutationKind == "MemberAdd";
+        string login = adding
+            ? op.MutationLogin
+            : op.Members.FirstOrDefault(m => m.Id == op.MutationMemberId)?.Login
+                ?? "SharePoint user " + op.MutationMemberId;
+        op.SkippedMembers = op
+            .SkippedMembers.Concat(
+                new[]
+                {
+                    op.GroupKey + (adding ? "|" + op.MutationLogin : "|#" + op.MutationMemberId),
+                }
+            )
+            .ToArray();
+        string title = store.Require<ManagedGroup>("asx_managedgroup", op.GroupKey).Value.Title;
+        Notice(
+            op,
+            "SharePoint did not "
+                + (adding ? "add " : "remove ")
+                + login.Substring(login.LastIndexOf('|') + 1)
+                + (adding ? " to" : " from")
+                + " the group for team '"
+                + title
+                + "': "
+                + SharePointObservations.ErrorMessage(request)
+        );
     }
 
     private static void ClearMutation(SecurityOperation op)
