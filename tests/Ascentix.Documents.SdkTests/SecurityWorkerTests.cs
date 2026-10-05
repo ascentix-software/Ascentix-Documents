@@ -464,6 +464,59 @@ public sealed class SecurityWorkerTests
         Assert.Equal("Applied", f.Drive().Status);
     }
 
+    private static void ExpireClaim(Fixture f)
+    {
+        var claim = f.Store.Require<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(f.Service, f.Key)
+        );
+        claim.Value.LeaseUntilUtc = DateTime.UtcNow.AddMinutes(-1);
+        f.Store.Save(claim);
+    }
+
+    [Theory]
+    [InlineData("GroupCreate", false)]
+    [InlineData("GroupCreate", true)]
+    [InlineData("MemberAdd", false)]
+    [InlineData("MemberAdd", true)]
+    [InlineData("GrantAdd", false)]
+    [InlineData("GrantAdd", true)]
+    public void UnknownSecurityWriteIsReadBackAndReconciledAfterTheLease(string kind, bool applied)
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        var work = f.Start();
+        for (int i = 0; ; i++)
+        {
+            Assert.True(i < 200, "Mutation " + kind + " never prepared.");
+            if (work.Status == "Read")
+                work = f.Observe(work);
+            else if (work.Status == "ReadyToCreate" && f.Operation().MutationKind == kind)
+                break;
+            else if (work.Status == "ReadyToCreate")
+                work = f.Call("PrepareCreate", work);
+            else if (work.Status == "Create")
+            {
+                f.Apply();
+                work = f.Call("CreateResponse", work, status: 200);
+            }
+            else
+                throw new Exception(work.Status);
+        }
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        if (applied)
+            f.Apply();
+        Assert.Equal("Quarantined", f.Call("CreateResponse", work, status: 0).Status);
+        Assert.Equal("Quarantined", f.Start().Status);
+        ExpireClaim(f);
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Equal(1, f.Writes.Count(w => w == kind));
+        Assert.Single(f.Members);
+        Assert.Equal(2, f.Acl.Single(a => a.Member.Id == 42).Roles.Rows.Single().Id);
+    }
+
     [Fact]
     public void UnknownSecurityWriteCannotRepeatOrReleaseTheDispatcher()
     {

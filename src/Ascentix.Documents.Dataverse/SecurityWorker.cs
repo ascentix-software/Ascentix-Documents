@@ -237,10 +237,16 @@ public sealed class SecurityWorker
                 claim.Value.RunId == request.RunId
                 && claim.Value.Token == request.Token
                 && claim.Value.LeaseUntilUtc > clock();
-            if (!same && !claim.Value.RecoveryPermitted)
+            // Once the lease expires the next claim takes over and reads back any unknown write.
+            if (!same && !claim.Value.RecoveryPermitted && claim.Value.LeaseUntilUtc > clock())
                 return new WorkerResult { Status = "Quarantined", Key = request.Key };
             if (!same)
+            {
+                claim.Value.HttpOutstanding = false;
+                if (op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)
+                    op.Value.Reprobe = true;
                 op.Value.ExternalResponseKnown = true;
+            }
         }
         op.Value.Steps = 0;
         claim.Value.OperationKey = request.Key;
@@ -280,7 +286,12 @@ public sealed class SecurityWorker
             throw new EvaluationBlockedException("Stale security observation.");
         try
         {
-            if (request.HttpStatus == 429 || request.HttpStatus >= 500 || request.HttpStatus == 0)
+            if (
+                request.HttpStatus == 429
+                || request.HttpStatus >= 500
+                || request.HttpStatus == 0
+                || request.HttpStatus == 408
+            )
             {
                 if (op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)
                     return Block(op, claim, "UnknownSecurityWrite");
@@ -364,6 +375,17 @@ public sealed class SecurityWorker
                         );
                     var group = store.Require<ManagedGroup>("asx_managedgroup", op.Value.GroupKey);
                     var found = groups.Rows.SingleOrDefault();
+                    if (
+                        found == null
+                        && op.Value.Reprobe
+                        && op.Value.MutationKind == "GroupCreate"
+                        && group.Value.GroupId == 0
+                    )
+                    {
+                        // Read back after an unknown create: no group, so it was not created.
+                        op.Value.Reprobe = false;
+                        ClearMutation(op.Value);
+                    }
                     if (found == null)
                     {
                         if (group.Value.GroupId != 0 || op.Value.ExternalSubmitted)
@@ -524,10 +546,13 @@ public sealed class SecurityWorker
                     )
                 )
                 : op.Value.Members.Any(m => m.Id == op.Value.MutationMemberId);
-            if (!op.Value.ExternalResponseKnown || present != adding)
+            // After an unknown write the readback decides: a missing change was not applied and
+            // is prepared again below from the same comparison.
+            if (!op.Value.ExternalResponseKnown || (present != adding && !op.Value.Reprobe))
                 throw new EvaluationBlockedException(
                     "Membership independent readback differs from the submitted change."
                 );
+            op.Value.Reprobe = false;
             ClearMutation(op.Value);
         }
         snapshot.Value.Observed = op.Value.Members;
@@ -590,6 +615,18 @@ public sealed class SecurityWorker
         if (actual != null && actual.Member.Type != 8)
             throw new EvaluationBlockedException("Managed group principal type changed.");
         int[] roles = actual?.Roles.Rows.Select(r => r.Id).ToArray() ?? Array.Empty<int>();
+        if (
+            op.Value.Reprobe
+            && op.Value.MutationKind.StartsWith("Grant", StringComparison.Ordinal)
+            && hash == op.Value.BaselineHash
+            && hash != op.Value.ExpectedAclHash
+        )
+        {
+            // Read back after an unknown write: the ACL is unchanged, so the grant change was
+            // not applied. The comparison below prepares it again.
+            op.Value.Reprobe = false;
+            ClearMutation(op.Value);
+        }
         if (op.Value.MutationKind.StartsWith("Grant", StringComparison.Ordinal))
         {
             if (!op.Value.ExternalResponseKnown)
@@ -611,6 +648,7 @@ public sealed class SecurityWorker
             grant.Value.Status = "Applied";
             grant.Value.Generation = op.Value.PolicyRevision;
             store.Save(grant);
+            op.Value.Reprobe = false;
             ClearMutation(op.Value);
             grant = store.Require<ManagedGrant>("asx_managedgrant", key);
         }

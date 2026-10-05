@@ -145,6 +145,19 @@ public sealed class LibraryProvisioningTests
         Assert.Equal("Quarantined", f.Run(queued.Key).Status);
         Assert.Single(f.Posts);
         Assert.Equal("ExternalUnknown", f.Worker.Inspect(queued.Key).Status);
+        // An expired lease does not release an unknown library creation: a second create
+        // could make a duplicate library, so it keeps operator recovery with evidence.
+        var lease = f.Store.Require<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(f.Service, queued.Key)
+        );
+        lease.Value.LeaseUntilUtc = DateTime.UtcNow.AddMinutes(-1);
+        f.Store.Save(lease);
+        Assert.Equal("Quarantined", f.Call("Claim", new WorkerResult { Key = queued.Key }).Status);
+        Assert.DoesNotContain(
+            queued.Key,
+            f.Store.Pending("asx_operation", now: DateTime.UtcNow.AddHours(1))
+        );
         Assert.Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
             f.Worker.Execute(new WorkerRequest { Command = "Retry", Key = queued.Key }, true)
         );

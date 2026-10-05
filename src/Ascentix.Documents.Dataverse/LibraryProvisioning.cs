@@ -306,9 +306,20 @@ public sealed class LibraryProvisioning
             {
                 if (claim.Value.OperationKey != request.Key)
                     return new WorkerResult { Status = "Busy", Key = request.Key };
-                if (!claim.Value.RecoveryPermitted)
+                // An expired lease is taken over only when no library write is outstanding; an
+                // unknown write keeps operator recovery, since a second create could duplicate it.
+                bool unknownWrite = op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
+                if (
+                    !claim.Value.RecoveryPermitted
+                    && (claim.Value.LeaseUntilUtc > clock() || unknownWrite)
+                )
                     return new WorkerResult { Status = "Quarantined", Key = request.Key };
-                if (op.Value.Mutation == "CreateLibrary" && op.Value.ListId == Guid.Empty)
+                claim.Value.HttpOutstanding = false;
+                if (
+                    unknownWrite
+                    && op.Value.Mutation == "CreateLibrary"
+                    && op.Value.ListId == Guid.Empty
+                )
                     throw new EvaluationBlockedException(
                         "Unknown library creation needs physical identity reconciliation; a same-name library must not be adopted automatically."
                     );
@@ -429,7 +440,12 @@ public sealed class LibraryProvisioning
             || request.ProbeKind != op.Value.ProbeKind
         )
             throw new EvaluationBlockedException("Library observation does not match its request.");
-        if (request.HttpStatus == 429 || request.HttpStatus >= 500 || request.HttpStatus == 0)
+        if (
+            request.HttpStatus == 429
+            || request.HttpStatus >= 500
+            || request.HttpStatus == 0
+            || request.HttpStatus == 408
+        )
         {
             if (op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)
                 return Block(op, lease, "Library write is unresolved.");

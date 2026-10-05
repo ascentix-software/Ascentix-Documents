@@ -75,12 +75,11 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
-    public void ExpiredClaimsNeverTakeOverWithoutSeparateRecoveryPermit()
+    public void OperatorRecoveryPermitStillWorksOnAnExpiredClaim()
     {
         var fixture = new Fixture();
         var claim = fixture.Claim();
         fixture.Now = fixture.Now.AddMinutes(6);
-        Assert.Equal("Quarantined", fixture.Claim("run-2").Status);
         Assert.Throws<EvaluationBlockedException>(() => fixture.Call("Renew", claim));
         var request = new WorkerRequest
         {

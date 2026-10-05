@@ -239,6 +239,15 @@ public sealed class DocumentStore
                     : null;
     }
 
+    private static readonly object[] InFlight =
+    {
+        "Inspecting",
+        "ReadyToCreate",
+        "ExternalUnknown",
+        "NeedsFinalPolicy",
+        "Verified",
+    };
+
     public WorkerResult FailUnclaimed<T>(string key)
         where T : OperationDocument => FailUnclaimed<T>(key, new WorkerRequest(), DateTime.UtcNow);
 
@@ -319,6 +328,9 @@ public sealed class DocumentStore
                 now ?? DateTime.UtcNow
             );
             query.Criteria.AddFilter(retry);
+            // Work a run left mid-step (a cancelled or timed-out flow) is listed again; Claim
+            // takes it over once its lease expires and re-reads before any write.
+            query.Criteria.AddCondition("asx_status", ConditionOperator.In, InFlight);
         }
         else
         {
@@ -341,8 +353,17 @@ public sealed class DocumentStore
         return service
             .RetrieveMultiple(query)
             .Entities.Select(row =>
-                JsonWire.Read<StoredDocument>(row.GetAttributeValue<string>("asx_payload")).Key
+                JsonWire.Read<StoredDocument>(row.GetAttributeValue<string>("asx_payload"))
             )
+            // A library creation with an unknown outcome waits for operator recovery: a second
+            // create could make a duplicate library.
+            .Where(work =>
+                !(
+                    work.Status == "ExternalUnknown"
+                    && work.Key.StartsWith("librarycreate:", StringComparison.Ordinal)
+                )
+            )
+            .Select(work => work.Key)
             .ToArray();
     }
 }

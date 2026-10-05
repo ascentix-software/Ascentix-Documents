@@ -213,7 +213,10 @@ public static class WorkCoordination
             budget.Value.RecoverPaceUtc = pause.AddMinutes(10);
             store.Save(budget);
         }
-        if (request.HttpStatus == 0 || request.HttpStatus == 408)
+        // A read (Observe) has no side effects, so a missing response is just a failed read: the
+        // worker waits and releases the slot. Only an unknown write outcome keeps the request
+        // outstanding until a later claim reads back what SharePoint did.
+        if ((request.HttpStatus == 0 || request.HttpStatus == 408) && request.Command != "Observe")
             return new WorkerResult
             {
                 Status = "Quarantined",

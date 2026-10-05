@@ -240,6 +240,12 @@ public class OperationDocument : StoredDocument
 
     [DataMember]
     public DateTime? NextAttemptUtc { get; set; }
+
+    // Set when a new claim takes over a write whose outcome is unknown (an expired lease or an
+    // operator retry). The next reads establish what SharePoint did; only then is the write
+    // either adopted or cleared so it can be prepared again.
+    [DataMember]
+    public bool Reprobe { get; set; }
 }
 
 [DataContract]

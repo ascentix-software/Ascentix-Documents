@@ -496,6 +496,56 @@ public sealed class CatalogApprovalTests
         }
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(408)]
+    public void CatalogReadTimeoutWaitsAndReleasesTheWriter(int status)
+    {
+        var f = new Fixture();
+        var queued = f.Admin.Execute(
+            new CatalogRequest
+            {
+                Command = "AddSite",
+                Key = null!,
+                NativeSiteId = f.NativeSite,
+                Name = "Site",
+                RequestId = Guid.NewGuid(),
+            },
+            true
+        );
+        var work = f.Worker.Execute(
+            new WorkerRequest
+            {
+                Command = "Claim",
+                Key = queued.Key,
+                RunId = "run",
+            },
+            true
+        );
+        var result = f.Worker.Execute(
+            new WorkerRequest
+            {
+                Command = "Observe",
+                Key = queued.Key,
+                RunId = "run",
+                Token = work.Token,
+                ProbeId = work.ProbeId,
+                ProbeKind = work.ProbeKind,
+                HttpStatus = status,
+            },
+            true
+        );
+        Assert.Equal("RetryWait", result.Status);
+        Assert.Null(
+            new DocumentStore(f.Service)
+                .Require<DispatcherDocument>(
+                    "asx_claim",
+                    WorkCoordination.Operation(f.Service, queued.Key)
+                )
+                .Value.RunId
+        );
+    }
+
     private static string Envelope<T>(T value) =>
         JsonWire.Write(new ODataEnvelope<T> { Data = value });
 

@@ -466,7 +466,13 @@ public sealed class WorkerCoordinator
                 dispatcher.Value.RunId == request.RunId
                 && dispatcher.Value.Token == request.Token
                 && dispatcher.Value.LeaseUntilUtc > clock();
-            if (!sameLiveRun && !dispatcher.Value.RecoveryPermitted)
+            // A live claim of another run is left alone. Once its lease expires (5 minutes, at
+            // least twice the connector timeout) the next claim takes over and re-reads.
+            if (
+                !sameLiveRun
+                && !dispatcher.Value.RecoveryPermitted
+                && dispatcher.Value.LeaseUntilUtc > clock()
+            )
                 return new WorkerResult { Status = "Quarantined", Key = request.Key };
             recovery = !sameLiveRun;
         }
@@ -495,7 +501,14 @@ public sealed class WorkerCoordinator
         operation.Value.ParentPath = parent;
         operation.Value.AbsenceVerified = false;
         if (recovery)
-            operation.Value.ExternalResponseKnown = true; // Requires the separately privileged, audited recovery permit.
+        {
+            // The earlier run's request is no longer awaited; the reads below establish what
+            // SharePoint did before any write.
+            dispatcher.Value.HttpOutstanding = false;
+            if (operation.Value.ExternalSubmitted && !operation.Value.ExternalResponseKnown)
+                operation.Value.Reprobe = true;
+            operation.Value.ExternalResponseKnown = true;
+        }
         dispatcher.Value.OperationKey = request.Key;
         dispatcher.Value.RunId = request.RunId;
         dispatcher.Value.Token = Guid.NewGuid();
@@ -542,7 +555,12 @@ public sealed class WorkerCoordinator
                 library,
                 operation.Value.ProbeKind == "FinalAcl" ? "FinalParent" : "Parent"
             );
-        if (request.HttpStatus == 429 || request.HttpStatus >= 500 || request.HttpStatus == 0)
+        if (
+            request.HttpStatus == 429
+            || request.HttpStatus >= 500
+            || request.HttpStatus == 0
+            || request.HttpStatus == 408
+        )
             return ScheduleRetry(
                 operation,
                 dispatcher,
@@ -711,6 +729,14 @@ public sealed class WorkerCoordinator
                 && operation.Value.ErrorCode == "CreateNameConflict"
             )
                 return Probe(operation, dispatcher.Value, library, "ConflictFile");
+            if (operation.Value.Reprobe)
+            {
+                // The re-read after an unknown create found no folder: that create made nothing,
+                // so it is no longer outstanding and the folder is created once now.
+                operation.Value.Reprobe = false;
+                operation.Value.ExternalSubmitted = false;
+                operation.Value.ExternalResponseKnown = false;
+            }
             if (operation.Value.ExternalSubmitted)
                 return new WorkerResult
                 {
@@ -741,6 +767,8 @@ public sealed class WorkerCoordinator
                 Key = request.Key,
                 Token = request.Token,
             };
+        // A folder at the path is adopted, so an unknown create is never repeated.
+        operation.Value.Reprobe = false;
         binding.PhysicalId = item.Id;
         binding.PhysicalPath = item.Path;
         binding.Candidate = item.Name;
@@ -949,23 +977,27 @@ public sealed class WorkerCoordinator
     private WorkerResult Retry(WorkerRequest request)
     {
         var operation = store.Require<OperationDocument>("asx_operation", request.Key);
-        var dispatcher = store.Find<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(service, request.Key)
-        );
-        if (
-            dispatcher?.Value.OperationKey == request.Key
-            || (operation.Value.ExternalSubmitted && !operation.Value.ExternalResponseKnown)
-        )
-            throw new EvaluationBlockedException(
-                "Unknown or active work requires controlled recovery, not retry."
-            );
+        bool expired = ReleaseExpired(request.Key, "Retry");
         if (operation.Value.Status == "Applied")
             return Done(operation);
-        if (operation.Value.Status != "Blocked" && operation.Value.Status != "RetryWait")
+        if (
+            !expired
+            && operation.Value.Status != "Blocked"
+            && operation.Value.Status != "RetryWait"
+            && !(operation.Value.ExternalSubmitted && !operation.Value.ExternalResponseKnown)
+        )
             throw new EvaluationBlockedException(
-                "Only blocked/waiting work can be explicitly retried."
+                "Only blocked, waiting or interrupted work can be explicitly retried."
             );
+        if (operation.Value.Status == "Superseded" || operation.Value.Status == "Cancelled")
+            throw new EvaluationBlockedException("Cancelled or superseded work cannot retry.");
+        if (operation.Value.ExternalSubmitted && !operation.Value.ExternalResponseKnown)
+        {
+            // The next claim reads back before writing: it adopts a folder the earlier create
+            // made, or creates it once.
+            operation.Value.Reprobe = true;
+            operation.Value.ExternalResponseKnown = true;
+        }
         operation.Value.Status = "Pending";
         operation.Value.NextAttemptUtc = null;
         operation.Value.RetryCount = 0;
@@ -978,14 +1010,9 @@ public sealed class WorkerCoordinator
     private WorkerResult Cancel(WorkerRequest request)
     {
         var operation = store.Require<OperationDocument>("asx_operation", request.Key);
-        var dispatcher = store.Find<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(service, request.Key)
-        );
-        if (dispatcher?.Value.OperationKey == request.Key || operation.Value.ExternalSubmitted)
-            throw new EvaluationBlockedException(
-                "Active or externally submitted work must finish controlled reconciliation before cancellation."
-            );
+        // Cancel works once no run holds a live claim. A folder an earlier create may have
+        // made stays in SharePoint; Cancel never deletes content.
+        ReleaseExpired(request.Key, "Cancel");
         if (operation.Value.Status == "Applied")
             return Done(operation);
         operation.Value.Status = "Cancelled";
@@ -994,6 +1021,31 @@ public sealed class WorkerCoordinator
         store.Save(operation);
         Audit(request.Key, "operator", "Cancel");
         return new WorkerResult { Status = "Cancelled", Key = request.Key };
+    }
+
+    /// <summary>
+    /// Releases this operation's writer claim for an operator action once its lease has expired.
+    /// A live claim belongs to a running flow and is refused.
+    /// </summary>
+    /// <returns>True when an expired claim was released.</returns>
+    private bool ReleaseExpired(string key, string action)
+    {
+        var dispatcher = store.Find<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(service, key)
+        );
+        if (dispatcher?.Value.OperationKey != key || dispatcher.Value.RunId == null)
+            return false;
+        if (dispatcher.Value.LeaseUntilUtc > clock())
+            throw new EvaluationBlockedException(
+                "A run is working on this operation. "
+                    + action
+                    + " is available when its 5-minute claim expires."
+            );
+        dispatcher.Value.HttpOutstanding = false;
+        Release(dispatcher);
+        Audit(key, "operator", "ReleaseExpiredClaim");
+        return true;
     }
 
     private WorkerResult Replan(WorkerRequest request)

@@ -791,15 +791,14 @@ public sealed class CatalogWorker
             {
                 if (claim.Value.OperationKey != request.Key)
                     return new WorkerResult { Status = "Busy", Key = request.Key };
+                // Probes only read: once the lease expires the next claim takes over.
                 if (
                     !claim.Value.RecoveryPermitted
-                    && (
-                        claim.Value.Token != request.Token
-                        || claim.Value.RunId != request.RunId
-                        || claim.Value.LeaseUntilUtc <= clock()
-                    )
+                    && claim.Value.LeaseUntilUtc > clock()
+                    && (claim.Value.Token != request.Token || claim.Value.RunId != request.RunId)
                 )
                     return new WorkerResult { Status = "Quarantined", Key = request.Key };
+                claim.Value.HttpOutstanding = false;
             }
             claim.Value.OperationKey = request.Key;
             claim.Value.RunId = request.RunId;
@@ -902,7 +901,13 @@ public sealed class CatalogWorker
             || request.ProbeKind != op.Value.ProbeKind
         )
             throw new EvaluationBlockedException("Stale or unsupported catalog observation.");
-        if (request.HttpStatus == 429 || request.HttpStatus >= 500)
+        // Catalog probes only read, so a missing response (0 or 408) waits like a throttle.
+        if (
+            request.HttpStatus == 429
+            || request.HttpStatus >= 500
+            || request.HttpStatus == 0
+            || request.HttpStatus == 408
+        )
             return Wait(op, claim, request.RetryAfter, request.HttpStatus, null);
         try
         {
