@@ -296,9 +296,9 @@ public sealed class GuardTests
     }
 
     [Fact]
-    public void SecurityAndRuntimeConfigurationRequireServerApiParent()
+    public void SecurityConfigurationRequiresServerApiParent()
     {
-        foreach (var table in new[] { "asx_policy", "asx_teamregistration", "asx_runtime" })
+        foreach (var table in new[] { "asx_policy", "asx_teamregistration" })
             Assert.Throws<InvalidPluginExecutionException>(() =>
                 new CatalogGuard().Execute(new Setup(table, "Update", new Entity(table)))
             );

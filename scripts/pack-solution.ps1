@@ -45,6 +45,16 @@ foreach ($stepFile in Get-ChildItem -LiteralPath (Join-Path $stage 'SdkMessagePr
     if ($node.Name -notlike 'Ascentix Documents: guard *' -or $node.ImpersonatingUserIdName) {
         throw "Package contract: only guard steps without impersonation may ship ($($node.Name))."
     }
+    if ($node.PrimaryEntity -eq 'asx_runtime') {
+        throw "Package contract: asx_runtime is protected by role privileges, not guard steps ($($node.Name))."
+    }
+}
+foreach ($roleFile in Get-ChildItem -LiteralPath (Join-Path $stage 'Roles') -Filter '*.xml') {
+    [xml]$role = Get-Content -LiteralPath $roleFile.FullName -Raw
+    $runtimeWrites = @($role.Role.RolePrivileges.RolePrivilege | Where-Object { $_.name -match '^prv(Create|Write|Delete|Append|AppendTo)asx_runtime$' })
+    if ($runtimeWrites.Count -ne 0) {
+        throw "Package contract: only System Administrator may change asx_runtime ($($roleFile.Name): $($runtimeWrites.name -join ', '))."
+    }
 }
 foreach ($flow in Get-ChildItem -LiteralPath (Join-Path $stage 'Workflows') -Filter '*.data.xml') {
     [xml]$data = Get-Content -LiteralPath $flow.FullName -Raw

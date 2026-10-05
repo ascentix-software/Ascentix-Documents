@@ -7,13 +7,11 @@
     <RolePrivilege name="prvAppendasx_library" level="Global" />
     <RolePrivilege name="prvAppendasx_policy" level="Global" />
     <RolePrivilege name="prvAppendasx_policyentry" level="Global" />
-    <RolePrivilege name="prvAppendasx_runtime" level="Global" />
     <RolePrivilege name="prvAppendasx_site" level="Global" />
     <RolePrivilege name="prvAppendasx_teamregistration" level="Global" />
     <RolePrivilege name="prvAppendToasx_library" level="Global" />
     <RolePrivilege name="prvAppendToasx_policy" level="Global" />
     <RolePrivilege name="prvAppendToasx_policyentry" level="Global" />
-    <RolePrivilege name="prvAppendToasx_runtime" level="Global" />
     <RolePrivilege name="prvAppendToasx_site" level="Global" />
     <RolePrivilege name="prvAppendToasx_teamregistration" level="Global" />
     <RolePrivilege name="prvAppendToSharePointDocumentLocation" level="Global" />
@@ -24,7 +22,6 @@
     <RolePrivilege name="prvCreateasx_outbox" level="Global" />
     <RolePrivilege name="prvCreateasx_policy" level="Global" />
     <RolePrivilege name="prvCreateasx_policyentry" level="Global" />
-    <RolePrivilege name="prvCreateasx_runtime" level="Global" />
     <RolePrivilege name="prvCreateasx_site" level="Global" />
     <RolePrivilege name="prvCreateasx_teamregistration" level="Global" />
     <RolePrivilege name="prvReadasx_attempt" level="Global" />
@@ -56,7 +53,6 @@
     <RolePrivilege name="prvWriteasx_library" level="Global" />
     <RolePrivilege name="prvWriteasx_policy" level="Global" />
     <RolePrivilege name="prvWriteasx_policyentry" level="Global" />
-    <RolePrivilege name="prvWriteasx_runtime" level="Global" />
     <RolePrivilege name="prvWriteasx_site" level="Global" />
     <RolePrivilege name="prvWriteasx_teamregistration" level="Global" />
   </RolePrivileges>

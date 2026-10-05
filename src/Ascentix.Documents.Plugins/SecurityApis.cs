@@ -262,17 +262,9 @@ public sealed class CatalogGuard : IPlugin
                 );
             return;
         }
-        if (
-            context.PrimaryEntityName == "asx_runtime"
-            && message == "Create"
-            && target != null
-            && !target.GetAttributeValue<bool>("asx_enabled")
-            && !target.GetAttributeValue<bool>("asx_processrecordupdates")
-        )
-            return;
         if (!trusted)
             throw new InvalidPluginExecutionException(
-                "Security/runtime configuration is writable only through guarded product APIs."
+                "Security configuration is writable only through guarded product APIs."
             );
     }
 }
