@@ -61,11 +61,7 @@ public static class EventRegistrations
             throw new EvaluationBlockedException(SystemJobsMessage);
         foreach (var table in tables)
             if (!CanReadAll(catalog, privileges, table))
-                throw new EvaluationBlockedException(
-                    "The worker application user cannot read every '"
-                        + table
-                        + "' record (organization-level Read required). Grant it before enabling this table."
-                );
+                throw new EvaluationBlockedException(CannotReadMessage(table));
         var desired = EventRegistrationPlan.Desired(catalog, tables, processUpdates);
         var changes = EventRegistrationPlan.Diff(desired, Steps(service, catalog), worker);
         foreach (var id in changes.Delete)
@@ -89,6 +85,8 @@ public static class EventRegistrations
             var catalog = Catalog(service, tables);
             var desired = EventRegistrationPlan.Desired(catalog, tables, processUpdates);
             var summary = Summary(desired, Steps(service, catalog), worker);
+            if (worker == Guid.Empty)
+                return summary;
             var privileges = WorkerPrivileges(service, worker);
             if (!privileges.ContainsKey(SystemJobsRead))
                 summary.Error = SystemJobsMessage;
@@ -253,14 +251,33 @@ public static class EventRegistrations
         return catalog;
     }
 
+    public static string CannotReadMessage(string table) =>
+        "The worker application user cannot read every '"
+        + table
+        + "' record (organization-level Read required). Grant it before enabling this table.";
+
     /// <summary>The worker's effective privileges by name; the value is the highest depth held.</summary>
     private static Dictionary<string, PrivilegeDepth> WorkerPrivileges(
         IOrganizationService service,
         Guid worker
     )
     {
-        var response = (RetrieveUserPrivilegesResponse)
-            service.Execute(new RetrieveUserPrivilegesRequest { UserId = worker });
+        RetrieveUserPrivilegesResponse response;
+        try
+        {
+            response = (RetrieveUserPrivilegesResponse)
+                service.Execute(new RetrieveUserPrivilegesRequest { UserId = worker });
+        }
+        catch (EvaluationBlockedException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            throw new EvaluationBlockedException(
+                "The worker application user could not be checked. Select an enabled worker application user."
+            );
+        }
         var held = new Dictionary<string, PrivilegeDepth>(StringComparer.OrdinalIgnoreCase);
         foreach (var privilege in response.RolePrivileges ?? Array.Empty<RolePrivilege>())
         {

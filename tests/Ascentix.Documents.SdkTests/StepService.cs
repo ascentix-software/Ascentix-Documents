@@ -21,6 +21,9 @@ internal sealed class StepService : IOrganizationService
     internal bool IgnoreStepWrites { get; set; }
     internal HashSet<string> MissingTables { get; set; } = new();
 
+    /// <summary>Users that real Dataverse would fault on (Guid.Empty always does).</summary>
+    internal HashSet<Guid> UnknownUsers { get; set; } = new();
+
     /// <summary>When true the worker holds no prvReadAsyncOperation.</summary>
     internal bool WorkerLacksSystemJobs { get; set; }
 
@@ -75,8 +78,10 @@ internal sealed class StepService : IOrganizationService
             response.Results["EntityMetadata"] = metadata;
             return response;
         }
-        if (request is RetrieveUserPrivilegesRequest)
+        if (request is RetrieveUserPrivilegesRequest user)
         {
+            if (user.UserId == Guid.Empty || UnknownUsers.Contains(user.UserId))
+                throw new InvalidOperationException("SystemUser Does Not Exist");
             var held = new List<RolePrivilege>();
             if (!WorkerLacksSystemJobs)
                 held.Add(

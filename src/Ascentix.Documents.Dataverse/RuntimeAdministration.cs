@@ -78,9 +78,23 @@ public static class RuntimeAdministration
             throw new EvaluationBlockedException("Refresh the runtime profile before saving.");
         RuntimeProfile.ValidateHosts(request.SharePointHosts);
         ValidateWorker(service, request.WorkerId);
-        WorkCoordination.RequireIdle(service);
         // Save never changes the table list; tables are added and removed one at a time.
         var tables = RuntimeTables.Effective(service, old).Tables;
+        // Refuse a worker that cannot own the steps before anything is written.
+        var probe = EventRegistrations.Inspect(
+            service,
+            request.WorkerId,
+            tables,
+            request.ProcessRecordUpdates
+        );
+        if (probe.Error != null)
+            throw new EvaluationBlockedException(probe.Error);
+        var unreadable = probe.Readiness.FirstOrDefault(r => r.Status == "WorkerCannotRead");
+        if (unreadable != null)
+            throw new EvaluationBlockedException(
+                EventRegistrations.CannotReadMessage(unreadable.Scope)
+            );
+        WorkCoordination.RequireIdle(service);
         RuntimeTables.Replace(service, old.Id, tables);
         var registerNow = BatchedTables(
             service,
@@ -179,6 +193,8 @@ public static class RuntimeAdministration
             var probe = EventRegistrations.Inspect(service, worker, tables, updates);
             if (probe.Error != null)
                 throw new EvaluationBlockedException(probe.Error);
+            if (probe.Readiness.Any(r => r.Scope == table && r.Status == "WorkerCannotRead"))
+                throw new EvaluationBlockedException(EventRegistrations.CannotReadMessage(table));
             RuntimeTables.Replace(service, old.Id, tables);
             EventRegistrations.Reconcile(
                 service,

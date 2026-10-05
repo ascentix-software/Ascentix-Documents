@@ -139,6 +139,50 @@ public sealed class RuntimeAdministrationTests
     }
 
     [Fact]
+    public void GetSucceedsWithoutAWorkerAndReportsAnUnknownWorker()
+    {
+        var e = new Env("account");
+        e.Org.S.Memory.Rows[e.Runtime]["asx_workeruserid"] = Guid.Empty.ToString();
+        var none = e.Get();
+        Assert.Null(none.Registration!.Error);
+        var unknown = Guid.NewGuid();
+        e.Org.S.Memory.Rows[e.Runtime]["asx_workeruserid"] = unknown.ToString();
+        e.Org.S.UnknownUsers.Add(unknown);
+        var got = e.Get();
+        Assert.Contains("could not be checked", got.Registration!.Error);
+    }
+
+    [Fact]
+    public void SaveWithoutSystemJobsReadIsRefusedBeforeAnyWrite()
+    {
+        var e = new Env("account");
+        var request = e.Get();
+        e.Org.S.WorkerLacksSystemJobs = true;
+        e.Org.S.Writes.Clear();
+        int updates = e.Org.S.Memory.Updates.Count;
+        var ex = Assert.Throws<EvaluationBlockedException>(() => e.Save(request));
+        Assert.Contains("prvReadAsyncOperation", ex.Message);
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Equal(updates, e.Org.S.Memory.Updates.Count);
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Empty(e.Org.Steps);
+    }
+
+    [Fact]
+    public void AddTableTheWorkerCannotReadGloballyIsRefusedBeforeAnyWrite()
+    {
+        var e = new Env("account");
+        e.Org.S.WorkerReadDepth["contact"] = Microsoft.Crm.Sdk.Messages.PrivilegeDepth.Basic;
+        int updates = e.Org.S.Memory.Updates.Count;
+        var ex = Assert.Throws<EvaluationBlockedException>(() => e.Change("AddTable", "contact"));
+        Assert.Contains("'contact'", ex.Message);
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Equal(updates, e.Org.S.Memory.Updates.Count);
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Empty(e.Org.Steps);
+    }
+
+    [Fact]
     public void AddTableOnALegacyProfileMigratesRowsAndClearsTheJson()
     {
         var e = new Env("account");
