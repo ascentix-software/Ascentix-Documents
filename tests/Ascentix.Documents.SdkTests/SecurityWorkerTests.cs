@@ -662,16 +662,138 @@ public sealed class SecurityWorkerTests
     }
 
     [Fact]
-    public void ForeignGrantOnOwnedPrincipalIsNeverAdopted()
+    public void GrantLevelChangedByHandIsReconciledBackWithANotice()
     {
         var f = new Fixture();
-        f.Acl.Add(f.Grant(42, 2));
         f.Queue("Read");
-        var result = f.Drive(false);
-        Assert.Equal("Blocked", result.Status);
-        Assert.Contains("Unowned", result.Notices.Single());
-        Assert.DoesNotContain("GrantRemove", f.Writes);
-        Assert.DoesNotContain("GrantAdd", f.Writes);
+        f.Drive();
+        f.SetRoles(42, f.Contribute.Id);
+        f.Writes.Clear();
+        f.Queue("Read");
+        f.Drive();
+        Assert.Equal(new[] { f.Read.Id }, f.Roles(42));
+        Assert.Equal(new[] { "GrantRemove", "GrantAdd" }, f.Writes);
+        var notice = f.Policy().Notices.Single();
+        Assert.Contains("Operations", notice);
+        Assert.Contains("changed outside Documents", notice);
+        Assert.Contains("Contribute", notice);
+        // The next run finds the configured level and has nothing to report.
+        f.Writes.Clear();
+        f.Queue("Read");
+        f.Drive();
+        Assert.Empty(f.Writes);
+        Assert.Empty(f.Policy().Notices);
+    }
+
+    [Fact]
+    public void GrantRemovedByHandIsGrantedAgainWithANotice()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        f.Drive();
+        f.SetRoles(42);
+        f.Writes.Clear();
+        f.Queue("Read");
+        f.Drive();
+        Assert.Equal(new[] { f.Read.Id }, f.Roles(42));
+        Assert.Equal(new[] { "GrantAdd" }, f.Writes);
+        Assert.Contains("changed outside Documents", f.Policy().Notices.Single());
+    }
+
+    [Fact]
+    public void ExtraBindingOnTheDocumentsGroupIsRemovedWithANotice()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        f.Drive();
+        f.SetRoles(42, f.Read.Id, 1073741829);
+        f.Writes.Clear();
+        f.Queue("Read");
+        f.Drive();
+        Assert.Equal(new[] { f.Read.Id }, f.Roles(42));
+        Assert.Equal(new[] { "GrantRemove" }, f.Writes);
+        Assert.Contains("1073741829", f.Policy().Notices.Single());
+    }
+
+    [Fact]
+    public void ExistingGrantOnANewDocumentsGroupIsReconciledToTheConfiguredLevel()
+    {
+        var f = new Fixture();
+        f.SetRoles(42, f.Contribute.Id);
+        f.Queue("Read");
+        f.Drive();
+        Assert.Equal(new[] { f.Read.Id }, f.Roles(42));
+        Assert.Equal(new[] { "GroupCreate", "GrantRemove", "GrantAdd" }, f.Writes);
+        Assert.Contains("changed outside Documents", f.Policy().Notices.Single());
+    }
+
+    [Fact]
+    public void EntraGroupInsideTheDocumentsGroupIsLeftInPlaceWithANotice()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        f.Drive();
+        var entraGroup = new SitePerson
+        {
+            Id = 900,
+            Login = "c:0t.c|tenant|5f0c3a2e-0000-0000-0000-000000000001",
+            Type = 4,
+        };
+        f.Members.Add(entraGroup);
+        f.Members.Add(
+            new SitePerson
+            {
+                Id = 901,
+                Login = "i:0#.f|membership|handadded@example.com",
+                Type = 1,
+            }
+        );
+        f.Writes.Clear();
+        f.Queue("Read");
+        f.Drive();
+        Assert.Contains(entraGroup, f.Members);
+        Assert.DoesNotContain(f.Members, m => m.Id == 901);
+        Assert.Equal(new[] { "MemberRemove" }, f.Writes);
+        var notice = f.Policy().Notices.Single();
+        Assert.Contains("5f0c3a2e-0000-0000-0000-000000000001", notice);
+        Assert.Contains("left in place", notice);
+    }
+
+    [Fact]
+    public void CancelAfterAnUnknownGrantThatLandedIsReconciledByTheNextRun()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        var work = f.Start();
+        for (int i = 0; ; i++)
+        {
+            Assert.True(i < 200, "GrantAdd never prepared.");
+            if (work.Status == "Read")
+                work = f.Observe(work);
+            else if (work.Status == "ReadyToCreate" && f.Operation().MutationKind == "GrantAdd")
+                break;
+            else if (work.Status == "ReadyToCreate")
+                work = f.Call("PrepareCreate", work);
+            else if (work.Status == "Create")
+            {
+                f.Apply();
+                work = f.Call("CreateResponse", work, status: 200);
+            }
+            else
+                throw new Exception(work.Status);
+        }
+        work = f.Call("PrepareCreate", work);
+        f.Apply();
+        Assert.Equal("Quarantined", f.Call("CreateResponse", work, status: 0).Status);
+        ExpireClaim(f);
+        Assert.Equal("Cancelled", Manage(f, "Cancel").Status);
+        f.Writes.Clear();
+        f.Queue("Read");
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Empty(f.Writes);
+        Assert.Equal(new[] { f.Read.Id }, f.Roles(42));
+        Assert.Empty(f.Policy().Notices);
     }
 
     [Fact]
@@ -1641,6 +1763,28 @@ public sealed class SecurityWorkerTests
             };
         }
 
+        public int[] Roles(int principal) =>
+            Acl.Where(a => a.Member.Id == principal)
+                .SelectMany(a => a.Roles.Rows.Select(r => r.Id))
+                .ToArray();
+
+        /// <summary>Sets a principal's role bindings on the library, as SharePoint would hold them.</summary>
+        public void SetRoles(int principal, params int[] roles)
+        {
+            Acl.RemoveAll(a => a.Member.Id == principal);
+            if (roles.Length == 0)
+                return;
+            var assignment = Grant(principal, roles[0]);
+            assignment.Roles.Rows = roles
+                .Select(role => new AclRole
+                {
+                    Id = role,
+                    Permissions = new PermissionMask { High = "0", Low = "0" },
+                })
+                .ToArray();
+            Acl.Add(assignment);
+        }
+
         public void Apply()
         {
             var operation = Operation();
@@ -1673,10 +1817,10 @@ public sealed class SecurityWorkerTests
                     Members.RemoveAll(p => p.Id == operation.MutationMemberId);
                     break;
                 case "GrantAdd":
-                    Acl.Add(Grant(42, operation.MutationRole));
+                    SetRoles(42, Roles(42).Concat(new[] { operation.MutationRole }).ToArray());
                     break;
                 case "GrantRemove":
-                    Acl.RemoveAll(a => a.Member.Id == 42);
+                    SetRoles(42, Roles(42).Where(r => r != operation.MutationRole).ToArray());
                     break;
                 default:
                     throw new Exception(operation.MutationKind);
@@ -1708,7 +1852,10 @@ public sealed class SecurityWorkerTests
                         break;
                     default:
                         if (expectApplied)
-                            Assert.Equal("Applied", work.Status);
+                            Assert.True(
+                                work.Status == "Applied",
+                                work.Status + ": " + string.Join(" ", work.Notices)
+                            );
                         return work;
                 }
             }

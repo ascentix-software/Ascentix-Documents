@@ -418,20 +418,51 @@ public sealed class SecurityWorker
                     var members = SharePointObservations.Body<ODataRows<SitePerson>>(request);
                     if (members.Rows == null)
                         throw new EvaluationBlockedException("Membership page missing.");
-                    op.Value.Members = op.Value.Members.Concat(members.Rows).ToArray();
-                    if (
-                        op.Value.Members.Length > 2000
-                        || op.Value.Members.Any(m =>
-                            m.Id <= 0 || m.Type != 1 || string.IsNullOrWhiteSpace(m.Login)
+                    string groupTitle = store
+                        .Require<ManagedGroup>("asx_managedgroup", op.Value.GroupKey)
+                        .Value.Title;
+                    foreach (var member in members.Rows.Where(m => m != null))
+                    {
+                        // People are synced from the team. Anything else an admin put in the
+                        // Documents group, such as an Entra group, is left in place.
+                        if (
+                            member.Type != 1
+                            || member.Id <= 0
+                            || string.IsNullOrWhiteSpace(member.Login)
                         )
-                        || op.Value.Members.Select(m => m.Id).Distinct().Count()
-                            != op.Value.Members.Length
-                        || op.Value.Members.Select(m => m.Login)
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .Count() != op.Value.Members.Length
-                    )
+                        {
+                            Notice(
+                                op.Value,
+                                "Team '"
+                                    + groupTitle
+                                    + "': "
+                                    + (
+                                        string.IsNullOrWhiteSpace(member.Login)
+                                            ? "SharePoint principal " + member.Id
+                                            : member.Login
+                                    )
+                                    + " in the Documents group is not a person and was left in place."
+                            );
+                            continue;
+                        }
+                        if (
+                            op.Value.Members.Any(m =>
+                                m.Id == member.Id
+                                || string.Equals(
+                                    m.Login,
+                                    member.Login,
+                                    StringComparison.OrdinalIgnoreCase
+                                )
+                            )
+                        )
+                            continue;
+                        op.Value.Members = op.Value.Members.Concat(new[] { member }).ToArray();
+                    }
+                    // A team holds at most 2000 people; the bound keeps the run's stored
+                    // operation inside the Dataverse payload limit.
+                    if (op.Value.Members.Length > 2000)
                         throw new EvaluationBlockedException(
-                            "Ambiguous or unsupported group membership."
+                            "The Documents group has more people than one access run can hold."
                         );
                     if (members.Next != null)
                         return Continue(op, claim.Value, catalog, members.Next);
@@ -601,6 +632,11 @@ public sealed class SecurityWorker
         return Probe(op, claim, catalog, "SecurityAcl");
     }
 
+    /// <summary>
+    /// Brings the Documents group's grant on the library to the configured level. The group is
+    /// Documents' own and the Dataverse team is the source of truth, so a level changed, removed
+    /// or added by hand is put back and reported in a notice rather than blocking.
+    /// </summary>
     private WorkerResult ReconcileGrant(
         StoredRow<SecurityOperation> op,
         DispatcherDocument claim,
@@ -617,6 +653,7 @@ public sealed class SecurityWorker
             .Value.Acl.SelectMany(a => a.Roles?.Rows ?? Array.Empty<AclRole>())
             .Select(r => r.Id)
             .Distinct()
+            .OrderBy(r => r)
             .ToArray();
         bool grantWrite = op.Value.MutationKind.StartsWith("Grant", StringComparison.Ordinal);
         if (
@@ -644,7 +681,11 @@ public sealed class SecurityWorker
                 );
             if (grant == null)
                 throw new EvaluationBlockedException("Prepared managed grant receipt missing.");
-            grant.Value.RoleId = add ? op.Value.MutationRole : 0;
+            if (add)
+                grant.Value.RoleId = op.Value.MutationRole;
+            else if (grant.Value.RoleId == op.Value.MutationRole)
+                grant.Value.RoleId = 0;
+            grant.Value.GroupId = group.GroupId;
             grant.Value.Status = "Applied";
             grant.Value.Generation = op.Value.PolicyRevision;
             store.Save(grant);
@@ -652,24 +693,6 @@ public sealed class SecurityWorker
             ClearMutation(op.Value);
             grant = store.Require<ManagedGrant>("asx_managedgrant", key);
         }
-        if (
-            roles.Length > 1
-            || (
-                roles.Length == 1
-                && (
-                    grant == null
-                    || grant.Value.GroupId != group.GroupId
-                    || grant.Value.RoleId != roles[0]
-                )
-            )
-        )
-            throw new EvaluationBlockedException(
-                "Unowned or unexpected assignment on the managed principal; no adoption/removal allowed."
-            );
-        if (grant != null && grant.Value.RoleId != 0 && !roles.Contains(grant.Value.RoleId))
-            throw new EvaluationBlockedException(
-                "Managed grant disappeared outside reconciliation."
-            );
         int desired =
             entry.Access == "Read" ? op.Value.ReadRole.Id
             : entry.Access == "Contribute" ? op.Value.ContributeRole.Id
@@ -683,40 +706,95 @@ public sealed class SecurityWorker
                 .Value.Enabled
         )
             desired = 0;
-        int current = roles.SingleOrDefault();
-        if (current != desired)
+        int[] target = desired == 0 ? Array.Empty<int>() : new[] { desired };
+        // What Documents last applied. A receipt still Pending means Documents' own write may
+        // have landed without a confirmed outcome, so a difference is not reported as a hand edit.
+        bool known = grant == null || grant.Value.Status == "Applied";
+        int recorded =
+            grant != null && grant.Value.GroupId == group.GroupId ? grant.Value.RoleId : 0;
+        int[] expected = recorded == 0 ? Array.Empty<int>() : new[] { recorded };
+        if (roles.SequenceEqual(target))
         {
-            if (grant == null)
+            // Already at the configured level, including a Documents write whose outcome was
+            // unknown but landed. Record it and move on.
+            if (grant != null && (recorded != desired || grant.Value.Status != "Applied"))
             {
-                store.Create(
-                    "asx_managedgrant",
-                    new ManagedGrant
-                    {
-                        Key = key,
-                        LibraryId = catalog.LibraryId,
-                        TeamId = entry.TeamId,
-                        GroupId = group.GroupId,
-                        Generation = op.Value.PolicyRevision,
-                    }
-                );
+                grant.Value.RoleId = desired;
+                grant.Value.GroupId = group.GroupId;
+                grant.Value.Status = "Applied";
+                grant.Value.Generation = op.Value.PolicyRevision;
+                store.Save(grant);
             }
-            op.Value.MutationRole = current != 0 ? current : desired;
-            return Prepare(
-                op,
-                claim,
-                catalog,
-                current != 0 ? "GrantRemove" : "GrantAdd",
-                SharePointRequests.ChangeOwnedGrant(
-                    catalog.Target,
-                    group.GroupId,
-                    op.Value.MutationRole,
-                    current == 0
-                )
+            op.Value.TeamIndex++;
+            return NextTeam(op, claim, catalog);
+        }
+        string changed =
+            "Team '"
+            + group.Title
+            + "': the Documents group's permission on this library was changed outside Documents";
+        // Reported once per team: the first reading is what the admin changed.
+        if (
+            known
+            && !roles.SequenceEqual(expected)
+            && !op.Value.Notices.Any(n => n.StartsWith(changed, StringComparison.Ordinal))
+        )
+            Notice(
+                op.Value,
+                changed
+                    + " (found "
+                    + Levels(op.Value, roles)
+                    + ", configured "
+                    + Levels(op.Value, target)
+                    + "). Documents restored the configured level. To keep a different level, change this team's access in Documents."
+            );
+        if (grant == null)
+        {
+            store.Create(
+                "asx_managedgrant",
+                new ManagedGrant
+                {
+                    Key = key,
+                    LibraryId = catalog.LibraryId,
+                    TeamId = entry.TeamId,
+                    GroupId = group.GroupId,
+                    Generation = op.Value.PolicyRevision,
+                }
             );
         }
-        op.Value.TeamIndex++;
-        return NextTeam(op, claim, catalog);
+        else
+        {
+            // Pending until the write is read back, so an unknown outcome is not later taken
+            // for a hand edit.
+            grant.Value.Status = "Pending";
+            store.Save(grant);
+        }
+        int extra = roles.FirstOrDefault(r => r != desired);
+        op.Value.MutationRole = extra != 0 ? extra : desired;
+        return Prepare(
+            op,
+            claim,
+            catalog,
+            extra != 0 ? "GrantRemove" : "GrantAdd",
+            SharePointRequests.ChangeOwnedGrant(
+                catalog.Target,
+                group.GroupId,
+                op.Value.MutationRole,
+                extra == 0
+            )
+        );
     }
+
+    private static string Levels(SecurityOperation op, int[] roles) =>
+        roles.Length == 0
+            ? "no access"
+            : string.Join(
+                " and ",
+                roles.Select(r =>
+                    r == op.ReadRole.Id ? "Read"
+                    : r == op.ContributeRole.Id ? "Contribute"
+                    : "permission level " + r
+                )
+            );
 
     private WorkerResult Complete(
         StoredRow<SecurityOperation> op,
