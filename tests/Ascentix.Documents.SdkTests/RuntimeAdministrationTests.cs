@@ -51,6 +51,168 @@ public sealed class RuntimeAdministrationTests
             r.Command = "Save";
             return RuntimeAdministration.Execute(Org.S, r, true, caller ?? Admin);
         }
+
+        internal RuntimeRequest Change(string command, string table, Guid? caller = null) =>
+            RuntimeAdministration.Execute(
+                Org.S,
+                new RuntimeRequest { Command = command, Table = table },
+                true,
+                caller ?? Admin
+            );
+
+        internal string[] Rows() =>
+            Org
+                .S.Memory.Rows.Values.Where(r => r.LogicalName == "asx_runtimetable")
+                .Select(r => r.GetAttributeValue<string>("asx_logicalname"))
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToArray();
+
+        internal int StepsFor(string table) =>
+            Org.Steps.Count(s => s.GetAttributeValue<string>("name").EndsWith(" " + table));
+
+        internal void ClearRows()
+        {
+            foreach (
+                var row in Org
+                    .S.Memory.Rows.Values.Where(r => r.LogicalName == "asx_runtimetable")
+                    .ToList()
+            )
+                Org.S.Memory.Rows.Remove(row.Id);
+        }
+    }
+
+    [Fact]
+    public void AddTableRegistersOnlyTheNewTableAndAddsItsRow()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        int accountSteps = e.StepsFor("account");
+        e.Org.S.Writes.Clear();
+        var got = e.Change("AddTable", "contact");
+        Assert.Equal(new[] { "account", "contact" }, got.Tables.OrderBy(t => t).ToArray());
+        Assert.Equal(new[] { "account", "contact" }, e.Rows());
+        Assert.Equal(accountSteps, e.StepsFor("account"));
+        Assert.Equal(EventRegistrationPlan.RecordMessages.Length, e.StepsFor("contact"));
+        Assert.DoesNotContain(
+            e.Org.S.Writes,
+            w => w.EndsWith("sdkmessageprocessingstep") && w.StartsWith("Delete")
+        );
+        Assert.All(got.Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+    }
+
+    [Fact]
+    public void AddTableForAnEnabledTableMakesNoWrites()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        e.Org.S.Writes.Clear();
+        int updates = e.Org.S.Memory.Updates.Count;
+        e.Change("AddTable", "account");
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Equal(updates, e.Org.S.Memory.Updates.Count);
+    }
+
+    [Fact]
+    public void NonAdministratorAddTableIsRefusedBeforeAnyWrite()
+    {
+        var e = new Env("account");
+        var ex = Assert.Throws<EvaluationBlockedException>(() =>
+            e.Change("AddTable", "contact", Guid.NewGuid())
+        );
+        Assert.Contains("System Administrator", ex.Message);
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Empty(e.Org.S.Memory.Updates);
+    }
+
+    [Fact]
+    public void AddTableOfAnUnknownTableNamesItAndWritesNothing()
+    {
+        var e = new Env(new[] { "account" }, new[] { "cr123_gone" });
+        e.Org.S.MissingTables.Add("cr123_gone");
+        var ex = Assert.Throws<EvaluationBlockedException>(() =>
+            e.Change("AddTable", "cr123_gone")
+        );
+        Assert.Contains("cr123_gone", ex.Message);
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Equal(0, e.StepsFor("cr123_gone"));
+    }
+
+    [Fact]
+    public void AddTableOnALegacyProfileMigratesRowsAndClearsTheJson()
+    {
+        var e = new Env("account");
+        e.ClearRows();
+        Assert.False(e.Get().Migrated);
+        var got = e.Change("AddTable", "contact");
+        Assert.True(got.Migrated);
+        Assert.Equal(new[] { "account", "contact" }, e.Rows());
+        Assert.Equal(
+            "[]",
+            e.Org.S.Memory.Rows[e.Runtime].GetAttributeValue<string>("asx_allowedtables")
+        );
+    }
+
+    [Fact]
+    public void RemoveTableDeletesItsStepsAndRowOnly()
+    {
+        var e = new Env("account", "contact");
+        e.Save(e.Get());
+        int accountSteps = e.StepsFor("account");
+        Assert.NotEqual(0, e.StepsFor("contact"));
+        var got = e.Change("RemoveTable", "contact");
+        Assert.Equal(new[] { "account" }, got.Tables);
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Equal(0, e.StepsFor("contact"));
+        Assert.Equal(accountSteps, e.StepsFor("account"));
+    }
+
+    [Fact]
+    public void RemoveTableOfAnAbsentTableMakesNoWrites()
+    {
+        var e = new Env("account");
+        e.Org.S.Writes.Clear();
+        e.Change("RemoveTable", "contact");
+        Assert.Empty(e.Org.S.Writes);
+    }
+
+    [Fact]
+    public void RemoveTableIsRefusedWhileAWriterIsActive()
+    {
+        var e = new Env("account", "contact");
+        e.Save(e.Get());
+        var store = new DocumentStore(e.Org.S.Memory);
+        var budget = store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey);
+        budget.Value.Writers = new[] { "site" };
+        store.Save(budget);
+        e.Org.S.Writes.Clear();
+        Assert.Throws<EvaluationBlockedException>(() => e.Change("RemoveTable", "contact"));
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Equal(new[] { "account", "contact" }, e.Rows());
+    }
+
+    [Fact]
+    public void NonAdministratorRemoveTableIsRefusedBeforeAnyWrite()
+    {
+        var e = new Env("account", "contact");
+        var ex = Assert.Throws<EvaluationBlockedException>(() =>
+            e.Change("RemoveTable", "contact", Guid.NewGuid())
+        );
+        Assert.Contains("System Administrator", ex.Message);
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Empty(e.Org.S.Memory.Updates);
+    }
+
+    [Fact]
+    public void SaveIgnoresTheTablesInTheRequest()
+    {
+        var e = new Env("account");
+        var got = e.Get();
+        got.Tables = new[] { "contact", "lead" };
+        var saved = e.Save(got);
+        Assert.Equal(new[] { "account" }, saved.Tables);
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Equal(0, e.StepsFor("contact"));
     }
 
     [Fact]
@@ -106,16 +268,16 @@ public sealed class RuntimeAdministrationTests
             .Range(0, EventRegistrations.MaxNewTablesPerSave + 2)
             .Select(i => "cr123_t" + i)
             .ToArray();
-        var e = new Env(new[] { "account" }, added);
-        var got = e.Save(e.Get());
-        got.Tables = new[] { "account" }.Concat(added).ToArray();
-        var saved = e.Save(got);
-        var newScopes = saved.Registration!.Readiness.Where(r => added.Contains(r.Scope)).ToList();
+        var e = new Env(new[] { "account" }.Concat(added).ToArray(), added);
+        var saved = e.Save(e.Get());
+        var newScopes = saved
+            .Registration!.Readiness.Where(r => r.Scope == "account" || added.Contains(r.Scope))
+            .ToList();
         Assert.Equal(
             EventRegistrations.MaxNewTablesPerSave,
             newScopes.Count(r => r.Status == "Ready")
         );
-        Assert.Equal(2, newScopes.Count(r => r.Status == "Pending"));
+        Assert.Equal(3, newScopes.Count(r => r.Status == "Pending"));
         Assert.Equal(
             added.Length + 1,
             e.Org.S.Memory.Rows.Values.Count(r => r.LogicalName == "asx_runtimetable")

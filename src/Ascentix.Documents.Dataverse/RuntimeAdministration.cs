@@ -33,6 +33,9 @@ public sealed class RuntimeRequest
     public string[] Tables { get; set; } = Array.Empty<string>();
 
     [DataMember]
+    public string Table { get; set; } = "";
+
+    [DataMember]
     public bool Migrated { get; set; }
 
     [DataMember]
@@ -53,7 +56,12 @@ public static class RuntimeAdministration
         var old = Profile(service);
         if (request.Command == "Get")
             return Get(service, old);
-        if (request.Command != "Save" && request.Command != "Unregister")
+        if (
+            request.Command != "Save"
+            && request.Command != "Unregister"
+            && request.Command != "AddTable"
+            && request.Command != "RemoveTable"
+        )
             throw new EvaluationBlockedException("Unsupported runtime command.");
         if (!AdministratorCheck.IsSystemAdministrator(service, caller))
             throw new EvaluationBlockedException(
@@ -64,21 +72,24 @@ public static class RuntimeAdministration
             EventRegistrations.Unregister(service);
             return Get(service, old);
         }
+        if (request.Command == "AddTable" || request.Command == "RemoveTable")
+            return ChangeTable(service, old, request);
         if (string.IsNullOrEmpty(request.RowVersion) || old.RowVersion != request.RowVersion)
             throw new EvaluationBlockedException("Refresh the runtime profile before saving.");
-        RuntimeTables.Validate(request.Tables);
         RuntimeProfile.ValidateHosts(request.SharePointHosts);
         ValidateWorker(service, request.WorkerId);
         WorkCoordination.RequireIdle(service);
-        RuntimeTables.Replace(service, old.Id, request.Tables);
+        // Save never changes the table list; tables are added and removed one at a time.
+        var tables = RuntimeTables.Effective(service, old).Tables;
+        RuntimeTables.Replace(service, old.Id, tables);
         // Register in batches: each new table's steps are created inside this one call, which Dataverse stops after 2 minutes.
         var probe = EventRegistrations.Inspect(
             service,
             request.WorkerId,
-            request.Tables,
+            tables,
             request.ProcessRecordUpdates
         );
-        var registerNow = request.Tables;
+        var registerNow = tables;
         if (probe.Error == null)
         {
             var ready = new System.Collections.Generic.HashSet<string>(
@@ -86,13 +97,11 @@ public static class RuntimeAdministration
                 StringComparer.Ordinal
             );
             var firstPending = new System.Collections.Generic.HashSet<string>(
-                request
-                    .Tables.Where(t => !ready.Contains(t))
-                    .Take(EventRegistrations.MaxNewTablesPerSave),
+                tables.Where(t => !ready.Contains(t)).Take(EventRegistrations.MaxNewTablesPerSave),
                 StringComparer.Ordinal
             );
-            registerNow = request
-                .Tables.Where(t => ready.Contains(t) || firstPending.Contains(t))
+            registerNow = tables
+                .Where(t => ready.Contains(t) || firstPending.Contains(t))
                 .ToArray();
         }
         EventRegistrations.Reconcile(
@@ -116,6 +125,51 @@ public static class RuntimeAdministration
                 ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
             }
         );
+        return Get(service, Profile(service));
+    }
+
+    private static RuntimeRequest ChangeTable(
+        IOrganizationService service,
+        Entity old,
+        RuntimeRequest request
+    )
+    {
+        bool add = request.Command == "AddTable";
+        var table = request.Table ?? "";
+        RuntimeTables.Validate(new[] { table });
+        var current = RuntimeTables.Effective(service, old);
+        bool present = current.Tables.Contains(table, StringComparer.Ordinal);
+        if (present == add)
+            return Get(service, old);
+        if (!add)
+            WorkCoordination.RequireIdle(service);
+        var tables = add
+            ? current.Tables.Concat(new[] { table }).ToArray()
+            : current
+                .Tables.Where(t => !string.Equals(t, table, StringComparison.Ordinal))
+                .ToArray();
+        var worker = Guid.TryParse(TemplateStore.Text(old, "asx_workeruserid"), out var id)
+            ? id
+            : Guid.Empty;
+        bool updates = old.GetAttributeValue<bool>("asx_processrecordupdates");
+        // Refuse unknown or unsupported tables before anything is written.
+        var probe = EventRegistrations.Inspect(service, worker, tables, updates);
+        if (probe.Error != null)
+            throw new EvaluationBlockedException(probe.Error);
+        RuntimeTables.Replace(service, old.Id, tables);
+        EventRegistrations.Reconcile(service, worker, tables, updates);
+        if (!current.Migrated)
+            service.Execute(
+                new UpdateRequest
+                {
+                    Target = new Entity("asx_runtime", old.Id)
+                    {
+                        RowVersion = old.RowVersion,
+                        ["asx_allowedtables"] = "[]",
+                    },
+                    ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+                }
+            );
         return Get(service, Profile(service));
     }
 
