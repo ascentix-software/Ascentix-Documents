@@ -529,17 +529,15 @@ public sealed class LibraryProvisioningTests
         var f = new Fixture { UnknownCreate = true };
         var queued = f.Queue();
         f.Run(queued.Key);
-        var claim = f.Store.Require<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(f.Service, queued.Key)
-        );
-        claim.Value.LeaseUntilUtc = DateTime.UtcNow.AddMinutes(-1);
-        f.Store.Save(claim);
+        // The setup released the site's writer and keeps the run that sent the create, which
+        // Inspect shows in the recovery panel.
+        Assert.Null(f.Claim(queued.Key).RunId);
+        var lost = f.Store.Require<LibrarySetup>("asx_operation", queued.Key).Value;
         var request = new WorkerRequest
         {
             Key = queued.Key,
-            RunId = claim.Value.RunId!,
-            Token = claim.Value.Token,
+            RunId = lost.RecoveryRunId!,
+            Token = lost.RecoveryToken,
             Evidence =
                 "Original run terminated; successful create response recovered from run history.",
         };
@@ -575,6 +573,127 @@ public sealed class LibraryProvisioningTests
         Assert.Equal("AccessPending", f.Run(queued.Key).Status);
         Assert.Single(f.Posts, p => p == "_api/web/lists");
         Assert.DoesNotContain(f.Posts, p => p.Contains("delete"));
+    }
+
+    /// <summary>Queues a second library setup on the fixture's site.</summary>
+    private static string Other(Fixture f) =>
+        f
+            .Service.Transaction(() =>
+                f.Worker.Queue(
+                    new CatalogRequest
+                    {
+                        SiteId = f.Site,
+                        Name = "Other",
+                        RequestId = Guid.NewGuid(),
+                        Entries = Array.Empty<PolicyEntry>(),
+                    }
+                )
+            )
+            .Key;
+
+    /// <summary>The site's writer is free and the runtime sees no active writer.</summary>
+    private static void SiteFree(Fixture f, string key)
+    {
+        Assert.Null(f.Claim(key).RunId);
+        Assert.False(f.Claim(key).HttpOutstanding);
+        Assert.False(WorkCoordination.Busy(f.Service));
+    }
+
+    [Fact]
+    public void SetupAwaitingRecoveryAfterALostAnswerDoesNotHoldTheSite()
+    {
+        var f = new Fixture { UnknownCreate = true };
+        var key = f.Queue().Key;
+        Assert.Equal("Quarantined", f.Run(key).Status);
+        Assert.Equal("RecoveryRequired", f.Status(key));
+        SiteFree(f, key);
+        // Other work on the site claims the writer at once.
+        Assert.Equal("Read", f.Call("Claim", new WorkerResult { Key = Other(f) }).Status);
+    }
+
+    [Fact]
+    public void SetupTakenOverWithAnUnknownCreateDoesNotHoldTheSite()
+    {
+        var (f, key, prepared) = PreparedCreate();
+        Assert.Equal("Permit", f.Permit(prepared).Status);
+        f.Expire(key);
+        Assert.Equal("Quarantined", f.Call("Claim", new WorkerResult { Key = key }).Status);
+        Assert.Equal("RecoveryRequired", f.Status(key));
+        SiteFree(f, key);
+        Assert.Equal("Read", f.Call("Claim", new WorkerResult { Key = Other(f) }).Status);
+    }
+
+    [Fact]
+    public void SetupWhoseClaimFailedWithAnUnknownCreateDoesNotHoldTheSite()
+    {
+        var (f, key, prepared) = PreparedCreate();
+        Assert.Equal("Permit", f.Permit(prepared).Status);
+        f.Expire(key);
+        Assert.Equal("RecoveryRequired", f.Manage("FailUnclaimed", key).Status);
+        SiteFree(f, key);
+        Assert.Equal("Read", f.Call("Claim", new WorkerResult { Key = Other(f) }).Status);
+    }
+
+    [Fact]
+    public void SetupLeftHoldingTheSiteByAnEarlierVersionReleasesItAtTheNextClaim()
+    {
+        var (f, key, prepared) = PreparedCreate();
+        Assert.Equal("Permit", f.Permit(prepared).Status);
+        var writer = f.Claim(key);
+        // 0.1.0.4 before this fix: RecoveryRequired with the site's writer still held.
+        var setup = f.Store.Require<LibrarySetup>("asx_operation", key);
+        setup.Value.Status = "RecoveryRequired";
+        f.Store.Save(setup);
+        LegacyPayload.Strip(f.Service, "asx_operation", "RecoveryRunId", "RecoveryToken");
+        Assert.Equal(key, f.Claim(key).OperationKey);
+        Assert.Equal("Read", f.Call("Claim", new WorkerResult { Key = Other(f) }).Status);
+        // The original run's identity is kept for evidence-based recovery.
+        var held = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
+        Assert.Equal(writer.RunId, held.RecoveryRunId);
+        Assert.Equal(writer.Token, held.RecoveryToken);
+    }
+
+    [Fact]
+    public void RecoveryOfASetupThatReleasedTheSiteUsesTheOriginalRunAndCreatesNothingAgain()
+    {
+        var f = new Fixture { UnknownCreate = true };
+        var key = f.Queue().Key;
+        f.Run(key);
+        var setup = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
+        // Another setup on the site uses the writer meanwhile, then is cancelled.
+        var other = Other(f);
+        Assert.Equal("Read", f.Call("Claim", new WorkerResult { Key = other }).Status);
+        f.Expire(other);
+        Assert.Equal("Cancelled", f.Manage("Cancel", other).Status);
+        f.UnknownCreate = false;
+        var request = new WorkerRequest
+        {
+            Key = key,
+            RunId = setup.RecoveryRunId!,
+            Token = setup.RecoveryToken,
+            Evidence = "Original run ended; its 201 response was copied from the run history.",
+            ResponseBody = JsonWire.Write(
+                new ODataEnvelope<CreatedLibrary>
+                {
+                    Data = new CreatedLibrary { Id = f.List, Title = "Documents" },
+                }
+            ),
+        };
+        var recovery = new WorkerCoordinator(f.Service);
+        var wrong = JsonWire.Read<WorkerRequest>(JsonWire.Write(request));
+        wrong.Token = Guid.NewGuid();
+        Assert.Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
+            f.Service.Transaction(() => recovery.PermitRecovery(wrong, true))
+        );
+        Assert.Equal(
+            "RecoveryPermitted",
+            f.Service.Transaction(() => recovery.PermitRecovery(request, true)).Status
+        );
+        Assert.Contains(key, f.Store.Pending("asx_operation"));
+        Assert.Equal("AccessPending", f.Run(key).Status);
+        // The recovered create is not sent again.
+        Assert.Single(f.Posts, p => p == "_api/web/lists");
+        Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
     }
 
     internal sealed class Fixture

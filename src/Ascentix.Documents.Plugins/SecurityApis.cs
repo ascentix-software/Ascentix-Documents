@@ -85,6 +85,12 @@ public sealed class ManageWorkApi : IPlugin
                 )
                 ?.Value;
             bool owns = claim?.OperationKey == request.Key;
+            // A library setup awaiting recovery released its site's writer; it keeps the run
+            // that sent the lost write, which recovery names.
+            var awaiting =
+                !owns && request.Key.StartsWith("librarycreate:", StringComparison.Ordinal)
+                    ? store.Require<LibrarySetup>("asx_operation", request.Key).Value
+                    : null;
             context.OutputParameters["Result"] = JsonWire.Write(
                 new WorkerResult
                 {
@@ -94,8 +100,11 @@ public sealed class ManageWorkApi : IPlugin
                         operation.ErrorCode == null
                             ? Array.Empty<string>()
                             : new[] { operation.ErrorCode },
-                    RunId = owns ? claim!.RunId : null,
-                    Token = owns ? claim!.Token : Guid.Empty,
+                    RunId = owns ? claim!.RunId : awaiting?.RecoveryRunId,
+                    Token =
+                        owns ? claim!.Token
+                        : awaiting?.RecoveryRunId != null ? awaiting.RecoveryToken
+                        : Guid.Empty,
                     LeaseUntilUtc = owns ? claim!.LeaseUntilUtc : (DateTime?)null,
                 }
             );

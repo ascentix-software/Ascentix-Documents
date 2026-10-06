@@ -90,7 +90,7 @@ Inspect the operation by its key in the recovery panel: its status, notice, clai
 A write whose answer was lost is never sent again blindly:
 
 - **Folder and access writes:** each job holds a 5-minute claim. Once the claim expires, the next dispatcher run takes the job over and reads SharePoint first. A folder that is there is adopted, and a group, member or grant change that took effect is recorded; only what is missing is written, once. No evidence is needed.
-- **Library creation:** a create that may have reached SharePoint goes to `RecoveryRequired`. Find the flow run that sent it, and record its original create response in the recovery panel (**Open recovery** in Blocked jobs fills it in). Without that response, **Cancel** the setup; it deletes nothing, and creating the library again starts over with fresh reads. A setup interrupted before its create was permitted, for example by a pause, continues by itself.
+- **Library creation:** a create that may have reached SharePoint goes to `RecoveryRequired`. It does not hold its site: other folder, access and library work on the site goes on while it waits. Find the flow run that sent it, and record its original create response in the recovery panel (**Open recovery** in Blocked jobs fills it in). Without that response, **Cancel** the setup; it deletes nothing, and creating the library again starts over with fresh reads. A setup interrupted before its create was permitted, for example by a pause, continues by itself.
 
 The recovery panel records evidence; it does not stop a flow run that is still working.
 

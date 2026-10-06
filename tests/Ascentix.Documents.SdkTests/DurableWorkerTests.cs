@@ -2133,6 +2133,56 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
+    public void FolderJobClaimsASiteThatALibrarySetupAwaitingRecoveryStillHeld()
+    {
+        var f = new Fixture();
+        // A library setup on the same site whose create answer was lost, left holding the site's
+        // writer by an earlier 0.1.0.4 build.
+        const string setupKey = "librarycreate:legacy";
+        f.Store.Create(
+            "asx_operation",
+            new LibrarySetup
+            {
+                Key = setupKey,
+                Status = "RecoveryRequired",
+                SiteId = f.SiteId,
+                WebUrl = "https://example.sharepoint.com/sites/proto",
+                Name = "Lost",
+                Mutation = "CreateLibrary",
+                ExternalSubmitted = true,
+                WritePermitted = true,
+            }
+        );
+        string site = WorkCoordination.Operation(f.Service, f.Operation.Key);
+        Assert.Equal(site, WorkCoordination.Operation(f.Service, setupKey));
+        var token = Guid.NewGuid();
+        f.Store.Create(
+            "asx_claim",
+            new DispatcherDocument
+            {
+                Key = site,
+                Status = "Claimed",
+                OperationKey = setupKey,
+                RunId = "setup-run",
+                Token = token,
+                LeaseUntilUtc = f.Now.AddMinutes(-20),
+                HttpOutstanding = true,
+            }
+        );
+        Assert.Equal("Library", f.Claim().ProbeKind);
+        var setup = f.Store.Require<LibrarySetup>("asx_operation", setupKey).Value;
+        Assert.Equal("RecoveryRequired", setup.Status);
+        Assert.Equal("setup-run", setup.RecoveryRunId);
+        Assert.Equal(token, setup.RecoveryToken);
+        // The recovery panel still fills in the run that sent the lost create.
+        RuntimeSeed.Seed(f.Service, Guid.NewGuid(), "account");
+        var inspected = ManageWork(f, _ => f.Service, Guid.NewGuid(), "Inspect", setupKey);
+        Assert.Equal("RecoveryRequired", inspected.Status);
+        Assert.Equal("setup-run", inspected.RunId);
+        Assert.Equal(token, inspected.Token);
+    }
+
+    [Fact]
     public void ClaimAndDriveSucceedWhilePolicyIsBeingApplied()
     {
         var f = new Fixture();

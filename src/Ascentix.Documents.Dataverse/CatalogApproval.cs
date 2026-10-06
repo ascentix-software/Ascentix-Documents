@@ -1455,6 +1455,7 @@ public sealed class CatalogWorker
                     WorkCoordination.Operation(service, request.Key)
                 );
             }
+            claim = WorkCoordination.Unstall(service, claim);
             if (claim.Value.RunId != null)
             {
                 if (claim.Value.OperationKey != request.Key)

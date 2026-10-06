@@ -69,6 +69,16 @@ public sealed class LibrarySetup : OperationDocument
     /// </summary>
     [DataMember]
     public bool? WritePermitted { get; set; }
+
+    /// <summary>
+    /// The run and claim token that sent a write whose answer was lost. A setup awaiting
+    /// recovery releases its site's writer; evidence-based recovery still names this exact run.
+    /// </summary>
+    [DataMember]
+    public string? RecoveryRunId { get; set; }
+
+    [DataMember]
+    public Guid RecoveryToken { get; set; }
 }
 
 [DataContract]
@@ -270,6 +280,37 @@ public sealed class LibraryProvisioning
         op.ExternalSubmitted && !op.ExternalResponseKnown && op.WritePermitted == false;
 
     /// <summary>
+    /// Puts a setup whose write answer was lost into RecoveryRequired and releases its site's
+    /// writer, keeping the run that sent the write for evidence-based recovery. Nothing on the
+    /// site depends on that write: no request of it is still on its way (the run answered, or
+    /// its 5-minute lease, at least twice the connector timeout, expired), folder work and
+    /// access runs of a new library start only after it is registered, and the setup itself
+    /// reads SharePoint again before any further write once recovery lists it. Holding the
+    /// writer would only stop every other job on the site until an operator acts.
+    /// </summary>
+    internal static void AwaitRecovery(
+        DocumentStore store,
+        StoredRow<LibrarySetup> op,
+        StoredRow<DispatcherDocument>? claim
+    )
+    {
+        if (claim?.Value.OperationKey == op.Value.Key && claim.Value.RunId != null)
+        {
+            op.Value.RecoveryRunId = claim.Value.RunId;
+            op.Value.RecoveryToken = claim.Value.Token;
+            claim.Value.HttpOutstanding = false;
+            claim.Value.OperationKey = null;
+            claim.Value.RunId = null;
+            claim.Value.Token = Guid.Empty;
+            claim.Value.RecoveryPermitted = false;
+            claim.Value.Status = "Idle";
+            store.Save(claim);
+        }
+        op.Value.Status = "RecoveryRequired";
+        store.Save(op);
+    }
+
+    /// <summary>
     /// Holds a setup while its site is suspended: it waits in RetryWait with a notice, its next
     /// check backs off (at most 15 minutes apart), so it takes no dispatch slot meanwhile, and it
     /// resumes by itself once the site is approved again. A create that may have reached
@@ -428,6 +469,10 @@ public sealed class LibraryProvisioning
                 )
             )
                 return new WorkerResult { Status = op.Value.Status, Key = request.Key };
+            // A lost write waits for the operator's evidence, Retry or Cancel; it never starts
+            // again by itself, so the create is never sent twice.
+            if (op.Value.Status == "RecoveryRequired")
+                return new WorkerResult { Status = "Quarantined", Key = request.Key };
             if (op.Value.NextAttemptUtc > clock())
                 return new WorkerResult { Status = "RetryWait", Key = request.Key };
             if (
@@ -471,6 +516,7 @@ public sealed class LibraryProvisioning
                     WorkCoordination.Operation(service, request.Key)
                 );
             }
+            claim = WorkCoordination.Unstall(service, claim);
             if (claim.Value.RunId != null)
             {
                 if (claim.Value.OperationKey != request.Key)
@@ -492,11 +538,10 @@ public sealed class LibraryProvisioning
                 {
                     if (unknownWrite && claim.Value.LeaseUntilUtc <= clock())
                     {
-                        op.Value.Status = "RecoveryRequired";
                         op.Value.ErrorCode =
                             op.Value.ErrorCode
                             ?? "Library request outcome is unknown. Reconcile the original run before retry.";
-                        store.Save(op);
+                        AwaitRecovery(store, op, claim);
                     }
                     return new WorkerResult { Status = "Quarantined", Key = request.Key };
                 }
@@ -924,10 +969,14 @@ public sealed class LibraryProvisioning
         bool unknown = op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
         // An unknown library write needs operator recovery with evidence: a second create could
         // make a duplicate library. RecoveryRequired keeps it off the dispatch page meanwhile.
-        op.Value.Status = unknown ? "RecoveryRequired" : "Blocked";
-        store.Save(op);
-        if (!unknown)
+        if (unknown)
+            AwaitRecovery(store, op, claim);
+        else
+        {
+            op.Value.Status = "Blocked";
+            store.Save(op);
             Release(claim);
+        }
         return new WorkerResult
         {
             Key = op.Value.Key,

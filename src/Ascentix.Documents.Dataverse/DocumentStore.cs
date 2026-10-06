@@ -284,9 +284,12 @@ public sealed class DocumentStore
             if (unknown && op.Value is LibrarySetup)
             {
                 // A second library create could make a duplicate library: operator recovery.
-                op.Value.Status = "RecoveryRequired";
-                Save(op);
-                return new WorkerResult { Status = op.Value.Status, Key = key };
+                LibraryProvisioning.AwaitRecovery(
+                    this,
+                    Require<LibrarySetup>("asx_operation", key),
+                    held ? claim : null
+                );
+                return new WorkerResult { Status = "RecoveryRequired", Key = key };
             }
             if (held)
                 ReleaseExpired(key, now, "Dispatch");

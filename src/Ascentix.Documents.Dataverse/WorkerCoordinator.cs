@@ -523,6 +523,7 @@ public sealed class WorkerCoordinator
                 WorkCoordination.Operation(service, request.Key)
             );
         }
+        dispatcher = WorkCoordination.Unstall(service, dispatcher);
         bool recovery = false;
         if (dispatcher.Value.RunId != null)
         {
@@ -1224,21 +1225,36 @@ public sealed class WorkerCoordinator
             "asx_claim",
             WorkCoordination.Operation(service, request.Key)
         );
+        bool held = dispatcher.Value.RunId != null && dispatcher.Value.OperationKey == request.Key;
+        // A library setup awaiting recovery released its site's writer and kept the identity of
+        // the run that sent the lost write (LibraryProvisioning.AwaitRecovery).
+        var awaiting = request.Key.StartsWith("librarycreate:", StringComparison.Ordinal)
+            ? store.Require<LibrarySetup>("asx_operation", request.Key)
+            : null;
+        bool released =
+            !held
+            && awaiting?.Value.Status == "RecoveryRequired"
+            && awaiting.Value.RecoveryRunId != null;
         if (
-            dispatcher.Value.RunId == null
-            || dispatcher.Value.OperationKey != request.Key
-            || dispatcher.Value.RunId != request.RunId
-            || dispatcher.Value.Token != request.Token
-            || dispatcher.Value.LeaseUntilUtc > clock()
+            (
+                held
+                    ? dispatcher.Value.RunId != request.RunId
+                        || dispatcher.Value.Token != request.Token
+                        || dispatcher.Value.LeaseUntilUtc > clock()
+                    : !released
+                        || awaiting!.Value.RecoveryRunId != request.RunId
+                        || awaiting.Value.RecoveryToken != request.Token
+            )
+            || request.Token == Guid.Empty
             || string.IsNullOrWhiteSpace(request.Evidence)
             || request.Evidence!.Length > 500
         )
             throw new EvaluationBlockedException(
                 "Expired exact writer identity and operator-confirmed termination/outstanding-call evidence required."
             );
-        if (request.Key.StartsWith("librarycreate:", StringComparison.Ordinal))
+        if (awaiting != null)
         {
-            var setup = store.Require<LibrarySetup>("asx_operation", request.Key);
+            var setup = awaiting;
             if (setup.Value.Mutation == "CreateLibrary" && setup.Value.ListId == Guid.Empty)
             {
                 if (
@@ -1272,8 +1288,21 @@ public sealed class WorkerCoordinator
             if (setup.Value.Status == "RecoveryRequired")
             {
                 setup.Value.Status = "Pending";
+                if (released)
+                {
+                    // The evidence settles the lost answer, as a takeover of a permitted claim
+                    // does: the next run claims the writer like any job and reads first.
+                    setup.Value.ExternalResponseKnown = true;
+                    setup.Value.RecoveryRunId = null;
+                    setup.Value.RecoveryToken = Guid.Empty;
+                }
                 store.Save(setup);
             }
+        }
+        if (released)
+        {
+            Audit(request.Key, request.RunId, "OperatorRecoveryPermit:" + request.Evidence);
+            return new WorkerResult { Status = "RecoveryPermitted", Key = request.Key };
         }
         dispatcher.Value.HttpOutstanding = false;
         dispatcher.Value.RecoveryPermitted = true;

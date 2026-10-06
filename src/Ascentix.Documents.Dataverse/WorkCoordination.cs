@@ -119,6 +119,32 @@ public static class WorkCoordination
         store.Save(old);
     }
 
+    /// <summary>
+    /// Frees a site's writer that a library setup awaiting recovery still holds, as an earlier
+    /// 0.1.0.4 build left it (see LibraryProvisioning.AwaitRecovery), so it never stops the
+    /// site's other work. Returns the claim as it now stands.
+    /// </summary>
+    public static StoredRow<DispatcherDocument> Unstall(
+        IOrganizationService service,
+        StoredRow<DispatcherDocument> claim
+    )
+    {
+        string? key = claim.Value.OperationKey;
+        if (
+            claim.Value.RunId == null
+            || claim.Value.RecoveryPermitted
+            || key == null
+            || !key.StartsWith("librarycreate:", StringComparison.Ordinal)
+        )
+            return claim;
+        var store = new DocumentStore(service);
+        var setup = store.Find<LibrarySetup>("asx_operation", key);
+        if (setup?.Value.Status != "RecoveryRequired")
+            return claim;
+        LibraryProvisioning.AwaitRecovery(store, setup, claim);
+        return store.Require<DispatcherDocument>("asx_claim", claim.Value.Key);
+    }
+
     private static Entity? Find(IOrganizationService service, string table, Guid id, string column)
     {
         var query = new QueryExpression(table) { ColumnSet = new ColumnSet(column), TopCount = 1 };
