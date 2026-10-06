@@ -271,11 +271,7 @@ public sealed class DocumentStore
             return new WorkerResult { Status = "Quarantined", Key = key };
         // A library write the connection never permitted was never sent, so nothing about it
         // is unknown: it is prepared again after fresh reads, like any interrupted setup.
-        if (
-            unknown
-            && op.Value is LibrarySetup setup
-            && LibraryProvisioning.NeverSent(setup, claim?.Value)
-        )
+        if (unknown && op.Value is LibrarySetup setup && LibraryProvisioning.NeverSent(setup))
         {
             LibraryProvisioning.Unsend(setup);
             unknown = false;

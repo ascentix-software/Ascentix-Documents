@@ -1343,7 +1343,7 @@ public sealed class WorkerCoordinator
         return Stop(
             request,
             "Superseded",
-            "A newer plan of this record replaced this folder work before it wrote anything."
+            "Superseded by a newer plan of this record. Folders it already created are kept; nothing in SharePoint was deleted."
         );
     }
 

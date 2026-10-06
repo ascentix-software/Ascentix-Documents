@@ -418,7 +418,7 @@ public static class WorkCoordination
             : StopsSite(service, site.Id);
     }
 
-    private static string? StopsSite(IOrganizationService service, Guid siteId)
+    internal static string? StopsSite(IOrganizationService service, Guid siteId)
     {
         var state = Read(service, "asx_site", siteId);
         return state == null || state.Value.removed ? "removed"

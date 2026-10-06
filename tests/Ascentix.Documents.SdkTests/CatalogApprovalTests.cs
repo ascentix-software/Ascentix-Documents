@@ -994,6 +994,108 @@ public sealed class CatalogApprovalTests
         );
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReapprovingASuspendedLibraryProceedsUnlessItsAccessRunHasAWriteOutstanding(
+        bool outstanding
+    )
+    {
+        var f = new Fixture();
+        var added = Added(f);
+        Assert.Equal("Approved", added.Status);
+        var store = new DocumentStore(f.Service);
+        // An access run is queued for the library and was held while it was suspended.
+        string run = "policywork:" + Guid.NewGuid().ToString("N");
+        store.Create(
+            "asx_operation",
+            new SecurityOperation
+            {
+                Key = run,
+                LibraryId = added.CatalogId,
+                Status = outstanding ? "ExternalUnknown" : "RetryWait",
+                ExternalSubmitted = outstanding,
+            }
+        );
+        string policyKey = "policy:" + added.CatalogId.ToString("N");
+        var policy = store.Find<PolicyDocument>("asx_policy", policyKey);
+        if (policy == null)
+            store.Create(
+                "asx_policy",
+                new PolicyDocument
+                {
+                    Key = policyKey,
+                    Status = "Queued",
+                    LibraryId = added.CatalogId,
+                    OperationKey = run,
+                }
+            );
+        else
+        {
+            policy.Value.OperationKey = run;
+            store.Save(policy);
+        }
+        f.Service.Transaction(() =>
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "SuspendLibrary",
+                    CatalogId = added.CatalogId,
+                    CatalogRowVersion = f.Service.Rows[added.CatalogId].RowVersion,
+                },
+                true
+            )
+        );
+        var library = f.Service.Rows[added.CatalogId];
+        var probe = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "ProbeLibrary",
+                    SiteId = library.GetAttributeValue<EntityReference>("asx_siteid").Id,
+                    ListId = f.List,
+                    NativeParentId = library
+                        .GetAttributeValue<EntityReference>("asx_nativeparentid")
+                        .Id,
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        CatalogResult Approve() =>
+            f.Service.Transaction(() =>
+                f.Admin.Execute(
+                    new CatalogRequest
+                    {
+                        Command = "Approve",
+                        Key = probe.Key,
+                        RowVersion = probe.RowVersion,
+                        CatalogRowVersion = f.Service.Rows[added.CatalogId].RowVersion,
+                        Name = "General",
+                    },
+                    true
+                )
+            );
+        if (outstanding)
+        {
+            var refused = Assert.Throws<EvaluationBlockedException>(() => Approve());
+            Assert.Contains("write to SharePoint whose result is not known yet", refused.Message);
+            Assert.False(f.Service.Rows[added.CatalogId].GetAttributeValue<bool>("asx_approved"));
+            return;
+        }
+        Assert.Equal("Approved", Approve().Status);
+        Assert.True(f.Service.Rows[added.CatalogId].GetAttributeValue<bool>("asx_approved"));
+        // The held access run is still queued and resumes by itself; nothing was cancelled.
+        Assert.Equal(
+            run,
+            store.Require<PolicyDocument>("asx_policy", policyKey).Value.OperationKey
+        );
+        Assert.Equal(
+            "RetryWait",
+            store.Require<SecurityOperation>("asx_operation", run).Value.Status
+        );
+    }
+
     private static CatalogResult Added(Fixture f)
     {
         var site = f.Capture(

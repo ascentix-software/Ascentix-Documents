@@ -322,21 +322,69 @@ public sealed class LibraryProvisioningTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void SetupStoredBeforeTheMarkerUsesTheClaimToTellWhetherTheCreateWasPermitted(
-        bool permitted
-    )
+    public void SetupStoredBeforeTheMarkerCountsAsPossiblySentAndCanStillBeCancelled(bool permitted)
     {
         var (f, key, prepared) = PreparedCreate();
         if (permitted)
             Assert.Equal("Permit", f.Permit(prepared).Status);
+        // An earlier release did not record the permit, and its answer handling cleared the
+        // claim's outstanding flag even for a 5xx, so the claim cannot tell either: a stored
+        // create counts as possibly sent and keeps evidence-based recovery.
         LegacyPayload.Strip(f.Service, "asx_operation", "WritePermitted");
         f.Expire(key);
-        if (permitted)
+        Assert.Equal("Quarantined", f.Call("Claim", new WorkerResult { Key = key }).Status);
+        Assert.Equal("RecoveryRequired", f.Status(key));
+        Assert.Contains(
+            "original create response",
+            Assert
+                .Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
+                    f.Manage("Retry", key)
+                )
+                .Message
+        );
+        Assert.Equal("Cancelled", f.Manage("Cancel", key).Status);
+        Assert.Empty(f.Posts);
+        Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SetupForASuspendedSiteWaitsAndResumesAfterReapproval(bool prepared)
+    {
+        Fixture f;
+        string key;
+        if (prepared)
         {
-            Assert.Equal("Quarantined", f.Call("Claim", new WorkerResult { Key = key }).Status);
-            Assert.Equal("RecoveryRequired", f.Status(key));
-            return;
+            // Interrupted after preparing its create, before any write permit.
+            (f, key, _) = PreparedCreate();
+            f.Expire(key);
         }
+        else
+        {
+            f = new Fixture();
+            key = f.Queue().Key;
+        }
+        f.Service.Rows[f.Site]["asx_approved"] = false;
+        Assert.Equal("RetryWait", f.Call("Claim", new WorkerResult { Key = key }).Status);
+        var op = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
+        Assert.Equal("RetryWait", op.Status);
+        Assert.Contains("suspended", op.ErrorCode);
+        Assert.False(op.ExternalSubmitted);
+        // It takes no dispatch slot until its next check is due.
+        Assert.DoesNotContain(key, f.Store.Pending("asx_operation"));
+        Assert.Contains(key, f.Store.Pending("asx_operation", now: DateTime.UtcNow.AddMinutes(16)));
+        Assert.Null(
+            f.Store.Find<DispatcherDocument>(
+                "asx_claim",
+                WorkCoordination.Operation(f.Service, key)
+            )?.Value.RunId
+        );
+        // Approved again, with no operator action, it resumes at its next check.
+        f.Service.Rows[f.Site]["asx_approved"] = true;
+        var due = f.Store.Require<LibrarySetup>("asx_operation", key);
+        due.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+        f.Store.Save(due);
         CreatedOnce(f, key);
     }
 

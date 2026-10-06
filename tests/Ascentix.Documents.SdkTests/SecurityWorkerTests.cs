@@ -1059,6 +1059,66 @@ public sealed class SecurityWorkerTests
     private static PolicyDocument PolicyOf(Fixture f, Guid library) =>
         f.Store.Require<PolicyDocument>("asx_policy", "policy:" + library.ToString("N")).Value;
 
+    private static DispatcherDocument WriterOf(Fixture f) =>
+        f
+            .Store.Require<DispatcherDocument>(
+                "asx_claim",
+                WorkCoordination.Operation(f.Service, f.Key)
+            )
+            .Value;
+
+    [Fact]
+    public void AccessRunOfASuspendedLibraryWaitsAndResumesAfterReapproval()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        var work = f.Start();
+        Assert.Equal("Read", work.Status);
+        f.Service.Rows[f.Library]["asx_approved"] = false;
+        Assert.Equal("RetryWait", f.Observe(work).Status);
+        var held = f.Operation();
+        Assert.Equal("RetryWait", held.Status);
+        Assert.Contains("suspended", held.ErrorCode);
+        Assert.Null(WriterOf(f).RunId);
+        // It takes no dispatch slot until its next check is due, and waits again if still suspended.
+        Assert.DoesNotContain(f.Key, f.Store.Pending("asx_operation"));
+        Due(f);
+        Assert.Equal("RetryWait", f.Start().Status);
+        Assert.Equal(2, f.Operation().RetryCount);
+        Assert.Empty(f.Writes);
+        // Approved again, with no operator action, it resumes at its next check.
+        f.Service.Rows[f.Library]["asx_approved"] = true;
+        Due(f);
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Single(f.Members);
+    }
+
+    [Fact]
+    public void AccessWriteAnsweredAfterSuspensionIsReadBackAfterReapprovalAndNotRepeated()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        var work = f.Start();
+        while (work.Status == "Read")
+            work = f.Observe(work);
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        var kind = f.Operation().MutationKind;
+        f.Apply();
+        // The library is suspended while the sent write is in flight; its answer arrives after.
+        f.Service.Rows[f.Library]["asx_approved"] = false;
+        Assert.Equal("RetryWait", f.Call("CreateResponse", work, status: 200).Status);
+        Assert.True(f.Operation().Reprobe);
+        Assert.Null(WriterOf(f).RunId);
+        Assert.False(WriterOf(f).HttpOutstanding);
+        f.Service.Rows[f.Library]["asx_approved"] = true;
+        Due(f);
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Equal(1, f.Writes.Count(w => w == kind));
+    }
+
     [Fact]
     public void ScheduledRefreshSkipsASuspendedLibraryAndRefreshesTheOthers()
     {
@@ -2621,7 +2681,12 @@ public sealed class SecurityWorkerTests
         if (change == "remove")
             Assert.Equal("Cancelled", f.Start().Status);
         else
-            Assert.Throws<EvaluationBlockedException>(() => f.Start());
+        {
+            // A suspended library holds the run until it is approved again.
+            Assert.Equal("RetryWait", f.Start().Status);
+            Assert.Contains("suspended", f.Operation().ErrorCode);
+        }
+        Assert.Empty(f.Writes);
     }
 
     [Fact]

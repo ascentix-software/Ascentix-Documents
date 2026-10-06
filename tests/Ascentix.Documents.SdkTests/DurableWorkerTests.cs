@@ -1521,7 +1521,10 @@ public sealed class DurableWorkerTests
                 Operations = new[] { "folderjob:newer" },
             }
         );
-        Assert.Equal("Superseded", f.Observe(work, f.LibraryBody()).Status);
+        var stopped = f.Observe(work, f.LibraryBody());
+        Assert.Equal("Superseded", stopped.Status);
+        // A multi-folder job may already have created earlier folders; they are kept.
+        Assert.Contains(stopped.Notices, n => n.Contains("Folders it already created are kept"));
         Assert.Equal("Superseded", StoredJob(f).Status);
         Assert.Null(WriterOf(f).RunId);
         Assert.DoesNotContain(f.Results, r => r.Status == "Create");

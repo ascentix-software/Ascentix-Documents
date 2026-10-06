@@ -66,7 +66,7 @@ public sealed class SecurityWorker
             return store.FailUnclaimed<SecurityOperation>(request.Key, request, clock());
         if (request.Command != "Retry" && request.Command != "Cancel")
         {
-            var stopped = StopRemoved(request, op);
+            var stopped = StopRemoved(request, op) ?? StopSuspended(request, op);
             if (stopped != null)
                 return stopped;
         }
@@ -241,6 +241,63 @@ public sealed class SecurityWorker
             {
                 "The library was removed from Documents, so this access run stopped. Nothing in SharePoint was undone or deleted.",
             },
+        };
+    }
+
+    /// <summary>
+    /// Holds an access run while its library or site is suspended, at its next step: it waits
+    /// in RetryWait with a notice, its next check backs off (at most 15 minutes apart) so it
+    /// takes no dispatch slot meanwhile, and it resumes by itself once both are approved again.
+    /// Nothing is written while suspended. A write already sent is read back after the wait
+    /// before anything is written again, as after an operator Retry.
+    /// </summary>
+    private WorkerResult? StopSuspended(WorkerRequest request, StoredRow<SecurityOperation> op)
+    {
+        if (
+            op.Value.Status == "Applied"
+            || op.Value.Status == "Cancelled"
+            || op.Value.Status == "Blocked"
+            || request.Command == "Claim" && op.Value.NextAttemptUtc > clock()
+            || WorkCoordination.Stops(service, op.Value.LibraryId) != "suspended"
+        )
+            return null;
+        var claim = store.Find<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(service, request.Key)
+        );
+        if (claim?.Value.OperationKey == request.Key && claim.Value.RunId != null)
+        {
+            if (request.Command != "Claim")
+                claim = Assert(request);
+            else if (claim.Value.LeaseUntilUtc > clock() && !claim.Value.RecoveryPermitted)
+                return new WorkerResult { Status = "Quarantined", Key = request.Key };
+            claim!.Value.HttpOutstanding = false;
+            Release(claim);
+        }
+        op = store.Require<SecurityOperation>("asx_operation", request.Key);
+        if (op.Value.ExternalSubmitted)
+        {
+            op.Value.Reprobe = true;
+            op.Value.ExternalResponseKnown = true;
+            op.Value.ReadbackMisses = 0;
+        }
+        else
+            ClearMutation(op.Value);
+        op.Value.RetryCount++;
+        op.Value.Status = "RetryWait";
+        op.Value.NextAttemptUtc = WorkerCoordinator.RetryAt(clock(), op.Value.RetryCount, null);
+        op.Value.ProbeId = Guid.Empty;
+        op.Value.ErrorCode =
+            "Waiting: the library or its site is suspended. This access run resumes by itself once both are approved again; check "
+            + op.Value.RetryCount.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ".";
+        store.Save(op);
+        Audit(op.Value.Key, request.RunId ?? "worker", "DestinationSuspended");
+        return new WorkerResult
+        {
+            Status = "RetryWait",
+            Key = request.Key,
+            Notices = new[] { op.Value.ErrorCode },
         };
     }
 

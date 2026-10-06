@@ -670,14 +670,23 @@ public sealed class CatalogAdministration
                     throw new EvaluationBlockedException(
                         "Catalog physical identity changed; no reassignment."
                     );
-            if (
-                isLibrary
-                && store
+            // A queued access run (held while the library was suspended) resumes by itself after
+            // reapproval. Only a run with a write sent to SharePoint whose result is not known yet
+            // must be settled first, since reapproval re-reads the library under it.
+            var queued = isLibrary
+                ? store
                     .Find<PolicyDocument>("asx_policy", "policy:" + id.ToString("N"))
-                    ?.Value.OperationKey != null
+                    ?.Value.OperationKey
+                : null;
+            var access =
+                queued == null ? null : store.Find<SecurityOperation>("asx_operation", queued);
+            if (
+                access != null
+                && access.Value.ExternalSubmitted
+                && !access.Value.ExternalResponseKnown
             )
                 throw new EvaluationBlockedException(
-                    "Finish or cancel the queued policy before reapproval."
+                    "The library's access run has a write to SharePoint whose result is not known yet. Wait for it to be read back, or Cancel the access run, then approve the library again."
                 );
             var update = new Entity(table, id)
             {

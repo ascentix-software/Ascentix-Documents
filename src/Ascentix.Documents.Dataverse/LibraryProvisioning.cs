@@ -232,24 +232,58 @@ public sealed class LibraryProvisioning
 
     /// <summary>
     /// True when the setup's prepared write was never permitted, so SharePoint never received
-    /// it: a pause, a lost Prepare response or a run that ended before its permit. Setups stored
-    /// before the permit was recorded use their held claim, whose outstanding-request flag is
-    /// set with every permit and cleared only once the answer is recorded.
+    /// it: a pause, a lost Prepare response or a run that ended before its permit. A setup
+    /// stored before the permit was recorded (null) counts as possibly sent: nothing stored by
+    /// an earlier release tells the two apart, so it keeps evidence-based recovery, and Cancel.
     /// </summary>
     /// <param name="op">The library setup.</param>
-    /// <param name="claim">The site writer row, or null when it is not known.</param>
-    internal static bool NeverSent(LibrarySetup op, DispatcherDocument? claim) =>
-        op.ExternalSubmitted
-        && !op.ExternalResponseKnown
-        && (
-            op.WritePermitted == false
-            || op.WritePermitted == null
-                && claim != null
-                && claim.OperationKey == op.Key
-                && claim.RunId != null
-                && !claim.RecoveryPermitted
-                && !claim.HttpOutstanding
+    internal static bool NeverSent(LibrarySetup op) =>
+        op.ExternalSubmitted && !op.ExternalResponseKnown && op.WritePermitted == false;
+
+    /// <summary>
+    /// Holds a setup while its site is suspended: it waits in RetryWait with a notice, its next
+    /// check backs off (at most 15 minutes apart), so it takes no dispatch slot meanwhile, and it
+    /// resumes by itself once the site is approved again. A create that may have reached
+    /// SharePoint is left to evidence-based recovery. Null when the site is not suspended.
+    /// </summary>
+    private WorkerResult? Suspended(WorkerRequest request, StoredRow<LibrarySetup> op)
+    {
+        if (WorkCoordination.StopsSite(service, op.Value.SiteId) != "suspended")
+            return null;
+        var claim = store.Find<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(service, request.Key)
         );
+        bool held = claim?.Value.RunId != null && claim.Value.OperationKey == request.Key;
+        if (claim?.Value.RunId != null && !held)
+            return new WorkerResult { Status = "Busy", Key = request.Key };
+        if (held && claim!.Value.LeaseUntilUtc > clock() && !claim.Value.RecoveryPermitted)
+            return new WorkerResult { Status = "Quarantined", Key = request.Key };
+        if (NeverSent(op.Value))
+            Unsend(op.Value);
+        if (op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)
+            return null;
+        if (held)
+        {
+            claim!.Value.HttpOutstanding = false;
+            Release(claim);
+        }
+        op.Value.RetryCount++;
+        op.Value.Status = "RetryWait";
+        op.Value.NextAttemptUtc = WorkerCoordinator.RetryAt(clock(), op.Value.RetryCount, null);
+        op.Value.ProbeId = Guid.Empty;
+        op.Value.ErrorCode =
+            "Waiting: the site is suspended. This library setup resumes by itself once the site is approved again; check "
+            + op.Value.RetryCount.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ".";
+        store.Save(op);
+        return new WorkerResult
+        {
+            Status = "RetryWait",
+            Key = request.Key,
+            Notices = new[] { op.Value.ErrorCode },
+        };
+    }
 
     /// <summary>Puts a write that was never sent back to Pending, to be read and prepared again.</summary>
     internal static void Unsend(LibrarySetup op)
@@ -280,12 +314,8 @@ public sealed class LibraryProvisioning
                     ? "Cancelled setup cannot retry. Create the library again to start over."
                     : "The library is created; its access run is managed with the library."
             );
-        var claim = store.Find<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(service, request.Key)
-        );
         bool unknown = op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
-        bool neverSent = NeverSent(op.Value, claim?.Value);
+        bool neverSent = NeverSent(op.Value);
         bool sentCreate =
             unknown
             && !neverSent
@@ -377,6 +407,9 @@ public sealed class LibraryProvisioning
                 || request.RunId.Any(char.IsControl)
             )
                 throw new EvaluationBlockedException("Actual worker run identity required.");
+            var held = Suspended(request, op);
+            if (held != null)
+                return held;
             var site = service.Retrieve(
                 "asx_site",
                 op.Value.SiteId,
@@ -418,11 +451,7 @@ public sealed class LibraryProvisioning
                 bool unknownWrite = op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
                 // A prepared write the connection never permitted was never sent: the run that
                 // held it stopped first. It is read and prepared again, not recovered.
-                if (
-                    unknownWrite
-                    && claim.Value.LeaseUntilUtc <= clock()
-                    && NeverSent(op.Value, claim.Value)
-                )
+                if (unknownWrite && claim.Value.LeaseUntilUtc <= clock() && NeverSent(op.Value))
                 {
                     Unsend(op.Value);
                     unknownWrite = false;
@@ -494,7 +523,7 @@ public sealed class LibraryProvisioning
         if (request.Command == "Fail")
         {
             // The run failed before its prepared write was permitted, so nothing was sent.
-            if (NeverSent(op.Value, lease.Value))
+            if (NeverSent(op.Value))
                 Unsend(op.Value);
             if (
                 TransientFailure.Is(request)
