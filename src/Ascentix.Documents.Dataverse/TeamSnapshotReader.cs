@@ -215,6 +215,8 @@ public sealed class TeamSnapshotReader
         var skipped = new List<string>();
         var ids = new HashSet<Guid>();
         var cookies = new HashSet<string>();
+        int used = 0;
+        bool incomplete = false;
         string Skip(string who, string reason) =>
             "Team '"
             + teamName
@@ -247,34 +249,36 @@ public sealed class TeamSnapshotReader
                     row.GetAttributeValue<string>("fullname"),
                     Clean(upn, "user " + row.Id.ToString("D"))
                 );
-                if (reason != null)
+                var person = new TeamPerson
                 {
-                    skipped.Add(Skip(who, reason));
+                    UserId = row.Id,
+                    EntraId = oid,
+                    Login = login,
+                };
+                string? notice = reason == null ? null : Skip(who, reason);
+                used += notice == null ? Footprint(person) : JsonWire.Write(notice).Length + 1;
+                if (used > PeopleBudget)
+                {
+                    incomplete = true;
+                    break;
+                }
+                if (notice != null)
+                {
+                    skipped.Add(notice);
                     continue;
                 }
                 names[row.Id] = who;
-                people.Add(
-                    new TeamPerson
-                    {
-                        UserId = row.Id,
-                        EntraId = oid,
-                        Login = login,
-                    }
-                );
+                people.Add(person);
             }
-            if (ids.Count > 2000)
-                throw new EvaluationBlockedException(
-                    "Team exceeds the supported complete snapshot bound."
-                );
-            if (!page.MoreRecords)
+            if (incomplete || !page.MoreRecords)
                 break;
             if (
                 page.Entities.Count == 0
                 || string.IsNullOrEmpty(page.PagingCookie)
                 || !cookies.Add(page.PagingCookie)
-                || ++query.PageInfo.PageNumber > 20
             )
                 throw new EvaluationBlockedException("Incomplete or cyclic team pagination.");
+            query.PageInfo.PageNumber++;
             query.PageInfo.PagingCookie = page.PagingCookie;
         }
         // Two members with one Entra object ID or one sign-in name cannot be told apart, so
@@ -301,6 +305,12 @@ public sealed class TeamSnapshotReader
                 skipped.Add(
                     Skip(names[person.UserId], "another team member has the same sign-in name")
                 );
+        if (incomplete)
+            skipped.Add(
+                "Team '"
+                    + teamName
+                    + "' has more people than one access run can store (each person is kept twice in one 500,000-character Dataverse row), so Documents left the members of its SharePoint group as they are. Its access to the library is still applied, and every scheduled refresh tries again. A Microsoft Entra or Microsoft 365 group team is granted as one group and has no such limit."
+            );
         return new TeamSnapshot
         {
             People = people
@@ -308,8 +318,32 @@ public sealed class TeamSnapshotReader
                 .OrderBy(p => p.UserId)
                 .ToArray(),
             Skipped = skipped.ToArray(),
+            Incomplete = incomplete,
         };
     }
+
+    // asx_membership.asx_payload holds at most 500,000 characters (MaxLength in
+    // Entities/asx_membership/Entity.xml, also enforced by JsonWire.Read). A team's row keeps
+    // each person twice: as the team has them (Desired) and as SharePoint lists them in the
+    // group (Observed). People are read while both copies, the skip notices and the row's own
+    // keys and status (a few hundred characters; 2,000 are kept free) fit.
+    private const int MembershipPayloadMaxLength = 500000;
+    private const int PeopleBudget = MembershipPayloadMaxLength - 2000;
+
+    /// <summary>The characters one person takes in the membership row: wanted and observed.</summary>
+    private static int Footprint(TeamPerson person) =>
+        JsonWire.Write(person).Length
+        + JsonWire
+            .Write(
+                new SitePerson
+                {
+                    Id = int.MaxValue,
+                    Login = person.Login,
+                    Type = 1,
+                }
+            )
+            .Length
+        + 2;
 
     /// <summary>
     /// A group team's only managed member is its group. Dataverse team members are never read.
@@ -369,7 +403,7 @@ public static class SecurityPaging
 {
     public static string Next(Uri web, string first, string next, string[] visited)
     {
-        if (visited.Length >= 20 || next.Length > 8000)
+        if (next.Length > 8000)
             throw new EvaluationBlockedException("Security pagination bound exceeded.");
         var endpoint = new Uri(web.AbsoluteUri.TrimEnd('/') + "/" + first);
         if (

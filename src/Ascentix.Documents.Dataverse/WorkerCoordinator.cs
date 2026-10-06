@@ -46,13 +46,17 @@ public sealed class WorkerCoordinator
     /// every case with record updates off, needs a replan.
     /// </summary>
     public static string WaitFollowUp(FolderWait wait, bool updates) =>
-        wait.Field == null
+        wait.Reason == FolderWaitReason.PathTooLong
             ? updates
-                ? "The folder is created when a change to the record gives it a usable name of its own."
-                : "Change the record so the folder gets a usable name of its own, then replan the record."
-            : updates && wait.Field.Source == "root"
-                ? "The folder is created when '" + wait.Field + "' has a value."
-                : "Fill in '" + wait.Field + "', then replan the record.";
+                ? "The folder is created when a change to the record makes its path short enough; after shortening the template's folder names, replan the record."
+                : "Shorten the record's value or the template's folder names, then replan the record."
+            : wait.Field == null
+                ? updates
+                    ? "The folder is created when a change to the record gives it a usable name of its own."
+                    : "Change the record so the folder gets a usable name of its own, then replan the record."
+                : updates && wait.Field.Source == "root"
+                    ? "The folder is created when '" + wait.Field + "' has a value."
+                    : "Fill in '" + wait.Field + "', then replan the record.";
 
     /// <summary>The plan's notices, each waiting folder's with what it needs; and those alone.</summary>
     private string[] PlanNotices(FolderPlan plan, out string[] waiting)

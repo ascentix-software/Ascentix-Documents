@@ -9,22 +9,25 @@ namespace Ascentix.Documents.Dataverse;
 
 public static class CompleteQuery
 {
+    // Dataverse returns at most 5,000 rows per page ("Page results using QueryExpression",
+    // https://learn.microsoft.com/power-apps/developer/data-platform/org-service/queryexpression/page-results).
+    private const int PageSize = 5000;
+
     /// <summary>
-    /// Reads every page within the row limit and rejects duplicate rows or invalid continuations.
+    /// Reads every page, however many rows there are, and rejects duplicate rows or invalid
+    /// continuations.
     /// </summary>
     /// <param name="service">The Dataverse service used to retrieve query pages.</param>
     /// <param name="query">The query to execute; its paging information is updated during traversal.</param>
-    /// <param name="maximum">The maximum total row count accepted for the complete result.</param>
     /// <returns>All rows returned by the completed query.</returns>
-    public static Entity[] Read(
-        IOrganizationService service,
-        QueryExpression query,
-        int maximum = 1000
-    )
+    public static Entity[] Read(IOrganizationService service, QueryExpression query)
     {
         if (query.TopCount.HasValue)
             throw new EvaluationBlockedException("Complete queries cannot use TopCount.");
-        query.PageInfo = new PagingInfo { Count = Math.Min(500, maximum), PageNumber = 1 };
+        query.PageInfo = new PagingInfo { Count = PageSize, PageNumber = 1 };
+        // Pages follow each other only in a unique order (same article): the primary key.
+        if (query.Orders.Count == 0)
+            query.AddOrder(query.EntityName + "id", OrderType.Ascending);
         var rows = new List<Entity>();
         var ids = new HashSet<Guid>();
         var cookies = new HashSet<string>();
@@ -36,17 +39,15 @@ public static class CompleteQuery
                     throw new EvaluationBlockedException("Duplicate/changing complete query page.");
                 else
                     rows.Add(row);
-            if (rows.Count > maximum)
-                throw new EvaluationBlockedException("Complete query bound exceeded.");
             if (!page.MoreRecords)
                 return rows.ToArray();
             if (
                 page.Entities.Count == 0
                 || string.IsNullOrEmpty(page.PagingCookie)
                 || !cookies.Add(page.PagingCookie)
-                || ++query.PageInfo.PageNumber > 20
             )
                 throw new EvaluationBlockedException("Incomplete query pagination.");
+            query.PageInfo.PageNumber++;
             query.PageInfo.PagingCookie = page.PagingCookie;
         }
     }
@@ -57,34 +58,78 @@ public sealed class SecurityRefresh
     private readonly IOrganizationService service;
     private readonly DocumentStore store;
     private readonly Func<DateTime> clock;
+    private readonly Func<TimeSpan>? elapsed;
     private bool waiting;
 
-    public SecurityRefresh(IOrganizationService service, Func<DateTime>? clock = null)
+    /// <param name="service">The Dataverse service.</param>
+    /// <param name="clock">The current time; review times are set from it.</param>
+    /// <param name="elapsed">Time spent in this scan so far; by default a stopwatch.</param>
+    public SecurityRefresh(
+        IOrganizationService service,
+        Func<DateTime>? clock = null,
+        Func<TimeSpan>? elapsed = null
+    )
     {
         this.service = service;
         store = new DocumentStore(service);
         this.clock = clock ?? (() => DateTime.UtcNow);
+        this.elapsed = elapsed;
     }
 
+    // The flow's Refresh_approved_security step is one call of the worker custom API, which
+    // Dataverse stops after 2 minutes ("Analyze plug-in performance",
+    // https://learn.microsoft.com/power-apps/developer/data-platform/analyze-performance; the
+    // same limit sizes EventRegistrations.MaxNewTablesPerSave). The scan uses half of it and
+    // leaves the rest of the due policies to the next run, a minute later.
+    public static readonly TimeSpan ScanBudget = TimeSpan.FromMinutes(1);
+
+    // Due policies are read a page at a time, like the dispatch page (DocumentStore.Pending);
+    // the scan goes on page after page until none is due or the time budget is used.
+    private const int ScanPage = 20;
+
+    /// <summary>
+    /// Reviews every policy whose daily review is due, oldest first, until none is left or the
+    /// time budget is used; the next run continues with the rest.
+    /// </summary>
     public WorkerResult Scan()
     {
-        var query = new QueryExpression("asx_policy")
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Func<TimeSpan> spent = elapsed ?? (() => watch.Elapsed);
+        var keys = new List<string>();
+        var reviewed = new HashSet<Guid>();
+        while (true)
         {
-            ColumnSet = new ColumnSet("asx_payload"),
-            TopCount = 5,
-        };
-        query.Criteria.AddCondition("asx_reviewafter", ConditionOperator.LessEqual, clock());
-        query.AddOrder("asx_reviewafter", OrderType.Ascending);
-        var rows = service.RetrieveMultiple(query).Entities;
-        var keys = Refresh(rows, Guid.Empty);
-        foreach (var row in rows)
-        {
-            var pointer = JsonWire.Read<PolicyDocument>(TemplateStore.Text(row, "asx_payload"));
-            var current = store.Require<PolicyDocument>("asx_policy", pointer.Key);
-            current.Value.NextReviewUtc = clock().AddDays(1);
-            store.Save(current);
+            var query = new QueryExpression("asx_policy")
+            {
+                ColumnSet = new ColumnSet("asx_payload"),
+                PageInfo = new PagingInfo { Count = ScanPage, PageNumber = 1 },
+            };
+            query.Criteria.AddCondition("asx_reviewafter", ConditionOperator.LessEqual, clock());
+            query.AddOrder("asx_reviewafter", OrderType.Ascending);
+            // A reviewed policy is no longer due, so each read starts with the next ones.
+            var rows = service
+                .RetrieveMultiple(query)
+                .Entities.Where(row => !reviewed.Contains(row.Id))
+                .ToArray();
+            if (rows.Length == 0)
+                break;
+            foreach (var row in rows)
+            {
+                if (spent() >= ScanBudget)
+                    return new WorkerResult
+                    {
+                        Status = "ReviewedDuePolicies",
+                        Keys = keys.ToArray(),
+                    };
+                reviewed.Add(row.Id);
+                keys.AddRange(Refresh(new[] { row }, Guid.Empty));
+                var pointer = JsonWire.Read<PolicyDocument>(TemplateStore.Text(row, "asx_payload"));
+                var current = store.Require<PolicyDocument>("asx_policy", pointer.Key);
+                current.Value.NextReviewUtc = clock().AddDays(1);
+                store.Save(current);
+            }
         }
-        return new WorkerResult { Status = "ReviewedDuePolicies", Keys = keys };
+        return new WorkerResult { Status = "ReviewedDuePolicies", Keys = keys.ToArray() };
     }
 
     /// <summary>

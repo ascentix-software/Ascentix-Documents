@@ -1507,9 +1507,10 @@ public sealed class SecurityWorkerTests
         f.Writes.Clear();
         f.Queue("Read");
         f.Drive();
-        Assert.Equal(new[] { "RejectedMemberRemove" }, f.Writes);
-        Assert.Contains(f.Policy().Notices, n => n.Contains("more than one run can record"));
-        Assert.True(f.Operation().SkippedCount == 1);
+        // The members fill what the run can store before a skip could be recorded, so the
+        // group's member changes stop before any write and wait for the next refresh.
+        Assert.DoesNotContain(f.Writes, w => w.Contains("Member"));
+        Assert.Contains(f.Policy().Notices, n => n.Contains("every scheduled refresh tries again"));
         var group = f
             .Store.Require<ManagedGroup>(
                 "asx_managedgroup",
@@ -1573,6 +1574,24 @@ public sealed class SecurityWorkerTests
         );
         Assert.Throws<EvaluationBlockedException>(() =>
             SecurityPaging.Next(web, first, next.Replace("$top=500", "$top=1"), new[] { first })
+        );
+        // However many pages SharePoint returns, each new one is followed; what the pages hold
+        // is bounded by what the run can store, not by a page count.
+        var visited = new[] { first }
+            .Concat(
+                Enumerable
+                    .Range(1, 40)
+                    .Select(i => first + "&$skiptoken=Paged%3DTRUE%26p_ID%3D" + i * 100)
+            )
+            .ToArray();
+        Assert.Contains(
+            "p_ID%3D4100",
+            SecurityPaging.Next(
+                web,
+                first,
+                web.AbsoluteUri + "/" + first + "&$skiptoken=Paged%3DTRUE%26p_ID%3D4100",
+                visited
+            )
         );
     }
 
@@ -1697,6 +1716,132 @@ public sealed class SecurityWorkerTests
                 : null;
         Assert.Throws<EvaluationBlockedException>(() =>
             new TeamSnapshotReader(f.Service).Read(f.Team)
+        );
+    }
+
+    [Fact]
+    public void ATeamTooLargeForOneRunKeepsItsGroupMembersAndStillGetsItsAccess()
+    {
+        var f = new Fixture();
+        // About 2,600 people: their sign-in names stored twice pass one 500,000-character row.
+        for (int i = 0; i < 2600; i++)
+            f.AddPerson(
+                "member" + i.ToString("D5") + ".with.a.longer.sign-in.name@example.com",
+                "Member " + i
+            );
+        f.Queue("Read");
+        f.Members.Add(
+            new SitePerson
+            {
+                Id = 7,
+                Login = "i:0#.f|membership|added.by.hand@example.com",
+                Type = 1,
+            }
+        );
+        f.Drive();
+        Assert.DoesNotContain("MemberAdd", f.Writes);
+        Assert.DoesNotContain("MemberRemove", f.Writes);
+        Assert.Contains("GrantAdd", f.Writes);
+        Assert.Single(f.Members);
+        Assert.Contains(
+            f.Policy().Notices,
+            n =>
+                n.StartsWith(
+                    "Team 'Operations' has more people than one access run can store",
+                    StringComparison.Ordinal
+                )
+        );
+        // Each scheduled refresh tries again, so the members sync once the team fits.
+        var group = f.Store.Require<ManagedGroup>(
+            "asx_managedgroup",
+            "group:" + f.Site.ToString("N") + ":" + f.Team.ToString("N")
+        );
+        Assert.StartsWith("retry:", group.Value.MembershipHash, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TeamSizeIsBoundOnlyByTheMembershipRowNotByAFixedCount()
+    {
+        var f = new Fixture();
+        // 2,150 people with short sign-in names fit the row twice: none is left out.
+        for (int i = 0; i < 2150; i++)
+            f.AddPerson(i + "@b.co", "P" + i);
+        var snapshot = new TeamSnapshotReader(f.Service).Snapshot(f.Team);
+        Assert.False(snapshot.Incomplete);
+        Assert.Equal(2150, snapshot.People.Length);
+        Assert.Empty(snapshot.Skipped);
+        // The same team read twice gives the same people, so an unchanged team is not "changed".
+        Assert.Equal(
+            TeamSnapshotReader.Hash(snapshot.People),
+            TeamSnapshotReader.Hash(new TeamSnapshotReader(f.Service).Read(f.Team))
+        );
+        // The full row, with every person also seen in SharePoint, is stored and read back.
+        var row = new MembershipDocument
+        {
+            Key = "membership:" + Guid.NewGuid().ToString("N") + ":" + f.Team.ToString("N"),
+            GroupKey = "group:" + f.Site.ToString("N") + ":" + f.Team.ToString("N"),
+            Desired = snapshot.People,
+            Observed = snapshot
+                .People.Select(
+                    (p, i) =>
+                        new SitePerson
+                        {
+                            Id = int.MaxValue - i,
+                            Login = p.Login,
+                            Type = 1,
+                        }
+                )
+                .ToArray(),
+            Status = "Observed",
+            Complete = true,
+        };
+        string json = JsonWire.Write(row);
+        Assert.True(json.Length <= 500000, json.Length + " characters");
+        Assert.Equal(2150, JsonWire.Read<MembershipDocument>(json).Observed.Length);
+    }
+
+    [Fact]
+    public void AnyStoredDocumentWithinThePayloadLengthIsReadBackWhateverItsItemCount()
+    {
+        // 60,000 short values: far more items than a fixed object-graph quota of 20,000, yet
+        // well inside the 500,000-character column a stored document comes from.
+        var values = Enumerable.Range(0, 60000).Select(i => "a").ToArray();
+        string json = JsonWire.Write(values);
+        Assert.True(json.Length < 500000);
+        Assert.Equal(60000, JsonWire.Read<string[]>(json).Length);
+        Assert.Throws<EvaluationBlockedException>(() =>
+            JsonWire.Read<string[]>(JsonWire.Write(Enumerable.Repeat("aaaa", 100000).ToArray()))
+        );
+    }
+
+    [Fact]
+    public void ADocumentsGroupTooLargeToStoreKeepsItsMembersAndStillGetsItsAccess()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        f.Members.AddRange(
+            Enumerable
+                .Range(0, 6000)
+                .Select(i => new SitePerson
+                {
+                    Id = 100 + i,
+                    Login = "i:0#.f|membership|hand.added.person" + i + "@example.com",
+                    Type = 1,
+                })
+        );
+        f.Drive();
+        Assert.DoesNotContain("MemberAdd", f.Writes);
+        Assert.DoesNotContain("MemberRemove", f.Writes);
+        Assert.Contains("GrantAdd", f.Writes);
+        Assert.Equal(6000, f.Members.Count);
+        Assert.Contains(
+            f.Policy().Notices,
+            n =>
+                n.StartsWith(
+                    "Team 'Operations': the Documents group has more people than one access run can store",
+                    StringComparison.Ordinal
+                )
         );
     }
 
@@ -2781,6 +2926,63 @@ public sealed class SecurityWorkerTests
         Assert.Empty(f.Service.Transaction(() => new SecurityRefresh(f.Service).Scan()).Keys);
     }
 
+    // Policies due for review that have never been applied: the scan only moves their review on.
+    private static Guid[] DuePolicies(Fixture f, int count)
+    {
+        var ids = new Guid[count];
+        for (int i = 0; i < count; i++)
+        {
+            string key = "policy:" + Guid.NewGuid().ToString("N");
+            f.Store.Create(
+                "asx_policy",
+                new PolicyDocument
+                {
+                    Key = key,
+                    Status = "Draft",
+                    LibraryId = Guid.NewGuid(),
+                    NextReviewUtc = DateTime.UtcNow.AddMinutes(-count + i),
+                }
+            );
+            ids[i] = f.Store.Require<PolicyDocument>("asx_policy", key).Row.Id;
+        }
+        return ids;
+    }
+
+    private static bool Reviewed(Fixture f, Guid id, DateTime now) =>
+        f.Service.Rows[id].GetAttributeValue<DateTime>("asx_reviewafter") > now;
+
+    [Fact]
+    public void AccessReviewScanReviewsEveryDuePolicyInOneRun()
+    {
+        var f = new Fixture();
+        var due = DuePolicies(f, 45);
+        var now = DateTime.UtcNow.AddMinutes(1);
+        var result = f.Service.Transaction(() => new SecurityRefresh(f.Service, () => now).Scan());
+        Assert.Equal("ReviewedDuePolicies", result.Status);
+        Assert.All(due, id => Assert.True(Reviewed(f, id, now)));
+    }
+
+    [Fact]
+    public void AccessReviewScanStopsAtItsTimeBudgetAndTheNextRunContinues()
+    {
+        var f = new Fixture();
+        var due = DuePolicies(f, 8);
+        var now = DateTime.UtcNow.AddMinutes(1);
+        // Each policy takes 25 seconds here: the 60-second budget is used after three.
+        int checks = 0;
+        Func<TimeSpan> slow = () => TimeSpan.FromSeconds(25 * checks++);
+        f.Service.Transaction(() => new SecurityRefresh(f.Service, () => now, slow).Scan());
+        Assert.Equal(3, due.Count(id => Reviewed(f, id, now)));
+        // Oldest first, so nothing waits behind a newer policy.
+        Assert.All(due.Take(3), id => Assert.True(Reviewed(f, id, now)));
+        checks = 0;
+        f.Service.Transaction(() => new SecurityRefresh(f.Service, () => now, slow).Scan());
+        Assert.Equal(6, due.Count(id => Reviewed(f, id, now)));
+        checks = 0;
+        f.Service.Transaction(() => new SecurityRefresh(f.Service, () => now, slow).Scan());
+        Assert.All(due, id => Assert.True(Reviewed(f, id, now)));
+    }
+
     [Theory]
     [InlineData("remove")]
     [InlineData("suspend")]
@@ -3171,7 +3373,30 @@ public sealed class SecurityWorkerTests
                     );
                     break;
                 case "SecurityMembers":
-                    body = Envelope(new ODataRows<SitePerson> { Rows = Members.ToArray() });
+                    // SharePoint pages a group's users ($top=500) with a $skiptoken link.
+                    var skip = System.Text.RegularExpressions.Regex.Match(
+                        work.Http!.RelativeUri,
+                        @"\$skiptoken=(\d+)"
+                    );
+                    int from = skip.Success ? int.Parse(skip.Groups[1].Value) : 0;
+                    var start = work.Http.RelativeUri.Split(
+                        new[] { "&$skiptoken=" },
+                        2,
+                        StringSplitOptions.None
+                    )[0];
+                    body = Envelope(
+                        new ODataRows<SitePerson>
+                        {
+                            Rows = Members.Skip(from).Take(500).ToArray(),
+                            Next =
+                                Members.Count > from + 500
+                                    ? "https://example.sharepoint.com/sites/proto/"
+                                        + start
+                                        + "&$skiptoken="
+                                        + (from + 500)
+                                    : null,
+                        }
+                    );
                     break;
                 default:
                     throw new Exception(work.ProbeKind);

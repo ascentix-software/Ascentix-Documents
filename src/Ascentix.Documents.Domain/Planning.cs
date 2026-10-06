@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Ascentix.Documents.Conditions;
@@ -381,8 +382,8 @@ public sealed class FolderPlan : ReadOnlyCollection<FolderIntent>
     public IReadOnlyList<string> Notices { get; }
 
     /// <summary>
-    /// Folders this plan skipped until the record changes: a blank or unusable name, or a name a
-    /// sibling already took. Each one's notice is also in <see cref="Notices"/> unless the
+    /// Folders this plan skipped until the record changes: a blank or unusable name, a name a
+    /// sibling already took, or a path longer than SharePoint allows. Each one's notice is also in <see cref="Notices"/> unless the
     /// plan reached its notice limit.
     /// </summary>
     public IReadOnlyList<FolderWait> Waits { get; }
@@ -398,16 +399,50 @@ public sealed class FolderPlan : ReadOnlyCollection<FolderIntent>
     }
 }
 
+/// <summary>Why a folder waits.</summary>
+public enum FolderWaitReason
+{
+    /// <summary>The naming field is blank.</summary>
+    Blank,
+
+    /// <summary>The name has no characters SharePoint accepts.</summary>
+    Unusable,
+
+    /// <summary>A sibling folder already took the name.</summary>
+    Duplicate,
+
+    /// <summary>The folder's path would be longer than SharePoint allows.</summary>
+    PathTooLong,
+}
+
 /// <summary>A folder a plan skipped, and everything below it, until the record changes.</summary>
 public sealed class FolderWait
 {
     public FolderWait(string section, string node, FieldReference? field, string notice)
+        : this(
+            section,
+            node,
+            field,
+            notice,
+            field == null ? FolderWaitReason.Unusable : FolderWaitReason.Blank
+        ) { }
+
+    public FolderWait(
+        string section,
+        string node,
+        FieldReference? field,
+        string notice,
+        FolderWaitReason reason
+    )
     {
         Section = section;
         Node = node;
         Field = field;
         Notice = notice;
+        Reason = reason;
     }
+
+    public FolderWaitReason Reason { get; }
 
     public string Section { get; }
     public string Node { get; }
@@ -425,6 +460,18 @@ public static class FolderPlanner
     // payload limit of the rows that keep it.
     private const int NoticeLimit = 200;
     private const int NoticeLength = 600;
+
+    // SharePoint in Microsoft 365 refuses a file or folder whose entire decoded path, file name
+    // included, is longer than 400 characters ("Restrictions and limitations in OneDrive and
+    // SharePoint", https://support.microsoft.com/office/64883a5d-228e-48f5-b3d2-eb39e07630fa,
+    // and "SharePoint limits", https://learn.microsoft.com/office365/servicedescriptions/
+    // sharepoint-online-service-description/sharepoint-online-limits). A folder up to that
+    // length is created; one longer waits, as SharePoint would refuse it.
+    private const int MaxPathLength = 400;
+
+    // Past this length a folder is still created, with a notice that the files inside need short
+    // names: fewer than 100 characters are left for them.
+    private const int ShortFileNamePathLength = 300;
 
     /// <summary>Records a notice once and returns its bounded text.</summary>
     private static string Notice(IList<string> notices, string text)
@@ -483,7 +530,8 @@ public static class FolderPlanner
                                         + "' is waiting for '"
                                         + blank
                                         + "' to have a value."
-                                )
+                                ),
+                                FolderWaitReason.Blank
                             )
                         );
                         continue;
@@ -507,7 +555,8 @@ public static class FolderPlanner
                                         + "' is waiting for a usable name: '"
                                         + raw
                                         + "' has no characters SharePoint accepts."
-                                )
+                                ),
+                                FolderWaitReason.Unusable
                             )
                         );
                         continue;
@@ -543,24 +592,56 @@ public static class FolderPlanner
                                         + "/"
                                         + first
                                         + "'; it waits until the names differ."
-                                )
+                                ),
+                                FolderWaitReason.Duplicate
                             )
                         );
                         continue;
                     }
                     names.Add(name, node.Key);
                     string path = parent == null ? name : parentPath + "/" + name;
-                    if (
+                    int length =
                         Uri.UnescapeDataString(new Uri(section.Library.EntryUrl).AbsolutePath)
                             .TrimEnd('/')
                             .Length
-                            + 1
-                            + path.Length
-                            + 100
-                        > 400
-                    )
-                        throw new EvaluationBlockedException(
-                            "Folder path does not retain the file-name budget."
+                        + 1
+                        + path.Length;
+                    if (length > MaxPathLength)
+                    {
+                        // SharePoint would refuse the folder: skip it and everything below it,
+                        // like a blank name, and plan the rest of the record.
+                        waits.Add(
+                            new FolderWait(
+                                section.Key,
+                                node.Key,
+                                null,
+                                Notice(
+                                    notices,
+                                    "Folder '"
+                                        + section.Key
+                                        + "/"
+                                        + node.Key
+                                        + "' is waiting for a shorter path: its path would be "
+                                        + length.ToString(CultureInfo.InvariantCulture)
+                                        + " characters, and SharePoint allows "
+                                        + MaxPathLength.ToString(CultureInfo.InvariantCulture)
+                                        + " including file names."
+                                ),
+                                FolderWaitReason.PathTooLong
+                            )
+                        );
+                        continue;
+                    }
+                    if (length > ShortFileNamePathLength)
+                        Notice(
+                            notices,
+                            "Folder '"
+                                + section.Key
+                                + "/"
+                                + node.Key
+                                + "': This folder's path is "
+                                + length.ToString(CultureInfo.InvariantCulture)
+                                + " characters; SharePoint allows 400 including file names, so files inside need short names."
                         );
                     result.Add(
                         new FolderIntent(

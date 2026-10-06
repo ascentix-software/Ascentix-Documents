@@ -14,9 +14,14 @@ namespace Ascentix.Documents.Dataverse;
 
 public static class JsonWire
 {
+    // Stored documents come from asx_payload columns of at most 500,000 characters (MaxLength in
+    // the solution's Entity.xml files). Such a document holds fewer than 500,000 values, so the
+    // item and array quotas follow the length and never refuse a document the length admits.
+    private const int MaxLength = 500000;
+
     public static T Read<T>(string json)
     {
-        if (string.IsNullOrWhiteSpace(json) || json.Length > 500000)
+        if (string.IsNullOrWhiteSpace(json) || json.Length > MaxLength)
             throw new EvaluationBlockedException("JSON input missing or too large.");
         using (
             var reader = JsonReaderWriterFactory.CreateJsonReader(
@@ -24,8 +29,8 @@ public static class JsonWire
                 new XmlDictionaryReaderQuotas
                 {
                     MaxDepth = 32,
-                    MaxStringContentLength = 500000,
-                    MaxArrayLength = 20000,
+                    MaxStringContentLength = MaxLength,
+                    MaxArrayLength = MaxLength,
                     MaxBytesPerRead = 4096,
                     MaxNameTableCharCount = 20000,
                 }
@@ -34,7 +39,7 @@ public static class JsonWire
             return (T)
                 new DataContractJsonSerializer(
                     typeof(T),
-                    new DataContractJsonSerializerSettings { MaxItemsInObjectGraph = 20000 }
+                    new DataContractJsonSerializerSettings { MaxItemsInObjectGraph = MaxLength }
                 ).ReadObject(reader)!;
     }
 

@@ -1474,6 +1474,49 @@ public sealed class CatalogApprovalTests
     }
 
     [Fact]
+    public void RemoveReadsEveryDestinationRowAndEveryLibraryHoweverMany()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        // 5,200 rows of an older revision come first; the one that uses the library now is
+        // last, past the first 5,000 rows.
+        var older = UseIn(f, library.CatalogId, "Archive", "Published", current: false);
+        for (int i = 0; i < 5199; i++)
+            f.Service.Seed(
+                new Entity("asx_destination", Guid.NewGuid())
+                {
+                    ["asx_revisionid"] = new EntityReference("asx_revision", older),
+                    ["asx_key"] = "s" + i,
+                    ["asx_libraryid"] = new EntityReference("asx_library", library.CatalogId),
+                }
+            );
+        UseIn(f, library.CatalogId, "Accounts", "Published", current: true);
+        var refused = Assert.Throws<EvaluationBlockedException>(() =>
+            Remove(f, "RemoveLibrary", library.CatalogId)
+        );
+        Assert.Equal(
+            "Used by template 'Accounts' (published). Change the template first.",
+            refused.Message
+        );
+        // A site with more than 5,000 removed libraries is still removed (kept for history).
+        var siteId = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_siteid")
+            .Id;
+        f.Service.Rows[library.CatalogId]["statecode"] = new OptionSetValue(1);
+        for (int i = 0; i < 5001; i++)
+            f.Service.Seed(
+                new Entity("asx_library", Guid.NewGuid())
+                {
+                    ["asx_name"] = "Old " + i,
+                    ["asx_siteid"] = new EntityReference("asx_site", siteId),
+                    ["statecode"] = new OptionSetValue(1),
+                }
+            );
+        Assert.Equal("Removed", Remove(f, "RemoveSite", siteId).Status);
+    }
+
+    [Fact]
     public void LibraryUsedOnlyByAnOlderRevisionIsKeptRemovedForHistory()
     {
         var f = new Fixture();

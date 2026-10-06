@@ -47,6 +47,12 @@ public sealed class TeamSnapshot
     public TeamPerson[] People { get; set; } = Array.Empty<TeamPerson>();
 
     public string[] Skipped { get; set; } = Array.Empty<string>();
+
+    /// <summary>
+    /// True when the team has more people than one access run can store; People then holds
+    /// the first ones only, always the same ones while the team is unchanged.
+    /// </summary>
+    public bool Incomplete { get; set; }
 }
 
 [DataContract]
@@ -217,6 +223,13 @@ public sealed class MembershipDocument : StoredDocument
 
     [DataMember]
     public bool Complete { get; set; }
+
+    /// <summary>
+    /// The team had more people than one access run can store, so its group's members are
+    /// left as they are this run. Rows written before 0.1.0.4 read as false.
+    /// </summary>
+    [DataMember]
+    public bool Incomplete { get; set; }
 }
 
 [DataContract]

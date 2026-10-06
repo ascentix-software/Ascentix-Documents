@@ -968,7 +968,7 @@ public sealed class CatalogAdministration
             ColumnSet = new ColumnSet("asx_entryurl", "asx_listid"),
         };
         query.Criteria.AddCondition("asx_siteid", ConditionOperator.Equal, site.Id);
-        // Every library of the site moves with it; a site holds few registered libraries.
+        // Every library of the site moves with it, however many there are.
         foreach (var library in CompleteQuery.Read(service, query))
         {
             string entry = TemplateStore.Text(library, "asx_entryurl");
@@ -1033,7 +1033,7 @@ public sealed class CatalogAdministration
         };
         destinations.Criteria.AddCondition("asx_libraryid", ConditionOperator.Equal, id);
         var revisions = CompleteQuery
-            .Read(service, destinations, 5000)
+            .Read(service, destinations)
             .Select(d => d.GetAttributeValue<EntityReference>("asx_revisionid")?.Id ?? Guid.Empty)
             .Where(r => r != Guid.Empty)
             .Distinct()
@@ -1186,7 +1186,7 @@ public sealed class CatalogAdministration
             ColumnSet = new ColumnSet("asx_name", "statecode"),
         };
         query.Criteria.AddCondition("asx_siteid", ConditionOperator.Equal, id);
-        var libraries = CompleteQuery.Read(service, query, 5000);
+        var libraries = CompleteQuery.Read(service, query);
         var active = libraries.Where(l => !IsRemoved(l)).ToArray();
         if (active.Length > 0)
             throw new EvaluationBlockedException(

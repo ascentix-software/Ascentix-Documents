@@ -376,6 +376,98 @@ public class FolderNameTests
         );
     }
 
+    // A template whose entry folder path has the given length, so a record name of a chosen
+    // length gives its root folder an exact path length.
+    private static DocumentTemplate LongEntryTemplate(int entry = 121)
+    {
+        var template = AcceptanceTests.Template();
+        foreach (var section in template.Destinations)
+        {
+            section.Library.EntryUrl =
+                "https://example.sharepoint.com/sites/proto/"
+                + section.Key.Substring(0, 7)
+                + "/"
+                + new string('e', entry - 21);
+            section.Nodes.Add(
+                new FolderNode
+                {
+                    Key = "deep",
+                    ParentKey = "child",
+                    Name = "Deep",
+                }
+            );
+        }
+        return template;
+    }
+
+    // The root folder's name is "C-" plus the record name, under the entry path.
+    private static string RootNamed(int pathLength, int entry = 121) =>
+        new string('r', pathLength - entry - 1 - 2);
+
+    [Fact]
+    public void PathsUpToSharePointsLimitAreCreatedWithANoticeAbove300Characters()
+    {
+        var plan = FolderPlanner.Plan(
+            LongEntryTemplate(),
+            Guid.NewGuid(),
+            Names(RootNamed(350), "C")
+        );
+        // root 350, child 359 and deep 364 characters: all are created, each with a notice.
+        Assert.Equal(6, plan.Count);
+        Assert.Empty(plan.Waits);
+        foreach (var section in new[] { "general", "sensitive" })
+        {
+            Assert.Contains(
+                "Folder '"
+                    + section
+                    + "/root': This folder's path is 350 characters; SharePoint allows 400 including file names, so files inside need short names.",
+                plan.Notices
+            );
+            Assert.Contains(
+                "Folder '"
+                    + section
+                    + "/deep': This folder's path is 364 characters; SharePoint allows 400 including file names, so files inside need short names.",
+                plan.Notices
+            );
+        }
+        // At 300 characters or fewer there is no notice.
+        Assert.Empty(
+            FolderPlanner
+                .Plan(LongEntryTemplate(), Guid.NewGuid(), Names(RootNamed(286), "C"))
+                .Notices
+        );
+    }
+
+    [Fact]
+    public void AFolderPastSharePointsPathLimitWaitsWithItsSubfoldersAndTheRestIsPlanned()
+    {
+        // root 395 characters is created; child would be 404 and waits with deep below it.
+        var plan = FolderPlanner.Plan(
+            LongEntryTemplate(200),
+            Guid.NewGuid(),
+            Names(RootNamed(395, 200), "C")
+        );
+        Assert.Equal(new[] { "root", "root" }, plan.Select(n => n.Node));
+        Assert.Equal(2, plan.Waits.Count);
+        var wait = plan.Waits.First(w => w.Section == "general");
+        Assert.Equal("child", wait.Node);
+        Assert.Null(wait.Field);
+        Assert.Equal(FolderWaitReason.PathTooLong, wait.Reason);
+        Assert.Equal(
+            "Folder 'general/child' is waiting for a shorter path: its path would be 404 characters, and SharePoint allows 400 including file names.",
+            wait.Notice
+        );
+        Assert.Contains(wait.Notice, plan.Notices);
+        // A root folder past the limit waits too; the plan itself never fails.
+        var root = FolderPlanner.Plan(
+            LongEntryTemplate(321),
+            Guid.NewGuid(),
+            Names(RootNamed(404, 321), "C")
+        );
+        Assert.Empty(root);
+        Assert.All(root.Waits, w => Assert.Equal("root", w.Node));
+    }
+
     [Fact]
     public void ANullValueFormatsAsNullForNaming()
     {

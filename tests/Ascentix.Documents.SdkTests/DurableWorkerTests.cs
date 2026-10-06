@@ -1964,6 +1964,21 @@ public sealed class DurableWorkerTests
                 false
             )
         );
+        var tooLong = new Ascentix.Documents.Domain.FolderWait(
+            "general",
+            "b",
+            null,
+            "",
+            Ascentix.Documents.Domain.FolderWaitReason.PathTooLong
+        );
+        Assert.Equal(
+            "Shorten the record's value or the template's folder names, then replan the record.",
+            WorkerCoordinator.WaitFollowUp(tooLong, false)
+        );
+        Assert.Equal(
+            "The folder is created when a change to the record makes its path short enough; after shortening the template's folder names, replan the record.",
+            WorkerCoordinator.WaitFollowUp(tooLong, true)
+        );
     }
 
     [Fact]

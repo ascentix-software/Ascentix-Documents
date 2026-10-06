@@ -636,6 +636,13 @@ public sealed class SecurityWorker
                     }
                     if (op.Value.MutationKind == "GroupCreate")
                         ClearMutation(op.Value);
+                    // A team too large for one run leaves its group's members as they are; the
+                    // group still gets its access.
+                    if (op.Value.SkippedMembers.Contains(op.Value.GroupKey + "|*"))
+                    {
+                        op.Value.Members = Array.Empty<SitePerson>();
+                        return ReconcileMembers(op, claim.Value, catalog);
+                    }
                     return Probe(op, claim.Value, catalog, "SecurityMembers");
                 case "SecurityMembers":
                     var members = SharePointObservations.Body<ODataRows<SitePerson>>(request);
@@ -645,14 +652,28 @@ public sealed class SecurityWorker
                         .Require<ManagedGroup>("asx_managedgroup", op.Value.GroupKey)
                         .Value;
                     string groupTitle = owner.Title;
+                    var wanted = store
+                        .Require<MembershipDocument>("asx_membership", op.Value.MembershipKey)
+                        .Value;
                     // The group claims of a group team, wanted now or put there by Documents
                     // before, are Documents' to manage like people.
-                    var principals = store
-                        .Require<MembershipDocument>("asx_membership", op.Value.MembershipKey)
-                        .Value.Desired.Where(p => p.Group)
+                    var principals = wanted
+                        .Desired.Where(p => p.Group)
                         .Select(p => p.Login)
                         .Concat(owner.Principals ?? Array.Empty<string>())
                         .ToArray();
+                    // The members read so far are kept on the run and in the team's membership
+                    // row; reading stops where either would pass its column size.
+                    int room = Math.Min(
+                        SkipDetailBudget - JsonWire.Write(op.Value).Length,
+                        PayloadMaxLength
+                            - (
+                                JsonWire.Write(wanted).Length
+                                - JsonWire.Write(wanted.Observed).Length
+                                + JsonWire.Write(op.Value.Members).Length
+                            )
+                    );
+                    bool full = false;
                     foreach (var member in members.Rows.Where(m => m != null))
                     {
                         // People are synced from the team. Anything else an admin put in the
@@ -695,14 +716,29 @@ public sealed class SecurityWorker
                             )
                         )
                             continue;
+                        room -= JsonWire.Write(member).Length + 1;
+                        if (room < 0)
+                        {
+                            full = true;
+                            break;
+                        }
                         op.Value.Members = op.Value.Members.Concat(new[] { member }).ToArray();
                     }
-                    // A team holds at most 2000 people; the bound keeps the run's stored
-                    // operation inside the Dataverse payload limit.
-                    if (op.Value.Members.Length > 2000)
-                        throw new EvaluationBlockedException(
-                            "The Documents group has more people than one access run can hold."
+                    if (full)
+                    {
+                        // Without every member read, a removal could be wrong: the group's
+                        // members are left as they are this run, and its access still applies.
+                        op.Value.SkippedMembers = op
+                            .Value.SkippedMembers.Concat(new[] { op.Value.GroupKey + "|*" })
+                            .ToArray();
+                        Notice(
+                            op.Value,
+                            "Team '"
+                                + groupTitle
+                                + "': the Documents group has more people than one access run can store (a 500,000-character Dataverse row), so Documents left its members as they are. Its access to the library is still applied, and every scheduled refresh tries again."
                         );
+                        return ReconcileMembers(op, claim.Value, catalog);
+                    }
                     if (members.Next != null)
                         return Continue(op, claim.Value, catalog, members.Next);
                     return ReconcileMembers(op, claim.Value, catalog);
@@ -837,6 +873,7 @@ public sealed class SecurityWorker
                     Generation = op.Value.PolicyRevision,
                     Desired = snapshot.People,
                     Skipped = snapshot.Skipped,
+                    Incomplete = snapshot.Incomplete,
                 }
             );
             membership = store.Require<MembershipDocument>(
@@ -846,6 +883,11 @@ public sealed class SecurityWorker
         }
         foreach (var skipped in membership.Value.Skipped)
             Notice(op.Value, skipped);
+        // A team with more people than one run can store keeps its group's members as they are;
+        // its skipped notice says so, and the group still gets its access.
+        string stop = groupKey + "|*";
+        if (membership.Value.Incomplete && !op.Value.SkippedMembers.Contains(stop))
+            op.Value.SkippedMembers = op.Value.SkippedMembers.Concat(new[] { stop }).ToArray();
         return Probe(op, claim, catalog, "SecurityGroup");
     }
 
@@ -974,14 +1016,16 @@ public sealed class SecurityWorker
             ? RetryHashPrefix + applied
             : applied;
         // A claim Documents removed is no longer its own; one SharePoint kept stays managed.
-        group.Value.Principals = (group.Value.Principals ?? Array.Empty<string>())
-            .Where(p =>
-                desired.Contains(p, StringComparer.OrdinalIgnoreCase)
-                || op.Value.Members.Any(m =>
-                    string.Equals(m.Login, p, StringComparison.OrdinalIgnoreCase)
+        // Without a complete read of the group nothing was removed, so all stay managed.
+        if (!stopped)
+            group.Value.Principals = (group.Value.Principals ?? Array.Empty<string>())
+                .Where(p =>
+                    desired.Contains(p, StringComparer.OrdinalIgnoreCase)
+                    || op.Value.Members.Any(m =>
+                        string.Equals(m.Login, p, StringComparison.OrdinalIgnoreCase)
+                    )
                 )
-            )
-            .ToArray();
+                .ToArray();
         group.Value.Status = "Applied";
         store.Save(group);
         return Probe(op, claim, catalog, "SecurityAcl");
