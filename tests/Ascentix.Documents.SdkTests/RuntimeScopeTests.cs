@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Ascentix.Documents.Conditions;
 using Ascentix.Documents.Dataverse;
 using Microsoft.Xrm.Sdk;
@@ -84,6 +85,57 @@ public sealed class RuntimeScopeTests
         Assert.Throws<EvaluationBlockedException>(() =>
             RuntimeProfile.ValidateHosts(new[] { host })
         );
+
+    // Every Microsoft cloud's SharePoint Online domain: worldwide and GCC, GCC High, DoD (both
+    // of its listed domains) and 21Vianet.
+    [Theory]
+    [InlineData("contoso.sharepoint.com")]
+    [InlineData("contoso-my.sharepoint.com")]
+    [InlineData("agency.sharepoint.us")]
+    [InlineData("command.sharepoint-mil.us")]
+    [InlineData("command.dps.mil")]
+    [InlineData("contoso.sharepoint.cn")]
+    public void HostConfigurationAcceptsEveryMicrosoftSharePointCloud(string host)
+    {
+        RuntimeProfile.ValidateHosts(new[] { host });
+        var s = Service();
+        s.Rows.Values.Single(r => r.LogicalName == "asx_runtime")["asx_sharepointhosts"] =
+            "[\"" + host + "\"]";
+        string url = "https://" + host + "/sites/a";
+        Site(s, url);
+        RuntimeProfile.Read(s).ValidateTransport(Request(url));
+        // A listed host still needs a registered site.
+        Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeProfile.Read(s).ValidateTransport(Request("https://" + host + "/sites/b"))
+        );
+    }
+
+    [Theory]
+    [InlineData("contoso.sharepoint.de")]
+    [InlineData("sharepoint.us")]
+    [InlineData("contoso.sharepoint.us.evil.test")]
+    [InlineData("contoso.mysharepoint.com")]
+    [InlineData("contoso.dps.mil.evil.test")]
+    public void HostConfigurationRefusesOtherDomains(string host) =>
+        Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeProfile.ValidateHosts(new[] { host })
+        );
+
+    [Fact]
+    public void AnyNumberOfHostsIsAcceptedWhileTheyFitTheirColumn()
+    {
+        RuntimeProfile.ValidateHosts(
+            Enumerable.Range(0, 150).Select(i => "tenant" + i + ".sharepoint.com").ToArray()
+        );
+        // The hosts list is stored as one value of at most 5,000 characters; past that it cannot
+        // be saved, and the refusal says so.
+        var tooMany = Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeProfile.ValidateHosts(
+                Enumerable.Range(0, 400).Select(i => "tenant" + i + ".sharepoint.com").ToArray()
+            )
+        );
+        Assert.Contains("5,000 characters", tooMany.Message);
+    }
 
     [Fact]
     public void DuplicateHostsAndUnsupportedTransportRemainRejected()

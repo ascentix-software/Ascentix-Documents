@@ -127,22 +127,41 @@ public sealed class RuntimeProfile
         return service.RetrieveMultiple(native).Entities.Count > 0;
     }
 
+    // The SharePoint Online domains of every Microsoft cloud, from Microsoft's published endpoint
+    // lists (their "SharePoint Online and OneDrive for Business" rows):
+    // - Worldwide, including GCC: *.sharepoint.com
+    //   https://learn.microsoft.com/microsoft-365/enterprise/urls-and-ip-address-ranges
+    // - US Government GCC High: *.sharepoint.us
+    //   https://learn.microsoft.com/microsoft-365/enterprise/microsoft-365-u-s-government-gcc-high-endpoints
+    // - US Government DoD: *.sharepoint-mil.us and *.dps.mil
+    //   https://learn.microsoft.com/microsoft-365/enterprise/microsoft-365-u-s-government-dod-endpoints
+    // - Operated by 21Vianet: *.sharepoint.cn
+    //   https://learn.microsoft.com/microsoft-365/enterprise/urls-and-ip-address-ranges-21vianet
+    // Each host must still be listed by the administrator, and every call also needs an active
+    // SharePoint site record with its exact address (ValidateTransport).
+    private const string TenantHost =
+        @"\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.(?:sharepoint\.com|sharepoint\.us|sharepoint-mil\.us|dps\.mil|sharepoint\.cn)\z";
+
+    // asx_runtime.asx_sharepointhosts holds at most 5,000 characters (MaxLength in
+    // Entities/asx_runtime/Entity.xml); the hosts are stored there as one JSON list.
+    private const int HostsMaxLength = 5000;
+
     public static void ValidateHosts(string[] hosts)
     {
         if (
             hosts == null
             || hosts.Length < 1
-            || hosts.Length > 20
             || hosts.Distinct(StringComparer.OrdinalIgnoreCase).Count() != hosts.Length
             || hosts.Any(host =>
-                !System.Text.RegularExpressions.Regex.IsMatch(
-                    host ?? "",
-                    @"\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.sharepoint\.com\z"
-                )
+                !System.Text.RegularExpressions.Regex.IsMatch(host ?? "", TenantHost)
             )
         )
             throw new EvaluationBlockedException(
-                "Explicit canonical SharePoint tenant hosts are required."
+                "Explicit canonical SharePoint tenant hosts are required: lowercase host names on a Microsoft SharePoint Online domain (sharepoint.com, sharepoint.us, sharepoint-mil.us, dps.mil or sharepoint.cn)."
+            );
+        if (JsonWire.Write(hosts).Length > HostsMaxLength)
+            throw new EvaluationBlockedException(
+                "The SharePoint hosts list is longer than the 5,000 characters its Dataverse column holds. Remove hosts that no registered site uses."
             );
     }
 
