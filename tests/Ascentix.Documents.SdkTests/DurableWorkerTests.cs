@@ -1020,6 +1020,241 @@ public sealed class DurableWorkerTests
         );
     }
 
+    private const string Moved = "/sites/proto/Shared Documents";
+
+    /// <summary>Re-points the fixture library after SharePoint renamed it, as the worker does.</summary>
+    private static void Repointed(Fixture f, string entryPath)
+    {
+        string key = CatalogAdministration.RepointPrefix + Guid.NewGuid().ToString("N");
+        f.Store.Create(
+            "asx_operation",
+            new CatalogProbe
+            {
+                Key = key,
+                Status = "Captured",
+                Repoint = true,
+                CatalogId = f.LibraryId,
+                SiteId = f.SiteId,
+                ListId = f.ListId,
+                EntryId = f.EntryId,
+                NativeSiteId = f.NativeSite,
+                WebId = Guid.Parse(f.Service.Rows[f.SiteId].GetAttributeValue<string>("asx_webid")),
+                WebUrl = "https://example.sharepoint.com/sites/proto",
+                EntryUrl = "https://example.sharepoint.com" + entryPath,
+            }
+        );
+        Assert.Equal(
+            "Approved",
+            f.Service.Transaction(() =>
+                new CatalogAdministration(f.Service).ApplyRepoint(key)
+            ).Status
+        );
+    }
+
+    private static string Folder(Guid id, string path) =>
+        JsonWire.Write(
+            new ODataEnvelope<FolderObservation>
+            {
+                Data = new FolderObservation { Id = id, Path = path },
+            }
+        );
+
+    private static string Library(Fixture f, string root) =>
+        JsonWire.Write(
+            new ODataEnvelope<LibraryObservation>
+            {
+                Data = new LibraryObservation
+                {
+                    Id = f.ListId,
+                    Root = new FolderObservation { Id = f.EntryId, Path = root },
+                },
+            }
+        );
+
+    [Fact]
+    public void InFlightFolderWorkFollowsARepointedLibraryAndReadsAgainUnderTheNewPath()
+    {
+        var f = new Fixture(false);
+        var child = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        child.Key += "-child";
+        child.Node = "invoices";
+        child.ParentBinding = "root";
+        child.OriginalName = child.Candidate = "Invoices";
+        f.Operation.Folders = new[] { f.Binding, child };
+        f.Store.Create("asx_operation", f.Operation);
+        var root = Guid.NewGuid();
+        var work = f.ObserveAndFinalize(f.Preflight(f.Claim()), f.Item(root, null));
+        Assert.Equal("Pending", f.Call("Complete", work).Status);
+        work = f.Claim("child-run");
+        work = f.Observe(work, f.LibraryBody());
+        Assert.Equal("Parent", work.ProbeKind);
+        // SharePoint renames the library while the child step's parent read is in flight.
+        Repointed(f, Moved);
+        Assert.Equal(
+            "https://example.sharepoint.com" + Moved,
+            f.Service.Rows[f.LibraryId].GetAttributeValue<string>("asx_entryurl")
+        );
+        Assert.Equal(
+            "Shared Documents",
+            f.Service.Rows[f.NativeParent].GetAttributeValue<string>("relativeurl")
+        );
+        // The answer to the read issued under the old path is discarded; the job reads again.
+        work = f.Observe(work, Folder(root, "/sites/proto/General/Example"));
+        Assert.Equal("Library", work.ProbeKind);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.Equal(Moved, stored.EntryPath);
+        Assert.Equal(Moved + "/Example", stored.Folders[0].PhysicalPath);
+        Assert.Equal(Moved + "/Example", stored.ParentPath);
+        work = f.Observe(work, Library(f, Moved));
+        Assert.Equal("Parent", work.ProbeKind);
+        Assert.Contains(Uri.EscapeDataString(Moved + "/Example"), work.Http!.RelativeUri);
+        work = f.Observe(work, Folder(root, Moved + "/Example"));
+        Assert.Equal("Folder", work.ProbeKind);
+        work = f.Observe(work, Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        Assert.Contains("Shared Documents/Example", work.Http!.Body!.Replace("\\/", "/"));
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Name = "Invoices";
+        item.Path = Moved + "/Example/Invoices";
+        work = f.Observe(work, Rows(item));
+        Assert.Equal("FinalParent", work.ProbeKind);
+        work = f.Observe(work, Folder(root, Moved + "/Example"));
+        Assert.Equal("Verified", work.Status);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        Assert.Single(
+            f.Service.Rows.Values,
+            r =>
+                r.LogicalName == "sharepointdocumentlocation"
+                && r.GetAttributeValue<EntityReference>("regardingobjectid") != null
+        );
+    }
+
+    [Fact]
+    public void SubmittedCreateDuringARepointIsReadBackUnderTheNewPathAndNotRepeated()
+    {
+        var f = new Fixture();
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        // The create was sent; the library is renamed before its response is recorded.
+        Repointed(f, Moved);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        Assert.Equal("Library", work.ProbeKind);
+        work = f.Observe(work, Library(f, Moved));
+        work = f.Observe(work, Folder(f.EntryId, Moved));
+        Assert.Equal("Folder", work.ProbeKind);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Path = Moved + "/Example";
+        work = f.Observe(work, Rows(item));
+        Assert.Equal("FinalParent", work.ProbeKind);
+        work = f.Observe(work, Folder(f.EntryId, Moved));
+        Assert.Equal("Verified", work.Status);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        Assert.Single(f.Results, r => r.Status == "Create");
+    }
+
+    [Fact]
+    public void RunningJobKeepsItsSiteWriterWhenTheSiteIsRepointed()
+    {
+        var f = new Fixture();
+        var work = f.Claim();
+        Assert.Equal("Library", work.ProbeKind);
+        // The site moved; the admin updated its SharePoint site record and re-pointed it.
+        const string moved = "https://example.sharepoint.com/sites/moved";
+        f.Service.Rows[f.NativeSite]["absoluteurl"] = moved;
+        string key = CatalogAdministration.RepointPrefix + Guid.NewGuid().ToString("N");
+        f.Store.Create(
+            "asx_operation",
+            new CatalogProbe
+            {
+                Key = key,
+                Status = "Captured",
+                Repoint = true,
+                CatalogId = f.SiteId,
+                SiteId = f.SiteId,
+                NativeSiteId = f.NativeSite,
+                WebId = Guid.Parse(f.Service.Rows[f.SiteId].GetAttributeValue<string>("asx_webid")),
+                WebUrl = moved,
+            }
+        );
+        f.Service.Transaction(() => new CatalogAdministration(f.Service).ApplyRepoint(key));
+        Assert.Equal(moved, f.Service.Rows[f.SiteId].GetAttributeValue<string>("asx_url"));
+        Assert.Equal(
+            moved + "/General",
+            f.Service.Rows[f.LibraryId].GetAttributeValue<string>("asx_entryurl")
+        );
+        Assert.Equal(
+            new[] { WorkCoordination.SiteUrl(moved) },
+            f.Store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey).Value.Writers
+        );
+        // The run's read under the old address is discarded and issued again at the new one.
+        work = f.Observe(work, f.LibraryBody());
+        Assert.Equal("Library", work.ProbeKind);
+        Assert.Equal(moved, work.SiteUrl);
+        work = f.Observe(work, Library(f, "/sites/moved/General"));
+        work = f.Observe(work, Folder(f.EntryId, "/sites/moved/General"));
+        Assert.Equal("Folder", work.ProbeKind);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Path = "/sites/moved/General/Example";
+        work = f.Observe(work, Rows(item));
+        work = f.Observe(work, Folder(f.EntryId, "/sites/moved/General"));
+        Assert.Equal("Verified", work.Status);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        Assert.Empty(
+            f.Store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey).Value.Writers
+        );
+    }
+
+    [Fact]
+    public void ExistingRecordFolderIsAdoptedUnderTheRepointedLibraryAndNotDuplicated()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        f.OperationKey = f.PlanRecord().Keys.Single();
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        work = f.Call("PrepareCreate", work);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var folder = Guid.NewGuid();
+        work = f.ObserveAndFinalize(work, f.Item(folder, null));
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        var first = f.OperationKey;
+        Repointed(f, Moved);
+        f.OperationKey = f.PlanRecord().Keys.Single();
+        Assert.NotEqual(first, f.OperationKey);
+        var planned = f.Store.Require<OperationDocument>("asx_operation", f.OperationKey).Value;
+        Assert.Equal(Moved, planned.EntryPath);
+        Assert.NotEqual(Guid.Empty, planned.Folders[0].LocationId);
+        int creates = f.Results.Count(r => r.Status == "Create");
+        work = f.Claim("after-rename");
+        work = f.Observe(work, Library(f, Moved));
+        work = f.Observe(work, Folder(f.EntryId, Moved));
+        Assert.Equal("Folder", work.ProbeKind);
+        Assert.Contains(Uri.EscapeDataString(Moved + "/Example"), work.Http!.RelativeUri);
+        var item = f.Item(folder, null);
+        item.Path = Moved + "/Example";
+        work = f.Observe(work, Rows(item));
+        Assert.Equal("FinalParent", work.ProbeKind);
+        work = f.Observe(work, Folder(f.EntryId, Moved));
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        Assert.Equal(creates, f.Results.Count(r => r.Status == "Create"));
+        var location = Assert.Single(
+            f.Service.Rows.Values,
+            r =>
+                r.LogicalName == "sharepointdocumentlocation"
+                && r.GetAttributeValue<EntityReference>("regardingobjectid") != null
+        );
+        Assert.Equal("Example", location.GetAttributeValue<string>("relativeurl"));
+        Assert.Equal(
+            Moved + "/Example",
+            f.Store.Require<OperationDocument>("asx_operation", f.OperationKey)
+                .Value.Folders[0]
+                .PhysicalPath
+        );
+    }
+
     [Fact]
     public void InFlightFolderJobSurvivesPolicyGenerationChange()
     {

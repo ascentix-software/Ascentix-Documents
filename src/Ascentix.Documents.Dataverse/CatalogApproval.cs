@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.Serialization;
 using Ascentix.Documents.Conditions;
@@ -105,6 +106,25 @@ public sealed class CatalogProbe : OperationDocument
     [DataMember]
     public bool BreakInheritance { get; set; }
 
+    /// <summary>
+    /// Re-point: re-reads an approved site by its web ID, or library by its list GUID and entry
+    /// folder ID, and follows a rename or move of the same site or library.
+    /// </summary>
+    [DataMember]
+    public bool Repoint { get; set; }
+
+    /// <summary>Re-point: the site URL or library entry URL before re-pointing.</summary>
+    [DataMember]
+    public string PreviousUrl { get; set; } = "";
+
+    /// <summary>Re-point: the library's entry folder no longer exists; it is not recreated.</summary>
+    [DataMember]
+    public bool EntryMissing { get; set; }
+
+    /// <summary>Re-point: what changed, such as "old URL → new URL", for the admin.</summary>
+    [DataMember]
+    public string[] Changes { get; set; } = Array.Empty<string>();
+
     [DataMember]
     public string DisplayName { get; set; } = "";
 
@@ -205,6 +225,12 @@ public sealed class CatalogAdministration
     public const string InheritanceWarning =
         "This library inherits permissions from the site. When you approve it, Documents stops the inheritance, keeps a copy of the current site permissions, and then manages team access on it.";
 
+    public const string LibraryGone =
+        "This library no longer exists on the site. Remove it, or register the new library.";
+
+    /// <summary>The key prefix of re-point probes; the catalog guard lets only them change addresses.</summary>
+    public const string RepointPrefix = "catalogprobe:repoint:";
+
     /// <summary>The library discovery query, which also reads whether each library inherits.</summary>
     public const string DiscoveryEndpoint =
         "_api/web/lists?$select=Id,Title,BaseTemplate,Hidden,HasUniqueRoleAssignments&$filter=BaseTemplate eq 101 and Hidden eq false&$orderby=Title&$top=50";
@@ -232,6 +258,8 @@ public sealed class CatalogAdministration
             && request.Key.StartsWith("librarycreate:", StringComparison.Ordinal)
         )
             return new LibraryProvisioning(service, clock).Inspect(request.Key);
+        if (request.Command == "RepointLibrary" || request.Command == "RepointSite")
+            return QueueRepoint(request);
         if (request.Command == "NextLibraries")
         {
             var prior = store.Require<CatalogProbe>("asx_operation", request.Key);
@@ -673,6 +701,241 @@ public sealed class CatalogAdministration
     }
 
     /// <summary>
+    /// Queues the reads that re-point a site or library. Identity never changes: a library is
+    /// re-read by its list GUID and entry folder ID on its site, a site by its web ID at the
+    /// address its SharePoint site record in Dataverse now has.
+    /// </summary>
+    private CatalogResult QueueRepoint(CatalogRequest request)
+    {
+        if (request.RequestId == Guid.Empty || request.CatalogId == Guid.Empty)
+            throw new EvaluationBlockedException(
+                "Select a site or library and a request identity."
+            );
+        bool library = request.Command == "RepointLibrary";
+        string key = RepointPrefix + request.RequestId.ToString("N");
+        var existing = store.Find<CatalogProbe>("asx_operation", key);
+        if (existing != null)
+        {
+            if (
+                !existing.Value.Repoint
+                || existing.Value.CatalogId != request.CatalogId
+                || (existing.Value.ListId != Guid.Empty) != library
+            )
+                throw new EvaluationBlockedException(
+                    "Re-point request ID was reused for different intent."
+                );
+            return Result(existing);
+        }
+        Entity? row = null;
+        Guid siteId = request.CatalogId;
+        if (library)
+        {
+            row = service.Retrieve(
+                "asx_library",
+                request.CatalogId,
+                new ColumnSet("asx_name", "asx_siteid", "asx_listid", "asx_entryid", "asx_entryurl")
+            );
+            siteId =
+                row.GetAttributeValue<EntityReference>("asx_siteid")?.Id
+                ?? throw new EvaluationBlockedException("Library site missing.");
+        }
+        var site = service.Retrieve(
+            "asx_site",
+            siteId,
+            new ColumnSet("asx_name", "asx_nativeid", "asx_webid", "asx_collectionid", "asx_url")
+        );
+        var native =
+            site.GetAttributeValue<EntityReference>("asx_nativeid")?.Id
+            ?? throw new EvaluationBlockedException("Site has no SharePoint site record.");
+        string url = NativeSite(service, native);
+        string stored = TemplateStore.Text(site, "asx_url").TrimEnd('/');
+        if (library && url != stored)
+            throw new EvaluationBlockedException(
+                "The site's address changed. Re-point the site first."
+            );
+        Guid.TryParse(site.GetAttributeValue<string>("asx_collectionid"), out var collection);
+        store.Create(
+            "asx_operation",
+            new CatalogProbe
+            {
+                Key = key,
+                Repoint = true,
+                DisplayName = TemplateStore.Text(row ?? site, "asx_name"),
+                NativeSiteId = native,
+                SiteId = siteId,
+                CatalogId = request.CatalogId,
+                WebId = Guid.Parse(TemplateStore.Text(site, "asx_webid")),
+                CollectionId = collection,
+                WebUrl = url,
+                ListId = library ? Guid.Parse(TemplateStore.Text(row!, "asx_listid")) : Guid.Empty,
+                EntryId = library
+                    ? Guid.Parse(TemplateStore.Text(row!, "asx_entryid"))
+                    : Guid.Empty,
+                EntryUrl = library ? TemplateStore.Text(row!, "asx_entryurl") : "",
+                PreviousUrl = library ? TemplateStore.Text(row!, "asx_entryurl") : stored,
+            }
+        );
+        return Result(store.Require<CatalogProbe>("asx_operation", key));
+    }
+
+    /// <summary>
+    /// Applies a verified re-point in one transaction: the catalog row's addresses and the
+    /// library's own Dataverse document location. Folder work already stored follows the new
+    /// address at its next step (see WorkerCoordinator.Follow); child record locations are
+    /// relative to the library's location, so they keep working.
+    /// </summary>
+    public CatalogResult ApplyRepoint(string key)
+    {
+        var probe = store.Require<CatalogProbe>("asx_operation", key);
+        var value = probe.Value;
+        if (!value.Repoint || value.Status != "Captured")
+            throw new EvaluationBlockedException("A verified re-point observation is required.");
+        var changes = new List<string>();
+        if (value.ListId == Guid.Empty)
+            RepointSite(value, changes);
+        else
+            RepointLibrary(value, changes);
+        value.Changes = changes.ToArray();
+        value.Status = "Approved";
+        store.Save(probe);
+        return Result(store.Require<CatalogProbe>("asx_operation", key));
+    }
+
+    private void RepointLibrary(CatalogProbe value, List<string> changes)
+    {
+        var library = service.Retrieve(
+            "asx_library",
+            value.CatalogId,
+            new ColumnSet("asx_siteid", "asx_listid", "asx_entryurl", "asx_nativeparentid")
+        );
+        var site = service.Retrieve("asx_site", value.SiteId, new ColumnSet("asx_url"));
+        if (
+            library.GetAttributeValue<EntityReference>("asx_siteid")?.Id != value.SiteId
+            || TemplateStore.Text(library, "asx_listid") != value.ListId.ToString("D")
+        )
+            throw new EvaluationBlockedException("Library identity changed during re-point.");
+        if (
+            TemplateStore.Text(site, "asx_url").TrimEnd('/') != value.WebUrl
+            || NativeSite(service, value.NativeSiteId) != value.WebUrl
+        )
+            throw new EvaluationBlockedException(
+                "The site's address changed. Re-point the site first."
+            );
+        string old = TemplateStore.Text(library, "asx_entryurl");
+        if (value.EntryMissing)
+        {
+            changes.Add(
+                "The library's entry folder (ID "
+                    + value.EntryId.ToString("D")
+                    + ") no longer exists. Documents did not recreate it; folder work for this library waits until the folder is restored."
+            );
+            return;
+        }
+        string entry = value.EntryUrl;
+        string path = Uri.UnescapeDataString(new Uri(entry).AbsolutePath);
+        new SharePointTarget(value.WebUrl, value.WebId, value.ListId, path);
+        if (entry != old)
+        {
+            service.Execute(
+                new UpdateRequest
+                {
+                    Target = new Entity("asx_library", library.Id)
+                    {
+                        RowVersion = library.RowVersion,
+                        ["asx_entryurl"] = entry,
+                    },
+                    ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+                }
+            );
+            changes.Add(old + " → " + entry);
+        }
+        var location = library.GetAttributeValue<EntityReference>("asx_nativeparentid");
+        if (
+            location != null
+            && new NativeLocations(service).Follow(
+                location.Id,
+                value.NativeSiteId,
+                value.WebUrl,
+                path
+            )
+        )
+            changes.Add("The library's Dataverse document location now points to " + entry + ".");
+        if (changes.Count == 0)
+            changes.Add("The library's address has not changed.");
+    }
+
+    private void RepointSite(CatalogProbe value, List<string> changes)
+    {
+        var site = service.Retrieve(
+            "asx_site",
+            value.CatalogId,
+            new ColumnSet("asx_url", "asx_webid", "asx_collectionid", "asx_identity")
+        );
+        if (TemplateStore.Text(site, "asx_webid") != value.WebId.ToString("D"))
+            throw new EvaluationBlockedException("Site identity changed during re-point.");
+        if (NativeSite(service, value.NativeSiteId) != value.WebUrl)
+            throw new EvaluationBlockedException(
+                "The site's address changed again; re-point again."
+            );
+        string old = TemplateStore.Text(site, "asx_url").TrimEnd('/');
+        string url = value.WebUrl;
+        if (old == url)
+        {
+            changes.Add("The site's address has not changed.");
+            return;
+        }
+        var update = new Entity("asx_site", site.Id)
+        {
+            RowVersion = site.RowVersion,
+            ["asx_url"] = url,
+        };
+        // The stored identity includes the host, so a move to another host keeps it current.
+        if (
+            site.GetAttributeValue<string>("asx_identity") != null
+            && value.CollectionId != Guid.Empty
+        )
+            update["asx_identity"] = SiteIdentity.Key(url, value.CollectionId, value.WebId);
+        service.Execute(
+            new UpdateRequest
+            {
+                Target = update,
+                ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+            }
+        );
+        changes.Add(old + " → " + url);
+        WorkCoordination.MoveWriter(service, old, url);
+        string oldPath = Uri.UnescapeDataString(new Uri(old).AbsolutePath).TrimEnd('/');
+        string newPath = Uri.UnescapeDataString(new Uri(url).AbsolutePath).TrimEnd('/');
+        string origin = new Uri(url).GetLeftPart(UriPartial.Authority);
+        var query = new QueryExpression("asx_library")
+        {
+            ColumnSet = new ColumnSet("asx_entryurl", "asx_listid"),
+        };
+        query.Criteria.AddCondition("asx_siteid", ConditionOperator.Equal, site.Id);
+        // Every library of the site moves with it; a site holds few registered libraries.
+        foreach (var library in CompleteQuery.Read(service, query))
+        {
+            string entry = TemplateStore.Text(library, "asx_entryurl");
+            string path = Uri.UnescapeDataString(new Uri(entry).AbsolutePath);
+            if (!path.StartsWith(oldPath + "/", StringComparison.Ordinal))
+                continue;
+            string moved = origin + newPath + path.Substring(oldPath.Length);
+            service.Execute(
+                new UpdateRequest
+                {
+                    Target = new Entity("asx_library", library.Id)
+                    {
+                        RowVersion = library.RowVersion,
+                        ["asx_entryurl"] = moved,
+                    },
+                    ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+                }
+            );
+            changes.Add(entry + " → " + moved);
+        }
+    }
+
+    /// <summary>
     /// Keeps the admin's consent on the library's access policy until the first access run
     /// stops the inheritance. A library with no policy yet gets one that, like a missing policy,
     /// has no access applied.
@@ -908,6 +1171,11 @@ public sealed class CatalogWorker
                 op.Value.ObservedUtc = clock();
                 store.Save(op);
                 Release(claim);
+                if (op.Value.Repoint)
+                {
+                    new CatalogAdministration(service, clock).ApplyRepoint(request.Key);
+                    return new WorkerResult { Status = "Approved", Key = request.Key };
+                }
                 if (op.Value.AutoApprove)
                 {
                     var fresh = store.Require<CatalogProbe>("asx_operation", request.Key);
@@ -966,6 +1234,18 @@ public sealed class CatalogWorker
             {
                 case "CatalogWeb":
                     var web = SharePointObservations.Body<WebObservation>(request);
+                    if (op.Value.Repoint && web.Id != Guid.Empty && web.Id != op.Value.WebId)
+                        throw new EvaluationBlockedException(
+                            "A different site now answers at "
+                                + op.Value.WebUrl
+                                + ". Re-point follows the same site only; register the other site separately."
+                        );
+                    if (op.Value.Repoint && web.Url.TrimEnd('/') != op.Value.WebUrl)
+                        throw new EvaluationBlockedException(
+                            "SharePoint reports this site at "
+                                + web.Url.TrimEnd('/')
+                                + ". Update the site's SharePoint site record in Dataverse to that address, then re-point again."
+                        );
                     if (
                         web.Id == Guid.Empty
                         || web.Url.TrimEnd('/') != op.Value.WebUrl
@@ -991,6 +1271,8 @@ public sealed class CatalogWorker
                     op.Value.CollectionId = collection.Id;
                     if (op.Value.DiscoverLibraries)
                         return Probe(op, claim.Value, "CatalogLibraries");
+                    if (op.Value.Repoint && op.Value.ListId != Guid.Empty)
+                        return Probe(op, claim.Value, "RepointLibrary");
                     if (op.Value.ListId != Guid.Empty)
                         return Probe(op, claim.Value, "CatalogLibrary");
                     break;
@@ -1128,6 +1410,47 @@ public sealed class CatalogWorker
                     if (last)
                         break;
                     return Probe(op, claim.Value, "CatalogRoles");
+                case "RepointLibrary":
+                    // The list GUID survives a rename; a 404 means the library is gone.
+                    if (request.HttpStatus == 404)
+                        throw new EvaluationBlockedException(CatalogAdministration.LibraryGone);
+                    var moved = SharePointObservations.Body<CatalogLibraryObservation>(request);
+                    if (
+                        moved.Id != op.Value.ListId
+                        || moved.Root == null
+                        || moved.Root.Id == Guid.Empty
+                        || string.IsNullOrWhiteSpace(moved.Root.Path)
+                    )
+                        throw new EvaluationBlockedException(CatalogAdministration.LibraryGone);
+                    op.Value.LibraryRootId = moved.Root.Id;
+                    op.Value.LibraryRootPath = moved.Root.Path;
+                    if (op.Value.EntryId == moved.Root.Id)
+                    {
+                        op.Value.EntryUrl = Origin(op.Value) + moved.Root.Path;
+                        break;
+                    }
+                    return Probe(op, claim.Value, "RepointEntry");
+                case "RepointEntry":
+                    // The entry folder is re-read by its unique ID and followed; a missing one
+                    // is reported, never recreated.
+                    if (request.HttpStatus == 404)
+                    {
+                        op.Value.EntryMissing = true;
+                        break;
+                    }
+                    var entryFolder = SharePointObservations.Body<FolderObservation>(request);
+                    if (
+                        entryFolder.Id != op.Value.EntryId
+                        || !entryFolder.Path.StartsWith(
+                            op.Value.LibraryRootPath + "/",
+                            StringComparison.Ordinal
+                        )
+                    )
+                        throw new EvaluationBlockedException(
+                            "The library's entry folder moved outside the library. Remove the library, or register it again."
+                        );
+                    op.Value.EntryUrl = Origin(op.Value) + entryFolder.Path;
+                    break;
                 case "CatalogRoles":
                     var roles = SharePointObservations.Body<ODataRows<SecurityRoleObservation>>(
                         request
@@ -1202,6 +1525,9 @@ public sealed class CatalogWorker
         }
     }
 
+    private static string Origin(CatalogProbe op) =>
+        new Uri(op.WebUrl).GetLeftPart(UriPartial.Authority);
+
     private WorkerResult Probe(StoredRow<CatalogProbe> op, DispatcherDocument claim, string kind)
     {
         string endpoint =
@@ -1224,6 +1550,11 @@ public sealed class CatalogWorker
             endpoint =
                 "_api/web/GetFolderByServerRelativePath(decodedUrl='"
                 + Uri.EscapeDataString(op.Value.AncestorPath!.Replace("'", "''"))
+                + "')?$select=UniqueId,ServerRelativeUrl";
+        if (kind == "RepointEntry")
+            endpoint =
+                "_api/web/GetFolderById('"
+                + op.Value.EntryId.ToString("D")
                 + "')?$select=UniqueId,ServerRelativeUrl";
         if (kind == "CatalogRoles")
             op.Value.Roles = Array.Empty<SecurityRoleObservation>();

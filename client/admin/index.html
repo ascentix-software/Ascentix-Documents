@@ -209,6 +209,17 @@
                 <button id="ad-existing" type="button">Add existing library</button
                 ><button id="ad-create" class="ad-primary" type="button">＋ Create library</button>
               </div>
+              <div class="ad-row">
+                <button id="ad-repoint-site" type="button">Re-point site</button>
+              </div>
+              <section id="ad-confirm" class="ad-box callout" hidden aria-label="Confirm">
+                <p id="ad-confirm-text"></p>
+                <div class="ad-row ad-topgap">
+                  <button id="ad-confirm-go" class="ad-primary" type="button">Confirm</button
+                  ><button id="ad-confirm-cancel" type="button">Cancel</button>
+                </div>
+              </section>
+              <ul id="ad-changes" class="ad-access-notices" aria-label="What changed" hidden></ul>
               <section id="ad-site-error" class="ad-box" hidden>
                 <h3>Site access needs attention</h3>
                 <p class="ad-topgap">
@@ -282,6 +293,9 @@
                     <span id="ad-library-status" class="ad-status">Ready for folder templates</span>
                     <span id="ad-library-access" class="ad-status">Access setup pending</span>
                   </span>
+                </div>
+                <div class="ad-row">
+                  <button id="ad-repoint-library" type="button">Re-point library</button>
                 </div>
                 <p class="ad-muted ad-topgap">All folders inherit this library’s access.</p>
 

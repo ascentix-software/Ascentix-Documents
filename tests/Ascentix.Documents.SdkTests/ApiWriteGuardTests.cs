@@ -130,6 +130,33 @@ public sealed class ApiWriteGuardTests
         );
     }
 
+    [Theory]
+    [InlineData("asx_library", "asx_entryurl")]
+    [InlineData("asx_site", "asx_url")]
+    [InlineData("asx_site", "asx_identity")]
+    public void RepointMayChangeOnlyAddresses(string table, string field)
+    {
+        new CatalogGuard().Execute(
+            new Provider(Setup("repoint:" + field, "Update", "asx_DocumentWorker", table))
+        );
+    }
+
+    [Theory]
+    [InlineData("repoint:asx_listid", "asx_DocumentWorker", "asx_library")]
+    [InlineData("repoint:asx_entryid", "asx_DocumentWorker", "asx_library")]
+    [InlineData("repoint:asx_webid", "asx_DocumentWorker", "asx_site")]
+    [InlineData("repoint:asx_collectionid", "asx_DocumentWorker", "asx_site")]
+    [InlineData("probe:asx_entryurl", "asx_DocumentWorker", "asx_library")]
+    [InlineData("admin:asx_entryurl", "asx_CatalogAdmin", "asx_library")]
+    [InlineData("admin:asx_url", "asx_SecurityAdmin", "asx_site")]
+    public void AddressesChangeOnlyThroughAVerifiedRepoint(string variant, string api, string table)
+    {
+        var error = Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(new Provider(Setup(variant, "Update", api, table)))
+        );
+        Assert.DoesNotContain("register a new destination", error.Message);
+    }
+
     private static IPluginExecutionContext Setup(
         string variant,
         string message,
@@ -148,12 +175,18 @@ public sealed class ApiWriteGuardTests
             target["asx_siteid"] = Guid.NewGuid();
         if (variant == "immutable")
             target["asx_listid"] = Guid.NewGuid().ToString();
+        if (variant.Contains(":"))
+            target[variant.Substring(variant.IndexOf(':') + 1)] = "changed";
         var input = new ParameterCollection
         {
             ["Request"] = "{\"Command\":\"Cancel\",\"Key\":\"catalogprobe:test\"}",
         };
         if (variant == "identity-upgrade")
             input["Request"] = "{\"Command\":\"CompleteSiteIdentity\"}";
+        if (variant.StartsWith("repoint:", StringComparison.Ordinal))
+            input["Request"] = "{\"Command\":\"Complete\",\"Key\":\"catalogprobe:repoint:abc\"}";
+        if (variant.StartsWith("probe:", StringComparison.Ordinal))
+            input["Request"] = "{\"Command\":\"Complete\",\"Key\":\"catalogprobe:abc\"}";
         var apiValues = new Dictionary<string, object>
         {
             ["Stage"] = 30,

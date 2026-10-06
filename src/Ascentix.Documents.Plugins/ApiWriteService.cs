@@ -170,6 +170,56 @@ public sealed class ApiWriteService : IOrganizationService
         return false;
     }
 
+    /// <summary>
+    /// A site or library address written by a verified re-point: the worker completing a
+    /// re-point probe, which only the catalog API queues. Identity fields stay immutable.
+    /// </summary>
+    public static bool AuthorizesCatalogRepoint(IPluginExecutionContext context) =>
+        AuthorizesCatalogCommand(
+            context,
+            "asx_DocumentWorker",
+            request =>
+            {
+                var work =
+                    Ascentix.Documents.Dataverse.JsonWire.Read<Ascentix.Documents.Dataverse.WorkerRequest>(
+                        request
+                    );
+                return work.Command == "Complete"
+                    && work.Key?.StartsWith(
+                        Ascentix.Documents.Dataverse.CatalogAdministration.RepointPrefix,
+                        StringComparison.Ordinal
+                    ) == true;
+            }
+        );
+
+    /// <summary>Whether the nearest product API frame is the named API with a matching request.</summary>
+    private static bool AuthorizesCatalogCommand(
+        IPluginExecutionContext context,
+        string api,
+        Func<string, bool> matches
+    )
+    {
+        if (!Authorizes(context, true))
+            return false;
+        var frame = context.ParentContext;
+        for (int depth = 0; frame != null && depth < 3; depth++, frame = frame.ParentContext)
+        {
+            if (!Apis.Contains(frame.MessageName))
+                continue;
+            if (frame.MessageName != api)
+                return false;
+            try
+            {
+                return matches((string)frame.InputParameters["Request"]);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
     private void Mark(OrganizationRequest request, string message, Entity target)
     {
         if (

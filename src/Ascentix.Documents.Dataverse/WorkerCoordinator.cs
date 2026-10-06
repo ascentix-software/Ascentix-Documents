@@ -356,6 +356,7 @@ public sealed class WorkerCoordinator
                         Key = operationKey,
                         Folders = folders,
                         RevisionId = revision.Id,
+                        EntryPath = library.Target.EntryPath,
                     }
                 );
             operations.Add(operationKey);
@@ -441,6 +442,8 @@ public sealed class WorkerCoordinator
         )
             return new WorkerResult { Status = "Busy", Key = request.Key };
         var library = Current(operation.Value, binding);
+        // A claim always starts by reading the library, so moved paths need no restart here.
+        Follow(operation.Value, library);
         var dispatcher = store.Find<DispatcherDocument>(
             "asx_claim",
             WorkCoordination.Operation(service, request.Key)
@@ -548,6 +551,8 @@ public sealed class WorkerCoordinator
             || request.ProbeKind != operation.Value.ProbeKind
         )
             throw new EvaluationBlockedException("Observation does not match the issued probe.");
+        if (Follow(operation.Value, library))
+            return Restart(operation, dispatcher.Value, library);
         // Earlier versions read the library's role assignments before and after each folder.
         // Folder work no longer checks permissions, so an operation persisted mid-probe ignores
         // that response, whatever it was, and continues with the parent-folder read.
@@ -793,6 +798,8 @@ public sealed class WorkerCoordinator
         var operation = store.Require<OperationDocument>("asx_operation", request.Key);
         var binding = operation.Value.Folder;
         var library = Current(operation.Value, binding);
+        if (Follow(operation.Value, library))
+            return Restart(operation, dispatcher.Value, library);
         if (
             operation.Value.Status != "ReadyToCreate"
             || !operation.Value.AbsenceVerified
@@ -837,6 +844,9 @@ public sealed class WorkerCoordinator
             throw new EvaluationBlockedException(
                 "No outstanding prepared create response is expected."
             );
+        // The create was sent while the destination moved: reads under the new path decide.
+        if (Follow(operation.Value, library))
+            return Restart(operation, dispatcher.Value, library);
         if (request.HttpStatus == 429)
         {
             // SharePoint does not execute a throttled request, so no folder was created. The
@@ -885,6 +895,8 @@ public sealed class WorkerCoordinator
         var dispatcher = Assert(request);
         var binding = operation.Value.Folder;
         var library = Current(operation.Value, binding);
+        // The folder was verified by its identity; only its stored path follows the move.
+        Follow(operation.Value, library);
         if (
             operation.Value.Status != "Verified"
             || binding.Status != "Verified"
@@ -1296,6 +1308,56 @@ public sealed class WorkerCoordinator
         if (library.EntryId != binding.EntryId)
             throw new EvaluationBlockedException("Approved destination entry changed.");
         return library;
+    }
+
+    /// <summary>
+    /// Moves the job's stored server-relative paths from the entry path they were written
+    /// against to the destination's current one, after a re-point followed a renamed or moved
+    /// library or site. Paths outside the entry (the library root and ancestors) are read again.
+    /// </summary>
+    /// <returns>True when the destination moved since the job last ran.</returns>
+    internal static bool Follow(OperationDocument operation, WorkerLibrary library)
+    {
+        string current = library.Target.EntryPath;
+        string? old = operation.EntryPath;
+        operation.EntryPath = current;
+        if (old == null || old == current)
+            return false;
+        string? Map(string? path) =>
+            path == null ? null
+            : path == old ? current
+            : path.StartsWith(old + "/", StringComparison.Ordinal)
+                ? current + path.Substring(old.Length)
+            : path;
+        foreach (var folder in operation.Folders)
+            folder.PhysicalPath = Map(folder.PhysicalPath);
+        operation.ParentPath = Map(operation.ParentPath);
+        operation.AncestorPath = null;
+        operation.LibraryRootPath = null;
+        operation.LibraryRootId = Guid.Empty;
+        return true;
+    }
+
+    /// <summary>
+    /// Reads the moved destination again from the library down, discarding a read issued under
+    /// the old path. Nothing unsent is written before the new reads confirm it.
+    /// </summary>
+    private WorkerResult Restart(
+        StoredRow<OperationDocument> operation,
+        DispatcherDocument dispatcher,
+        WorkerLibrary library
+    )
+    {
+        operation.Value.AbsenceVerified = false;
+        if (operation.Value.ExternalSubmitted)
+        {
+            // A create sent before or during the move: the folder is adopted where the reads
+            // find it, or created once if they find none.
+            operation.Value.ExternalResponseKnown = true;
+            operation.Value.Reprobe = true;
+        }
+        Audit(operation.Value.Key, dispatcher.RunId ?? "worker", "DestinationMoved");
+        return Probe(operation, dispatcher, library, "Library");
     }
 
     private WorkerResult Probe(

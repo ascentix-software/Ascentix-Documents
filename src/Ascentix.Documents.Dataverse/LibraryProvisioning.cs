@@ -275,9 +275,11 @@ public sealed class LibraryProvisioning
             if (
                 !site.GetAttributeValue<bool>("asx_approved")
                 || TemplateStore.Text(site, "asx_webid") != op.Value.WebId.ToString("D")
-                || TemplateStore.Text(site, "asx_url") != op.Value.WebUrl
             )
                 throw new EvaluationBlockedException("Site identity or readiness changed.");
+            // A re-pointed site keeps its web ID; setup follows its new address. Every claim
+            // reads the library again before registering it.
+            op.Value.WebUrl = TemplateStore.Text(site, "asx_url");
             var claim = store.Find<DispatcherDocument>(
                 "asx_claim",
                 WorkCoordination.Operation(service, request.Key)

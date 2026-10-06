@@ -133,7 +133,8 @@ public sealed class DocumentStore
         {
             entity["asx_workkey"] = probe.Key;
             entity["asx_workkind"] =
-                probe.DiscoverLibraries ? "LibraryDiscovery"
+                probe.Repoint ? "Repoint"
+                : probe.DiscoverLibraries ? "LibraryDiscovery"
                 : probe.ListId == Guid.Empty ? "SiteValidation"
                 : "LibraryValidation";
             entity["asx_displayname"] = probe.DisplayName;

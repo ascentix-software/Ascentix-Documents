@@ -55,16 +55,80 @@ public static class WorkCoordination
         var store = new DocumentStore(service);
         if (key.StartsWith("catalogprobe:", StringComparison.Ordinal))
             return SiteUrl(store.Require<CatalogProbe>("asx_operation", key).Value.WebUrl);
+        // Library setup and access runs use their site's current address, like folder jobs, so
+        // a re-pointed site keeps one writer (see MoveWriter).
         if (key.StartsWith("librarycreate:", StringComparison.Ordinal))
-            return SiteUrl(store.Require<LibrarySetup>("asx_operation", key).Value.WebUrl);
+        {
+            var setup = store.Require<LibrarySetup>("asx_operation", key).Value;
+            return SiteUrl(Current(service, "asx_site", setup.SiteId) ?? setup.WebUrl);
+        }
         if (key.StartsWith("policywork:", StringComparison.Ordinal))
-            return SiteUrl(store.Require<SecurityOperation>("asx_operation", key).Value.WebUrl);
+        {
+            var access = store.Require<SecurityOperation>("asx_operation", key).Value;
+            var library = Find(service, "asx_library", access.LibraryId, "asx_siteid");
+            var site = library?.GetAttributeValue<EntityReference>("asx_siteid");
+            return SiteUrl(
+                (site == null ? null : Current(service, "asx_site", site.Id)) ?? access.WebUrl
+            );
+        }
         var op = store.Require<OperationDocument>("asx_operation", key).Value;
         return Library(
             service,
             op.HistoryCompacted || op.Folders.Length == 0 ? op.ResultLibraryId : op.Folder.LibraryId
         );
     }
+
+    /// <summary>
+    /// Moves a re-pointed site's writer row to its new address, including a run that holds it,
+    /// so the run's next step finds its claim and the site still has one writer.
+    /// </summary>
+    public static void MoveWriter(IOrganizationService service, string oldUrl, string newUrl)
+    {
+        string from = SiteUrl(oldUrl),
+            to = SiteUrl(newUrl);
+        if (from == to)
+            return;
+        var store = new DocumentStore(service);
+        var old = store.Find<DispatcherDocument>("asx_claim", from);
+        if (old == null || old.Value.RunId == null)
+            return;
+        var moved = store.Find<DispatcherDocument>("asx_claim", to);
+        if (moved == null)
+        {
+            store.Create("asx_claim", new DispatcherDocument { Key = to, Status = "Idle" });
+            moved = store.Require<DispatcherDocument>("asx_claim", to);
+        }
+        if (moved.Value.RunId != null)
+            return;
+        moved.Value.OperationKey = old.Value.OperationKey;
+        moved.Value.RunId = old.Value.RunId;
+        moved.Value.Token = old.Value.Token;
+        moved.Value.LeaseUntilUtc = old.Value.LeaseUntilUtc;
+        moved.Value.HttpOutstanding = old.Value.HttpOutstanding;
+        moved.Value.RecoveryPermitted = old.Value.RecoveryPermitted;
+        moved.Value.TerminationEvidence = old.Value.TerminationEvidence;
+        moved.Value.Status = old.Value.Status;
+        store.Save(moved);
+        old = store.Require<DispatcherDocument>("asx_claim", from);
+        old.Value.HttpOutstanding = false;
+        old.Value.RunId = null;
+        old.Value.OperationKey = null;
+        old.Value.Token = Guid.Empty;
+        old.Value.RecoveryPermitted = false;
+        old.Value.Status = "Idle";
+        store.Save(old);
+    }
+
+    private static Entity? Find(IOrganizationService service, string table, Guid id, string column)
+    {
+        var query = new QueryExpression(table) { ColumnSet = new ColumnSet(column), TopCount = 1 };
+        query.Criteria.AddCondition(table + "id", ConditionOperator.Equal, id);
+        return service.RetrieveMultiple(query).Entities.FirstOrDefault();
+    }
+
+    // The site's current address; null when the row no longer exists.
+    private static string? Current(IOrganizationService service, string table, Guid id) =>
+        Find(service, table, id, "asx_url")?.GetAttributeValue<string>("asx_url");
 
     private static StoredRow<ConnectionBudget> Budget(DocumentStore store)
     {

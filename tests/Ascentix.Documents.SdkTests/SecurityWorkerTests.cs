@@ -2402,6 +2402,19 @@ public sealed class SecurityWorkerTests
         Assert.False(f.Policy().Inherits);
     }
 
+    [Fact]
+    public void QueuedAccessRunFollowsARepointedSite()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        // Re-point moved the site; the queued run keeps its web ID and follows the new address.
+        const string moved = "https://example.sharepoint.com/sites/renamed";
+        f.Service.Rows[f.Site]["asx_url"] = moved;
+        f.Service.Rows[f.Library]["asx_entryurl"] = moved + "/General";
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Equal(moved, f.Operation().WebUrl.TrimEnd('/'));
+    }
+
     private sealed class Fixture
     {
         public DurableWorkerTests.MemoryService Service { get; } =

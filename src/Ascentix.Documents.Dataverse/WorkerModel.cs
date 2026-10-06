@@ -217,6 +217,12 @@ public class OperationDocument : StoredDocument
     [DataMember]
     public string? ParentPath { get; set; }
 
+    // The library entry path this job's stored paths were written against. When a re-point
+    // moves the entry, the job's paths follow it at its next step (WorkerCoordinator.Follow).
+    // Null in jobs stored before re-point existed; set at their next step.
+    [DataMember]
+    public string? EntryPath { get; set; }
+
     [DataMember]
     public Guid ProbeId { get; set; }
 

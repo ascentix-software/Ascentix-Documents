@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Ascentix.Documents.Conditions;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Query;
 
 namespace Ascentix.Documents.Dataverse;
@@ -185,6 +187,90 @@ public sealed class NativeLocations
             }
         );
         return id;
+    }
+
+    /// <summary>
+    /// Re-points a library's own document location chain after the library or its entry folder
+    /// moved within the site. When the chain has as many path segments as the new path, each
+    /// row takes its share of the new path, which keeps shared parent rows correct for everyone.
+    /// Otherwise the library's own row is placed directly under the site with the full path.
+    /// Record locations are relative to this row, so they follow it.
+    /// </summary>
+    /// <returns>True when a row changed.</returns>
+    public bool Follow(Guid locationId, Guid nativeSiteId, string webUrl, string entryPath)
+    {
+        string webPath = Uri.UnescapeDataString(new Uri(webUrl).AbsolutePath).TrimEnd('/');
+        if (!entryPath.StartsWith(webPath + "/", StringComparison.Ordinal))
+            throw new EvaluationBlockedException("Entry path is outside the site.");
+        string expected = webUrl.TrimEnd('/') + "/" + entryPath.Substring(webPath.Length + 1);
+        if (
+            string.Equals(
+                Uri.UnescapeDataString(ResolveParent(locationId, nativeSiteId)).TrimEnd('/'),
+                Uri.UnescapeDataString(expected).TrimEnd('/'),
+                StringComparison.OrdinalIgnoreCase
+            )
+        )
+            return false;
+        var parts = entryPath.Substring(webPath.Length + 1).Split('/');
+        var chain = new List<Entity>();
+        EntityReference current = new EntityReference("sharepointdocumentlocation", locationId);
+        while (current.LogicalName == "sharepointdocumentlocation")
+        {
+            if (chain.Count >= 20)
+                throw new EvaluationBlockedException("Native location ancestor cycle/depth.");
+            var row = service.Retrieve(
+                current.LogicalName,
+                current.Id,
+                new ColumnSet("relativeurl", "parentsiteorlocation")
+            );
+            chain.Insert(0, row);
+            current =
+                row.GetAttributeValue<EntityReference>("parentsiteorlocation")
+                ?? throw new EvaluationBlockedException("Native parent chain is incomplete.");
+        }
+        if (current.Id != nativeSiteId)
+            throw new EvaluationBlockedException("Native site differs from approval.");
+        int[] counts = chain
+            .Select(r => (r.GetAttributeValue<string>("relativeurl") ?? "").Split('/').Length)
+            .ToArray();
+        if (counts.Sum() == parts.Length)
+        {
+            int next = 0;
+            for (int i = 0; i < chain.Count; i++)
+            {
+                string relative = string.Join("/", parts.Skip(next).Take(counts[i]));
+                next += counts[i];
+                if (relative != chain[i].GetAttributeValue<string>("relativeurl"))
+                    Update(chain[i], relative, null);
+            }
+        }
+        else
+            Update(
+                chain[chain.Count - 1],
+                string.Join("/", parts),
+                new EntityReference("sharepointsite", nativeSiteId)
+            );
+        return true;
+    }
+
+    private void Update(Entity row, string relative, EntityReference? parent)
+    {
+        foreach (var segment in relative.Split('/'))
+            Domain.FolderNames.Validate(segment);
+        var target = new Entity("sharepointdocumentlocation", row.Id)
+        {
+            RowVersion = row.RowVersion,
+            ["relativeurl"] = relative,
+        };
+        if (parent != null)
+            target["parentsiteorlocation"] = parent;
+        service.Execute(
+            new UpdateRequest
+            {
+                Target = target,
+                ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+            }
+        );
     }
 
     public void ValidateParent(Guid locationId, string expectedEntryUrl, Guid approvedNativeSiteId)

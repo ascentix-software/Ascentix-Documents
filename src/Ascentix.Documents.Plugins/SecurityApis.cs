@@ -183,9 +183,14 @@ public sealed class CatalogGuard : IPlugin
                     && target.GetAttributeValue<Guid>(primary) != target.Id
                 )
                     throw new InvalidPluginExecutionException("Catalog record identity differs.");
+                // Re-point follows a renamed or moved site or library: only its addresses (and
+                // the host inside the stored site identity) change, never its IDs.
+                bool repoint = ApiWriteService.AuthorizesCatalogRepoint(context);
                 if (
-                    (target.Contains("asx_collectionid") || target.Contains("asx_identity"))
-                    && !ApiWriteService.AuthorizesCatalogIdentityUpgrade(context)
+                    (
+                        target.Contains("asx_collectionid")
+                        || target.Contains("asx_identity") && !repoint
+                    ) && !ApiWriteService.AuthorizesCatalogIdentityUpgrade(context)
                 )
                     throw new InvalidPluginExecutionException(
                         "Site identity fields require the verified identity upgrade operation."
@@ -202,9 +207,12 @@ public sealed class CatalogGuard : IPlugin
                             "asx_nativeparentid",
                         }
                 )
-                    if (target.Contains(field))
+                    if (
+                        target.Contains(field)
+                        && !(repoint && (field == "asx_url" || field == "asx_entryurl"))
+                    )
                         throw new InvalidPluginExecutionException(
-                            "Approved catalog physical identities are immutable; register a new destination for changes."
+                            "Approved catalog physical identities are immutable. Use Re-point to follow a renamed or moved site or library."
                         );
                 foreach (
                     var field in new[] { "asx_policyrevision", "asx_policyapplied", "asx_aclhash" }

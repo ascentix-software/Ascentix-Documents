@@ -29,6 +29,10 @@
     progressSignature: null,
     completed: new Map(),
     pollFailures: 0,
+    // The site or library command waiting for in-page confirmation: { kind, id, name }.
+    confirm: null,
+    // What the last re-point changed, such as "old URL → new URL".
+    changes: [],
   };
   const node = (tag, text) => {
     const n = document.createElement(tag);
@@ -155,6 +159,8 @@
         return ['Queued', 'Check library', 'Ready'];
       case 'LibraryDiscovery':
         return ['Queued', 'Find libraries', 'Ready'];
+      case 'Repoint':
+        return ['Queued', 'Read SharePoint', 'Ready'];
       default:
         return ['Queued', 'Check site', 'Finish setup', 'Ready'];
     }
@@ -440,6 +446,15 @@
       ? state.consent.warnings.join(' ') + ' Select Confirm and create to continue.'
       : '';
     $('ad-provision-warning').hidden = !confirmCreate;
+    // Site and library commands ask in the page, like Remove in the Tables panel.
+    const c = state.confirm;
+    $('ad-confirm').hidden = !c;
+    $('ad-confirm-text').textContent = c ? confirmText(c) : '';
+    $('ad-confirm-go').textContent = c ? confirmLabel(c) : 'Confirm';
+    $('ad-changes').replaceChildren(...state.changes.map((t) => node('li', t)));
+    $('ad-changes').hidden = !state.changes.length;
+    $('ad-repoint-site').disabled = state.busy || !state.site;
+    $('ad-repoint-library').disabled = state.busy || !state.library;
     [
       'ad-validate',
       'ad-provision',
@@ -449,6 +464,39 @@
       'ad-more-libraries',
     ].forEach((id) => ($(id).disabled = state.busy));
     drawProgress();
+  }
+  function confirmText(c) {
+    switch (c.kind) {
+      case 'RepointSite':
+        return (
+          'Re-point ' +
+          c.name +
+          ': Documents reads the site by its ID at the address in its SharePoint site record and updates the site and its libraries to it. Nothing in SharePoint changes.'
+        );
+      case 'RepointLibrary':
+        return (
+          'Re-point ' +
+          c.name +
+          ': Documents reads the library and its entry folder by their IDs and follows a rename or move. Existing record folders keep working. Nothing in SharePoint changes.'
+        );
+      default:
+        return '';
+    }
+  }
+  const confirmLabel = (c) => (c.kind.startsWith('Repoint') ? 'Re-point' : 'Confirm');
+  // Runs a confirmed site or library command.
+  async function runConfirmed(c) {
+    state.confirm = null;
+    state.changes = [];
+    const result = await catalog({
+      Command: c.kind,
+      CatalogId: c.id,
+      RequestId: crypto.randomUUID(),
+    });
+    state.progressSignature = null;
+    state.completed.delete(result.Key);
+    state.operations.set(result.Key, { name: c.name, kind: 'Repoint' });
+    issue('Re-pointing ' + c.name + '…');
   }
   async function loadSites(append = false) {
     const term = $('ad-search').value.trim().replace(/'/g, "''");
@@ -602,6 +650,17 @@
           state.discovery = result;
           showDiscovery();
         }
+        continue;
+      }
+      if (o.kind === 'Repoint' && result.Status === 'Approved') {
+        state.operations.delete(key);
+        state.changes = result.Observation?.Changes || [];
+        await loadSites();
+        const site = state.sites.find((s) => s.asx_siteid === state.site?.asx_siteid);
+        if (site) state.site = site;
+        if (state.site) await libraries();
+        await window.AsxdAdmin?.refreshCatalog();
+        issue(o.name + ' re-pointed.');
         continue;
       }
       if (['Ready', 'Approved', 'Applied'].includes(result.Status)) {
@@ -927,6 +986,28 @@
       p.result = result;
       p.saved = JSON.stringify(p.entries);
       issue('Access submitted. Team membership syncing is onboarded automatically.');
+    });
+  $('ad-repoint-site').onclick = () => {
+    if (!state.site) return;
+    state.confirm = { kind: 'RepointSite', id: state.site.asx_siteid, name: state.site.asx_name };
+    render();
+  };
+  $('ad-repoint-library').onclick = () => {
+    if (!state.library) return;
+    state.confirm = {
+      kind: 'RepointLibrary',
+      id: state.library.asx_libraryid,
+      name: state.library.asx_name,
+    };
+    render();
+  };
+  $('ad-confirm-cancel').onclick = () => {
+    state.confirm = null;
+    render();
+  };
+  $('ad-confirm-go').onclick = () =>
+    action(async () => {
+      if (state.confirm) await runConfirmed(state.confirm);
     });
   $('ad-manage-connection').onclick = () =>
     xrm.Navigation.openUrl('https://make.powerautomate.com/');

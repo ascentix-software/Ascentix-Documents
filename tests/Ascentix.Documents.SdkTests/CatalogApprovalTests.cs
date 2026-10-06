@@ -993,6 +993,232 @@ public sealed class CatalogApprovalTests
         );
     }
 
+    private static CatalogResult Added(Fixture f)
+    {
+        var site = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddSite",
+                    NativeSiteId = f.NativeSite,
+                    Name = "Site",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        f.Service.Rows.Remove(f.NativeParent);
+        return f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = site.CatalogId,
+                    ListId = f.List,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+    }
+
+    private static CatalogResult Repoint(Fixture f, string command, Guid id) =>
+        f.Capture(
+            f.Service.Transaction(() =>
+                f.Admin.Execute(
+                    new CatalogRequest
+                    {
+                        Command = command,
+                        CatalogId = id,
+                        RequestId = Guid.NewGuid(),
+                    },
+                    true
+                )
+            ).Key
+        );
+
+    private static Entity Location(Fixture f, Guid library) =>
+        f.Service.Rows[
+            f.Service.Rows[library].GetAttributeValue<EntityReference>("asx_nativeparentid").Id
+        ];
+
+    [Fact]
+    public void RepointFollowsARenamedLibraryByItsListId()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var before = f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_entryurl");
+        Assert.Equal(
+            "General",
+            Location(f, library.CatalogId).GetAttributeValue<string>("relativeurl")
+        );
+        f.LibraryName = "Shared Documents";
+        f.Reads.Clear();
+        var result = Repoint(f, "RepointLibrary", library.CatalogId);
+        Assert.Equal("Approved", result.Status);
+        Assert.Contains(f.Reads, r => r.Contains("lists(guid'" + f.List));
+        string after = f.Url + "/Shared Documents";
+        Assert.Equal(
+            after,
+            f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_entryurl")
+        );
+        Assert.Equal(
+            "Shared Documents",
+            Location(f, library.CatalogId).GetAttributeValue<string>("relativeurl")
+        );
+        Assert.Contains(before + " → " + after, result.Observation!.Changes);
+        Assert.Equal(
+            f.List.ToString("D"),
+            f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_listid")
+        );
+        Assert.All(f.Reads, r => Assert.DoesNotContain("roleassignments", r));
+    }
+
+    [Fact]
+    public void RepointOfALibraryThatNoLongerExistsSaysSoAndChangesNothing()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var row = f.Service.Rows[library.CatalogId].RowVersion;
+        f.ListGone = true;
+        var result = Repoint(f, "RepointLibrary", library.CatalogId);
+        Assert.Equal("Blocked", result.Status);
+        Assert.Equal(
+            "This library no longer exists on the site. Remove it, or register the new library.",
+            result.Issue
+        );
+        Assert.Equal(row, f.Service.Rows[library.CatalogId].RowVersion);
+    }
+
+    [Fact]
+    public void RepointFollowsARenamedEntryFolderByItsUniqueId()
+    {
+        var f = new Fixture();
+        f.Nested = true;
+        var root = Guid.NewGuid();
+        f.Service.Seed(
+            new Entity("sharepointdocumentlocation", root)
+            {
+                ["relativeurl"] = "General",
+                ["statecode"] = new OptionSetValue(0),
+                ["servicetype"] = new OptionSetValue(0),
+                ["parentsiteorlocation"] = new EntityReference("sharepointsite", f.NativeSite),
+            }
+        );
+        f.Service.Rows[f.NativeParent]["relativeurl"] = "Archive/Entry";
+        f.Service.Rows[f.NativeParent]["parentsiteorlocation"] = new EntityReference(
+            "sharepointdocumentlocation",
+            root
+        );
+        var site = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddSite",
+                    NativeSiteId = f.NativeSite,
+                    Name = "Site",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        var library = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = site.CatalogId,
+                    ListId = f.List,
+                    NativeParentId = f.NativeParent,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Equal("Approved", library.Status);
+        f.EntryPath = "/sites/proto/General/Archive/Renamed";
+        var result = Repoint(f, "RepointLibrary", library.CatalogId);
+        Assert.Equal("Approved", result.Status);
+        Assert.Equal(
+            f.Url + "/General/Archive/Renamed",
+            f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_entryurl")
+        );
+        Assert.Equal(
+            "Archive/Renamed",
+            f.Service.Rows[f.NativeParent].GetAttributeValue<string>("relativeurl")
+        );
+        Assert.Equal("General", f.Service.Rows[root].GetAttributeValue<string>("relativeurl"));
+        // A deleted entry folder is reported and never recreated.
+        f.EntryGone = true;
+        var gone = Repoint(f, "RepointLibrary", library.CatalogId);
+        Assert.Equal("Approved", gone.Status);
+        Assert.Contains(
+            gone.Observation!.Changes,
+            c => c.Contains("no longer exists") && c.Contains("did not recreate")
+        );
+        Assert.Equal(
+            f.Url + "/General/Archive/Renamed",
+            f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_entryurl")
+        );
+    }
+
+    [Fact]
+    public void RepointFollowsAMovedSiteAndItsLibrariesByWebId()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var siteId = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_siteid")
+            .Id;
+        // Re-pointing a library first is refused while its site's address changed.
+        f.Url = "https://example.sharepoint.com/sites/renamed";
+        f.Service.Rows[f.NativeSite]["absoluteurl"] = f.Url;
+        var early = Assert.Throws<EvaluationBlockedException>(() =>
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "RepointLibrary",
+                    CatalogId = library.CatalogId,
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            )
+        );
+        Assert.Equal("The site's address changed. Re-point the site first.", early.Message);
+        var result = Repoint(f, "RepointSite", siteId);
+        Assert.Equal("Approved", result.Status);
+        var site = f.Service.Rows[siteId];
+        Assert.Equal(f.Url, site.GetAttributeValue<string>("asx_url"));
+        Assert.Equal(
+            SiteIdentity.Key(f.Url, f.Collection, f.Web),
+            site.GetAttributeValue<string>("asx_identity")
+        );
+        Assert.Equal(f.Web.ToString("D"), site.GetAttributeValue<string>("asx_webid"));
+        Assert.Equal(
+            f.Url + "/General",
+            f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_entryurl")
+        );
+        Assert.Contains(
+            "https://example.sharepoint.com/sites/proto → " + f.Url,
+            result.Observation!.Changes
+        );
+        // The library's location chain ends at the site record, so it resolves to the new address.
+        new NativeLocations(f.Service).ValidateParent(
+            Location(f, library.CatalogId).Id,
+            f.Url + "/General",
+            f.NativeSite
+        );
+        // A site reporting another address asks the admin to update its Dataverse record.
+        f.Service.Rows[f.NativeSite]["absoluteurl"] = "https://example.sharepoint.com/sites/stale";
+        var stale = Repoint(f, "RepointSite", siteId);
+        Assert.Equal("Blocked", stale.Status);
+        Assert.Contains("SharePoint reports this site at " + f.Url, stale.Issue);
+        Assert.Equal(f.Url, f.Service.Rows[siteId].GetAttributeValue<string>("asx_url"));
+    }
+
     [Fact]
     public void SiteIdentityIncludesHostnameAndRejectsIncompleteIdentity()
     {
@@ -1017,6 +1243,16 @@ public sealed class CatalogApprovalTests
 
         /// <summary>Whether the library has its own permissions or inherits the site's.</summary>
         public bool Unique = true;
+
+        /// <summary>The library's URL segment in SharePoint; Re-point follows a rename.</summary>
+        public string LibraryName = "General";
+
+        /// <summary>The library or the nested entry folder no longer exists.</summary>
+        public bool ListGone,
+            EntryGone;
+
+        /// <summary>Where SharePoint reports the nested entry folder (by its unique ID).</summary>
+        public string EntryPath = "/sites/proto/General/Archive/Entry";
         public int AncestorReads;
         public List<string> Reads = new List<string>();
         public Guid NestedEntry = Guid.NewGuid();
@@ -1094,6 +1330,7 @@ public sealed class CatalogApprovalTests
                 Reads.Add(work.Http.RelativeUri);
                 Assert.DoesNotContain("AsxdWorkKey", work.Http.RelativeUri);
                 string body;
+                int status = 200;
                 switch (work.ProbeKind)
                 {
                     case "CatalogLibraries":
@@ -1126,6 +1363,14 @@ public sealed class CatalogApprovalTests
                         break;
                     case "CatalogLibrary":
                     case "CatalogFinal":
+                    case "RepointLibrary":
+                        if (work.ProbeKind == "RepointLibrary" && ListGone)
+                        {
+                            status = 404;
+                            body =
+                                "{\"error\":{\"code\":\"-1\",\"message\":{\"value\":\"List does not exist.\"}}}";
+                            break;
+                        }
                         body = Envelope(
                             new CatalogLibraryObservation
                             {
@@ -1134,9 +1379,21 @@ public sealed class CatalogApprovalTests
                                 Root = new FolderObservation
                                 {
                                     Id = Entry,
-                                    Path = new Uri(Url).AbsolutePath + "/General",
+                                    Path = new Uri(Url).AbsolutePath + "/" + LibraryName,
                                 },
                             }
+                        );
+                        break;
+                    case "RepointEntry":
+                        Assert.Contains(NestedEntry.ToString("D"), work.Http.RelativeUri);
+                        if (EntryGone)
+                        {
+                            status = 404;
+                            body = "{}";
+                            break;
+                        }
+                        body = Envelope(
+                            new FolderObservation { Id = NestedEntry, Path = EntryPath }
                         );
                         break;
                     case "CatalogEntry":
@@ -1202,7 +1459,7 @@ public sealed class CatalogApprovalTests
                         Token = work.Token,
                         ProbeId = work.ProbeId,
                         ProbeKind = work.ProbeKind,
-                        HttpStatus = 200,
+                        HttpStatus = status,
                         ResponseBody = body,
                     },
                     true

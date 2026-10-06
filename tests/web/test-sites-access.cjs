@@ -554,6 +554,54 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   assert.equal(applies(), beforeReapply + 1);
   assert.equal(reapplied.BreakInheritance, true);
   assert.equal(reapplied.AcknowledgeBroaderAccess, undefined);
+  // Re-point asks in the page, then shows what changed as text.
+  const repoints = () => requests.filter((r) => r.Command === 'RepointLibrary');
+  assert.equal(nodes['ad-confirm'].hidden, true);
+  nodes['ad-repoint-library'].onclick();
+  assert.equal(repoints().length, 0, 'Nothing is re-pointed before the admin confirms');
+  assert.equal(nodes['ad-confirm'].hidden, false);
+  assert.match(
+    nodes['ad-confirm-text'].textContent,
+    /Re-point Reset: .*Nothing in SharePoint changes/,
+  );
+  nodes['ad-confirm-cancel'].onclick();
+  assert.equal(nodes['ad-confirm'].hidden, true);
+  nodes['ad-repoint-library'].onclick();
+  await nodes['ad-confirm-go'].onclick();
+  assert.equal(repoints().length, 1);
+  assert.equal(repoints()[0].CatalogId, id(19));
+  assert.equal(nodes['ad-confirm'].hidden, true);
+  inspectByKey['catalogprobe:test'] = {
+    Status: 'Approved',
+    Key: 'catalogprobe:test',
+    Observation: {
+      Changes: [
+        'https://example.sharepoint.com/sites/proto/General → https://example.sharepoint.com/sites/proto/<b>Shared</b>',
+      ],
+    },
+  };
+  await timers.shift()();
+  assert.match(nodes['ad-message'].textContent, /Reset re-pointed/);
+  assert.equal(nodes['ad-changes'].hidden, false);
+  assert.equal(
+    nodes['ad-changes'].children[0].textContent,
+    'https://example.sharepoint.com/sites/proto/General → https://example.sharepoint.com/sites/proto/<b>Shared</b>',
+    'Changes are text, never markup',
+  );
+  // A library that no longer exists is reported on its card.
+  nodes['ad-repoint-site'].onclick();
+  assert.match(nodes['ad-confirm-text'].textContent, /Re-point Delivery: .*SharePoint site record/);
+  await nodes['ad-confirm-go'].onclick();
+  assert.equal(requests.at(-1).Command, 'RepointSite');
+  assert.equal(requests.at(-1).CatalogId, id(1));
+  inspectByKey['catalogprobe:test'] = {
+    Status: 'Blocked',
+    Key: 'catalogprobe:test',
+    Issue: 'This library no longer exists on the site. Remove it, or register the new library.',
+  };
+  await timers.shift()();
+  assert.match(nodes['ad-provision-progress'].textContent, /no longer exists on the site/);
+  delete inspectByKey['catalogprobe:test'];
   console.log(
     'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, and author deep link. Mocked APIs; connected acceptance pending.',
   );

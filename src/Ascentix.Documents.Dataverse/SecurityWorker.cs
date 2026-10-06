@@ -1113,10 +1113,12 @@ public sealed class SecurityWorker
     {
         var catalog = new SecurityCatalog(service, op.LibraryId);
         var policy = store.Require<PolicyDocument>("asx_policy", op.PolicyKey).Value;
+        // A re-pointed site keeps its web ID; the run follows its new address.
+        if (catalog.Target.WebId == op.WebId && catalog.Target.Web.AbsoluteUri != op.WebUrl)
+            op.WebUrl = catalog.Target.Web.AbsoluteUri;
         if (
             catalog.Target.WebId != op.WebId
             || catalog.Target.ListId != op.ListId
-            || catalog.Target.Web.AbsoluteUri != op.WebUrl
             || catalog.SiteId != op.SiteId
             || policy.Generation != op.PolicyRevision
             || policy.OperationKey != op.Key
