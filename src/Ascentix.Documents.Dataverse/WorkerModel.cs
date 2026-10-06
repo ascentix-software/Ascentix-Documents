@@ -1,4 +1,8 @@
 using System;
+using System.Collections;
+using System.Collections.Concurrent;
+using System.Linq;
+using System.Reflection;
 using System.Runtime.Serialization;
 
 namespace Ascentix.Documents.Dataverse;
@@ -17,6 +21,45 @@ public class StoredDocument
 
     [DataMember]
     public string Status { get; set; } = "Pending";
+
+    /// <summary>
+    /// Rows saved by an earlier release lack the lists added since, and the serializer runs no
+    /// constructor or initializer, so those lists would read as null. Every stored list reads
+    /// as empty instead, whichever release wrote the row.
+    /// </summary>
+    [OnDeserialized]
+    private void FillMissingLists(StreamingContext context) => StoredLists.Fill(this);
+}
+
+/// <summary>Gives a deserialized document an empty list for each list member its row lacked.</summary>
+internal static class StoredLists
+{
+    private static readonly ConcurrentDictionary<Type, PropertyInfo[]> Lists =
+        new ConcurrentDictionary<Type, PropertyInfo[]>();
+
+    public static void Fill(object document)
+    {
+        foreach (var list in Lists.GetOrAdd(document.GetType(), Find))
+            if (list.GetValue(document) == null)
+                list.SetValue(document, Empty(list.PropertyType));
+    }
+
+    private static PropertyInfo[] Find(Type type) =>
+        type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p =>
+                p.CanRead
+                && p.CanWrite
+                && p.GetIndexParameters().Length == 0
+                && p.GetCustomAttributes(typeof(DataMemberAttribute), true).Length > 0
+                && p.PropertyType != typeof(string)
+                && typeof(IEnumerable).IsAssignableFrom(p.PropertyType)
+            )
+            .ToArray();
+
+    private static object Empty(Type type) =>
+        type.IsArray
+            ? Array.CreateInstance(type.GetElementType()!, 0)
+            : Activator.CreateInstance(type)!;
 }
 
 [DataContract]

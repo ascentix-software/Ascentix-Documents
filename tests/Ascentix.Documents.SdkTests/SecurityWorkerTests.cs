@@ -572,6 +572,44 @@ public sealed class SecurityWorkerTests
         Assert.Equal("NeedsReview", g.Policy().Status);
     }
 
+    [Theory]
+    [InlineData("asx_operation")]
+    [InlineData("asx_membership")]
+    [InlineData("asx_policy")]
+    [InlineData("asx_managedgroup")]
+    public void BlockedAccessRunSavedBy0103RetriesAndCompletes(string table)
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        f.Reject = op => op.MutationKind == "MemberAdd" ? 403 : null;
+        Assert.Equal("Blocked", f.Drive(expectApplied: false).Status);
+        // 0.1.0.3 wrote none of the members 0.1.0.4 added to these documents.
+        var added = new System.Collections.Generic.Dictionary<string, string[]>
+        {
+            ["asx_operation"] = new[]
+            {
+                "Notices",
+                "SkippedMembers",
+                "SkippedCount",
+                "ReadbackMisses",
+                "EnsuredLogin",
+                "BreakInheritance",
+                "Reprobe",
+                "NameConflict",
+                "EntryPath",
+            },
+            ["asx_membership"] = new[] { "Skipped" },
+            ["asx_policy"] = new[] { "Notices", "BreakInheritance", "Inherits" },
+            ["asx_managedgroup"] = new[] { "Principals" },
+        };
+        Assert.True(LegacyPayload.Strip(f.Service, table, added[table]) > 0);
+        f.Reject = null;
+        Assert.Equal("Pending", Manage(f, "Retry").Status);
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Contains(f.Members, m => m.Login.Contains("person@example.com"));
+    }
+
     [Fact]
     public void UnknownSecurityWriteCannotRepeatOrReleaseTheDispatcher()
     {

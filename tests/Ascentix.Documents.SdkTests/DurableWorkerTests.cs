@@ -2009,6 +2009,55 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
+    public void BlockedOutboxRowSavedBy0103RetriesAndPlans()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        var key = f.BlockRecord();
+        // 0.1.0.3 outbox rows had no wait fields; record plans had no notices.
+        Assert.True(
+            LegacyPayload.Strip(f.Service, "asx_outbox", "NextAttemptUtc", "Attempts", "Notices")
+                > 0
+        );
+        Assert.Equal(
+            "Pending",
+            f.Execute(new WorkerRequest { Command = "RetryOutbox", Key = key }).Status
+        );
+        var planned = f.Execute(new WorkerRequest { Command = "Plan", Key = key });
+        Assert.Equal("Planned", planned.Status);
+        Assert.Single(planned.Keys);
+        LegacyPayload.Strip(f.Service, "asx_outbox", "Notices");
+        Assert.Equal(
+            "Planned",
+            f.Execute(new WorkerRequest { Command = "Plan", Key = key }).Status
+        );
+    }
+
+    [Fact]
+    public void BlockedFolderJobSavedBy0103RetriesAndCreatesItsFolder()
+    {
+        var f = new Fixture();
+        var stopped = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key);
+        stopped.Value.Status = "Blocked";
+        stopped.Value.ErrorCode = "ObservationMismatch";
+        f.Store.Save(stopped);
+        // 0.1.0.3 folder jobs had no entry path, read-back or name-conflict markers.
+        Assert.True(
+            LegacyPayload.Strip(f.Service, "asx_operation", "EntryPath", "Reprobe", "NameConflict")
+                > 0
+        );
+        Assert.Equal(
+            "Pending",
+            f.Execute(new WorkerRequest { Command = "Retry", Key = f.Operation.Key }).Status
+        );
+        var work = f.Call("PrepareCreate", f.Observe(f.Preflight(f.Claim()), "{}"));
+        Assert.Equal("Create", work.Status);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var verified = f.ObserveAndFinalize(work, f.Item(Guid.NewGuid(), null));
+        Assert.Equal("Applied", f.Call("Complete", verified).Status);
+    }
+
+    [Fact]
     public void RetryOutboxLeavesAnyOtherStatusUnchanged()
     {
         var f = new Fixture(seedBinding: false);

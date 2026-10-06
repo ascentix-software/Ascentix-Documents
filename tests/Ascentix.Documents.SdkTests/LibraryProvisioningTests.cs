@@ -182,6 +182,28 @@ public sealed class LibraryProvisioningTests
     }
 
     [Fact]
+    public void WaitingSetupSavedBy0103RetriesAndCreatesTheLibrary()
+    {
+        var f = new Fixture { ThrottledCreates = 1 };
+        var queued = f.Queue();
+        Assert.Equal("RetryWait", f.Run(queued.Key).Status);
+        // 0.1.0.3 setups had no consent flag and none of the newer operation markers.
+        Assert.True(
+            LegacyPayload.Strip(
+                f.Service,
+                "asx_operation",
+                "AcknowledgeBroaderAccess",
+                "EntryPath",
+                "Reprobe",
+                "NameConflict"
+            ) > 0
+        );
+        Assert.Equal("Pending", f.Manage("Retry", queued.Key).Status);
+        Assert.Equal("AccessPending", f.Run(queued.Key).Status);
+        Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
+    }
+
+    [Fact]
     public void UnknownCreationIsQuarantinedWithoutDeletingOrAdoptingContent()
     {
         var f = new Fixture { UnknownCreate = true };
@@ -461,6 +483,12 @@ public sealed class LibraryProvisioningTests
             }
             throw new Exception("Library setup did not terminate");
         }
+
+        /// <summary>An operator's Retry or Cancel, which carries only the setup key.</summary>
+        public WorkerResult Manage(string command, string key) =>
+            Service.Transaction(() =>
+                Worker.Execute(new WorkerRequest { Command = command, Key = key }, true)
+            );
 
         public WorkerResult Call(
             string command,

@@ -169,8 +169,8 @@ public sealed class ManagedGroup : StoredDocument
 
     /// <summary>
     /// Group claims Documents put in this group for a group team. A claim no longer wanted is
-    /// removed; any other non-person member was added by hand and is left in place. Null in
-    /// documents written before group teams.
+    /// removed; any other non-person member was added by hand and is left in place. Documents
+    /// written before group teams read it as empty (StoredDocument fills missing lists).
     /// </summary>
     [DataMember]
     public string[]? Principals { get; set; }
