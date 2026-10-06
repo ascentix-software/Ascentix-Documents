@@ -991,6 +991,27 @@ async function change(n, value) {
     assert.deepEqual(inspected.at(-1), { Command: 'Inspect', Key: 'folderjob:old' });
     assert.equal(nodes.operation.value, 'folderjob:old');
     assert(nodes.operation.children.some((o) => o.value === 'folderjob:old'));
+    // A pasted key that is not an operation key is refused before anything is asked or listed.
+    const listed = nodes.operation.children.length;
+    nodes.operationKey.value = 'recordplan:abc';
+    await nodes.inspectOperationKey.onclick();
+    assert.equal(inspected.at(-1).Key, 'folderjob:old');
+    assert.equal(nodes.operation.children.length, listed);
+    assert.match(
+      nodes.status.textContent,
+      /folderjob:, librarycreate:, catalogprobe: or policywork:/,
+    );
+    // An operation Inspect cannot find is not added to the list either.
+    const working = xrm.WebApi.online.execute;
+    xrm.WebApi.online.execute = async () => {
+      throw new Error('Operation not found.');
+    };
+    nodes.operationKey.value = 'policywork:missing';
+    await nodes.inspectOperationKey.onclick();
+    assert.equal(nodes.operation.children.length, listed);
+    assert.equal(nodes.operation.value, 'folderjob:old');
+    assert.match(nodes.status.textContent, /Operation not found/);
+    xrm.WebApi.online.execute = working;
     const recorded = [];
     xrm.WebApi.online.execute = async (req) => {
       recorded.push([req.getMetadata().operationName, JSON.parse(req.Request)]);

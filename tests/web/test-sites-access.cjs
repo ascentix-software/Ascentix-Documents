@@ -827,6 +827,32 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     delete inspectByKey['librarycreate:test'];
   }
   {
+    // A setup whose first access run was cancelled ends Ready with that notice instead of
+    // "Setup completed.".
+    nodes['ad-create'].onclick();
+    nodes['ad-library-name'].value = 'Unsynced';
+    nodes['ad-initial-team'].value = '';
+    await nodes['ad-provision'].onclick();
+    inspectByKey['librarycreate:test'] = {
+      Status: 'Ready',
+      Key: 'librarycreate:test',
+      Issue: 'Library created. Its first access run was cancelled; apply access on the library.',
+    };
+    await timers.shift()();
+    // Each card ends with Dismiss; the Unsynced card is the text from its name to that.
+    const card = /Unsynced(?:(?!Dismiss)[^])*Dismiss/.exec(
+      nodes['ad-provision-progress'].textContent,
+    );
+    assert(card, 'The finished setup stays listed');
+    assert.match(card[0], /first access run was cancelled; apply access/);
+    assert.doesNotMatch(card[0], /Setup completed/);
+    assert.match(
+      nodes['ad-message'].textContent,
+      /Unsynced: Library created. Its first access run/,
+    );
+    delete inspectByKey['librarycreate:test'];
+  }
+  {
     // After a reload, a re-point still running or blocked is found again with the other setup
     // activity, and its command and ID come from its probe, so "Re-point again" still works.
     const fresh = {},

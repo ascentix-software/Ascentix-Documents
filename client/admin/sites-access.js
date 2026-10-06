@@ -212,7 +212,8 @@
 
     let message;
     if (done) {
-      message = 'Setup completed.';
+      // A setup can end Ready with something to do, such as a cancelled first access run.
+      message = result.Issue || 'Setup completed.';
     } else if (stopped) {
       message = result.Issue || 'Setup needs review before it can continue.';
     } else if (retrying) {
@@ -825,7 +826,7 @@
         } else if (state.site) await libraries();
         await window.AsxdAdmin?.refreshCatalog();
         state.operations.delete(key);
-        issue(o.name + ' is ready.');
+        issue(result.Issue ? o.name + ': ' + result.Issue : o.name + ' is ready.');
       }
     }
     for (const l of state.libraries) {

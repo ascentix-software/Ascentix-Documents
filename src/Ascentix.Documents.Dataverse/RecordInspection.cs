@@ -74,7 +74,12 @@ public sealed class RecordInspection
             .ToArray();
         var states = operations.Select(job => job.Status).ToArray();
         var folders = operations.SelectMany(job => job.Folders).ToArray();
-        var status = Summarize(states, folders, selection.Value.Status == "SelectionNeedsReview");
+        // A record with folders waiting for a value or a usable name reports that it waits;
+        // its folder jobs are still listed below.
+        var status =
+            selection.Value.Status == WorkerCoordinator.WaitingStatus
+                ? WorkerCoordinator.WaitingStatus
+                : Summarize(states, folders, selection.Value.Status == "SelectionNeedsReview");
         return new WorkerResult
         {
             Status = status,

@@ -1887,7 +1887,8 @@ public sealed class DurableWorkerTests
             new WorkerRequest { TemplateId = f.TemplateId, RecordId = f.RecordId },
             new[] { "account" }
         );
-        Assert.Equal("NoCurrentOperations", inspected.Status);
+        // The record reports that it waits, whatever its folder jobs show.
+        Assert.Equal(WorkerCoordinator.WaitingStatus, inspected.Status);
         Assert.Contains(notice, inspected.Notices);
         // A replan once the field is filled in plans the folder and clears the marker.
         f.Service.Rows[f.RecordId]["name"] = "Example";

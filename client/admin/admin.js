@@ -2044,17 +2044,19 @@
       );
       message('Latest operations loaded. This is a bounded activity view.');
     });
+  const operationKeyPrefixes = ['folderjob:', 'librarycreate:', 'catalogprobe:', 'policywork:'];
   // Inspects one operation for the recovery panel: one picked from the latest operations, a
   // pasted key, or a job opened from Blocked jobs.
   async function inspectOperation(key) {
-    if (![...$('operation').options].some((o) => o.value === key))
-      $('operation').append(option(key, key));
-    $('operation').value = key;
     const result = JSON.parse(
       await api('asx_ManageWork', {
         Request: JSON.stringify({ Command: 'Inspect', Key: key }),
       }),
     );
+    // Listed only once Inspect found it.
+    if (![...$('operation').options].some((o) => o.value === key))
+      $('operation').append(option(key, key));
+    $('operation').value = key;
     $('operationStatus').textContent =
       result.Status +
       '\n' +
@@ -2072,6 +2074,14 @@
     task(async () => {
       const key = $('operationKey').value.trim();
       if (!key) throw new Error('Paste an operation key.');
+      // The asx_operation keys: folder jobs, library setups, catalog probes and access runs.
+      if (!operationKeyPrefixes.some((prefix) => key.startsWith(prefix)))
+        throw new Error(
+          'Paste an operation key: it starts with ' +
+            operationKeyPrefixes.slice(0, -1).join(', ') +
+            ' or ' +
+            operationKeyPrefixes.at(-1),
+        );
       await inspectOperation(key);
     });
   async function manage(command) {
