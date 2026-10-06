@@ -1135,6 +1135,50 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
+    public void DuplicateSiblingWaitsAndIsPlannedWhenTheRecordChanges()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        foreach (
+            var (key, expression, order) in new[] { ("a", "{root.name}", 1), ("b", "Example", 2) }
+        )
+            f.Service.Seed(
+                new Entity("asx_folder", Guid.NewGuid())
+                {
+                    ["asx_revisionid"] = new EntityReference("asx_revision", f.RevisionId),
+                    ["asx_key"] = key,
+                    ["asx_sectionkey"] = "general",
+                    ["asx_parentkey"] = "root",
+                    ["asx_expression"] = expression,
+                    ["asx_order"] = order,
+                }
+            );
+        var waiting = f.PlanRecord();
+        Assert.Equal("Planned", waiting.Status);
+        Assert.Equal(
+            new[]
+            {
+                "Folder 'general/b' has the same name 'Example' as 'general/a'; it waits until the names differ.",
+            },
+            waiting.Notices
+        );
+        Assert.Equal(
+            new[] { "root", "a" },
+            f.Store.Require<OperationDocument>("asx_operation", Assert.Single(waiting.Keys))
+                .Value.Folders.Select(folder => folder.Node)
+        );
+        // A replan after the record changes plans the folder that waited.
+        f.Service.Rows[f.RecordId]["name"] = "Other";
+        var planned = f.PlanRecord();
+        Assert.Empty(planned.Notices);
+        Assert.Equal(
+            new[] { "Other", "Other", "Example" },
+            f.Store.Require<OperationDocument>("asx_operation", Assert.Single(planned.Keys))
+                .Value.Folders.Select(folder => folder.Candidate)
+        );
+    }
+
+    [Fact]
     public void RecordNameSharePointForbidsIsCleanedAndApplied()
     {
         var f = new Fixture(seedBinding: false);

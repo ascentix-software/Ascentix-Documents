@@ -221,16 +221,101 @@ public class FolderNameTests
     {
         var template = AcceptanceTests.Template();
         template.Destinations[1].Nodes[0].Name = "Static";
-        foreach (var customer in new[] { null, "", "   " })
+        var plan = FolderPlanner.Plan(template, Guid.NewGuid(), Names("Example", null));
+        Assert.DoesNotContain(plan, n => n.Section == "general");
+        Assert.Equal(2, plan.Count(n => n.Section == "sensitive"));
+        Assert.Equal(
+            new[] { "Folder 'general/root' is waiting for 'customer.name' to have a value." },
+            plan.Notices
+        );
+    }
+
+    [Fact]
+    public void PartlyBlankNamesArePlannedAndWhollyBlankNamesWait()
+    {
+        var template = AcceptanceTests.Template();
+        template.Destinations[1].Nodes[0].Name = "Static";
+        // A blank token inside a composite name is kept, as before.
+        foreach (var customer in new[] { "", " " })
+        {
+            var plan = FolderPlanner.Plan(template, Guid.NewGuid(), Names("Example", customer));
+            Assert.All(
+                plan.Where(n => n.Section == "general" && n.IsRoot),
+                n => Assert.Equal("-Example", n.Name)
+            );
+            Assert.Equal(4, plan.Count);
+        }
+        template.Destinations[0].Nodes[0].Name = "X ({customer.name})";
+        Assert.Contains(
+            FolderPlanner.Plan(template, Guid.NewGuid(), Names("Example", " ")),
+            n => n.IsRoot && n.Name == "X ( )"
+        );
+        // A name that is blank as a whole waits for its field.
+        template.Destinations[0].Nodes[0].Name = "{customer.name}";
+        foreach (var customer in new[] { "", "   " })
         {
             var plan = FolderPlanner.Plan(template, Guid.NewGuid(), Names("Example", customer));
             Assert.DoesNotContain(plan, n => n.Section == "general");
-            Assert.Equal(2, plan.Count(n => n.Section == "sensitive"));
             Assert.Equal(
                 new[] { "Folder 'general/root' is waiting for 'customer.name' to have a value." },
                 plan.Notices
             );
         }
+    }
+
+    [Fact]
+    public void ADuplicateSiblingIsPlannedOnceTheNamesDiffer()
+    {
+        var template = AcceptanceTests.Template();
+        foreach (var section in template.Destinations)
+        {
+            section.Nodes[1].Name = "{root.name}";
+            section.Nodes.Add(
+                new FolderNode
+                {
+                    Key = "other",
+                    ParentKey = "root",
+                    Name = "{customer.name}",
+                    Order = 1,
+                }
+            );
+            section.Nodes.Add(
+                new FolderNode
+                {
+                    Key = "deep",
+                    ParentKey = "other",
+                    Name = "Deep",
+                }
+            );
+        }
+        var record = Guid.NewGuid();
+        var waiting = FolderPlanner.Plan(template, record, Names("A/B", "A:B"));
+        Assert.Equal(4, waiting.Count);
+        Assert.DoesNotContain(waiting, n => n.Node == "other" || n.Node == "deep");
+        Assert.Contains(
+            "Folder 'general/other' has the same name 'A-B' as 'general/child'; it waits until the names differ.",
+            waiting.Notices
+        );
+        Assert.Contains(
+            "Folder 'sensitive/other' has the same name 'A-B' as 'sensitive/child'; it waits until the names differ.",
+            waiting.Notices
+        );
+        var replanned = FolderPlanner.Plan(template, record, Names("A/B", "C"));
+        Assert.Equal(8, replanned.Count);
+        Assert.Contains(replanned, n => n.RelativePath == "C-A-B/C/Deep");
+        Assert.DoesNotContain(replanned.Notices, n => n.Contains("same name"));
+    }
+
+    [Theory]
+    [InlineData(".lock")]
+    [InlineData(".LOCK")]
+    [InlineData("゛abc")]
+    [InlineData("ဧabc")]
+    public void ValidateRejectsTheOtherMicrosoftReservedNames(string name)
+    {
+        Assert.Throws<EvaluationBlockedException>(() => FolderNames.Validate(name));
+        Assert.Throws<EvaluationBlockedException>(() => FolderNames.Validate(name, false));
+        FolderNames.Validate("a" + name);
     }
 
     [Fact]

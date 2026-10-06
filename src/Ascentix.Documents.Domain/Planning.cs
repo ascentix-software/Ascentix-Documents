@@ -130,6 +130,9 @@ public static class FolderNames
             || name == ".."
             || (atLibraryRoot && name.Equals("Forms", StringComparison.OrdinalIgnoreCase))
             || name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase)
+            || name.Equals(".lock", StringComparison.OrdinalIgnoreCase)
+            || name[0] == (char)0x309B
+            || name[0] == (char)0x1027
             || name.StartsWith("~$", StringComparison.Ordinal)
             || name.IndexOf("_vti_", StringComparison.OrdinalIgnoreCase) >= 0
             || DeviceName.IsMatch(name)
@@ -417,7 +420,8 @@ public static class FolderPlanner
             Action<string?, string> visit = null!;
             visit = (parent, parentPath) =>
             {
-                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                // Each cleaned name and the first included sibling that took it.
+                var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 foreach (
                     var node in section
                         .Nodes.Where(n => n.ParentKey == parent)
@@ -470,10 +474,27 @@ public static class FolderPlanner
                                 + name
                                 + "' for SharePoint."
                         );
-                    if (!names.Add(name))
-                        throw new EvaluationBlockedException(
-                            "Included siblings resolve to the same name."
+                    if (names.TryGetValue(name, out var first))
+                    {
+                        // The first sibling in Order, then Key, keeps the name. This one and
+                        // everything below it wait until a change to the record tells them apart.
+                        Notice(
+                            notices,
+                            "Folder '"
+                                + section.Key
+                                + "/"
+                                + node.Key
+                                + "' has the same name '"
+                                + name
+                                + "' as '"
+                                + section.Key
+                                + "/"
+                                + first
+                                + "'; it waits until the names differ."
                         );
+                        continue;
+                    }
+                    names.Add(name, node.Key);
                     string path = parent == null ? name : parentPath + "/" + name;
                     if (
                         Uri.UnescapeDataString(new Uri(section.Library.EntryUrl).AbsolutePath)

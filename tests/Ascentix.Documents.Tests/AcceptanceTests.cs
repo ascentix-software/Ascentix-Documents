@@ -256,7 +256,7 @@ public class AcceptanceTests
         Assert.Throws<EvaluationBlockedException>(() => FolderNames.Validate(name));
 
     [Fact]
-    public void IncludedSiblingDuplicatesFail()
+    public void IncludedSiblingDuplicatesWaitWhileTheFirstIsPlanned()
     {
         var template = Template();
         template
@@ -269,8 +269,26 @@ public class AcceptanceTests
                     Name = "included",
                 }
             );
-        Assert.Throws<EvaluationBlockedException>(() =>
-            FolderPlanner.Plan(template, Guid.NewGuid(), Snapshot)
+        template
+            .Destinations[0]
+            .Nodes.Add(
+                new FolderNode
+                {
+                    Key = "below",
+                    ParentKey = "duplicate",
+                    Name = "Below",
+                }
+            );
+        var plan = FolderPlanner.Plan(template, Guid.NewGuid(), Snapshot);
+        Assert.Equal(4, plan.Count);
+        Assert.Contains(plan, n => n.Section == "general" && n.Node == "child");
+        Assert.DoesNotContain(plan, n => n.Node == "duplicate" || n.Node == "below");
+        Assert.Equal(
+            new[]
+            {
+                "Folder 'general/duplicate' has the same name 'included' as 'general/child'; it waits until the names differ.",
+            },
+            plan.Notices
         );
     }
 

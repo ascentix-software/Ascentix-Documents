@@ -154,27 +154,33 @@ public static class NameExpression
     /// <summary>Renders a folder name from the snapshot.</summary>
     /// <param name="expression">The naming expression with its field tokens.</param>
     /// <param name="snapshot">The record's authorized values.</param>
-    /// <param name="blank">The first field whose value is null or blank, if any.</param>
-    /// <returns>The rendered name, or null when a field has no value yet.</returns>
+    /// <param name="blank">The field the name waits for, when it returns null.</param>
+    /// <returns>
+    /// The rendered name, or null when a field is null, or when the whole name is blank because
+    /// a field is blank. A blank field inside an otherwise filled name is kept as it is.
+    /// </returns>
     public static string? Render(string expression, Snapshot snapshot, out FieldReference? blank)
     {
         Fields(expression);
         FieldReference? missing = null;
+        FieldReference? empty = null;
         var name = Token.Replace(
             expression,
             m =>
             {
                 var field = new FieldReference(m.Groups[1].Value, m.Groups[2].Value);
                 var text = snapshot.Resolve(field).Format();
-                if (string.IsNullOrWhiteSpace(text))
+                if (text == null)
                 {
                     missing ??= field;
                     return "";
                 }
-                return text!;
+                if (string.IsNullOrWhiteSpace(text))
+                    empty ??= field;
+                return text;
             }
         );
-        blank = missing;
+        blank = missing ?? (string.IsNullOrWhiteSpace(name) ? empty : null);
         return blank == null ? name.Normalize(NormalizationForm.FormC) : null;
     }
 }
