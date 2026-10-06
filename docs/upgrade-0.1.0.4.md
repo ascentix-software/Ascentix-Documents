@@ -17,6 +17,13 @@ Use stage-and-upgrade. A plain update leaves the removed components behind.
 ## Before you upgrade
 
 - The Documents Worker role now includes System Jobs read (`prvReadAsyncOperation`). Capture runs as a background job owned by the worker, so the worker needs this privilege.
+- The Documents Worker role now includes organization-level Write on Document Locations (`prvWriteSharePointDocumentLocation`). **Re-point** updates the library's Dataverse document location, which may belong to whoever created it.
+- The Documents Security Administrator role now includes:
+  - organization-level Delete on Sites and Libraries (`prvDeleteasx_site`, `prvDeleteasx_library`), so **Remove** can delete a site or library nothing refers to;
+  - organization-level Write on Operations and Create on Attempts (`prvWriteasx_operation`, `prvCreateasx_attempt`), so **Remove** and **Apply access** can cancel an idle access run;
+  - user-level Create and Append on Document Locations (`prvCreateSharePointDocumentLocation`, `prvAppendSharePointDocumentLocation`), so approving an added library can create its document location.
+
+  The guard plug-ins still allow writes to Documents tables only through the product APIs. If you copied these roles, add the same privileges to your copies.
 - The worker application user needs organization-level Read on every enabled table. Registration refuses any table the worker cannot read and names it.
 - The worker must be an application user.
 

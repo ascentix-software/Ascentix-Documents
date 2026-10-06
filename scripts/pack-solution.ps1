@@ -56,6 +56,36 @@ foreach ($roleFile in Get-ChildItem -LiteralPath (Join-Path $stage 'Roles') -Fil
         throw "Package contract: only System Administrator may change asx_runtime ($($roleFile.Name): $($runtimeWrites.name -join ', '))."
     }
 }
+# The catalog and security APIs run as their caller, and the worker writes as itself, so each
+# role must hold what its commands write. Depth: Basic < Local < Deep < Global.
+$depths = @{ Basic = 1; Local = 2; Deep = 3; Global = 4 }
+$needs = @(
+    @('Documents Security Administrator', 'prvDeleteasx_library', 'Global', 'Remove deletes a library nothing refers to'),
+    @('Documents Security Administrator', 'prvDeleteasx_site', 'Global', 'Remove deletes a site nothing refers to'),
+    @('Documents Security Administrator', 'prvWriteasx_operation', 'Global', 'Remove and Apply access with the inheritance acknowledgement cancel an idle access run; Approve, Next libraries and site identity upgrade save their probe'),
+    @('Documents Security Administrator', 'prvCreateasx_attempt', 'Global', 'Cancel releases an expired run claim and records it'),
+    @('Documents Security Administrator', 'prvWriteasx_claim', 'Global', 'Suspend, Remove, Approve and Apply access save the site writer row'),
+    @('Documents Security Administrator', 'prvCreateasx_claim', 'Global', 'Suspend, Remove, Approve and Apply access create the site writer row'),
+    @('Documents Security Administrator', 'prvCreateasx_operation', 'Global', 'Add, Re-point and Create library queue their work'),
+    @('Documents Security Administrator', 'prvWriteasx_library', 'Global', 'Suspend, Remove, Approve and Apply access update the library'),
+    @('Documents Security Administrator', 'prvWriteasx_site', 'Global', 'Suspend, Remove and Approve update the site'),
+    @('Documents Security Administrator', 'prvWriteasx_policy', 'Global', 'Save, Apply and Remove update the access policy'),
+    @('Documents Security Administrator', 'prvWriteasx_policyentry', 'Global', 'Apply and Remove update the team references'),
+    @('Documents Security Administrator', 'prvCreateSharePointDocumentLocation', 'Basic', 'Approve of an added library creates its Dataverse document location'),
+    @('Documents Security Administrator', 'prvAppendSharePointDocumentLocation', 'Basic', 'that location is linked to its SharePoint site'),
+    @('Documents Worker', 'prvWriteSharePointDocumentLocation', 'Global', 'Re-point updates the library document location chain, whoever created it'),
+    @('Documents Worker', 'prvAppendSharePointDocumentLocation', 'Global', 'Re-point can move a location under its SharePoint site'),
+    @('Documents Worker', 'prvWriteasx_operation', 'Global', 'every worker step saves its operation'),
+    @('Documents Worker', 'prvCreateasx_attempt', 'Global', 'every worker step records its attempts')
+)
+foreach ($need in $needs) {
+    $roleFile = Join-Path $stage ('Roles/' + $need[0] + '.xml')
+    [xml]$role = Get-Content -LiteralPath $roleFile -Raw
+    $held = @($role.Role.RolePrivileges.RolePrivilege | Where-Object { $_.name -eq $need[1] })
+    if ($held.Count -ne 1 -or $depths[[string]$held[0].level] -lt $depths[$need[2]]) {
+        throw "Package contract: $($need[0]) needs $($need[1]) at $($need[2]) or wider: $($need[3])."
+    }
+}
 foreach ($flow in Get-ChildItem -LiteralPath (Join-Path $stage 'Workflows') -Filter '*.data.xml') {
     [xml]$data = Get-Content -LiteralPath $flow.FullName -Raw
     if ($data.Workflow.StateCode -ne '0') { throw "Package contract: flows must ship Off ($($flow.Name))." }

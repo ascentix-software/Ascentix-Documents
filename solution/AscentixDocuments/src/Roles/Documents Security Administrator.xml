@@ -9,6 +9,7 @@
     <RolePrivilege name="prvAppendasx_policyentry" level="Global" />
     <RolePrivilege name="prvAppendasx_site" level="Global" />
     <RolePrivilege name="prvAppendasx_teamregistration" level="Global" />
+    <RolePrivilege name="prvAppendSharePointDocumentLocation" level="Basic" />
     <RolePrivilege name="prvAppendToasx_library" level="Global" />
     <RolePrivilege name="prvAppendToasx_policy" level="Global" />
     <RolePrivilege name="prvAppendToasx_policyentry" level="Global" />
@@ -16,6 +17,7 @@
     <RolePrivilege name="prvAppendToasx_teamregistration" level="Global" />
     <RolePrivilege name="prvAppendToSharePointDocumentLocation" level="Global" />
     <RolePrivilege name="prvAppendToSharePointSite" level="Global" />
+    <RolePrivilege name="prvCreateasx_attempt" level="Global" />
     <RolePrivilege name="prvCreateasx_claim" level="Global" />
     <RolePrivilege name="prvCreateasx_library" level="Global" />
     <RolePrivilege name="prvCreateasx_operation" level="Global" />
@@ -24,6 +26,9 @@
     <RolePrivilege name="prvCreateasx_policyentry" level="Global" />
     <RolePrivilege name="prvCreateasx_site" level="Global" />
     <RolePrivilege name="prvCreateasx_teamregistration" level="Global" />
+    <RolePrivilege name="prvCreateSharePointDocumentLocation" level="Basic" />
+    <RolePrivilege name="prvDeleteasx_library" level="Global" />
+    <RolePrivilege name="prvDeleteasx_site" level="Global" />
     <RolePrivilege name="prvReadasx_attempt" level="Global" />
     <RolePrivilege name="prvReadasx_claim" level="Global" />
     <RolePrivilege name="prvReadasx_condition" level="Global" />
@@ -51,6 +56,7 @@
     <RolePrivilege name="prvReadUser" level="Global" />
     <RolePrivilege name="prvWriteasx_claim" level="Global" />
     <RolePrivilege name="prvWriteasx_library" level="Global" />
+    <RolePrivilege name="prvWriteasx_operation" level="Global" />
     <RolePrivilege name="prvWriteasx_policy" level="Global" />
     <RolePrivilege name="prvWriteasx_policyentry" level="Global" />
     <RolePrivilege name="prvWriteasx_site" level="Global" />
