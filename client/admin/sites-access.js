@@ -99,6 +99,11 @@
   // Applied while the queued run could not be replaced yet (PolicyDocument.ApplyPending).
   const pendingNotice =
     'Your change is saved. It is applied right after the access run in progress, as soon as that run is between steps and SharePoint has answered its last write.';
+  const stoppedPendingNotice =
+    'The access run stopped: Retry or Cancel it, then your change applies.';
+  // The last run applied the grants but left team membership unsynced (MembershipIncomplete).
+  const incompleteNotice =
+    'Needs attention: access is applied, but team membership was not synced. People removed from a team keep access, and people added get none, until this is resolved. See the notices below.';
   // The last access run stopped because the library inherits the site's permissions.
   const inherits = (p) => !!p?.result.Policy?.Inherits;
   const applyKey = (p) => (state.library?.asx_libraryid || '') + JSON.stringify(p?.entries || []);
@@ -426,7 +431,8 @@
     const run = p?.result.RunStatus,
       stuck = ['Blocked', 'RetryWait'].includes(run) && !inherits(p),
       running = !!p?.result.Policy?.OperationKey && !inherits(p) && run !== 'Blocked',
-      pending = !!p?.result.Policy?.ApplyPending;
+      pending = !!p?.result.Policy?.ApplyPending,
+      incomplete = !!p?.result.Policy?.MembershipIncomplete;
     if (p) {
       p.entries.forEach((e) => {
         const tr = node('tr'),
@@ -467,16 +473,23 @@
     const reapply = inherits(p) || ['Missing', 'NeedsReview'].includes(p?.result.Status);
     $('ad-apply').disabled = state.busy || !p || (!changed(p) && !reapply);
     $('ad-add-team').disabled = state.busy || !p;
+    // A stopped run comes first: a change waiting behind it applies only after Retry or Cancel.
+    // A run that waits to retry carries on by itself, and the waiting change follows it.
     $('ad-change-status').textContent = !p
       ? 'Loading access…'
-      : pending && !changed(p)
-        ? pendingNotice
-        : stuck
-          ? 'Needs attention: ' +
-            (p.result.RunNotice || 'the access run stopped.') +
-            (run === 'RetryWait' && p.result.RunNextAttemptUtc
-              ? ' Next check: ' + when(p.result.RunNextAttemptUtc) + '.'
-              : '')
+      : stuck
+        ? 'Needs attention: ' +
+          (p.result.RunNotice || 'the access run stopped.') +
+          (run === 'RetryWait' && p.result.RunNextAttemptUtc
+            ? ' Next check: ' + when(p.result.RunNextAttemptUtc) + '.'
+            : '') +
+          (pending && !changed(p)
+            ? run === 'Blocked'
+              ? ' ' + stoppedPendingNotice
+              : ' ' + pendingNotice
+            : '')
+        : pending && !changed(p)
+          ? pendingNotice
           : running
             ? 'Applying access and syncing members…'
             : inherits(p)
@@ -487,10 +500,15 @@
                   ? 'Apply to confirm this library’s access.'
                   : p.result.Status === 'NeedsReview'
                     ? 'The access run was cancelled. Apply access to run it again.'
-                    : p.result.Status === 'Applied'
-                      ? 'Access and team membership confirmed.'
-                      : p.result.Status;
-    $('ad-change-status').className = stuck ? 'ad-issue' : 'ad-muted';
+                    : p.result.Status === 'Applied' && incomplete
+                      ? incompleteNotice
+                      : p.result.Status === 'Applied'
+                        ? 'Access and team membership confirmed.'
+                        : p.result.Status;
+    $('ad-change-status').className =
+      stuck || (incomplete && p?.result.Status === 'Applied' && !running && !changed(p))
+        ? 'ad-issue'
+        : 'ad-muted';
     $('ad-run-actions').hidden = !stuck;
     $('ad-run-retry').disabled = state.busy;
     $('ad-run-cancel').disabled = state.busy;

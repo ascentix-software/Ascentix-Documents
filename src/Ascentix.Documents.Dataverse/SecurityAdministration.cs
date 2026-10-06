@@ -476,9 +476,13 @@ public sealed class SecurityAdministration
     // (https://learn.microsoft.com/dotnet/api/microsoft.sharepoint.client.permissionkind).
     // Documents grants teams only Read and Contribute, so a level carrying any of these is
     // refused. Every other right is the site's own choice: a customized level is accepted.
+    // ManageAlerts (bit 39) stays accepted: it only lets a member manage other users' alerts,
+    // that is who is e-mailed about changes they can already see, and grants no access.
     private static readonly (string Name, int Bit)[] AdministrativeRights =
     {
         ("ManageLists", 12),
+        // Adds and edits pages and web parts, which can carry script.
+        ("AddAndCustomizePages", 19),
         ("ManageSubwebs", 24),
         ("CreateGroups", 25),
         ("ManagePermissions", 26),

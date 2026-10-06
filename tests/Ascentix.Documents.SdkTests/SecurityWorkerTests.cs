@@ -1670,6 +1670,60 @@ public sealed class SecurityWorkerTests
     }
 
     [Fact]
+    public void MembersThatFitButLeaveNoRoomForSkipDetailsStopAfterTheFirstSkip()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        f.Drive();
+        f.Reject = op => op.MutationKind == "MemberRemove" ? 400 : (int?)null;
+        f.Writes.Clear();
+        f.Queue("Read");
+        var work = f.Start();
+        while (work.ProbeKind != "SecurityMembers")
+            work = f.Observe(work);
+        // The run's stored operation may use 500,000 characters less room for 200 notices of
+        // 600 characters (SecurityWorker.SkipDetailBudget). The members read now fill it to
+        // within 20 characters: they all fit, but no skip detail does.
+        const int skipDetailBudget = 500000 - 200 * (600 + 16);
+        int room = skipDetailBudget - JsonWire.Write(f.Operation()).Length - 20;
+        SitePerson Person(int i, int pad) =>
+            new SitePerson
+            {
+                Id = 1000 + i,
+                Login = "i:0#.f|membership|" + new string('a', pad) + "." + i + "@example.com",
+                Type = 1,
+            };
+        int Size(SitePerson p) => JsonWire.Write(p).Length + 1;
+        for (int i = 0; room - Size(Person(i, 900)) > Size(Person(i + 1, 0)) + 900; i++)
+        {
+            var filler = Person(i, 900);
+            f.Members.Add(filler);
+            room -= Size(filler);
+        }
+        int last = f.Members.Count;
+        var closing = Person(last, 0);
+        closing = Person(last, room - Size(closing));
+        f.Members.Add(closing);
+        Assert.Equal(0, room - Size(closing));
+        Assert.True(f.Members.Count <= 500, "one SharePoint page");
+        work = f.Observe(work);
+        Assert.Equal("ReadyToCreate", work.Status);
+        Assert.Equal(f.Members.Count, f.Operation().Members.Length);
+        var stopped = f.Finish(work);
+        // The first removal SharePoint refused could not be recorded: its count is kept, the
+        // group's other member changes wait for the next refresh, and the grant still applies.
+        Assert.Equal("Applied", stopped.Status);
+        Assert.Equal(new[] { "RejectedMemberRemove" }, f.Writes);
+        Assert.Contains(f.Policy().Notices, n => n.Contains("more than one run can record"));
+        Assert.True(f.Policy().MembershipIncomplete);
+        var group = f.Store.Require<ManagedGroup>(
+            "asx_managedgroup",
+            "group:" + f.Site.ToString("N") + ":" + f.Team.ToString("N")
+        );
+        Assert.StartsWith("retry:", group.Value.MembershipHash, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ChangedTeamSnapshotBlocksBeforeMembershipRemoval()
     {
         var f = new Fixture();
@@ -1871,6 +1925,9 @@ public sealed class SecurityWorkerTests
         );
     }
 
+    private const string Unsynced =
+        "Team membership was not synced: people removed from the team keep access, and people added get none, until this is resolved.";
+
     [Fact]
     public void ATeamTooLargeForOneRunKeepsItsGroupMembersAndStillGetsItsAccess()
     {
@@ -1901,8 +1958,9 @@ public sealed class SecurityWorkerTests
                 n.StartsWith(
                     "Team 'Operations' has more people than one access run can store",
                     StringComparison.Ordinal
-                )
+                ) && n.Contains(Unsynced)
         );
+        Assert.True(f.Policy().MembershipIncomplete);
         // Each scheduled refresh tries again, so the members sync once the team fits.
         var group = f.Store.Require<ManagedGroup>(
             "asx_managedgroup",
@@ -1993,8 +2051,9 @@ public sealed class SecurityWorkerTests
                 n.StartsWith(
                     "Team 'Operations': the Documents group has more people than one access run can store",
                     StringComparison.Ordinal
-                )
+                ) && n.Contains(Unsynced)
         );
+        Assert.True(f.Policy().MembershipIncomplete);
     }
 
     [Fact]
@@ -2060,8 +2119,15 @@ public sealed class SecurityWorkerTests
     // SharePoint PermissionKind bits, one-based within the 64-bit mask (Low holds 1-32).
     private const uint DeleteListItems = 1u << 3,
         ManageLists = 1u << 11,
+        AddAndCustomizePages = 1u << 18,
+        ManageSubwebs = 1u << 23,
+        CreateGroups = 1u << 24,
         ManagePermissions = 1u << 25,
         ManageWeb = 1u << 30;
+
+    // High holds bits 33-64.
+    private const uint ManageAlerts = 1u << 6,
+        EnumeratePermissions = 1u << 30;
 
     private static PolicyRole Role(int id, uint high, uint low) =>
         new PolicyRole
@@ -2072,13 +2138,18 @@ public sealed class SecurityWorkerTests
         };
 
     [Theory]
-    [InlineData(false, ManageLists, "ManageLists")]
-    [InlineData(false, ManagePermissions, "ManagePermissions")]
-    [InlineData(true, ManageWeb, "ManageWeb")]
-    [InlineData(true, ManagePermissions | ManageWeb, "ManagePermissions, ManageWeb")]
+    [InlineData(false, ManageLists, 0u, "ManageLists")]
+    [InlineData(false, ManagePermissions, 0u, "ManagePermissions")]
+    [InlineData(true, ManageWeb, 0u, "ManageWeb")]
+    [InlineData(true, ManagePermissions | ManageWeb, 0u, "ManagePermissions, ManageWeb")]
+    [InlineData(false, ManageSubwebs, 0u, "ManageSubwebs")]
+    [InlineData(true, CreateGroups, 0u, "CreateGroups")]
+    [InlineData(false, AddAndCustomizePages, 0u, "AddAndCustomizePages")]
+    [InlineData(true, 0u, EnumeratePermissions, "EnumeratePermissions")]
     public void PermissionLevelsWithAdministrativeRightsAreRefusedNamingThem(
         bool read,
         uint added,
+        uint addedHigh,
         string named
     )
     {
@@ -2086,7 +2157,7 @@ public sealed class SecurityWorkerTests
         var role = read ? f.Read : f.Contribute;
         var refused = Assert.Throws<EvaluationBlockedException>(() =>
             SecurityAdministration.ValidateRole(
-                Role(role.Id, uint.Parse(role.High), uint.Parse(role.Low) | added),
+                Role(role.Id, uint.Parse(role.High) | addedHigh, uint.Parse(role.Low) | added),
                 read
             )
         );
@@ -2113,6 +2184,11 @@ public sealed class SecurityWorkerTests
             true
         );
         SecurityAdministration.ValidateRole(Role(2, 0, 1), true);
+        // Managing other users' alerts only changes who is e-mailed about changes.
+        SecurityAdministration.ValidateRole(
+            Role(3, uint.Parse(f.Contribute.High) | ManageAlerts, uint.Parse(f.Contribute.Low)),
+            false
+        );
     }
 
     [Fact]
@@ -3722,9 +3798,11 @@ public sealed class SecurityWorkerTests
             }
         }
 
-        public WorkerResult Drive(bool expectApplied = true)
+        public WorkerResult Drive(bool expectApplied = true) => Finish(Start(), expectApplied);
+
+        /// <summary>Carries a run this fixture already started on to its end.</summary>
+        public WorkerResult Finish(WorkerResult work, bool expectApplied = true)
         {
-            var work = Start();
             for (int i = 0; i < 200; i++)
             {
                 switch (work.Status)

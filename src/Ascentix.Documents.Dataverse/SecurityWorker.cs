@@ -736,14 +736,15 @@ public sealed class SecurityWorker
                     {
                         // Without every member read, a removal could be wrong: the group's
                         // members are left as they are this run, and its access still applies.
-                        op.Value.SkippedMembers = op
-                            .Value.SkippedMembers.Concat(new[] { op.Value.GroupKey + "|*" })
-                            .ToArray();
+                        if (!op.Value.SkippedMembers.Contains(op.Value.GroupKey + "|*"))
+                            op.Value.SkippedMembers = op
+                                .Value.SkippedMembers.Concat(new[] { op.Value.GroupKey + "|*" })
+                                .ToArray();
                         Notice(
                             op.Value,
                             "Team '"
                                 + groupTitle
-                                + "': the Documents group has more people than one access run can store (a 500,000-character Dataverse row), so Documents left its members as they are. Its access to the library is still applied, and every scheduled refresh tries again."
+                                + "': the Documents group has more people than one access run can store (a 500,000-character Dataverse row). Team membership was not synced: people removed from the team keep access, and people added get none, until this is resolved. The team's access to the library is still applied, and every scheduled refresh tries again."
                         );
                         return ReconcileMembers(op, claim.Value, catalog);
                     }
@@ -1250,6 +1251,9 @@ public sealed class SecurityWorker
         policy.Value.Status = "Applied";
         policy.Value.Inherits = false;
         policy.Value.Notices = op.Value.Notices;
+        // Members SharePoint refused, or a team too large for one run, leave membership unsynced
+        // even though the grants are applied; the library shows that it needs attention.
+        policy.Value.MembershipIncomplete = op.Value.SkippedMembers.Length > 0;
         policy.Value.ResidualAccess = new[]
         {
             "Documents manages only its own team groups and their grants on this library. People may still have access through other groups, direct shares, links, item permissions or site administration.",
@@ -1653,7 +1657,7 @@ public sealed class SecurityWorker
                 + title
                 + "': "
                 + op.SkippedCount
-                + " member changes were skipped, more than one run can record. The remaining member changes for this team are retried on the next scheduled refresh."
+                + " member changes were skipped, more than one run can record. Team membership was not synced: people removed from the team keep access, and people added get none, until this is resolved. The remaining member changes for this team are retried on the next scheduled refresh."
         );
         return false;
     }

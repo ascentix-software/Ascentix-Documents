@@ -309,7 +309,7 @@ public sealed class TeamSnapshotReader
             skipped.Add(
                 "Team '"
                     + teamName
-                    + "' has more people than one access run can store (each person is kept twice in one 500,000-character Dataverse row), so Documents left the members of its SharePoint group as they are. Its access to the library is still applied, and every scheduled refresh tries again. A Microsoft Entra or Microsoft 365 group team is granted as one group and has no such limit."
+                    + "' has more people than one access run can store (each person is kept twice in one 500,000-character Dataverse row). Team membership was not synced: people removed from the team keep access, and people added get none, until this is resolved. The team's access to the library is still applied, and every scheduled refresh tries again. A Microsoft Entra or Microsoft 365 group team is granted as one group and has no such limit."
             );
         return new TeamSnapshot
         {

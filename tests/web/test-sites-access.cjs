@@ -777,6 +777,39 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     const replaced = requests.filter((r) => r.Command === 'ApplyPolicy');
     assert.equal(replaced.length, before + 1, 'A stopped run does not refuse Apply');
     assert.equal(replaced.at(-1).Entries[0].Access, 'Contribute');
+    // A change waiting behind a stopped run says the run must be retried or cancelled first.
+    policy = { ...stuck, Policy: { ...stuck.Policy, ApplyPending: true } };
+    lib2.asx_libraryid = id(21); // a library not loaded yet, so its access is read
+    await window.AsxdSites.selectLibrary(id(13));
+    assert.equal(
+      nodes['ad-change-status'].textContent,
+      'Needs attention: SharePoint refused the write (HTTP 403). The access run stopped: Retry or Cancel it, then your change applies.',
+    );
+    assert.equal(nodes['ad-change-status'].className, 'ad-issue');
+    assert.equal(nodes['ad-run-actions'].hidden, false);
+    // Applied access with team membership left unsynced is not shown as confirmed.
+    policy = {
+      Status: 'Applied',
+      RowVersion: '42',
+      Policy: {
+        Desired: stuck.Policy.Desired,
+        Applied: stuck.Policy.Desired,
+        MembershipIncomplete: true,
+        Notices: ["Team 'Big' has more people than one access run can store."],
+      },
+    };
+    lib2.asx_libraryid = id(22);
+    await window.AsxdSites.selectLibrary(id(13));
+    assert.match(
+      nodes['ad-change-status'].textContent,
+      /^Needs attention: access is applied, but team membership was not synced. People removed from a team keep access, and people added get none/,
+    );
+    assert.equal(nodes['ad-change-status'].className, 'ad-issue');
+    assert.doesNotMatch(nodes['ad-change-status'].textContent, /confirmed/);
+    policy = { ...policy, Policy: { ...policy.Policy, MembershipIncomplete: false, Notices: [] } };
+    lib2.asx_libraryid = id(23);
+    await window.AsxdSites.selectLibrary(id(13));
+    assert.equal(nodes['ad-change-status'].textContent, 'Access and team membership confirmed.');
   }
   {
     // A library setup that needs attention offers Retry and Cancel through the catalog API, so

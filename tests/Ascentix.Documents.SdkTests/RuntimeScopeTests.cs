@@ -116,6 +116,11 @@ public sealed class RuntimeScopeTests
     [InlineData("contoso.sharepoint.us.evil.test")]
     [InlineData("contoso.mysharepoint.com")]
     [InlineData("contoso.dps.mil.evil.test")]
+    [InlineData("evil-sharepoint.com")]
+    [InlineData("contoso.sharepoint.com:444")]
+    [InlineData("contoso.sharepoint.cоm")]
+    [InlineData("xn--contso-6ve.sharepoint.com.evil.test")]
+    [InlineData("contоso.sharepoint.com")]
     public void HostConfigurationRefusesOtherDomains(string host) =>
         Assert.Throws<EvaluationBlockedException>(() =>
             RuntimeProfile.ValidateHosts(new[] { host })

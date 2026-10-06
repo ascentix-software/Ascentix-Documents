@@ -146,6 +146,14 @@ public sealed class PolicyDocument : StoredDocument
     public bool ApplyPending { get; set; }
 
     /// <summary>
+    /// The last access run applied the library grants but left some team membership unsynced:
+    /// members SharePoint refused, or a team too large for one run. Its notices say which.
+    /// Rows written before 0.1.0.4 read as false.
+    /// </summary>
+    [DataMember]
+    public bool MembershipIncomplete { get; set; }
+
+    /// <summary>
     /// The admin accepted that Documents stops this library's permission inheritance. The next
     /// queued access run carries it and it is cleared here.
     /// </summary>
