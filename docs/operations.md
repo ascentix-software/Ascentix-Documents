@@ -10,7 +10,7 @@ Install and read back own component identities, active keys, plugin messages/ste
 
 Turning the runtime off pauses processing. Events keep queueing while it is off, so nothing is lost. Turning it back on resumes the queue.
 
-Pause and resume take effect at once, even while work is running. Pause and resume are System Administrator only. A flow run that is driving a job when you pause ends at its next step without calling SharePoint, and shows as Succeeded; the job stays queued and continues after resume, once its 5-minute claim lapses.
+Pause and resume take effect at once, even while work is running. Pause and resume are System Administrator only. A flow run that is driving a job when you pause makes no new SharePoint call: it ends at its next SharePoint request and shows as Succeeded. The job stays queued and continues after resume, once its 5-minute claim lapses. Pause never drops an answer: a SharePoint write already sent when you pause has its answer recorded, and a job that only needs to record a verified result completes. A library create sent just before a pause therefore continues after resume and does not need recovery.
 
 Capture of record and team events runs as background jobs, so a save is never blocked by Documents. If capture fails, the save still succeeds and the failed job is kept for recovery.
 

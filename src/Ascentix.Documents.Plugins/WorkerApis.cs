@@ -25,7 +25,8 @@ public sealed class DocumentWorkerApi : IPlugin
             throw new InvalidPluginExecutionException(
                 "Worker caller differs from the approved runtime identity."
             );
-        if (!profile.Enabled)
+        var request = JsonWire.Read<WorkerRequest>((string)context.InputParameters["Request"]);
+        if (!profile.Enabled && WorkerPause.Refuses(request.Command))
         {
             context.OutputParameters["Result"] = JsonWire.Write(
                 new WorkerResult { Status = "Disabled" }
@@ -33,7 +34,6 @@ public sealed class DocumentWorkerApi : IPlugin
             return;
         }
         context.SharedVariables[InternalWrite] = true;
-        var request = JsonWire.Read<WorkerRequest>((string)context.InputParameters["Request"]);
         if (request.Command == "PurgeHistory")
         {
             context.OutputParameters["Result"] = JsonWire.Write(

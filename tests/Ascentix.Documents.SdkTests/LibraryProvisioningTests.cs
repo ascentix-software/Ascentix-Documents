@@ -577,7 +577,7 @@ public sealed class LibraryProvisioningTests
         Assert.DoesNotContain(f.Posts, p => p.Contains("delete"));
     }
 
-    private sealed class Fixture
+    internal sealed class Fixture
     {
         public readonly DurableWorkerTests.MemoryService Service =
             new DurableWorkerTests.MemoryService();

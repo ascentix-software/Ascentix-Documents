@@ -3368,7 +3368,7 @@ public sealed class SecurityWorkerTests
         Assert.Equal(moved, f.Operation().WebUrl.TrimEnd('/'));
     }
 
-    private sealed class Fixture
+    internal sealed class Fixture
     {
         public DurableWorkerTests.MemoryService Service { get; } =
             new DurableWorkerTests.MemoryService();
