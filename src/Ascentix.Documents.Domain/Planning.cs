@@ -632,6 +632,41 @@ public static class FolderPlanner
                         );
                         continue;
                     }
+                    // A path SharePoint takes can still be too long once escaped into the
+                    // address of a read (SharePointAddress): it waits the same way.
+                    int address = SharePointAddress.LookupLength(
+                        Uri.UnescapeDataString(new Uri(section.Library.EntryUrl).AbsolutePath)
+                            .TrimEnd('/')
+                            + "/"
+                            + path
+                    );
+                    if (address > SharePointAddress.MaxQueryString)
+                    {
+                        waits.Add(
+                            new FolderWait(
+                                section.Key,
+                                node.Key,
+                                null,
+                                Notice(
+                                    notices,
+                                    "Folder '"
+                                        + section.Key
+                                        + "/"
+                                        + node.Key
+                                        + "' is waiting for a shorter path: written into a SharePoint address it would be "
+                                        + address.ToString("N0", CultureInfo.InvariantCulture)
+                                        + " characters, and the HTTP connector accepts "
+                                        + SharePointAddress.MaxQueryString.ToString(
+                                            "N0",
+                                            CultureInfo.InvariantCulture
+                                        )
+                                        + "."
+                                ),
+                                FolderWaitReason.PathTooLong
+                            )
+                        );
+                        continue;
+                    }
                     if (length > ShortFileNamePathLength)
                         Notice(
                             notices,

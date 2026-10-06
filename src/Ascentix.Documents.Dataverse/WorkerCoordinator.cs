@@ -775,9 +775,15 @@ public sealed class WorkerCoordinator
                     throw new EvaluationBlockedException("Unknown observation phase.");
             }
         }
-        catch (EvaluationBlockedException)
+        catch (EvaluationBlockedException error)
         {
-            return Block(operation, dispatcher, "ObservationMismatch");
+            return Block(
+                operation,
+                dispatcher,
+                error.Message == SharePointRequests.AddressTooLongNotice
+                    ? "RequestUrlTooLong"
+                    : "ObservationMismatch"
+            );
         }
     }
 
@@ -789,6 +795,20 @@ public sealed class WorkerCoordinator
         WorkerLibrary library
     )
     {
+        // A folder read by its ID that is no longer at the expected path was moved or renamed.
+        if (binding.PhysicalId != Guid.Empty && request.HttpStatus == 200)
+        {
+            var known = SharePointObservations.Body<FolderLookupObservation>(request);
+            if (
+                known.Id != binding.PhysicalId
+                || !string.Equals(
+                    known.Path,
+                    operation.Value.ParentPath + "/" + binding.Candidate,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+                return Block(operation, dispatcher, "FolderChangedDuringRequest");
+        }
         // A child folder is always below the library root; a root folder may sit at it.
         var item = SharePointObservations.Find(
             request,
@@ -1246,8 +1266,9 @@ public sealed class WorkerCoordinator
                         || awaiting.Value.RecoveryToken != request.Token
             )
             || request.Token == Guid.Empty
+            // Evidence is the operator's own words, of any length; the request carrying it is
+            // bounded by the 500,000-character payload limit (JsonWire).
             || string.IsNullOrWhiteSpace(request.Evidence)
-            || request.Evidence!.Length > 500
         )
             throw new EvaluationBlockedException(
                 "Expired exact writer identity and operator-confirmed termination/outstanding-call evidence required."
@@ -1662,22 +1683,29 @@ public sealed class WorkerCoordinator
                 break;
             case "Ancestor":
             case "FinalAncestor":
+                // An ancestor Documents created, or the approved entry, is read by its ID; one
+                // above the entry by its path, which is shorter than the folder's own.
+                var known = KnownFolder(operation.Value, library, operation.Value.AncestorPath!);
                 http = new HttpIntent
                 {
-                    RelativeUri = SharePointRequests.ByPath(
-                        "GetFolderByServerRelativePath",
-                        operation.Value.AncestorPath!,
-                        "$select=UniqueId,ServerRelativeUrl"
-                    ),
+                    RelativeUri =
+                        known != Guid.Empty
+                            ? SharePointRequests.ById(known, "$select=UniqueId,ServerRelativeUrl")
+                            : SharePointRequests.ByPath(
+                                "GetFolderByServerRelativePath",
+                                operation.Value.AncestorPath!,
+                                "$select=UniqueId,ServerRelativeUrl"
+                            ),
                 };
                 break;
             case "FinalParent":
             case "Parent":
+                // The parent's ID is always known: the approved entry, or the parent folder
+                // this job created or found. Its path is checked against the answer.
                 http = new HttpIntent
                 {
-                    RelativeUri = SharePointRequests.ByPath(
-                        "GetFolderByServerRelativePath",
-                        operation.Value.ParentPath!,
+                    RelativeUri = SharePointRequests.ById(
+                        ParentId(operation.Value, library),
                         "$select=UniqueId,ServerRelativeUrl"
                     ),
                 };
@@ -1693,11 +1721,15 @@ public sealed class WorkerCoordinator
                 };
                 break;
             case "Folder":
-                http = SharePointRequests.FindFolder(
-                    library.Target,
-                    operation.Value.ParentPath!,
-                    binding.Candidate
-                );
+                // A folder already found is read again by its ID.
+                http =
+                    binding.PhysicalId != Guid.Empty
+                        ? SharePointRequests.FindFolder(binding.PhysicalId)
+                        : SharePointRequests.FindFolder(
+                            library.Target,
+                            operation.Value.ParentPath!,
+                            binding.Candidate
+                        );
                 break;
             default:
                 throw new EvaluationBlockedException("Unknown probe type.");
@@ -1718,6 +1750,29 @@ public sealed class WorkerCoordinator
             SiteUrl = library.Target.Web.AbsoluteUri.TrimEnd('/'),
             Http = http,
         };
+    }
+
+    /// <summary>The unique ID of the current folder's parent: the entry, or its parent folder.</summary>
+    private static Guid ParentId(OperationDocument operation, WorkerLibrary library)
+    {
+        var binding = operation.Folder;
+        return binding.ParentBinding == null
+            ? library.EntryId
+            : operation.Folders.Single(f => f.Node == binding.ParentBinding).PhysicalId;
+    }
+
+    /// <summary>The ID of a folder at this path that Documents already knows, or empty.</summary>
+    private static Guid KnownFolder(OperationDocument operation, WorkerLibrary library, string path)
+    {
+        if (string.Equals(path, library.Target.EntryPath, StringComparison.Ordinal))
+            return library.EntryId;
+        return operation
+                .Folders.FirstOrDefault(f =>
+                    f.PhysicalId != Guid.Empty
+                    && string.Equals(f.PhysicalPath, path, StringComparison.Ordinal)
+                )
+                ?.PhysicalId
+            ?? Guid.Empty;
     }
 
     private WorkerResult Block(

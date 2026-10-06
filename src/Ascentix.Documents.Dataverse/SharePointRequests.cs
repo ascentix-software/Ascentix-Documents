@@ -107,13 +107,27 @@ public static class SharePointRequests
     /// <param name="function">GetFolderByServerRelativePath or GetFileByServerRelativePath.</param>
     /// <param name="path">The decoded server-relative path.</param>
     /// <param name="query">The rest of the query string, such as "$select=...".</param>
-    public static string ByPath(string function, string path, string query) =>
-        "_api/web/"
-        + function
-        + "(decodedUrl=@p)?@p='"
-        + Uri.EscapeDataString(path.Replace("'", "''"))
-        + "'&"
-        + query;
+    /// <summary>The notice for a read whose address the connector would refuse.</summary>
+    public const string AddressTooLongNotice =
+        "This SharePoint address is too long for the HTTP connector: its query string would pass 2,048 characters. Nothing was sent; shorten the names.";
+
+    public static string ByPath(string function, string path, string query)
+    {
+        string alias = SharePointAddress.Alias(path) + "&" + query;
+        // Never sent when the connector would refuse it; planning keeps folders inside this
+        // (FolderPlanner), so only an address an admin chose can reach it.
+        if (alias.Length > SharePointAddress.MaxQueryString)
+            throw new EvaluationBlockedException(AddressTooLongNotice);
+        return "_api/web/" + function + "(decodedUrl=@p)?" + alias;
+    }
+
+    /// <summary>A read of the folder with this unique ID: the same short address for any path.</summary>
+    public static string ById(Guid id, string query)
+    {
+        if (id == Guid.Empty)
+            throw new EvaluationBlockedException("Folder ID required.");
+        return "_api/web/GetFolderById('" + id.ToString("D") + "')?" + query;
+    }
 
     public static HttpIntent FindFolder(SharePointTarget target, string parent, string name)
     {
@@ -124,10 +138,17 @@ public static class SharePointRequests
             RelativeUri = ByPath(
                 "GetFolderByServerRelativePath",
                 parent + "/" + name,
-                "$select=Exists,UniqueId,ServerRelativeUrl,ListItemAllFields/Id,ListItemAllFields/UniqueId,ListItemAllFields/FileLeafRef,ListItemAllFields/FileRef,ListItemAllFields/FSObjType&$expand=ListItemAllFields"
+                SharePointAddress.FolderLookup
             ),
         };
     }
+
+    /// <summary>
+    /// Reads a folder Documents already found by its unique ID, with the same fields as a
+    /// lookup by path, so a long path never makes the address longer.
+    /// </summary>
+    public static HttpIntent FindFolder(Guid id) =>
+        new HttpIntent { RelativeUri = ById(id, SharePointAddress.FolderLookup) };
 
     public static HttpIntent CreateFolder(SharePointTarget target, string parent, string name)
     {

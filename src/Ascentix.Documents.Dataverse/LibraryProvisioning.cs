@@ -132,9 +132,32 @@ public sealed class LibraryProvisioning
     /// </summary>
     /// <param name="request">The site, library name, initial team access, and stable request identity.</param>
     /// <returns>The existing or newly queued library setup result.</returns>
+    // The fields of the library read; before the create the library is read by its title.
+    private const string LibrarySelect =
+        "$select=Id,HasUniqueRoleAssignments,RootFolder/UniqueId,RootFolder/ServerRelativeUrl&$expand=RootFolder";
+
+    /// <summary>The query string of the read by title, which carries the title as an alias.</summary>
+    private static string ByTitle(string name) =>
+        Domain.SharePointAddress.Alias(name) + "&" + LibrarySelect;
+
     public CatalogResult Queue(CatalogRequest request)
     {
         Domain.FolderNames.Validate(request.Name);
+        // The setup reads the library by its title before creating it. A title that is too
+        // long once escaped into that address is refused now, with its reason, rather than
+        // failing later (Domain.SharePointAddress).
+        int address = ByTitle(request.Name).Length;
+        if (address > Domain.SharePointAddress.MaxQueryString)
+            throw new EvaluationBlockedException(
+                "This library name is too long for the HTTP connector: written into a SharePoint address it would be "
+                    + address.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)
+                    + " characters, and the HTTP connector accepts "
+                    + Domain.SharePointAddress.MaxQueryString.ToString(
+                        "N0",
+                        System.Globalization.CultureInfo.InvariantCulture
+                    )
+                    + ". Use a shorter name."
+            );
         if (request.SiteId == Guid.Empty || request.RequestId == Guid.Empty)
             throw new EvaluationBlockedException("Select a site and provide a request identity.");
         if (
@@ -736,14 +759,9 @@ public sealed class LibraryProvisioning
                         // The title goes in the query string as a parameter alias, like folder
                         // paths (SharePointRequests.ByPath), so a long title never lengthens the
                         // URL path the connector limits.
-                        (
-                            op.Value.ListId == Guid.Empty
-                                ? "_api/web/lists/GetByTitle(@p)?@p='"
-                                    + Uri.EscapeDataString(op.Value.Name.Replace("'", "''"))
-                                    + "'&"
-                                : List(op.Value) + "?"
-                        )
-                            + "$select=Id,HasUniqueRoleAssignments,RootFolder/UniqueId,RootFolder/ServerRelativeUrl&$expand=RootFolder"
+                        op.Value.ListId == Guid.Empty
+                            ? "_api/web/lists/GetByTitle(@p)?" + ByTitle(op.Value.Name)
+                            : List(op.Value) + "?" + LibrarySelect
                     );
                 case "Library":
                     if (request.HttpStatus == 404 && op.Value.ListId == Guid.Empty)
@@ -846,6 +864,33 @@ public sealed class LibraryProvisioning
     {
         var v = op.Value;
         var folder = v.Library!.Root;
+        v.CatalogId = SiteIdentity.LibraryId(v.SiteId, v.ListId);
+        // While the setup awaited recovery, an admin may have added the created library as an
+        // existing one. Approval gives the same row for the same site and list, so that row is
+        // adopted; any other entry for the list is left alone and the setup stops with why.
+        var listed = new QueryExpression("asx_library")
+        {
+            ColumnSet = new ColumnSet("asx_siteid", "statecode"),
+            TopCount = 2,
+        };
+        listed.Criteria.AddCondition("asx_listid", ConditionOperator.Equal, v.ListId.ToString("D"));
+        var entries = service.RetrieveMultiple(listed).Entities;
+        if (entries.Count > 0)
+        {
+            var entry = entries.Count == 1 ? entries[0] : null;
+            if (
+                entry == null
+                || entry.Id != v.CatalogId
+                || entry.GetAttributeValue<EntityReference>("asx_siteid")?.Id != v.SiteId
+                || entry.GetAttributeValue<OptionSetValue>("statecode")?.Value == 1
+            )
+                return Block(
+                    op,
+                    lease,
+                    "The library was created in SharePoint, but the Documents catalog already has a different entry for it (another site, or removed). Nothing was changed. Remove that entry if it is wrong, add the library as an existing library, then cancel this setup."
+                );
+            return Adopt(op, lease);
+        }
         var nativeId = new NativeLocations(service).EnsureLibrary(
             v.SiteId,
             v.WebId,
@@ -855,7 +900,6 @@ public sealed class LibraryProvisioning
             folder.Path,
             v.Name
         );
-        v.CatalogId = SiteIdentity.LibraryId(v.SiteId, v.ListId);
         var catalog = new Entity("asx_library", v.CatalogId)
         {
             ["asx_name"] = v.Name,
@@ -871,6 +915,41 @@ public sealed class LibraryProvisioning
         };
         service.Create(catalog);
         Release(lease);
+        return ApplyAccess(op);
+    }
+
+    /// <summary>
+    /// Finishes with the catalog entry an admin added for this library while the setup awaited
+    /// recovery. Access the admin set there is kept; with none, the setup's own access is
+    /// applied, as it would have been.
+    /// </summary>
+    private WorkerResult Adopt(StoredRow<LibrarySetup> op, StoredRow<DispatcherDocument> lease)
+    {
+        var v = op.Value;
+        Release(lease);
+        if (store.Find<PolicyDocument>("asx_policy", "policy:" + v.CatalogId.ToString("N")) == null)
+            return ApplyAccess(op);
+        v.Status = "Applied";
+        v.CompletedUtc = clock();
+        v.ExternalSubmitted = false;
+        v.ExternalResponseKnown = true;
+        v.ErrorCode = null;
+        store.Save(op);
+        return new WorkerResult
+        {
+            Status = "Applied",
+            Key = v.Key,
+            Notices = new[]
+            {
+                "Library created. It was added to the catalog while this setup awaited recovery, so the access settings there are kept.",
+            },
+        };
+    }
+
+    /// <summary>Applies the setup's team access to its catalog entry and waits on that run.</summary>
+    private WorkerResult ApplyAccess(StoredRow<LibrarySetup> op)
+    {
+        var v = op.Value;
         var policy = new SecurityAdministration(service).Execute(
             new SecurityRequest
             {

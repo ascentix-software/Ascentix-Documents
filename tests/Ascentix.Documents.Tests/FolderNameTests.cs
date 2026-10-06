@@ -439,6 +439,52 @@ public class FolderNameTests
     }
 
     [Fact]
+    public void AFolderWhoseEscapedAddressPassesTheConnectorLimitWaitsWithANotice()
+    {
+        // 399 characters, mostly CJK: each escapes to 9 characters, so the folder's address in
+        // a SharePoint read would pass the connector's 2,048-character query string.
+        var plan = FolderPlanner.Plan(
+            LongEntryTemplate(200),
+            Guid.NewGuid(),
+            Names(new string('文', 196), "C")
+        );
+        Assert.Empty(plan);
+        var wait = plan.Waits.First(w => w.Section == "general");
+        Assert.Equal("root", wait.Node);
+        Assert.Equal(FolderWaitReason.PathTooLong, wait.Reason);
+        Assert.StartsWith(
+            "Folder 'general/root' is waiting for a shorter path: written into a SharePoint address it would be ",
+            wait.Notice
+        );
+        Assert.EndsWith(
+            " characters, and the HTTP connector accepts "
+                + SharePointAddress.MaxQueryString.ToString(
+                    "N0",
+                    System.Globalization.CultureInfo.InvariantCulture
+                )
+                + ".",
+            wait.Notice
+        );
+        Assert.Contains(wait.Notice, plan.Notices);
+        // A 399-character path whose address fits is created.
+        var fits = FolderPlanner.Plan(
+            LongEntryTemplate(200),
+            Guid.NewGuid(),
+            Names(new string('文', 60) + new string('r', 136), "C")
+        );
+        Assert.Contains(fits, n => n.Node == "root");
+        Assert.All(
+            fits.Where(n => n.Section == "general"),
+            n =>
+                Assert.True(
+                    SharePointAddress.Fits(
+                        "/sites/proto/general/" + new string('e', 179) + "/" + n.RelativePath
+                    )
+                )
+        );
+    }
+
+    [Fact]
     public void AFolderPastSharePointsPathLimitWaitsWithItsSubfoldersAndTheRestIsPlanned()
     {
         // root 395 characters is created; child would be 404 and waits with deep below it.

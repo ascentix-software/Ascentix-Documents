@@ -1098,7 +1098,11 @@ public sealed class DurableWorkerTests
         Assert.Equal(Moved + "/Example", stored.ParentPath);
         work = f.Observe(work, Library(f, Moved));
         Assert.Equal("Parent", work.ProbeKind);
-        Assert.Contains(Uri.EscapeDataString(Moved + "/Example"), work.Http!.RelativeUri);
+        // The parent is read by its ID; its answer must show the moved path.
+        Assert.StartsWith(
+            "_api/web/GetFolderById('" + root.ToString("D") + "')",
+            work.Http!.RelativeUri
+        );
         work = f.Observe(work, Folder(root, Moved + "/Example"));
         Assert.Equal("Folder", work.ProbeKind);
         work = f.Observe(work, Rows<ItemObservation>());
@@ -1164,7 +1168,11 @@ public sealed class DurableWorkerTests
         Assert.Equal(Moved + "/Example", stored.Folders[0].PhysicalPath);
         Assert.Equal(Moved + "/Example", stored.ParentPath);
         work = f.Observe(work, Library(f, Moved));
-        Assert.Contains(Uri.EscapeDataString(Moved + "/Example"), work.Http!.RelativeUri);
+        // The parent is read by its ID; its answer must show the moved path.
+        Assert.StartsWith(
+            "_api/web/GetFolderById('" + root.ToString("D") + "')",
+            work.Http!.RelativeUri
+        );
         work = f.Observe(work, Folder(root, Moved + "/Example"));
         Assert.Equal("Folder", work.ProbeKind);
         work = f.Observe(work, Rows<ItemObservation>());

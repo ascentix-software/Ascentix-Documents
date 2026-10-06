@@ -575,6 +575,158 @@ public sealed class LibraryProvisioningTests
         Assert.DoesNotContain(f.Posts, p => p.Contains("delete"));
     }
 
+    [Fact]
+    public void ALibraryNameTooLongForTheConnectorAddressIsRefusedWithItsReason()
+    {
+        var f = new Fixture();
+        var error = Assert.Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
+            f.Service.Transaction(() =>
+                f.Worker.Queue(
+                    new CatalogRequest
+                    {
+                        SiteId = f.Site,
+                        Name = new string('文', 250),
+                        RequestId = Guid.NewGuid(),
+                        Entries = Array.Empty<PolicyEntry>(),
+                    }
+                )
+            )
+        );
+        Assert.Contains("HTTP connector accepts 2,048", error.Message);
+        Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_operation");
+    }
+
+    /// <summary>
+    /// Leaves a setup awaiting recovery, adds the library it created to the catalog as an
+    /// existing library the way approval does (same site and list ID gives the same row), then
+    /// records the recovery evidence.
+    /// </summary>
+    private static (Fixture F, string Key, Guid Row) AddedDuringRecovery(
+        Guid? site = null,
+        bool policy = false
+    )
+    {
+        var f = new Fixture { UnknownCreate = true };
+        var key = f.Queue().Key;
+        f.Run(key);
+        Assert.Equal("RecoveryRequired", f.Status(key));
+        Guid owner = site ?? f.Site;
+        var row = SiteIdentity.LibraryId(owner, f.List);
+        f.Service.Seed(
+            new Entity("asx_library", row)
+            {
+                ["asx_name"] = "Documents",
+                ["asx_siteid"] = new EntityReference("asx_site", owner),
+                ["asx_listid"] = f.List.ToString("D"),
+                ["asx_entryid"] = f.Root.ToString("D"),
+                ["asx_entryurl"] = "https://example.sharepoint.com/sites/test/Documents",
+                ["asx_approved"] = true,
+                ["statecode"] = new OptionSetValue(0),
+            }
+        );
+        if (policy)
+            f.Store.Create(
+                "asx_policy",
+                new PolicyDocument
+                {
+                    Key = "policy:" + row.ToString("N"),
+                    Status = "Applied",
+                    LibraryId = row,
+                }
+            );
+        var lost = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
+        Assert.Equal(
+            "RecoveryPermitted",
+            f.Service.Transaction(() =>
+                new WorkerCoordinator(f.Service).PermitRecovery(
+                    new WorkerRequest
+                    {
+                        Key = key,
+                        RunId = lost.RecoveryRunId!,
+                        Token = lost.RecoveryToken,
+                        Evidence = "Original run ended; its 201 response was recovered.",
+                        ResponseBody = FullCreateResponse(f.List, "Documents", 6546),
+                    },
+                    true
+                )
+            ).Status
+        );
+        f.UnknownCreate = false;
+        return (f, key, row);
+    }
+
+    [Fact]
+    public void RecoveryKeepsOperatorEvidenceOfAnyLength()
+    {
+        var f = new Fixture { UnknownCreate = true };
+        var key = f.Queue().Key;
+        f.Run(key);
+        var lost = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
+        string evidence = string.Concat(
+            Enumerable.Repeat("Run history checked; the original call ended with 201. ", 100)
+        );
+        Assert.True(evidence.Length > 5000);
+        Assert.Equal(
+            "RecoveryPermitted",
+            f.Service.Transaction(() =>
+                new WorkerCoordinator(f.Service).PermitRecovery(
+                    new WorkerRequest
+                    {
+                        Key = key,
+                        RunId = lost.RecoveryRunId!,
+                        Token = lost.RecoveryToken,
+                        Evidence = evidence,
+                        ResponseBody = FullCreateResponse(f.List, "Documents", 6546),
+                    },
+                    true
+                )
+            ).Status
+        );
+        Assert.Contains(
+            f.Service.Rows.Values,
+            r =>
+                r.LogicalName == "asx_attempt"
+                && r.GetAttributeValue<string>("asx_payload").Contains(evidence)
+        );
+    }
+
+    [Fact]
+    public void LibraryAddedAsExistingDuringRecoveryIsAdoptedAndGetsTheSetupsAccess()
+    {
+        var (f, key, row) = AddedDuringRecovery();
+        Assert.Equal("AccessPending", f.Run(key).Status);
+        Assert.Equal(
+            row,
+            Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library").Id
+        );
+        Assert.Equal(row, f.Store.Require<LibrarySetup>("asx_operation", key).Value.CatalogId);
+        Assert.Single(f.Posts, p => p == "_api/web/lists");
+    }
+
+    [Fact]
+    public void LibraryAddedWithItsOwnAccessDuringRecoveryKeepsThatAccess()
+    {
+        var (f, key, row) = AddedDuringRecovery(policy: true);
+        var done = f.Run(key);
+        Assert.Equal("Applied", done.Status);
+        Assert.Contains(done.Notices, n => n.Contains("access settings there are kept"));
+        Assert.Equal("Ready", f.Worker.Inspect(key).Status);
+        Assert.Null(f.Store.Require<LibrarySetup>("asx_operation", key).Value.PolicyOperation);
+        Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
+    }
+
+    [Fact]
+    public void ACatalogEntryForTheListOnAnotherSiteBlocksWithAClearNotice()
+    {
+        var (f, key, _) = AddedDuringRecovery(site: Guid.NewGuid());
+        Assert.Equal("Blocked", f.Run(key).Status);
+        Assert.Contains(
+            "already has a different entry",
+            f.Store.Require<LibrarySetup>("asx_operation", key).Value.ErrorCode
+        );
+        Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
+    }
+
     /// <summary>Queues a second library setup on the fixture's site.</summary>
     private static string Other(Fixture f) =>
         f

@@ -117,6 +117,128 @@ public sealed class LongPathTests
             url => url.Contains(Uri.EscapeDataString(RecordName + "/" + ChildName))
         );
         Assert.All(sharePoint.Requests, url => Assert.True(PathPart(url).Length <= MaxUrlPath));
+        // A parent is read by its known ID, never by its path.
+        var parents = sharePoint.Reads.Where(r => r.Kind == "Parent" || r.Kind == "FinalParent");
+        Assert.NotEmpty(parents);
+        Assert.All(parents, r => Assert.StartsWith("_api/web/GetFolderById('", r.Relative));
+    }
+
+    [Fact]
+    public void AFolderWhoseAddressWouldPassTheConnectorLimitWaitsAndTheRestIsApplied()
+    {
+        var f = new DurableWorkerTests.Fixture(seedBinding: false) { RecordUpdates = false };
+        f.SeedTemplate();
+        // 250 CJK characters: a 276-character path, but each escapes to 9 characters.
+        string child = new string('文', 250);
+        f.Service.Seed(
+            new Entity("asx_folder", Guid.NewGuid())
+            {
+                ["asx_revisionid"] = new EntityReference("asx_revision", f.RevisionId),
+                ["asx_key"] = "deep",
+                ["asx_sectionkey"] = "general",
+                ["asx_parentkey"] = "root",
+                ["asx_expression"] = child,
+                ["asx_order"] = 1,
+            }
+        );
+        var planned = f.PlanRecord();
+        Assert.Contains(
+            planned.Notices,
+            n =>
+                n.StartsWith(
+                    "Folder 'general/deep' is waiting for a shorter path: written into a SharePoint address it would be ",
+                    StringComparison.Ordinal
+                )
+                && n.EndsWith(
+                    "the HTTP connector accepts 2,048. Shorten the record's value or the template's folder names, then replan the record.",
+                    StringComparison.Ordinal
+                )
+        );
+        var sharePoint = new SharePointDouble(f);
+        Assert.Equal("Applied", sharePoint.Drive(Assert.Single(planned.Keys)));
+        Assert.Equal(
+            new[] { "/sites/proto/General", "/sites/proto/General/Example" },
+            sharePoint.Folders
+        );
+    }
+
+    [Fact]
+    public void AnExistingFolderIsReadAgainByItsID()
+    {
+        var f = new DurableWorkerTests.Fixture();
+        var physical = Guid.NewGuid();
+        var read = f.Observe(
+            f.Preflight(f.Claim()),
+            JsonWire.Write(
+                new ODataEnvelope<FolderLookupObservation>
+                {
+                    Data = new FolderLookupObservation
+                    {
+                        Exists = true,
+                        Id = physical,
+                        Path = "/sites/proto/General/Example",
+                        ListItemAllFields = f.Item(physical, null),
+                    },
+                }
+            )
+        );
+        Assert.Equal("FinalParent", read.ProbeKind);
+        Assert.StartsWith(
+            "_api/web/GetFolderById('" + f.EntryId.ToString("D") + "')?",
+            read.Http!.RelativeUri
+        );
+        // The run stops before completing; the next run takes over and reads again.
+        f.Now = f.Now.AddMinutes(6);
+        read = f.Observe(f.Claim("run-2"), f.LibraryBody());
+        Assert.Equal("Parent", read.ProbeKind);
+        Assert.StartsWith(
+            "_api/web/GetFolderById('" + f.EntryId.ToString("D") + "')?",
+            read.Http!.RelativeUri
+        );
+        read = f.Observe(read, f.ParentBody());
+        Assert.Equal("Folder", read.ProbeKind);
+        Assert.StartsWith(
+            "_api/web/GetFolderById('" + physical.ToString("D") + "')?",
+            read.Http!.RelativeUri
+        );
+        Assert.Contains("ListItemAllFields", read.Http.RelativeUri);
+        // A folder renamed by hand is no longer where the job expects it.
+        var moved = f.Item(physical, null);
+        moved.Path = moved.Path + " (old)";
+        moved.Name = "Example (old)";
+        var changed = f.Observe(
+            read,
+            JsonWire.Write(
+                new ODataEnvelope<FolderLookupObservation>
+                {
+                    Data = new FolderLookupObservation
+                    {
+                        Exists = true,
+                        Id = physical,
+                        Path = moved.Path,
+                        ListItemAllFields = moved,
+                    },
+                }
+            )
+        );
+        Assert.Equal("Blocked", changed.Status);
+        Assert.Equal(
+            "FolderChangedDuringRequest",
+            f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value.ErrorCode
+        );
+    }
+
+    [Fact]
+    public void AReadWhoseAddressWouldPassTheConnectorLimitIsNeverSent()
+    {
+        var error = Assert.Throws<EvaluationBlockedException>(() =>
+            SharePointRequests.ByPath(
+                "GetFolderByServerRelativePath",
+                "/sites/proto/General/" + new string('文', 250),
+                "$select=UniqueId"
+            )
+        );
+        Assert.Equal(SharePointRequests.AddressTooLongNotice, error.Message);
     }
 
     [Fact]
@@ -149,6 +271,9 @@ public sealed class LongPathTests
             StringComparer.OrdinalIgnoreCase
         );
         public List<string> Requests { get; } = new List<string>();
+
+        /// <summary>Each read's probe kind and relative address, in order.</summary>
+        public List<(string Kind, string Relative)> Reads { get; } = new List<(string, string)>();
         public IEnumerable<string> Folders => folders.Keys;
 
         public SharePointDouble(DurableWorkerTests.Fixture fixture)
@@ -188,7 +313,14 @@ public sealed class LongPathTests
                     401,
                     "{\"statusCode\":401,\"source\":\"canada.azure-apihub.net\",\"innerError\":\"The length of the URL for this request exceeds the configured maxUrlLength value.\"}"
                 );
+            if (query >= 0 && url.Length - query - 1 > MaxQueryString)
+                return (
+                    401,
+                    "{\"statusCode\":401,\"source\":\"canada.azure-apihub.net\",\"innerError\":\"The length of the query string for this request exceeds the configured maxQueryStringLength value.\"}"
+                );
             string relative = work.Http.RelativeUri;
+            if (work.Http.Method == "GET")
+                Reads.Add((work.ProbeKind ?? "", relative));
             if (work.Http.Method == "POST")
             {
                 var create = JsonWire.Read<FolderCreateBody>(work.Http.Body!);
@@ -199,11 +331,22 @@ public sealed class LongPathTests
             }
             if (relative.StartsWith("_api/web/lists(", StringComparison.Ordinal))
                 return (200, f.LibraryBody());
-            string path = relative.Contains("decodedUrl=@p")
-                ? Alias(relative)
-                : InlinePath(relative);
-            if (!folders.TryGetValue(path, out var id))
-                return (404, "{}");
+            string path;
+            Guid id;
+            if (relative.StartsWith("_api/web/GetFolderById('", StringComparison.Ordinal))
+            {
+                id = Guid.Parse(relative.Substring(24, 36));
+                var found = folders.Where(pair => pair.Value == id).Select(pair => pair.Key);
+                if (!found.Any())
+                    return (404, "{}");
+                path = found.Single();
+            }
+            else
+            {
+                path = relative.Contains("decodedUrl=@p") ? Alias(relative) : InlinePath(relative);
+                if (!folders.TryGetValue(path, out id))
+                    return (404, "{}");
+            }
             if (work.ProbeKind == "Folder")
                 return (
                     200,
