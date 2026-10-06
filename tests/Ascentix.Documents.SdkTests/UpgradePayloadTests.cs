@@ -67,6 +67,15 @@ public sealed class UpgradePayloadTests
     }
 
     [Fact]
+    public void AMemberAnEarlierReleaseWroteButThisOneDroppedIsIgnored()
+    {
+        // 0.1.0.3 folder jobs stored ApprovedAclHash; 0.1.0.4 no longer has it.
+        var json = JsonWire.Write(new OperationDocument { Key = "operation:legacy" });
+        var legacy = json.Insert(1, "\"ApprovedAclHash\":\"acl-v1-hash\",");
+        Assert.Equal("operation:legacy", JsonWire.Read<OperationDocument>(legacy).Key);
+    }
+
+    [Fact]
     public void TheAuditCoversTheListsAddedSince0103()
     {
         // The lists 0.1.0.4 added to stored documents; 0.1.0.3 rows have none of them.

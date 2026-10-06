@@ -291,10 +291,6 @@ public class OperationDocument : StoredDocument
     [DataMember]
     public Guid LibraryRootId { get; set; }
 
-    // Unused: folder jobs no longer compare the library ACL. Kept so stored payloads deserialize.
-    [DataMember]
-    public string? ApprovedAclHash { get; set; }
-
     [DataMember]
     public bool ExternalSubmitted { get; set; }
 

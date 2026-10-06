@@ -286,7 +286,7 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
-    public void WorkerRejectsMissingTransactionAndIncompleteAcl()
+    public void WorkerRejectsMissingTransaction()
     {
         var fixture = new Fixture();
         Assert.Throws<EvaluationBlockedException>(() =>
@@ -300,8 +300,6 @@ public sealed class DurableWorkerTests
                 false
             )
         );
-        var partial = new ODataRows<AclAssignment> { Rows = fixture.Acl.Rows, Next = "next-page" };
-        Assert.Throws<EvaluationBlockedException>(() => SharePointObservations.AclHash(partial));
     }
 
     [Fact]
@@ -2597,7 +2595,6 @@ public sealed class DurableWorkerTests
                     ["asx_policyrevision"] = policy.ToString(),
                     ["asx_approved"] = true,
                     ["asx_policyapplied"] = true,
-                    ["asx_aclhash"] = SharePointObservations.AclHash(Acl),
                 }
             );
             Service.Seed(

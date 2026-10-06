@@ -743,23 +743,26 @@ public sealed class LibraryProvisioning
                                     + "/breakroleinheritance(copyRoleAssignments=false,clearSubscopes=false)",
                             }
                         );
-                    return Read(
-                        op,
-                        lease.Value,
-                        "Acl",
-                        List(op.Value)
-                            + "/roleassignments?$select=Member/Id,Member/PrincipalType,RoleDefinitionBindings/Id,RoleDefinitionBindings/BasePermissions&$expand=Member,RoleDefinitionBindings"
-                    );
+                    return OwnerGrant(op, lease.Value);
                 case "Acl":
-                    var acl = SharePointObservations.Body<ODataRows<AclAssignment>>(request);
-                    // Validates that the page is complete; the ACL itself is not recorded.
-                    SharePointObservations.AclHash(acl);
-                    if (
-                        !acl.Rows.Any(a =>
-                            a.Member.Id == op.Value.OwnerGroup
-                            && a.Roles.Rows.Any(role => role.Id == op.Value.OwnerRole)
-                        )
-                    )
+                    // Setups saved by 0.1.0.3 mid-read asked for the library's whole role
+                    // assignment list. Its answer is not used: the owners group's own assignment
+                    // is read instead. Remove after 0.1.0.5.
+                    return OwnerGrant(op, lease.Value);
+                case "OwnerGrant":
+                    // Only the owners group's own assignment is read, so the library's size or
+                    // the people shared with it never matter. SharePoint answers 404 when the
+                    // group has no assignment on the list.
+                    AclAssignment? owners = null;
+                    if (request.HttpStatus != 404)
+                    {
+                        owners = SharePointObservations.Body<AclAssignment>(request);
+                        if (owners.Member?.Id != op.Value.OwnerGroup)
+                            throw new EvaluationBlockedException(
+                                "SharePoint returned the role assignment of another principal."
+                            );
+                    }
+                    if (owners?.Roles?.Rows?.Any(role => role.Id == op.Value.OwnerRole) != true)
                         return Prepare(
                             op,
                             lease.Value,
@@ -848,6 +851,18 @@ public sealed class LibraryProvisioning
             Notices = new[] { "Library created. Team access is being applied." },
         };
     }
+
+    /// <summary>Reads the owners group's role assignment on the new library.</summary>
+    private WorkerResult OwnerGrant(StoredRow<LibrarySetup> op, DispatcherDocument claim) =>
+        Read(
+            op,
+            claim,
+            "OwnerGrant",
+            List(op.Value)
+                + "/roleassignments/getbyprincipalid("
+                + op.Value.OwnerGroup
+                + ")?$select=Member/Id,RoleDefinitionBindings/Id&$expand=Member,RoleDefinitionBindings"
+        );
 
     private WorkerResult Read(
         StoredRow<LibrarySetup> op,

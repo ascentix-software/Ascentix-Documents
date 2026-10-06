@@ -54,6 +54,21 @@ public sealed class LibraryProvisioningTests
     }
 
     [Fact]
+    public void ASetupSavedMidWholeListReadReadsTheOwnersGroupInstead()
+    {
+        var f = new Fixture { LegacyAcl = true };
+        var queued = f.Queue();
+        Assert.Equal("AccessPending", f.Run(queued.Key).Status);
+        Assert.False(f.LegacyAcl);
+        Assert.NotEmpty(f.OwnerGrantReads);
+        Assert.Contains(
+            f.Posts,
+            p =>
+                p.EndsWith("addroleassignment(principalid=7,roledefid=5)", StringComparison.Ordinal)
+        );
+    }
+
+    [Fact]
     public void CreatesLibraryBoundaryAndOwnerGrantThenQueuesInitialTeamSync()
     {
         var f = new Fixture();
@@ -74,6 +89,12 @@ public sealed class LibraryProvisioningTests
             f.Posts,
             p =>
                 p.EndsWith("addroleassignment(principalid=7,roledefid=5)", StringComparison.Ordinal)
+        );
+        // Only the owners group's own assignment is read, never the library's whole list.
+        Assert.NotEmpty(f.OwnerGrantReads);
+        Assert.All(
+            f.OwnerGrantReads,
+            read => Assert.Contains("/roleassignments/getbyprincipalid(7)?", read)
         );
         var catalog = Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
         Assert.True(catalog.GetAttributeValue<bool>("asx_approved"));
@@ -577,6 +598,12 @@ public sealed class LibraryProvisioningTests
         public bool StopBeforePost;
         public List<string> Posts = new List<string>();
 
+        /// <summary>The owners-group reads, by their request path.</summary>
+        public List<string> OwnerGrantReads = new List<string>();
+
+        /// <summary>Answers the first owners-group read as a 0.1.0.3 whole-list read.</summary>
+        public bool LegacyAcl;
+
         public DispatcherDocument Claim(string key) =>
             Store
                 .Require<DispatcherDocument>("asx_claim", WorkCoordination.Operation(Service, key))
@@ -756,34 +783,47 @@ public sealed class LibraryProvisioningTests
                             }
                         );
                         break;
-                    case "Acl":
+                    case "OwnerGrant" when LegacyAcl:
+                        // A setup saved by 0.1.0.3 mid-read: its probe asked for the whole list.
+                        LegacyAcl = false;
+                        var legacy = Store.Require<LibrarySetup>("asx_operation", work.Key);
+                        legacy.Value.ProbeKind = "Acl";
+                        Store.Save(legacy);
+                        work.ProbeKind = "Acl";
                         response = Body(
-                            new ODataRows<AclAssignment>
+                            new ODataRows<AclAssignment> { Rows = Array.Empty<AclAssignment>() }
+                        );
+                        break;
+                    case "OwnerGrant":
+                        // Only the owners group's own assignment is read; SharePoint answers
+                        // 404 when the group has none on the list.
+                        OwnerGrantReads.Add(work.Http!.RelativeUri);
+                        if (!OwnerAccess)
+                        {
+                            code = 404;
+                            response =
+                                "{\"error\":{\"code\":\"-2146232832\",\"message\":{\"lang\":\"en-US\",\"value\":\"Can not find the principal with id: 7.\"}}}";
+                            break;
+                        }
+                        response = Body(
+                            new AclAssignment
                             {
-                                Rows = OwnerAccess
-                                    ? new[]
+                                Member = new AclMember { Id = 7, Type = 8 },
+                                Roles = new ODataRows<AclRole>
+                                {
+                                    Rows = new[]
                                     {
-                                        new AclAssignment
+                                        new AclRole
                                         {
-                                            Member = new AclMember { Id = 7, Type = 8 },
-                                            Roles = new ODataRows<AclRole>
+                                            Id = 5,
+                                            Permissions = new PermissionMask
                                             {
-                                                Rows = new[]
-                                                {
-                                                    new AclRole
-                                                    {
-                                                        Id = 5,
-                                                        Permissions = new PermissionMask
-                                                        {
-                                                            High = "2147483647",
-                                                            Low = "4294967295",
-                                                        },
-                                                    },
-                                                },
+                                                High = "2147483647",
+                                                Low = "4294967295",
                                             },
                                         },
-                                    }
-                                    : Array.Empty<AclAssignment>(),
+                                    },
+                                },
                             }
                         );
                         break;

@@ -29,7 +29,8 @@ jobs:
         displayName: Download officially signed plug-in
         inputs:
           buildType: specific
-          project: e9a46335-7f42-40c5-9de5-f5c06664599d
+          # The official plug-in pipeline lives in this same project.
+          project: $(System.TeamProjectId)
           definition: '25'
           buildVersionToDownload: latestFromBranch
           branchName: $(Build.SourceBranch)

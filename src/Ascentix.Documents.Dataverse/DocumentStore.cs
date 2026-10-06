@@ -245,6 +245,7 @@ public sealed class DocumentStore
         "Inspecting",
         "ReadyToCreate",
         "ExternalUnknown",
+        // A verified folder awaiting its final parent read (see WorkerCoordinator).
         "NeedsFinalPolicy",
         "Verified",
     };

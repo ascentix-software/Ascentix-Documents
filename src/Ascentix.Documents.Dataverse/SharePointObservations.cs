@@ -1,7 +1,6 @@
 using System;
 using System.Linq;
 using System.Runtime.Serialization;
-using System.Text.RegularExpressions;
 using Ascentix.Documents.Conditions;
 
 namespace Ascentix.Documents.Dataverse;
@@ -201,63 +200,6 @@ public static class SharePointObservations
         if (message.Length > 400)
             message = message.Substring(0, 400) + "...";
         return message.Length == 0 ? "HTTP " + request.HttpStatus + "." : message;
-    }
-
-    public static string AclHash(ODataRows<AclAssignment> assignments)
-    {
-        if (
-            assignments == null
-            || assignments.Next != null
-            || assignments.Rows == null
-            || assignments.Rows.Length > 1000
-            || assignments.Rows.Select(a => a.Member?.Id).Distinct().Count()
-                != assignments.Rows.Length
-        )
-            throw new EvaluationBlockedException("Incomplete or duplicate ACL snapshot.");
-        var canonical = assignments
-            .Rows.SelectMany(assignment =>
-            {
-                if (
-                    assignment.Member == null
-                    || assignment.Member.Id <= 0
-                    || assignment.Member.Type <= 0
-                    || assignment.Roles == null
-                    || assignment.Roles.Next != null
-                    || assignment.Roles.Rows == null
-                    || assignment.Roles.Rows.Length == 0
-                    || assignment.Roles.Rows.Length > 100
-                    || assignment.Roles.Rows.Select(r => r.Id).Distinct().Count()
-                        != assignment.Roles.Rows.Length
-                )
-                    throw new EvaluationBlockedException("Incomplete principal/role bindings.");
-                return assignment.Roles.Rows.Select(role =>
-                {
-                    if (
-                        role.Id <= 0
-                        || role.Permissions == null
-                        || !Regex.IsMatch(role.Permissions.High ?? "", "^[0-9]{1,20}$")
-                        || !Regex.IsMatch(role.Permissions.Low ?? "", "^[0-9]{1,20}$")
-                    )
-                        throw new EvaluationBlockedException("Role permission mask missing.");
-                    return assignment.Member.Id
-                        + ":"
-                        + assignment.Member.Type
-                        + ":"
-                        + role.Id
-                        + ":"
-                        + role.Permissions.High
-                        + ":"
-                        + role.Permissions.Low;
-                });
-            })
-            .OrderBy(v => v, StringComparer.Ordinal);
-        var joined = "acl-v1|" + string.Join("|", canonical);
-        // Hashes the complete serialized ACL as UTF-8 bytes.
-        using (var sha = System.Security.Cryptography.SHA256.Create())
-            return BitConverter
-                .ToString(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(joined)))
-                .Replace("-", "")
-                .ToLowerInvariant();
     }
 
     /// <summary>Reads the folder at the expected path, or null when SharePoint has none.</summary>

@@ -616,6 +616,7 @@ public sealed class WorkerCoordinator
         // Earlier versions read the library's role assignments before and after each folder.
         // Folder work no longer checks permissions, so an operation persisted mid-probe ignores
         // that response, whatever it was, and continues with the parent-folder read.
+        // Legacy shim for jobs saved by 0.1.0.3: remove after 0.1.0.5.
         if (operation.Value.ProbeKind == "Acl" || operation.Value.ProbeKind == "FinalAcl")
             return Probe(
                 operation,
@@ -847,6 +848,9 @@ public sealed class WorkerCoordinator
         binding.PhysicalPath = item.Path;
         binding.Candidate = item.Name;
         binding.Status = "Verified";
+        // The folder is there; its parent is read once more before the job completes. The
+        // status name dates from when a final permission check followed and is kept because
+        // stored jobs carry it; no policy or permission is involved any more.
         operation.Value.Status = "NeedsFinalPolicy";
         operation.Value.AbsenceVerified = false;
         return Probe(operation, dispatcher.Value, library, "FinalParent");
