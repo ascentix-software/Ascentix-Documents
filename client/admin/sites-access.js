@@ -36,6 +36,24 @@
     o.value = value;
     return o;
   };
+  // Owner teams sync their members. An Entra or Microsoft 365 group team is granted through its
+  // group, so it is labelled with its kind. Teams SharePoint cannot identify are listed disabled
+  // with the reason, matching the server's refusal (team.teamtype 2 security group, 3 Microsoft
+  // 365 group; membershiptype 2 owners, 3 guests).
+  const teamLabel = (t) => {
+    if (t.teamtype !== 2 && t.teamtype !== 3) return { text: t.name, reason: null };
+    const kind = t.teamtype === 2 ? 'Entra group' : 'Microsoft 365 group',
+      owners = t.membershiptype === 2;
+    const reason = !t.azureactivedirectoryobjectid
+      ? 'no Microsoft Entra group object ID, so SharePoint cannot identify its group'
+      : t.membershiptype === 3
+        ? 'guests only: SharePoint has no sign-in claim for only the guests of a group'
+        : owners && t.teamtype === 2
+          ? 'owners only: SharePoint has no sign-in claim for only the owners of a security group'
+          : null;
+    const text = t.name + ' (' + kind + (owners && !reason ? ', owners' : '') + ')';
+    return { text: reason ? text + ' - ' + reason : text, reason };
+  };
   const issue = (text, error = false) => {
     $('ad-message').textContent = text;
     $('ad-message').className = error ? 'ad-issue' : 'ad-status';
@@ -411,8 +429,12 @@
     state.policies.set(l.asx_libraryid, { result, entries, saved: JSON.stringify(entries) });
     for (const e of entries)
       if (!state.teams.has(e.TeamId)) {
-        const team = await xrm.WebApi.retrieveRecord('team', e.TeamId, '?$select=name');
-        state.teams.set(e.TeamId, team.name);
+        const team = await xrm.WebApi.retrieveRecord(
+          'team',
+          e.TeamId,
+          '?$select=name,teamtype,membershiptype,azureactivedirectoryobjectid',
+        );
+        state.teams.set(e.TeamId, teamLabel(team).text);
       }
     if (result.Status === 'Applied') {
       l.asx_policyapplied = true;
@@ -421,7 +443,10 @@
   }
   async function loadTeams() {
     const teams = [];
-    let options = '?$select=teamid,name&$orderby=name&$filter=teamtype eq 0 and isdefault eq false';
+    // Owner, Entra security group and Microsoft 365 group teams; default and access teams stay out.
+    let options =
+      '?$select=teamid,name,teamtype,membershiptype,azureactivedirectoryobjectid&$orderby=name' +
+      '&$filter=(teamtype eq 0 or teamtype eq 2 or teamtype eq 3) and isdefault eq false';
     do {
       const result = await page('team', options);
       teams.push(...result.entities);
@@ -433,9 +458,13 @@
       ),
     );
     teams.forEach((t) => {
-      state.teams.set(t.teamid, t.name);
-      $('ad-team-choice').append(opt(t.teamid, t.name));
-      $('ad-initial-team').append(opt(t.teamid, t.name));
+      const label = teamLabel(t);
+      state.teams.set(t.teamid, label.text);
+      ['ad-team-choice', 'ad-initial-team'].forEach((id) => {
+        const o = opt(t.teamid, label.text);
+        o.disabled = !!label.reason;
+        $(id).append(o);
+      });
     });
   }
   async function discoverActivity(append = false) {

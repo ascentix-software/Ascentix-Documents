@@ -53,7 +53,42 @@ const site = {
     asx_policyapplied: true,
   };
 const requests = [],
-  timers = [];
+  timers = [],
+  teamQueries = [];
+// Owner, Entra group and Microsoft 365 group teams. Dataverse fills group team members only as
+// people sign in, so the group itself is granted and its members are never listed here.
+const teams = [
+  { teamid: id(4), name: 'Operations', teamtype: 0 },
+  {
+    teamid: id(5),
+    name: 'Finance',
+    teamtype: 2,
+    membershiptype: 0,
+    azureactivedirectoryobjectid: id(15),
+  },
+  {
+    teamid: id(6),
+    name: 'Project X',
+    teamtype: 3,
+    membershiptype: 2,
+    azureactivedirectoryobjectid: id(16),
+  },
+  {
+    teamid: id(7),
+    name: 'Partners',
+    teamtype: 3,
+    membershiptype: 3,
+    azureactivedirectoryobjectid: id(17),
+  },
+  { teamid: id(10), name: 'Unlinked', teamtype: 2, membershiptype: 1 },
+  {
+    teamid: id(11),
+    name: 'Finance owners',
+    teamtype: 2,
+    membershiptype: 2,
+    azureactivedirectoryobjectid: id(18),
+  },
+];
 let discovery = false;
 let operationStatus = 'Verified';
 let inspectIssue = null,
@@ -64,18 +99,21 @@ const xrm = {
   Utility: { getGlobalContext: () => ({ getClientUrl: () => 'https://example.test' }) },
   Navigation: { openUrl: () => {} },
   WebApi: {
-    retrieveMultipleRecords: async (table) => ({
-      entities:
-        table === 'asx_site'
-          ? [site]
-          : table === 'asx_library'
-            ? [lib]
-            : table === 'team'
-              ? [{ teamid: id(4), name: 'Operations' }]
-              : table === 'sharepointsite'
-                ? [{ sharepointsiteid: id(2), name: 'Delivery' }]
-                : [],
-    }),
+    retrieveMultipleRecords: async (table, options) => {
+      if (table === 'team') teamQueries.push(options);
+      return {
+        entities:
+          table === 'asx_site'
+            ? [site]
+            : table === 'asx_library'
+              ? [lib]
+              : table === 'team'
+                ? teams
+                : table === 'sharepointsite'
+                  ? [{ sharepointsiteid: id(2), name: 'Delivery' }]
+                  : [],
+      };
+    },
     retrieveRecord: async (table, key) =>
       table === 'asx_library' ? lib : table === 'asx_site' ? site : { name: 'Operations' },
     online: {
@@ -137,6 +175,30 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   await window.AsxdSites.open();
   assert.equal(nodes['ad-site-title'].textContent, 'Delivery');
   assert.equal(nodes['ad-library-title'].textContent, 'General');
+  const teamQuery = decodeURIComponent(teamQueries[0]);
+  assert.match(teamQuery, /teamtype eq 0 or teamtype eq 2 or teamtype eq 3/);
+  assert.match(teamQuery, /isdefault eq false/);
+  assert.doesNotMatch(teamQuery, /teamtype eq 1/, 'Access teams stay out of the picker');
+  for (const picker of ['ad-team-choice', 'ad-initial-team']) {
+    const options = nodes[picker].children.slice(1),
+      byId = (n) => options.find((o) => o.value === id(n));
+    assert.equal(options.length, teams.length, picker + ' lists every eligible team');
+    assert.equal(byId(4).textContent, 'Operations');
+    assert.equal(byId(4).disabled, false);
+    assert.equal(byId(5).textContent, 'Finance (Entra group)');
+    assert.equal(byId(5).disabled, false);
+    assert.equal(byId(6).textContent, 'Project X (Microsoft 365 group, owners)');
+    assert.equal(byId(6).disabled, false);
+    assert.equal(byId(7).disabled, true, 'A guests-only team cannot be chosen');
+    assert.match(
+      byId(7).textContent,
+      /Partners \(Microsoft 365 group\).*SharePoint has no sign-in claim for only the guests/,
+    );
+    assert.equal(byId(10).disabled, true, 'A team with no group object ID cannot be chosen');
+    assert.match(byId(10).textContent, /no Microsoft Entra group object ID/);
+    assert.equal(byId(11).disabled, true);
+    assert.match(byId(11).textContent, /only the owners of a security group/);
+  }
   nodes['ad-add-team'].onclick();
   nodes['ad-team-choice'].value = id(4);
   nodes['ad-team-access'].value = 'Read';
