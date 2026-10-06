@@ -2,11 +2,11 @@
 
 Runtime administration includes **Apply folder templates when record data changes**. It is off by default and is stored as `asx_runtime.asx_processrecordupdates`; the runtime API field is `ProcessRecordUpdates`.
 
-Saving the setting changes the actual product-owned synchronous `Update` and `UpdateMultiple` plug-in step states. With the setting off, those steps are disabled, avoiding their invocation on high-volume record updates. With it on, installed update steps for allowed source tables are enabled. Existing update steps outside the new allowlist are disabled. Create/CreateMultiple, Delete, team events, integrity guards, and Power Automate flow activation are unaffected.
+Saving the setting changes the state of the Update event steps that Documents registers. With the setting off, those steps are disabled, avoiding their invocation on high-volume record updates. With it on, update steps for the enabled source tables are enabled. Create, Delete, team events, integrity guards, and Power Automate flow activation are unaffected.
 
 The setting covers root business records and related records used as template sources. An upsert that updates an existing record follows the update setting; an upsert that creates a new record can still trigger creation processing. There is no separate Upsert registration or Power Automate record-update trigger. The dispatcher processes queued work on its recurrence schedule.
 
-When updates are enabled, the event handler filters each published template against the source columns or lookups present in the request. It queues evaluation rather than making SharePoint calls inside the record transaction. When disabled, a defensive check exits before template, dependency, or outbox queries if an update invocation was already in flight or a step was manually re-enabled.
+When updates are enabled, the event handler filters each published template against the source columns or lookups present in the request. Event steps run asynchronously as background jobs, so capture cannot block a save. The handler queues evaluation and makes no SharePoint calls. When disabled, a defensive check exits before template, dependency, or outbox queries if an update invocation was already in flight or a step was manually re-enabled.
 
 ## Saving and installation
 
@@ -14,7 +14,7 @@ Load the runtime profile, change the setting, and save. Saving uses the runtime 
 
 The administrator saving this setting needs Dataverse privileges to read the relevant plug-in metadata and update plug-in steps. The API uses the caller's service and does not elevate privileges or grant a role. Runtime permission alone does not grant step-management privileges.
 
-The solution includes the runtime Boolean column used by the plug-in and admin resources. Configure event step states to match the saved setting; fresh installations leave update monitoring off. An allowed-table entry alone does not install missing event registrations. The runtime API only manages existing product-owned steps and does not create new registrations.
+The solution includes the runtime Boolean column used by the plug-in and admin resources. Fresh installations leave update monitoring off. Saving in Runtime administration creates, corrects, and verifies the event steps for every enabled table; each table shows Ready when its steps are in place. See the [upgrade notes](upgrade-0.1.0.4.md).
 
 Turning updates off does not cancel already queued work. Turning them on does not replay updates missed while monitoring was off. Use an explicit, reviewed replan for catch-up. Creation processing remains available, subject to its own installed/enabled Create steps and the worker being enabled.
 

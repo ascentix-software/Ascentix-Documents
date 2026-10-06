@@ -2,7 +2,7 @@
 
 Ascentix Documents provisions SharePoint folder structures from Dataverse records and manages library access through Dataverse teams. Define folder templates, publish them, and let the worker apply the resulting folder and access changes. It runs independently of Ascentix Rules Engine.
 
-**Version 0.1.0.3 is a public preview.** Read the [release notes](docs/public-preview.md) for features and known limitations. The managed solution is the intended evaluation download. Source is licensed under [Apache 2.0](LICENSE).
+**Version 0.1.0.4 is a public preview.** Read the [release notes](docs/public-preview.md) for features and known limitations. The managed solution is the intended evaluation download. Source is licensed under [Apache 2.0](LICENSE).
 
 ## What it does
 
@@ -14,13 +14,24 @@ Ascentix Documents provisions SharePoint folder structures from Dataverse record
 - Offers a system-wide record-update switch, Off by default. Disabling it disables the Update and UpdateMultiple plugin steps.
 - Retains document folders when their business record is deleted and marks the record for decommission review.
 
+## New in 0.1.0.4
+
+- No customer save can be blocked by Documents. Capture is asynchronous.
+- No table-count limit. Event registration is managed in the application.
+- Temporary failures retry automatically.
+- Admin stops always work.
+- B2B guests and Entra or Microsoft 365 group teams are supported.
+- Re-point and Remove for destinations.
+
+Upgrading from 0.1.0.3? Read the [upgrade notes](docs/upgrade-0.1.0.4.md).
+
 ## Evaluate
 
-Use a dedicated Dataverse and SharePoint evaluation environment. Follow the [managed installation guide](docs/customer-installation.md), including the application identity, connector connections, worker roles, event registrations, and disposable-record check. Credentials stay in the platform.
+Use a dedicated Dataverse and SharePoint evaluation environment. Follow the [managed installation guide](docs/customer-installation.md), including the application identity, connector connections, worker roles, tables, and disposable-record check. Credentials stay in the platform.
 
 The [operations guide](docs/operations.md) covers work recovery, access changes, upgrades, and retention. Read [record-update processing](docs/record-update-processing.md) before enabling update monitoring.
 
-This preview has bounded live validation. Sustained high-volume capacity, advanced recovery, and a fresh installation of the corrected package remain unverified. See the release notes for the remaining limitations.
+This preview has bounded live validation. Sustained high-volume capacity, advanced recovery, a fresh installation, and uninstall remain unverified. Entra and Microsoft 365 group claims and guest sign-in are verified in a test environment, not across tenants (pending). See the release notes for the remaining limitations.
 
 ## Build from source
 
