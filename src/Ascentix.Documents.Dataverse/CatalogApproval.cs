@@ -194,6 +194,10 @@ public sealed class CatalogResult
 
     [DataMember]
     public CatalogProbe? Observation { get; set; }
+
+    /// <summary>What a command left in place or changed, for the admin.</summary>
+    [DataMember]
+    public string[] Notices { get; set; } = Array.Empty<string>();
 }
 
 [DataContract]
@@ -260,6 +264,10 @@ public sealed class CatalogAdministration
             return new LibraryProvisioning(service, clock).Inspect(request.Key);
         if (request.Command == "RepointLibrary" || request.Command == "RepointSite")
             return QueueRepoint(request);
+        if (request.Command == "RemoveLibrary")
+            return RemoveLibrary(request.CatalogId);
+        if (request.Command == "RemoveSite")
+            return RemoveSite(request.CatalogId);
         if (request.Command == "NextLibraries")
         {
             var prior = store.Require<CatalogProbe>("asx_operation", request.Key);
@@ -677,6 +685,12 @@ public sealed class CatalogAdministration
                 ["asx_name"] = request.Name,
                 ["asx_approved"] = true,
             };
+            // Adding a removed site or library again makes it active.
+            if (IsRemoved(old))
+            {
+                update["statecode"] = new OptionSetValue(0);
+                update["statuscode"] = new OptionSetValue(1);
+            }
             if (isLibrary)
                 update["asx_policyapplied"] = false;
             service.Execute(
@@ -733,8 +747,19 @@ public sealed class CatalogAdministration
             row = service.Retrieve(
                 "asx_library",
                 request.CatalogId,
-                new ColumnSet("asx_name", "asx_siteid", "asx_listid", "asx_entryid", "asx_entryurl")
+                new ColumnSet(
+                    "asx_name",
+                    "asx_siteid",
+                    "asx_listid",
+                    "asx_entryid",
+                    "asx_entryurl",
+                    "statecode"
+                )
             );
+            if (IsRemoved(row))
+                throw new EvaluationBlockedException(
+                    "This library was removed. Add it again to use it."
+                );
             siteId =
                 row.GetAttributeValue<EntityReference>("asx_siteid")?.Id
                 ?? throw new EvaluationBlockedException("Library site missing.");
@@ -806,8 +831,18 @@ public sealed class CatalogAdministration
         var library = service.Retrieve(
             "asx_library",
             value.CatalogId,
-            new ColumnSet("asx_siteid", "asx_listid", "asx_entryurl", "asx_nativeparentid")
+            new ColumnSet(
+                "asx_siteid",
+                "asx_listid",
+                "asx_entryurl",
+                "asx_nativeparentid",
+                "statecode"
+            )
         );
+        if (IsRemoved(library))
+            throw new EvaluationBlockedException(
+                "This library was removed. Add it again to use it."
+            );
         var site = service.Retrieve("asx_site", value.SiteId, new ColumnSet("asx_url"));
         if (
             library.GetAttributeValue<EntityReference>("asx_siteid")?.Id != value.SiteId
@@ -933,6 +968,255 @@ public sealed class CatalogAdministration
             );
             changes.Add(entry + " → " + moved);
         }
+    }
+
+    /// <summary>Shown after a removal: Documents never deletes or changes anything in SharePoint.</summary>
+    public const string RemovalNotice =
+        "Nothing was deleted or changed in SharePoint: the library, its folders and permissions, and the Documents groups and their access stay as they are. Remove them in SharePoint if they are no longer needed.";
+
+    /// <summary>A removed catalog row: inactive, unapproved and kept only for history.</summary>
+    public static bool IsRemoved(Entity row) =>
+        row.GetAttributeValue<OptionSetValue>("statecode")?.Value == 1;
+
+    /// <summary>
+    /// Removes a library no Draft or published template revision uses. Unfinished access work is
+    /// cancelled with the existing Cancel semantics; folder work stops at its next step (folder
+    /// creates already sent may finish). A library nothing refers to any more is deleted;
+    /// otherwise it is kept, Removed, for history. Nothing in SharePoint is changed.
+    /// </summary>
+    private CatalogResult RemoveLibrary(Guid id)
+    {
+        if (id == Guid.Empty)
+            throw new EvaluationBlockedException("Select a library.");
+        var library = service.Retrieve(
+            "asx_library",
+            id,
+            new ColumnSet("asx_name", "asx_nativeparentid", "statecode")
+        );
+        var destinations = new QueryExpression("asx_destination")
+        {
+            ColumnSet = new ColumnSet("asx_revisionid"),
+        };
+        destinations.Criteria.AddCondition("asx_libraryid", ConditionOperator.Equal, id);
+        var revisions = CompleteQuery
+            .Read(service, destinations, 5000)
+            .Select(d => d.GetAttributeValue<EntityReference>("asx_revisionid")?.Id ?? Guid.Empty)
+            .Where(r => r != Guid.Empty)
+            .Distinct()
+            .ToArray();
+        var users = new List<string>();
+        foreach (var revisionId in revisions)
+        {
+            var revision = service.Retrieve(
+                "asx_revision",
+                revisionId,
+                new ColumnSet("asx_status", "asx_templateid")
+            );
+            var templateRef = revision.GetAttributeValue<EntityReference>("asx_templateid");
+            var template =
+                templateRef == null
+                    ? null
+                    : service.Retrieve(
+                        "asx_template",
+                        templateRef.Id,
+                        new ColumnSet("asx_name", "asx_publishedrevisionid")
+                    );
+            string? state =
+                revision.GetAttributeValue<string>("asx_status") == "Draft" ? "draft"
+                : template?.GetAttributeValue<EntityReference>("asx_publishedrevisionid")?.Id
+                == revisionId
+                    ? "published"
+                : null;
+            // Superseded and retired revisions keep their history and never block removal.
+            if (state != null)
+                users.Add(
+                    "Used by template '"
+                        + (template?.GetAttributeValue<string>("asx_name") ?? "unnamed")
+                        + "' ("
+                        + state
+                        + ")."
+                );
+        }
+        if (users.Count > 0)
+            throw new EvaluationBlockedException(
+                string.Join(" ", users.Distinct())
+                    + (
+                        users.Count == 1
+                            ? " Change the template first."
+                            : " Change the templates first."
+                    )
+            );
+        var notices = new List<string>();
+        string policyKey = "policy:" + id.ToString("N");
+        var policy = store.Find<PolicyDocument>("asx_policy", policyKey);
+        if (policy?.Value.OperationKey != null)
+        {
+            var queued = store.Find<SecurityOperation>("asx_operation", policy.Value.OperationKey);
+            if (queued != null && queued.Value.Status != "Applied")
+            {
+                new SecurityWorker(service, clock).Execute(
+                    new WorkerRequest { Command = "Cancel", Key = queued.Value.Key },
+                    true
+                );
+                notices.Add("Unfinished access work for this library was cancelled.");
+            }
+            policy = store.Require<PolicyDocument>("asx_policy", policyKey);
+        }
+        var nativeParent = library.GetAttributeValue<EntityReference>("asx_nativeparentid");
+        bool referenced =
+            revisions.Length > 0
+            || policy != null
+            || nativeParent != null && Records(nativeParent.Id);
+        library = service.Retrieve("asx_library", id, new ColumnSet("asx_name", "statecode"));
+        notices.Add(RemovalNotice);
+        if (!referenced)
+        {
+            service.Execute(
+                new DeleteRequest
+                {
+                    Target = new EntityReference("asx_library", id)
+                    {
+                        RowVersion = library.RowVersion,
+                    },
+                    ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+                }
+            );
+            return new CatalogResult
+            {
+                Status = "Deleted",
+                CatalogId = id,
+                Notices = notices.ToArray(),
+            };
+        }
+        if (policy != null)
+        {
+            // Access sync for a removed library stops; its teams no longer schedule it.
+            policy.Value.Status = "Removed";
+            store.Save(policy);
+            foreach (var team in policy.Value.ManagedTeams)
+            {
+                var reference = store.Find<PolicyTeamReference>(
+                    "asx_policyentry",
+                    "policyteam:" + id.ToString("N") + ":" + team.ToString("N")
+                );
+                if (reference != null && reference.Value.Status != "Inactive")
+                {
+                    reference.Value.Status = "Inactive";
+                    store.Save(reference);
+                }
+            }
+        }
+        if (!IsRemoved(library))
+            Retire("asx_library", library);
+        return new CatalogResult
+        {
+            Status = "Removed",
+            CatalogId = id,
+            Notices = notices.ToArray(),
+        };
+    }
+
+    /// <summary>
+    /// Removes a site that has no libraries left. A site nothing refers to any more is deleted;
+    /// one still referred to by removed libraries or library setup history is kept, Removed.
+    /// </summary>
+    private CatalogResult RemoveSite(Guid id)
+    {
+        if (id == Guid.Empty)
+            throw new EvaluationBlockedException("Select a site.");
+        var site = service.Retrieve("asx_site", id, new ColumnSet("asx_url", "statecode"));
+        var query = new QueryExpression("asx_library")
+        {
+            ColumnSet = new ColumnSet("asx_name", "statecode"),
+        };
+        query.Criteria.AddCondition("asx_siteid", ConditionOperator.Equal, id);
+        var libraries = CompleteQuery.Read(service, query, 5000);
+        var active = libraries.Where(l => !IsRemoved(l)).ToArray();
+        if (active.Length > 0)
+            throw new EvaluationBlockedException(
+                "Remove the site's libraries first: "
+                    + string.Join(", ", active.Select(l => l.GetAttributeValue<string>("asx_name")))
+                    + "."
+            );
+        var setups = new QueryExpression("asx_operation")
+        {
+            ColumnSet = new ColumnSet(false),
+            TopCount = 1,
+        };
+        setups.Criteria.AddCondition("asx_workkind", ConditionOperator.Equal, "LibrarySetup");
+        setups.Criteria.AddCondition(
+            "asx_siteurl",
+            ConditionOperator.Equal,
+            TemplateStore.Text(site, "asx_url")
+        );
+        bool referenced =
+            libraries.Length > 0 || service.RetrieveMultiple(setups).Entities.Count > 0;
+        var notices = new[]
+        {
+            "Nothing was deleted or changed in SharePoint: the site, its libraries and the Documents groups stay as they are.",
+        };
+        if (!referenced)
+        {
+            service.Execute(
+                new DeleteRequest
+                {
+                    Target = new EntityReference("asx_site", id) { RowVersion = site.RowVersion },
+                    ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+                }
+            );
+            return new CatalogResult
+            {
+                Status = "Deleted",
+                CatalogId = id,
+                Notices = notices,
+            };
+        }
+        if (!IsRemoved(site))
+            Retire("asx_site", site);
+        return new CatalogResult
+        {
+            Status = "Removed",
+            CatalogId = id,
+            Notices = notices,
+        };
+    }
+
+    // Folder locations Documents made for records under the library's own location.
+    private bool Records(Guid nativeParent)
+    {
+        var query = new QueryExpression("sharepointdocumentlocation")
+        {
+            ColumnSet = new ColumnSet(false),
+            TopCount = 1,
+        };
+        query.Criteria.AddCondition("parentsiteorlocation", ConditionOperator.Equal, nativeParent);
+        query.Criteria.AddCondition(
+            "description",
+            ConditionOperator.BeginsWith,
+            "AscentixDocuments:"
+        );
+        return service.RetrieveMultiple(query).Entities.Count > 0;
+    }
+
+    // The Removed state: unapproved and inactive, hidden from pickers, planning and access sync.
+    private void Retire(string table, Entity row)
+    {
+        var target = new Entity(table, row.Id)
+        {
+            RowVersion = row.RowVersion,
+            ["asx_approved"] = false,
+            ["statecode"] = new OptionSetValue(1),
+            ["statuscode"] = new OptionSetValue(2),
+        };
+        if (table == "asx_library")
+            target["asx_policyapplied"] = false;
+        service.Execute(
+            new UpdateRequest
+            {
+                Target = target,
+                ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+            }
+        );
     }
 
     /// <summary>

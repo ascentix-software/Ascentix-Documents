@@ -455,6 +455,8 @@
     $('ad-changes').hidden = !state.changes.length;
     $('ad-repoint-site').disabled = state.busy || !state.site;
     $('ad-repoint-library').disabled = state.busy || !state.library;
+    $('ad-remove-site').disabled = state.busy || !state.site;
+    $('ad-remove-library').disabled = state.busy || !state.library;
     [
       'ad-validate',
       'ad-provision',
@@ -479,15 +481,46 @@
           c.name +
           ': Documents reads the library and its entry folder by their IDs and follows a rename or move. Existing record folders keep working. Nothing in SharePoint changes.'
         );
+      case 'RemoveLibrary':
+        return (
+          'Remove ' +
+          c.name +
+          ' from Documents? Templates can no longer use it, and its unfinished folder and access work is cancelled. Nothing in SharePoint is deleted or changed: the library, its folders, its permissions and the Documents groups stay as they are.'
+        );
+      case 'RemoveSite':
+        return (
+          'Remove ' +
+          c.name +
+          ' from Documents? Nothing in SharePoint is deleted or changed. Remove its libraries first.'
+        );
       default:
         return '';
     }
   }
-  const confirmLabel = (c) => (c.kind.startsWith('Repoint') ? 'Re-point' : 'Confirm');
+  const confirmLabel = (c) =>
+    c.kind.startsWith('Repoint')
+      ? 'Re-point'
+      : c.kind === 'RemoveLibrary'
+        ? 'Remove library'
+        : 'Remove site';
   // Runs a confirmed site or library command.
   async function runConfirmed(c) {
     state.confirm = null;
     state.changes = [];
+    if (c.kind.startsWith('Remove')) {
+      // Refused while a Draft or published template uses the library; the error names them.
+      const removed = await catalog({ Command: c.kind, CatalogId: c.id });
+      state.changes = removed.Notices || [];
+      state.library = null;
+      if (c.kind === 'RemoveSite') {
+        state.site = null;
+        state.libraries = [];
+        await loadSites();
+      } else await libraries();
+      await window.AsxdAdmin?.refreshCatalog();
+      issue(c.name + ' was removed from Documents.');
+      return;
+    }
     const result = await catalog({
       Command: c.kind,
       CatalogId: c.id,
@@ -504,7 +537,7 @@
       'asx_site',
       append
         ? nextOptions(state.nextSites)
-        : "?$select=asx_siteid,asx_name,asx_approved,asx_url,_asx_nativeid_value&$orderby=asx_name&$filter=contains(asx_name,'" +
+        : "?$select=asx_siteid,asx_name,asx_approved,asx_url,_asx_nativeid_value&$orderby=asx_name&$filter=statecode eq 0 and contains(asx_name,'" +
             term +
             "')",
     );
@@ -517,7 +550,7 @@
       'asx_library',
       append
         ? nextOptions(state.nextLibraries)
-        : '?$select=asx_libraryid,asx_name,asx_approved,asx_policyapplied&$orderby=asx_name&$filter=_asx_siteid_value eq ' +
+        : '?$select=asx_libraryid,asx_name,asx_approved,asx_policyapplied&$orderby=asx_name&$filter=statecode eq 0 and _asx_siteid_value eq ' +
             state.site.asx_siteid,
     );
     state.libraries = append ? state.libraries.concat(result.entities) : result.entities;
@@ -996,6 +1029,20 @@
     if (!state.library) return;
     state.confirm = {
       kind: 'RepointLibrary',
+      id: state.library.asx_libraryid,
+      name: state.library.asx_name,
+    };
+    render();
+  };
+  $('ad-remove-site').onclick = () => {
+    if (!state.site) return;
+    state.confirm = { kind: 'RemoveSite', id: state.site.asx_siteid, name: state.site.asx_name };
+    render();
+  };
+  $('ad-remove-library').onclick = () => {
+    if (!state.library) return;
+    state.confirm = {
+      kind: 'RemoveLibrary',
       id: state.library.asx_libraryid,
       name: state.library.asx_name,
     };

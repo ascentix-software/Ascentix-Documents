@@ -2403,6 +2403,51 @@ public sealed class SecurityWorkerTests
     }
 
     [Fact]
+    public void RemovingALibraryCancelsItsQueuedAccessAndStopsItsSync()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        f.Drive();
+        int writes = f.Writes.Count;
+        f.Queue("Contribute");
+        var queued = f.Key;
+        var result = f.Service.Transaction(() =>
+            new CatalogAdministration(f.Service).Execute(
+                new CatalogRequest { Command = "RemoveLibrary", CatalogId = f.Library },
+                true
+            )
+        );
+        Assert.Equal("Removed", result.Status);
+        Assert.Contains(result.Notices, n => n.Contains("cancelled"));
+        Assert.Contains(result.Notices, n => n.Contains("Documents groups and their access stay"));
+        Assert.Equal(
+            "Cancelled",
+            f.Store.Require<SecurityOperation>("asx_operation", queued).Value.Status
+        );
+        Assert.Equal("Removed", f.Policy().Status);
+        Assert.Equal(
+            "Inactive",
+            f.Store.Require<PolicyTeamReference>(
+                "asx_policyentry",
+                "policyteam:" + f.Library.ToString("N") + ":" + f.Team.ToString("N")
+            ).Value.Status
+        );
+        Assert.Equal(
+            1,
+            f.Service.Rows[f.Library].GetAttributeValue<OptionSetValue>("statecode").Value
+        );
+        Assert.Equal(writes, f.Writes.Count);
+        // The daily access review skips the removed library instead of failing on it.
+        var policy = f.Store.Require<PolicyDocument>(
+            "asx_policy",
+            "policy:" + f.Library.ToString("N")
+        );
+        policy.Value.NextReviewUtc = DateTime.UtcNow.AddDays(-1);
+        f.Store.Save(policy);
+        Assert.Empty(f.Service.Transaction(() => new SecurityRefresh(f.Service).Scan()).Keys);
+    }
+
+    [Fact]
     public void QueuedAccessRunFollowsARepointedSite()
     {
         var f = new Fixture();

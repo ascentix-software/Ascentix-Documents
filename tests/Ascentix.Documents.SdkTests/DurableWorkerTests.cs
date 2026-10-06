@@ -1208,6 +1208,71 @@ public sealed class DurableWorkerTests
         );
     }
 
+    private static CatalogResult RemoveLibrary(Fixture f) =>
+        f.Service.Transaction(() =>
+            new CatalogAdministration(f.Service).Execute(
+                new CatalogRequest { Command = "RemoveLibrary", CatalogId = f.LibraryId },
+                true
+            )
+        );
+
+    /// <summary>An earlier, superseded revision used the library, so removal keeps its row.</summary>
+    private static void UsedBySupersededRevision(Fixture f)
+    {
+        var old = Guid.NewGuid();
+        f.Service.Seed(
+            new Entity("asx_revision", old)
+            {
+                ["asx_templateid"] = new EntityReference("asx_template", f.TemplateId),
+                ["asx_status"] = "Published",
+            }
+        );
+        f.Service.Seed(
+            new Entity("asx_destination", Guid.NewGuid())
+            {
+                ["asx_revisionid"] = new EntityReference("asx_revision", old),
+                ["asx_key"] = "general",
+                ["asx_libraryid"] = new EntityReference("asx_library", f.LibraryId),
+            }
+        );
+    }
+
+    [Fact]
+    public void RemovingALibraryCancelsItsUnsentFolderWorkAtTheNextStep()
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = f.Claim();
+        Assert.Equal("Library", work.ProbeKind);
+        Assert.Equal("Removed", RemoveLibrary(f).Status);
+        var cancelled = f.Observe(work, f.LibraryBody());
+        Assert.Equal("Cancelled", cancelled.Status);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.Equal("Cancelled", stored.Status);
+        Assert.Equal("DestinationRemoved", stored.ErrorCode);
+        Assert.Null(
+            f.Store.Require<DispatcherDocument>(
+                "asx_claim",
+                WorkCoordination.Operation(f.Service, f.Operation.Key)
+            ).Value.RunId
+        );
+        Assert.DoesNotContain(f.Results, r => r.Status == "Create");
+    }
+
+    [Fact]
+    public void FolderCreateSentBeforeRemovalFinishes()
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        Assert.Equal("Removed", RemoveLibrary(f).Status);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var verified = f.ObserveAndFinalize(work, f.Item(Guid.NewGuid(), null));
+        Assert.Equal("Applied", f.Call("Complete", verified).Status);
+    }
+
     [Fact]
     public void ExistingRecordFolderIsAdoptedUnderTheRepointedLibraryAndNotDuplicated()
     {
@@ -2364,6 +2429,9 @@ public sealed class DurableWorkerTests
                 object expected = condition.Values[0];
                 if (condition.Operator == ConditionOperator.Equal)
                     return Equals(actual, expected);
+                if (condition.Operator == ConditionOperator.BeginsWith)
+                    return actual is string text
+                        && text.StartsWith((string)expected, StringComparison.Ordinal);
                 if (condition.Operator == ConditionOperator.LessEqual)
                     return actual is IComparable comparable && comparable.CompareTo(expected) <= 0;
                 throw new NotSupportedException(condition.Operator.ToString());

@@ -175,6 +175,7 @@ public sealed class SecurityRefresh
             var policy = store.Require<PolicyDocument>("asx_policy", pointer.Key);
             if (
                 policy.Value.Generation == Guid.Empty
+                || policy.Value.Status == "Removed"
                 || onlyTeam != Guid.Empty && !policy.Value.Approved.Any(e => e.TeamId == onlyTeam)
             )
                 continue;

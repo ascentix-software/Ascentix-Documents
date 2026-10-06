@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Ascentix.Documents.Conditions;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
@@ -35,6 +36,22 @@ public sealed class WorkerCatalog
     /// after the site or library is suspended. Nothing new starts without approval.
     /// </param>
     /// <returns>The library's SharePoint target and native identities.</returns>
+    /// <summary>
+    /// Whether a library was removed from Documents (or no longer exists). Its unsent folder work
+    /// is cancelled and it is not planned.
+    /// </summary>
+    public bool Removed(Guid id)
+    {
+        var query = new QueryExpression("asx_library")
+        {
+            ColumnSet = new ColumnSet("statecode"),
+            TopCount = 1,
+        };
+        query.Criteria.AddCondition("asx_libraryid", ConditionOperator.Equal, id);
+        var row = service.RetrieveMultiple(query).Entities.FirstOrDefault();
+        return row == null || CatalogAdministration.IsRemoved(row);
+    }
+
     public WorkerLibrary Read(Guid id, bool requireApproved = true)
     {
         var row = service.Retrieve(

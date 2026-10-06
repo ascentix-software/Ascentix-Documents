@@ -1219,6 +1219,169 @@ public sealed class CatalogApprovalTests
         Assert.Equal(f.Url, f.Service.Rows[siteId].GetAttributeValue<string>("asx_url"));
     }
 
+    private static CatalogResult Remove(Fixture f, string command, Guid id) =>
+        f.Service.Transaction(() =>
+            f.Admin.Execute(new CatalogRequest { Command = command, CatalogId = id }, true)
+        );
+
+    /// <summary>Seeds a template revision whose destination uses the library.</summary>
+    private static Guid UseIn(Fixture f, Guid library, string template, string status, bool current)
+    {
+        var templateId = DocumentStore.StableId("template:" + template);
+        var revision = Guid.NewGuid();
+        if (!f.Service.Rows.ContainsKey(templateId))
+            f.Service.Seed(new Entity("asx_template", templateId) { ["asx_name"] = template });
+        if (current)
+            f.Service.Rows[templateId]["asx_publishedrevisionid"] = new EntityReference(
+                "asx_revision",
+                revision
+            );
+        f.Service.Seed(
+            new Entity("asx_revision", revision)
+            {
+                ["asx_templateid"] = new EntityReference("asx_template", templateId),
+                ["asx_status"] = status,
+            }
+        );
+        f.Service.Seed(
+            new Entity("asx_destination", Guid.NewGuid())
+            {
+                ["asx_revisionid"] = new EntityReference("asx_revision", revision),
+                ["asx_key"] = "general",
+                ["asx_libraryid"] = new EntityReference("asx_library", library),
+            }
+        );
+        return revision;
+    }
+
+    [Fact]
+    public void RemoveIsRefusedWhileADraftOrPublishedTemplateUsesTheLibrary()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        UseIn(f, library.CatalogId, "Accounts", "Published", current: true);
+        UseIn(f, library.CatalogId, "Contracts", "Draft", current: false);
+        var version = f.Service.Rows[library.CatalogId].RowVersion;
+        var refused = Assert.Throws<EvaluationBlockedException>(() =>
+            Remove(f, "RemoveLibrary", library.CatalogId)
+        );
+        Assert.Equal(
+            "Used by template 'Accounts' (published). Used by template 'Contracts' (draft). Change the templates first.",
+            refused.Message
+        );
+        Assert.Equal(version, f.Service.Rows[library.CatalogId].RowVersion);
+    }
+
+    [Fact]
+    public void LibraryUsedOnlyByAnOlderRevisionIsKeptRemovedForHistory()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        UseIn(f, library.CatalogId, "Accounts", "Published", current: false);
+        var operations = f.Service.Rows.Values.Count(r => r.LogicalName == "asx_operation");
+        var result = Remove(f, "RemoveLibrary", library.CatalogId);
+        Assert.Equal("Removed", result.Status);
+        Assert.Contains(
+            result.Notices,
+            n => n.StartsWith("Nothing was deleted or changed in SharePoint")
+        );
+        var row = f.Service.Rows[library.CatalogId];
+        Assert.False(row.GetAttributeValue<bool>("asx_approved"));
+        Assert.Equal(1, row.GetAttributeValue<OptionSetValue>("statecode").Value);
+        Assert.True(new WorkerCatalog(f.Service).Removed(library.CatalogId));
+        // Removal reads and writes only Dataverse: no SharePoint work is queued.
+        Assert.Equal(
+            operations,
+            f.Service.Rows.Values.Count(r => r.LogicalName == "asx_operation")
+        );
+        // The site still has the removed library, so it is kept Removed too.
+        var siteId = row.GetAttributeValue<EntityReference>("asx_siteid").Id;
+        Assert.Equal("Removed", Remove(f, "RemoveSite", siteId).Status);
+        Assert.Equal(
+            1,
+            f.Service.Rows[siteId].GetAttributeValue<OptionSetValue>("statecode").Value
+        );
+        // Adding the library again makes it active.
+        var again = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddSite",
+                    NativeSiteId = f.NativeSite,
+                    Name = "Site",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Equal(siteId, again.CatalogId);
+        Assert.Equal(
+            0,
+            f.Service.Rows[siteId].GetAttributeValue<OptionSetValue>("statecode").Value
+        );
+        Assert.True(f.Service.Rows[siteId].GetAttributeValue<bool>("asx_approved"));
+    }
+
+    [Fact]
+    public void UnreferencedLibraryAndThenItsSiteAreDeleted()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var siteId = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_siteid")
+            .Id;
+        var refused = Assert.Throws<EvaluationBlockedException>(() =>
+            Remove(f, "RemoveSite", siteId)
+        );
+        Assert.Equal("Remove the site's libraries first: General.", refused.Message);
+        var location = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_nativeparentid")
+            .Id;
+        Assert.Equal("Deleted", Remove(f, "RemoveLibrary", library.CatalogId).Status);
+        Assert.False(f.Service.Rows.ContainsKey(library.CatalogId));
+        // The library's Dataverse document location is navigation others may use; it stays.
+        Assert.True(f.Service.Rows.ContainsKey(location));
+        Assert.Equal("Deleted", Remove(f, "RemoveSite", siteId).Status);
+        Assert.False(f.Service.Rows.ContainsKey(siteId));
+    }
+
+    [Fact]
+    public void LibraryWithRecordFoldersIsKeptRemoved()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var location = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_nativeparentid")
+            .Id;
+        f.Service.Seed(
+            new Entity("sharepointdocumentlocation", Guid.NewGuid())
+            {
+                ["relativeurl"] = "Example",
+                ["description"] = "AscentixDocuments:abc",
+                ["parentsiteorlocation"] = new EntityReference(
+                    "sharepointdocumentlocation",
+                    location
+                ),
+            }
+        );
+        Assert.Equal("Removed", Remove(f, "RemoveLibrary", library.CatalogId).Status);
+        Assert.True(f.Service.Rows.ContainsKey(library.CatalogId));
+        Assert.Throws<EvaluationBlockedException>(() =>
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "RepointLibrary",
+                    CatalogId = library.CatalogId,
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            )
+        );
+    }
+
     [Fact]
     public void SiteIdentityIncludesHostnameAndRejectsIncompleteIdentity()
     {

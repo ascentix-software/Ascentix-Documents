@@ -148,13 +148,26 @@ public sealed class CatalogGuard : IPlugin
         var context = (IPluginExecutionContext)provider.GetService(typeof(IPluginExecutionContext));
         bool transported = ApiWriteService.Authorizes(context, true);
         string message = context.MessageName;
+        // A site or library is deleted only by the catalog API's Remove command, once nothing
+        // refers to it any more.
+        if (
+            message == "Delete"
+            && context.Stage == 20
+            && context.IsInTransaction
+            && (
+                context.PrimaryEntityName == "asx_site"
+                || context.PrimaryEntityName == "asx_library"
+            )
+            && ApiWriteService.AuthorizesCatalogRemoval(context)
+        )
+            return;
         if (
             context.Stage != 20
             || !context.IsInTransaction
             || (message != "Create" && message != "Update")
         )
             throw new InvalidPluginExecutionException(
-                "Catalog deletion and nontransactional writes are unsupported."
+                "Catalog rows are deleted only by Remove in the Sites panel; nontransactional writes are unsupported."
             );
         var parent = context.ParentContext;
         bool marked =

@@ -54,7 +54,7 @@ public sealed class WorkerCoordinator
             }.Contains(request.Command)
         )
         {
-            var stopped = StopUnavailable(request);
+            var stopped = StopUnavailable(request) ?? StopRemoved(request);
             if (stopped != null)
                 return stopped;
         }
@@ -1238,6 +1238,56 @@ public sealed class WorkerCoordinator
             Notices = new[]
             {
                 "Template is deleted, deactivated or outside its schedule. Existing SharePoint content is unchanged.",
+            },
+        };
+    }
+
+    /// <summary>
+    /// Cancels unsent folder work whose library was removed from Documents, with the Cancel
+    /// semantics: nothing in SharePoint is deleted. A create already sent finishes first.
+    /// </summary>
+    private WorkerResult? StopRemoved(WorkerRequest request)
+    {
+        var operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        if (
+            operation.Value.HistoryCompacted
+            || operation.Value.ExternalSubmitted
+            || operation.Value.Status == "Applied"
+            || operation.Value.Status == "Cancelled"
+            || operation.Value.Folders.Length == 0
+            || !catalog.Removed(operation.Value.Folder.LibraryId)
+        )
+            return null;
+        var claim = store.Find<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(service, request.Key)
+        );
+        if (claim?.Value.OperationKey == request.Key && claim.Value.RunId != null)
+        {
+            if (request.Command == "Claim" && !claim.Value.RecoveryPermitted)
+            {
+                // A live claim of another run is left to expire, then cancelled here.
+                if (claim.Value.LeaseUntilUtc > clock())
+                    return new WorkerResult { Status = "Busy", Key = request.Key };
+            }
+            else if (request.Command != "Claim")
+                claim = Assert(request);
+            Release(claim);
+        }
+        operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        operation.Value.Status = "Cancelled";
+        operation.Value.ErrorCode = "DestinationRemoved";
+        operation.Value.NextAttemptUtc = null;
+        operation.Value.ProbeId = Guid.Empty;
+        store.Save(operation);
+        Audit(request.Key, request.RunId ?? "worker", "Cancel");
+        return new WorkerResult
+        {
+            Status = "Cancelled",
+            Key = request.Key,
+            Notices = new[]
+            {
+                "The library was removed from Documents. Unsent folder work was cancelled; nothing in SharePoint was deleted.",
             },
         };
     }

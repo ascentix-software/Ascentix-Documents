@@ -234,8 +234,13 @@ public sealed class SecurityWorker
         policy.Value.Queued = Array.Empty<PolicyEntry>();
         policy.Value.Status = "NeedsReview";
         store.Save(policy);
-        var catalog = new SecurityCatalog(service, op.Value.LibraryId);
-        SecurityCatalog.UpdateLibrary(service, catalog.Library, op.Value.PolicyRevision, false);
+        // Cancel works whatever the library's approval: a suspended or removed library too.
+        var library = service.Retrieve(
+            "asx_library",
+            op.Value.LibraryId,
+            new Microsoft.Xrm.Sdk.Query.ColumnSet("asx_policyrevision")
+        );
+        SecurityCatalog.UpdateLibrary(service, library, op.Value.PolicyRevision, false);
         return new WorkerResult { Status = "Cancelled", Key = op.Value.Key };
     }
 

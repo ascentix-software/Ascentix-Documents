@@ -157,6 +157,31 @@ public sealed class ApiWriteGuardTests
         Assert.DoesNotContain("register a new destination", error.Message);
     }
 
+    [Theory]
+    [InlineData("RemoveLibrary", "asx_library")]
+    [InlineData("RemoveSite", "asx_site")]
+    public void CatalogRowsAreDeletedOnlyByRemove(string command, string table)
+    {
+        new CatalogGuard().Execute(
+            new Provider(Setup("remove:" + command, "Delete", "asx_CatalogAdmin", table))
+        );
+        Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(
+                new Provider(Setup("remove:Approve", "Delete", "asx_CatalogAdmin", table))
+            )
+        );
+        Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(
+                new Provider(Setup("remove:" + command, "Delete", "asx_DocumentWorker", table))
+            )
+        );
+        Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(
+                new Provider(Setup("direct", "Delete", "asx_CatalogAdmin", table))
+            )
+        );
+    }
+
     private static IPluginExecutionContext Setup(
         string variant,
         string message,
@@ -175,7 +200,7 @@ public sealed class ApiWriteGuardTests
             target["asx_siteid"] = Guid.NewGuid();
         if (variant == "immutable")
             target["asx_listid"] = Guid.NewGuid().ToString();
-        if (variant.Contains(":"))
+        if (variant.Contains(":") && !variant.StartsWith("remove:", StringComparison.Ordinal))
             target[variant.Substring(variant.IndexOf(':') + 1)] = "changed";
         var input = new ParameterCollection
         {
@@ -185,6 +210,8 @@ public sealed class ApiWriteGuardTests
             input["Request"] = "{\"Command\":\"CompleteSiteIdentity\"}";
         if (variant.StartsWith("repoint:", StringComparison.Ordinal))
             input["Request"] = "{\"Command\":\"Complete\",\"Key\":\"catalogprobe:repoint:abc\"}";
+        if (variant.StartsWith("remove:", StringComparison.Ordinal))
+            input["Request"] = "{\"Command\":\"" + variant.Substring(7) + "\"}";
         if (variant.StartsWith("probe:", StringComparison.Ordinal))
             input["Request"] = "{\"Command\":\"Complete\",\"Key\":\"catalogprobe:abc\"}";
         var apiValues = new Dictionary<string, object>
@@ -199,8 +226,9 @@ public sealed class ApiWriteGuardTests
             ["SharedVariables"] = new ParameterCollection(),
         };
         var api = Context(apiValues);
-        string operation = message.StartsWith("Create", StringComparison.Ordinal)
-            ? "Create"
+        string operation =
+            message == "Delete" ? "Delete"
+            : message.StartsWith("Create", StringComparison.Ordinal) ? "Create"
             : "Update";
         string tag = ApiWriteService.Tag(api, operation, target);
         if (variant == "wrong-caller")
@@ -234,6 +262,8 @@ public sealed class ApiWriteGuardTests
             }
         );
         var inputs = new ParameterCollection { ["Target"] = target };
+        if (message == "Delete")
+            inputs["Target"] = target.ToEntityReference();
         if (message.EndsWith("Multiple", StringComparison.Ordinal) || variant == "bulk")
         {
             var rows = new EntityCollection();

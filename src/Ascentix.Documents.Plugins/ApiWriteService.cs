@@ -192,6 +192,18 @@ public sealed class ApiWriteService : IOrganizationService
             }
         );
 
+    /// <summary>A site or library deleted by the catalog API's Remove command.</summary>
+    public static bool AuthorizesCatalogRemoval(IPluginExecutionContext context) =>
+        AuthorizesCatalogCommand(context, "asx_CatalogAdmin", RemovalRequest);
+
+    private static bool RemovalRequest(string request)
+    {
+        var command = Ascentix
+            .Documents.Dataverse.JsonWire.Read<Ascentix.Documents.Dataverse.CatalogRequest>(request)
+            .Command;
+        return command == "RemoveLibrary" || command == "RemoveSite";
+    }
+
     /// <summary>Whether the nearest product API frame is the named API with a matching request.</summary>
     private static bool AuthorizesCatalogCommand(
         IPluginExecutionContext context,
@@ -267,9 +279,9 @@ public sealed class ApiWriteService : IOrganizationService
             Mark(request, "Update", update.Target);
         else if (request is DeleteRequest delete)
         {
-            if (!RetentionRequest(owner))
+            if (!RetentionRequest(owner) && !CatalogRemovalRequest(owner))
                 throw new InvalidPluginExecutionException(
-                    "Only history retention may delete through this transport."
+                    "Only history retention and catalog removal may delete through this transport."
                 );
             Mark(request, "Delete", new Entity(delete.Target.LogicalName, delete.Target.Id));
         }
@@ -280,6 +292,23 @@ public sealed class ApiWriteService : IOrganizationService
             Mark(request, "Create", create.Target);
         }
         return inner.Execute(request);
+    }
+
+    private static bool CatalogRemovalRequest(IPluginExecutionContext context)
+    {
+        if (
+            context.MessageName != "asx_CatalogAdmin"
+            || context.InputParameters?.Contains("Request") != true
+        )
+            return false;
+        try
+        {
+            return RemovalRequest((string)context.InputParameters["Request"]);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public static bool RetentionRequest(IPluginExecutionContext context)

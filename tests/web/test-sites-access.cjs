@@ -52,6 +52,10 @@ const site = {
     asx_approved: true,
     asx_policyapplied: true,
   };
+// The refusal RemoveLibrary answers with, or null to remove.
+let removalRefusal = null;
+const libraryQueries = [],
+  siteQueries = [];
 const requests = [],
   timers = [],
   teamQueries = [];
@@ -127,6 +131,8 @@ const xrm = {
   WebApi: {
     retrieveMultipleRecords: async (table, options) => {
       if (table === 'team') teamQueries.push(options);
+      if (table === 'asx_library') libraryQueries.push(options);
+      if (table === 'asx_site') siteQueries.push(options);
       return {
         entities:
           table === 'asx_site'
@@ -154,6 +160,18 @@ const xrm = {
         requests.push(command);
         if (command.Command === 'Inspect' && inspectFails)
           throw new Error('Temporary status request failure');
+        if (command.Command === 'RemoveLibrary' && removalRefusal)
+          return { ok: false, text: async () => removalRefusal };
+        if (command.Command.startsWith('Remove'))
+          return {
+            ok: true,
+            json: async () => ({
+              Result: JSON.stringify({
+                Status: 'Removed',
+                Notices: ['Nothing was deleted or changed in SharePoint: the library stays.'],
+              }),
+            }),
+          };
         let result;
         if (command.Command === 'GetPolicy') result = policy;
         else if (command.Command === 'ApplyPolicy')
@@ -602,6 +620,31 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   await timers.shift()();
   assert.match(nodes['ad-provision-progress'].textContent, /no longer exists on the site/);
   delete inspectByKey['catalogprobe:test'];
+  // Remove asks in the page; a refusal lists the templates that use the library.
+  const removes = () => requests.filter((r) => r.Command === 'RemoveLibrary');
+  nodes['ad-remove-library'].onclick();
+  assert.equal(removes().length, 0, 'Nothing is removed before the admin confirms');
+  assert.match(nodes['ad-confirm-text'].textContent, /Nothing in SharePoint is deleted or changed/);
+  assert.equal(nodes['ad-confirm-go'].textContent, 'Remove library');
+  removalRefusal = "Used by template 'Accounts' (published). Change the template first.";
+  await nodes['ad-confirm-go'].onclick();
+  assert.equal(removes().length, 1);
+  assert.equal(removes()[0].CatalogId, id(19));
+  assert.match(nodes['ad-message'].textContent, /Used by template 'Accounts' \(published\)/);
+  assert.equal(nodes['ad-message'].className, 'ad-issue');
+  removalRefusal = null;
+  nodes['ad-remove-library'].onclick();
+  await nodes['ad-confirm-go'].onclick();
+  assert.equal(removes().length, 2);
+  assert.match(nodes['ad-message'].textContent, /Reset was removed from Documents/);
+  assert.match(nodes['ad-changes'].textContent, /Nothing was deleted or changed in SharePoint/);
+  assert.match(libraryQueries.at(-1), /statecode eq 0/, 'Removed libraries are hidden');
+  nodes['ad-remove-site'].onclick();
+  assert.equal(nodes['ad-confirm-go'].textContent, 'Remove site');
+  await nodes['ad-confirm-go'].onclick();
+  assert.equal(requests.at(-1).Command, 'RemoveSite');
+  assert.equal(requests.at(-1).CatalogId, id(1));
+  assert.match(siteQueries.at(-1), /statecode eq 0/, 'Removed sites are hidden');
   console.log(
     'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, and author deep link. Mocked APIs; connected acceptance pending.',
   );
