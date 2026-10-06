@@ -153,6 +153,8 @@ public sealed class SecurityAdministration
         var existing = store.Find<PolicyDocument>("asx_policy", policyKey);
         if (request.Command == "GetPolicy")
             return Result(existing);
+        if (request.Command == "ApplyPolicy" && request.BreakInheritance && existing != null)
+            existing = ReplaceInheritanceStop(existing, request);
         var catalog = new SecurityCatalog(service, request.LibraryId);
         string? expectedVersion = request.RowVersion;
         if (request.Command == "SavePolicy" || request.Command == "ApplyPolicy")
@@ -285,6 +287,11 @@ public sealed class SecurityAdministration
             new TeamSnapshotReader(service).Read(entry.TeamId);
         var generation = Guid.NewGuid();
         string operationKey = "policywork:" + generation.ToString("N");
+        // The admin's consent is used by this run only; a later reset to inheritance asks again.
+        bool breakInheritance = request.BreakInheritance || existing.Value.BreakInheritance;
+        existing.Value.BreakInheritance = false;
+        if (breakInheritance)
+            existing.Value.Inherits = false;
         if (!workerRefresh)
         {
             existing.Value.ApprovedReadRole = existing.Value.ReadRole;
@@ -315,6 +322,7 @@ public sealed class SecurityAdministration
                 Entries = entries,
                 ReadRole = existing.Value.ApprovedReadRole,
                 ContributeRole = existing.Value.ApprovedContributeRole,
+                BreakInheritance = breakInheritance,
             }
         );
         foreach (var entry in entries)
@@ -341,6 +349,31 @@ public sealed class SecurityAdministration
         }
         SecurityCatalog.UpdateLibrary(service, catalog.Library, generation, false);
         return Result(store.Require<PolicyDocument>("asx_policy", policyKey));
+    }
+
+    /// <summary>
+    /// Apply access with the inheritance acknowledgement replaces the run that stopped because
+    /// the library inherits again. That run never wrote to SharePoint; it is cancelled with the
+    /// existing Cancel semantics and the admin's apply continues in this transaction.
+    /// </summary>
+    private StoredRow<PolicyDocument> ReplaceInheritanceStop(
+        StoredRow<PolicyDocument> policy,
+        SecurityRequest request
+    )
+    {
+        if (!policy.Value.Inherits || policy.Value.OperationKey == null)
+            return policy;
+        Version(policy.Row, request.RowVersion);
+        var stopped = store.Require<SecurityOperation>("asx_operation", policy.Value.OperationKey);
+        if (stopped.Value.Status != "Blocked" || stopped.Value.ExternalSubmitted)
+            return policy;
+        new SecurityWorker(service).Execute(
+            new WorkerRequest { Command = "Cancel", Key = stopped.Value.Key },
+            true
+        );
+        var current = store.Require<PolicyDocument>("asx_policy", policy.Value.Key);
+        request.RowVersion = current.Row.RowVersion;
+        return current;
     }
 
     public static void Validate(PolicyEntry[] entries, PolicyRole read, PolicyRole contribute)

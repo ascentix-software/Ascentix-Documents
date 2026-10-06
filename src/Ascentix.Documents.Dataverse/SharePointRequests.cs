@@ -190,6 +190,20 @@ public static class SharePointRequests
         };
     }
 
+    /// <summary>
+    /// Stops the library inheriting its site's permissions. copyRoleAssignments=true keeps a copy
+    /// of the site's current permissions as the library's starting point; clearSubscopes=false
+    /// leaves folders and items with their own permissions as they are.
+    /// </summary>
+    public static HttpIntent BreakInheritance(SharePointTarget target) =>
+        new HttpIntent
+        {
+            Method = "POST",
+            RelativeUri =
+                List(target)
+                + "/breakroleinheritance(copyRoleAssignments=true,clearSubscopes=false)",
+        };
+
     public static HttpIntent ChangeOwnedGrant(
         SharePointTarget target,
         int ownedGroupId,

@@ -104,6 +104,18 @@ const lib2 = {
   asx_policyapplied: true,
 };
 let discovery = false;
+// Inspect results by operation key, checked before the shared mock answers.
+const inspectByKey = {};
+let discovered = [{ Id: id(8), Title: 'Archive' }];
+// Finds a rendered node depth-first.
+const find = (n, test) => {
+  if (test(n)) return n;
+  for (const c of n.children || []) {
+    const hit = find(c, test);
+    if (hit) return hit;
+  }
+  return null;
+};
 let operationStatus = 'Verified';
 let inspectIssue = null,
   inspectFails = false;
@@ -150,6 +162,8 @@ const xrm = {
             RowVersion: '2',
             Policy: { Desired: command.Entries, Applied: [], OperationKey: 'policywork:test' },
           };
+        else if (command.Command === 'Inspect' && inspectByKey[command.Key])
+          result = inspectByKey[command.Key];
         else if (command.Command === 'Inspect')
           result = discovery
             ? {
@@ -158,7 +172,7 @@ const xrm = {
                 RowVersion: '7',
                 Observation: {
                   SiteId: id(1),
-                  Libraries: [{ Id: id(8), Title: 'Archive' }],
+                  Libraries: discovered,
                   NextLibraries: 'next',
                 },
               }
@@ -468,6 +482,78 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     requests.filter((r) => r.Command === 'CreateLibrary').at(-1).AcknowledgeBroaderAccess,
     undefined,
   );
+  // A library that inherits the site's permissions is added only after the admin confirms, in
+  // the page, that Documents stops the inheritance.
+  const warning =
+    'This library inherits permissions from the site. When you approve it, Documents stops the inheritance, keeps a copy of the current site permissions, and then manages team access on it.';
+  discovered = [{ Id: id(14), Title: 'Shared', HasUniqueRoleAssignments: false }];
+  await nodes['ad-existing'].onclick();
+  await timers.shift()();
+  const adds = () => requests.filter((r) => r.Command === 'AddLibrary');
+  const beforeAdd = adds().length;
+  await nodes['ad-existing-choices'].children[0].onclick();
+  assert.equal(adds().length, beforeAdd, 'Nothing is added before the admin confirms');
+  assert.equal(nodes['ad-existing-warning'].hidden, false);
+  assert.equal(
+    nodes['ad-existing-warning'].textContent,
+    warning + ' Select Confirm and add to continue.',
+  );
+  assert.equal(nodes['ad-existing-choices'].children[0].textContent, 'Confirm and add Shared');
+  await nodes['ad-existing-choices'].children[0].onclick();
+  assert.equal(adds().length, beforeAdd + 1);
+  assert.equal(adds().at(-1).ListId, id(14));
+  assert.equal(adds().at(-1).BreakInheritance, true);
+  // An approval refused for want of consent offers the consent on its card.
+  inspectByKey['catalogprobe:test'] = {
+    Status: 'Blocked',
+    Key: 'catalogprobe:test',
+    Issue: warning + ' Approve it with that acknowledgement to continue.',
+    Observation: { Inherits: true, SiteId: id(1), ListId: id(14), WebUrl: undefined },
+  };
+  await timers.shift()();
+  assert.match(nodes['ad-provision-progress'].textContent, /keeps a copy of the current site/);
+  const stop = find(
+    nodes['ad-provision-progress'],
+    (n) => n.textContent === 'Stop inheritance and add',
+  );
+  assert(stop, 'The blocked card offers to stop the inheritance');
+  await stop.onclick();
+  assert.equal(adds().length, beforeAdd + 2);
+  assert.equal(adds().at(-1).BreakInheritance, true);
+  assert.equal(adds().at(-1).ListId, id(14));
+  delete inspectByKey['catalogprobe:test'];
+  // A library reset to inherit stops its access run; Apply access asks before stopping it again.
+  policy = {
+    Status: 'Queued',
+    RowVersion: '30',
+    Policy: {
+      Desired: [{ TeamId: id(4), Access: 'Read' }],
+      Applied: [{ TeamId: id(4), Access: 'Read' }],
+      OperationKey: 'policywork:stopped',
+      Inherits: true,
+    },
+  };
+  // A library not opened before, so its policy is read fresh.
+  lib2.asx_libraryid = id(19);
+  lib2.asx_name = 'Reset';
+  await window.AsxdSites.selectLibrary(id(13));
+  assert.equal(
+    nodes['ad-change-status'].textContent,
+    'This library inherits permissions again. Use Apply access to let Documents stop the inheritance again.',
+  );
+  assert.equal(nodes['ad-apply'].disabled, false, 'Apply access is offered for the reset library');
+  const beforeReapply = applies();
+  await nodes['ad-apply'].onclick();
+  assert.equal(applies(), beforeReapply, 'Nothing is applied before the admin confirms');
+  assert.match(
+    nodes['ad-apply-warning'].textContent,
+    /When you apply access, Documents stops the inheritance, keeps a copy of the current site permissions/,
+  );
+  await nodes['ad-apply'].onclick();
+  const reapplied = requests.filter((r) => r.Command === 'ApplyPolicy').at(-1);
+  assert.equal(applies(), beforeReapply + 1);
+  assert.equal(reapplied.BreakInheritance, true);
+  assert.equal(reapplied.AcknowledgeBroaderAccess, undefined);
   console.log(
     'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, and author deep link. Mocked APIs; connected acceptance pending.',
   );

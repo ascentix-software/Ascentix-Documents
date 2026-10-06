@@ -50,6 +50,13 @@ public sealed class CatalogRequest
     /// <summary>CreateLibrary: the admin accepted the initial team's broader access.</summary>
     [DataMember]
     public bool AcknowledgeBroaderAccess { get; set; }
+
+    /// <summary>
+    /// AddLibrary, ProbeLibrary and Approve: the admin saw and accepted that Documents stops the
+    /// library's permission inheritance (see CatalogAdministration.InheritanceWarning).
+    /// </summary>
+    [DataMember]
+    public bool BreakInheritance { get; set; }
 }
 
 [DataContract]
@@ -66,6 +73,10 @@ public sealed class LibraryChoice
 
     [DataMember]
     public bool Hidden { get; set; }
+
+    /// <summary>False when the library inherits its site's permissions; null when unknown.</summary>
+    [DataMember(Name = "HasUniqueRoleAssignments")]
+    public bool? Unique { get; set; }
 }
 
 [DataContract]
@@ -85,6 +96,14 @@ public sealed class CatalogProbe : OperationDocument
 
     [DataMember]
     public bool AutoApprove { get; set; }
+
+    /// <summary>The library inherits its site's permissions, as last read.</summary>
+    [DataMember]
+    public bool Inherits { get; set; }
+
+    /// <summary>The admin accepted that Documents stops the inheritance (AddLibrary consent).</summary>
+    [DataMember]
+    public bool BreakInheritance { get; set; }
 
     [DataMember]
     public string DisplayName { get; set; } = "";
@@ -182,6 +201,14 @@ public sealed class CatalogLibraryObservation
 
 public sealed class CatalogAdministration
 {
+    /// <summary>Shown to the admin before approving a library that inherits its site's permissions.</summary>
+    public const string InheritanceWarning =
+        "This library inherits permissions from the site. When you approve it, Documents stops the inheritance, keeps a copy of the current site permissions, and then manages team access on it.";
+
+    /// <summary>The library discovery query, which also reads whether each library inherits.</summary>
+    public const string DiscoveryEndpoint =
+        "_api/web/lists?$select=Id,Title,BaseTemplate,Hidden,HasUniqueRoleAssignments&$filter=BaseTemplate eq 101 and Hidden eq false&$orderby=Title&$top=50";
+
     private readonly IOrganizationService service;
     private readonly DocumentStore store;
     private readonly Func<DateTime> clock;
@@ -334,6 +361,7 @@ public sealed class CatalogAdministration
                     WebUrl = url,
                     ListId = library ? request.ListId : Guid.Empty,
                     NativeParentId = library ? request.NativeParentId : Guid.Empty,
+                    BreakInheritance = library && request.BreakInheritance,
                     EntryUrl =
                         library && request.NativeParentId != Guid.Empty
                             ? new NativeLocations(service).ResolveParent(
@@ -507,6 +535,11 @@ public sealed class CatalogAdministration
         if (NativeSite(service, value.NativeSiteId) != value.WebUrl)
             throw new EvaluationBlockedException("Native site changed after observation.");
         bool isLibrary = value.ListId != Guid.Empty;
+        // Consent, not a guard: the admin chooses whether Documents stops the inheritance.
+        if (isLibrary && value.Inherits && !request.BreakInheritance && !value.BreakInheritance)
+            throw new EvaluationBlockedException(
+                InheritanceWarning + " Approve it with that acknowledgement to continue."
+            );
         string table = isLibrary ? "asx_library" : "asx_site";
         string identity = SiteIdentity.Key(value.WebUrl, value.CollectionId, value.WebId);
         Guid id = isLibrary
@@ -626,6 +659,8 @@ public sealed class CatalogAdministration
                 }
             );
         }
+        if (isLibrary && value.Inherits)
+            RecordInheritanceConsent(id);
         probe.Value.CatalogId = id;
         probe.Value.Status = "Approved";
         store.Save(probe);
@@ -635,6 +670,33 @@ public sealed class CatalogAdministration
             Key = value.Key,
             CatalogId = id,
         };
+    }
+
+    /// <summary>
+    /// Keeps the admin's consent on the library's access policy until the first access run
+    /// stops the inheritance. A library with no policy yet gets one that, like a missing policy,
+    /// has no access applied.
+    /// </summary>
+    private void RecordInheritanceConsent(Guid library)
+    {
+        string key = "policy:" + library.ToString("N");
+        var policy = store.Find<PolicyDocument>("asx_policy", key);
+        if (policy == null)
+        {
+            store.Create(
+                "asx_policy",
+                new PolicyDocument
+                {
+                    Key = key,
+                    Status = "Missing",
+                    LibraryId = library,
+                    BreakInheritance = true,
+                }
+            );
+            return;
+        }
+        policy.Value.BreakInheritance = true;
+        store.Save(policy);
     }
 
     private static string RoleJson(CatalogProbe value, int type)
@@ -951,7 +1013,7 @@ public sealed class CatalogWorker
                             ? null
                             : SecurityPaging.Next(
                                 new Uri(op.Value.WebUrl),
-                                "_api/web/lists?$select=Id,Title,BaseTemplate,Hidden&$filter=BaseTemplate eq 101 and Hidden eq false&$orderby=Title&$top=50",
+                                CatalogAdministration.DiscoveryEndpoint,
                                 choices.Next,
                                 op.Value.Pages
                             );
@@ -961,13 +1023,15 @@ public sealed class CatalogWorker
                     var library = SharePointObservations.Body<CatalogLibraryObservation>(request);
                     if (
                         library.Id != op.Value.ListId
-                        || library.Unique != true
                         || library.Root == null
                         || library.Root.Id == Guid.Empty
                     )
                         throw new EvaluationBlockedException(
-                            "Existing library needs its reviewed unique permission boundary."
+                            "The library or its root folder could not be read."
                         );
+                    // An inheriting library is registered with the admin's consent; approval
+                    // asks for it (InheritanceWarning).
+                    op.Value.Inherits = library.Unique != true;
                     string entry =
                         new Uri(op.Value.WebUrl).GetLeftPart(UriPartial.Authority)
                         + library.Root.Path;
@@ -1150,9 +1214,7 @@ public sealed class CatalogWorker
                 + "')"
                 + "?$select=Id,HasUniqueRoleAssignments,RootFolder/UniqueId,RootFolder/ServerRelativeUrl&$expand=RootFolder";
         if (kind == "CatalogLibraries")
-            endpoint =
-                op.Value.DiscoveryEndpoint
-                ?? "_api/web/lists?$select=Id,Title,BaseTemplate,Hidden&$filter=BaseTemplate eq 101 and Hidden eq false&$orderby=Title&$top=50";
+            endpoint = op.Value.DiscoveryEndpoint ?? CatalogAdministration.DiscoveryEndpoint;
         if (
             kind == "CatalogEntry"
             || kind == "CatalogEntryFinal"

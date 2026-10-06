@@ -31,6 +31,15 @@ public sealed class SecurityRoleObservation
 
 public sealed class SecurityWorker
 {
+    /// <summary>A library reset to inherit its site's permissions after Documents stopped it.</summary>
+    public const string InheritsAgainNotice =
+        "This library inherits permissions again. Use Apply access to let Documents stop the inheritance again.";
+
+    public const string InheritanceStoppedNotice =
+        "Documents stopped this library's permission inheritance and kept a copy of the site's permissions.";
+
+    private const string BreakInheritanceKind = "BreakInheritance";
+
     private readonly IOrganizationService service;
     private readonly DocumentStore store;
     private readonly Func<DateTime> clock;
@@ -116,6 +125,14 @@ public sealed class SecurityWorker
                         ClearMutation(op.Value);
                         return Wait(op, claim, request.RetryAfter, request.HttpStatus, null);
                     }
+                    // Whether inheritance stopped is read back after the wait: the library read
+                    // decides, so the break is never sent twice.
+                    if (op.Value.MutationKind == BreakInheritanceKind)
+                    {
+                        op.Value.Reprobe = true;
+                        op.Value.ExternalResponseKnown = true;
+                        return Wait(op, claim, request.RetryAfter, request.HttpStatus, null);
+                    }
                     return Block(op, claim, "AmbiguousSecurityWrite");
                 }
                 if (request.HttpStatus < 200 || request.HttpStatus >= 300)
@@ -139,14 +156,7 @@ public sealed class SecurityWorker
                     return Probe(op, claim.Value, catalog, "SecurityMembers");
                 }
                 op.Value.ExternalResponseKnown = true;
-                return Probe(
-                    op,
-                    claim.Value,
-                    catalog,
-                    op.Value.MutationKind.StartsWith("Grant", StringComparison.Ordinal)
-                        ? "SecurityAcl"
-                        : "SecurityGroup"
-                );
+                return Probe(op, claim.Value, catalog, ReadBack(op.Value));
             case "Complete":
                 return Complete(op, claim, catalog);
             case "Fail":
@@ -158,6 +168,16 @@ public sealed class SecurityWorker
                     && !op.Value.ExternalResponseKnown
                 )
                     ClearMutation(op.Value);
+                // An inheritance break of unknown outcome is read back by the next run.
+                if (
+                    op.Value.MutationKind == BreakInheritanceKind
+                    && op.Value.ExternalSubmitted
+                    && !op.Value.ExternalResponseKnown
+                )
+                {
+                    op.Value.Reprobe = true;
+                    op.Value.ExternalResponseKnown = true;
+                }
                 if (
                     TransientFailure.Is(request)
                     && !(op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)
@@ -295,15 +315,15 @@ public sealed class SecurityWorker
             op,
             claim.Value,
             catalog,
-            op.Value.ExternalSubmitted
-                ? (
-                    op.Value.MutationKind.StartsWith("Grant", StringComparison.Ordinal)
-                        ? "SecurityAcl"
-                        : "SecurityGroup"
-                )
-                : "SecurityLibrary"
+            op.Value.ExternalSubmitted ? ReadBack(op.Value) : "SecurityLibrary"
         );
     }
+
+    /// <summary>The read that shows whether the run's last write took effect.</summary>
+    private static string ReadBack(SecurityOperation op) =>
+        op.MutationKind == BreakInheritanceKind ? "SecurityLibrary"
+        : op.MutationKind.StartsWith("Grant", StringComparison.Ordinal) ? "SecurityAcl"
+        : "SecurityGroup";
 
     private WorkerResult Observe(
         WorkerRequest request,
@@ -335,11 +355,16 @@ public sealed class SecurityWorker
             {
                 case "SecurityLibrary":
                     var library = SharePointObservations.Body<SecurityLibraryObservation>(request);
-                    if (library.Id != catalog.Target.ListId || library.UniquePermissions != true)
+                    if (library.Id != catalog.Target.ListId)
                         throw new EvaluationBlockedException(
-                            "Library must have its explicitly reviewed unique permission boundary before policy application."
+                            "SharePoint returned a different library than the approved one."
                         );
-                    return Probe(op, claim.Value, catalog, "SecurityReadRole");
+                    return ObserveInheritance(
+                        op,
+                        claim,
+                        catalog,
+                        library.UniquePermissions == true
+                    );
                 case "SecurityReadRole":
                 case "SecurityContributeRole":
                     var role = SharePointObservations.Body<SecurityRoleObservation>(request);
@@ -551,6 +576,63 @@ public sealed class SecurityWorker
         {
             return Block(op, claim, error.Message);
         }
+    }
+
+    /// <summary>
+    /// The first step of every run, before any group or grant write. A library with its own
+    /// permissions continues. An inheriting library has its inheritance stopped when the admin
+    /// consented (keeping a copy of the site's permissions); otherwise the run stops with a
+    /// notice, honoring an admin who reset the library to inherit.
+    /// </summary>
+    private WorkerResult ObserveInheritance(
+        StoredRow<SecurityOperation> op,
+        StoredRow<DispatcherDocument> claim,
+        SecurityCatalog catalog,
+        bool unique
+    )
+    {
+        bool breaking = op.Value.MutationKind == BreakInheritanceKind && op.Value.ExternalSubmitted;
+        if (unique)
+        {
+            if (breaking)
+            {
+                // Read back after the break, including one whose response was lost.
+                op.Value.Reprobe = false;
+                ClearMutation(op.Value);
+                Notice(op.Value, InheritanceStoppedNotice);
+            }
+            return Probe(op, claim.Value, catalog, "SecurityReadRole");
+        }
+        if (breaking)
+        {
+            if (!op.Value.Reprobe)
+            {
+                // SharePoint confirmed the break but the read does not show it yet; reads can
+                // lag a write, so read again after a short wait within the read-back window.
+                if (++op.Value.ReadbackMisses >= ReadbackWindow)
+                    throw new EvaluationBlockedException(
+                        "The library still inherits permissions after SharePoint confirmed stopping it."
+                    );
+                return Wait(op, claim, null, null, "InheritanceReadbackPending");
+            }
+            // Read back after an unknown outcome: the break did not happen. It is sent once now.
+            op.Value.Reprobe = false;
+            ClearMutation(op.Value);
+        }
+        if (!op.Value.BreakInheritance)
+        {
+            var policy = store.Require<PolicyDocument>("asx_policy", op.Value.PolicyKey);
+            policy.Value.Inherits = true;
+            store.Save(policy);
+            throw new EvaluationBlockedException(InheritsAgainNotice);
+        }
+        return Prepare(
+            op,
+            claim.Value,
+            catalog,
+            BreakInheritanceKind,
+            SharePointRequests.BreakInheritance(catalog.Target)
+        );
     }
 
     private WorkerResult NextTeam(
@@ -976,6 +1058,7 @@ public sealed class SecurityWorker
         policy.Value.Queued = Array.Empty<PolicyEntry>();
         policy.Value.OperationKey = null;
         policy.Value.Status = "Applied";
+        policy.Value.Inherits = false;
         policy.Value.Notices = op.Value.Notices;
         policy.Value.ResidualAccess = new[]
         {

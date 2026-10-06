@@ -130,6 +130,20 @@ public sealed class PolicyDocument : StoredDocument
     /// <summary>What the last access run skipped or reconciled, for admins to review.</summary>
     [DataMember]
     public string[] Notices { get; set; } = Array.Empty<string>();
+
+    /// <summary>
+    /// The admin accepted that Documents stops this library's permission inheritance. The next
+    /// queued access run carries it and it is cleared here.
+    /// </summary>
+    [DataMember]
+    public bool BreakInheritance { get; set; }
+
+    /// <summary>
+    /// The last access run stopped because the library inherits its site's permissions and no
+    /// consent was given. Apply access with BreakInheritance resolves it.
+    /// </summary>
+    [DataMember]
+    public bool Inherits { get; set; }
 }
 
 [DataContract]
@@ -238,6 +252,13 @@ public sealed class SecurityRequest
     /// </summary>
     [DataMember]
     public bool AcknowledgeBroaderAccess { get; set; }
+
+    /// <summary>
+    /// ApplyPolicy: the admin saw and accepted that Documents stops the library's permission
+    /// inheritance, keeping a copy of the site's permissions.
+    /// </summary>
+    [DataMember]
+    public bool BreakInheritance { get; set; }
 }
 
 [DataContract]
@@ -347,6 +368,13 @@ public sealed class SecurityOperation : OperationDocument
     /// <summary>The group claim SharePoint resolved in this run, so it is added next.</summary>
     [DataMember]
     public string? EnsuredLogin { get; set; }
+
+    /// <summary>
+    /// The admin consented to stopping the library's permission inheritance for this run. Without
+    /// it an inheriting library blocks the run with a notice.
+    /// </summary>
+    [DataMember]
+    public bool BreakInheritance { get; set; }
 }
 
 [DataContract]

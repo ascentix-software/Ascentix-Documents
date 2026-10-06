@@ -77,13 +77,23 @@
   const warningsFor = (teamIds) => [
     ...new Set(teamIds.map((id) => state.warnings.get(id)).filter(Boolean)),
   ];
-  function consent(kind, key, teamIds) {
-    const warnings = warningsFor(teamIds);
+  function confirmed(kind, key, warnings) {
     if (!warnings.length) return { go: true, ack: false };
     if (state.consent?.kind === kind && state.consent.key === key) return { go: true, ack: true };
     state.consent = { kind, key, warnings };
     return { go: false };
   }
+  const consent = (kind, key, teamIds) => confirmed(kind, key, warningsFor(teamIds));
+  // Shown before an admin adds a library that inherits its site's permissions (the server's
+  // CatalogAdministration.InheritanceWarning) and before Apply access stops it again.
+  const inheritanceWarning =
+    'This library inherits permissions from the site. When you approve it, Documents stops the inheritance, keeps a copy of the current site permissions, and then manages team access on it.';
+  const reapplyWarning =
+    'This library inherits permissions from the site. When you apply access, Documents stops the inheritance, keeps a copy of the current site permissions, and then manages team access on it.';
+  const inheritsAgain =
+    'This library inherits permissions again. Use Apply access to let Documents stop the inheritance again.';
+  // The last access run stopped because the library inherits the site's permissions.
+  const inherits = (p) => !!p?.result.Policy?.Inherits;
   const applyKey = (p) => (state.library?.asx_libraryid || '') + JSON.stringify(p?.entries || []);
   const issue = (text, error = false) => {
     $('ad-message').textContent = text;
@@ -248,7 +258,24 @@
       const message = node('p', p.message);
       message.className = p.stopped ? 'ad-issue' : 'ad-muted';
       card.append(heading, bar, list, message);
-      if (p.status === 'Blocked') {
+      const observed = o.result?.Observation;
+      if (p.status === 'Blocked' && o.kind === 'LibraryValidation' && observed?.Inherits) {
+        // The card shows the server's refusal, which repeats the warning; this is the consent.
+        const add = node('button', 'Stop inheritance and add');
+        add.onclick = () =>
+          action(async () => {
+            await addLibrary(
+              observed.SiteId,
+              observed.ListId,
+              o.name,
+              observed.WebUrl || o.url,
+              true,
+            );
+            state.operations.delete(key);
+            state.completed.delete(key);
+          });
+        card.append(add);
+      } else if (p.status === 'Blocked') {
         const retry = node('button', 'Retry after repair');
         retry.onclick = () =>
           action(async () => {
@@ -377,21 +404,24 @@
         $('ad-teams').append(tr);
       }
     }
-    const running = !!p?.result.Policy?.OperationKey;
+    // A run stopped because the library inherits again is replaced by Apply access.
+    const running = !!p?.result.Policy?.OperationKey && !inherits(p);
     $('ad-apply').disabled =
-      state.busy || !p || running || (!changed(p) && p.result.Status !== 'Missing');
+      state.busy || !p || running || (!changed(p) && p.result.Status !== 'Missing' && !inherits(p));
     $('ad-add-team').disabled = state.busy || !p || running;
     $('ad-change-status').textContent = !p
       ? 'Loading access…'
       : running
         ? 'Applying access and syncing members…'
-        : changed(p)
-          ? 'Changes not yet applied.'
-          : p.result.Status === 'Missing'
-            ? 'Apply to confirm this library’s access.'
-            : p.result.Status === 'Applied'
-              ? 'Access and team membership confirmed.'
-              : p.result.Status;
+        : inherits(p)
+          ? inheritsAgain
+          : changed(p)
+            ? 'Changes not yet applied.'
+            : p.result.Status === 'Missing'
+              ? 'Apply to confirm this library’s access.'
+              : p.result.Status === 'Applied'
+                ? 'Access and team membership confirmed.'
+                : p.result.Status;
     // What the last access sync skipped or reconciled, such as members SharePoint could not take.
     const notices = (p && p.result.Policy?.Notices) || [];
     $('ad-access-notices').replaceChildren(...notices.map((n) => node('li', n)));
@@ -708,31 +738,50 @@
         url: state.site.asx_url,
       });
     });
+  // Adds an existing library; breakInheritance carries the admin's consent for an inheriting one.
+  async function addLibrary(siteId, listId, name, url, breakInheritance) {
+    const result = await catalog({
+      Command: 'AddLibrary',
+      SiteId: siteId,
+      ListId: listId,
+      Name: name,
+      RequestId: crypto.randomUUID(),
+      ...(breakInheritance ? { BreakInheritance: true } : {}),
+    });
+    state.consent = null;
+    state.progressSignature = null;
+    state.completed.delete(result.Key);
+    state.operations.set(result.Key, { name, kind: 'LibraryValidation', url });
+    $('ad-existing-form').hidden = true;
+    issue('Validating ' + name + ' and setting up navigation.');
+  }
   function showDiscovery() {
     const d = state.discovery;
     $('ad-existing-form').hidden = false;
     $('ad-existing-choices').replaceChildren();
+    const asking = state.consent?.kind === 'inherit' ? state.consent : null;
+    $('ad-existing-warning').textContent = asking
+      ? asking.warnings.join(' ') + ' Select Confirm and add to continue.'
+      : '';
+    $('ad-existing-warning').hidden = !asking;
     for (const l of d.Observation.Libraries) {
-      const b = node('button', 'Add ' + l.Title);
+      const confirming = asking?.key === l.Id,
+        b = node('button', (confirming ? 'Confirm and add ' : 'Add ') + l.Title);
       b.type = 'button';
       b.onclick = () =>
         action(async () => {
-          const result = await catalog({
-            Command: 'AddLibrary',
-            SiteId: d.Observation.SiteId,
-            ListId: l.Id,
-            Name: l.Title,
-            RequestId: crypto.randomUUID(),
-          });
-          state.progressSignature = null;
-          state.completed.delete(result.Key);
-          state.operations.set(result.Key, {
-            name: l.Title,
-            kind: 'LibraryValidation',
-            url: d.Observation.WebUrl,
-          });
-          $('ad-existing-form').hidden = true;
-          issue('Validating ' + l.Title + ' and setting up navigation.');
+          // A library that inherits the site's permissions is added only after the admin
+          // confirms the warning shown in the page.
+          const agreed = confirmed(
+            'inherit',
+            l.Id,
+            l.HasUniqueRoleAssignments === false ? [inheritanceWarning] : [],
+          );
+          if (!agreed.go) {
+            showDiscovery();
+            return;
+          }
+          await addLibrary(d.Observation.SiteId, l.Id, l.Title, d.Observation.WebUrl, agreed.ack);
         });
       $('ad-existing-choices').append(b);
     }
@@ -776,6 +825,7 @@
     });
   $('ad-existing-cancel').onclick = () => {
     $('ad-existing-form').hidden = true;
+    if (state.consent?.kind === 'inherit') state.consent = null;
   };
   $('ad-create').onclick = () => {
     $('ad-library-form').hidden = false;
@@ -838,11 +888,14 @@
     action(async () => {
       const p = policy();
       if (!p) throw new Error('Select a library.');
-      const agreed = consent(
-        'apply',
-        applyKey(p),
-        p.entries.filter((e) => e.Access !== 'None').map((e) => e.TeamId),
-      );
+      const broader = warningsFor(
+          p.entries.filter((e) => e.Access !== 'None').map((e) => e.TeamId),
+        ),
+        agreed = confirmed(
+          'apply',
+          applyKey(p),
+          broader.concat(inherits(p) ? [reapplyWarning] : []),
+        );
       if (!agreed.go) return;
       const latest = await security({
         Command: 'GetPolicy',
@@ -858,7 +911,7 @@
         throw new Error(
           'Library access changed since you opened it. Reload the page and review the current access before applying.',
         );
-      if (latest.Policy?.OperationKey)
+      if (latest.Policy?.OperationKey && !latest.Policy.Inherits)
         throw new Error(
           'An access synchronization is in progress. Wait for it to finish, then apply your changes.',
         );
@@ -867,7 +920,8 @@
         LibraryId: state.library.asx_libraryid,
         RowVersion: latest.RowVersion || null,
         Entries: p.entries,
-        ...(agreed.ack ? { AcknowledgeBroaderAccess: true } : {}),
+        ...(agreed.ack && broader.length ? { AcknowledgeBroaderAccess: true } : {}),
+        ...(agreed.ack && inherits(p) ? { BreakInheritance: true } : {}),
       });
       state.consent = null;
       p.result = result;

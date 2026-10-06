@@ -852,6 +852,147 @@ public sealed class CatalogApprovalTests
         );
     }
 
+    private const string InheritanceWarning =
+        "This library inherits permissions from the site. When you approve it, Documents stops the inheritance, keeps a copy of the current site permissions, and then manages team access on it.";
+
+    [Fact]
+    public void InheritingLibraryIsApprovedOnlyWithTheAdminsAcknowledgement()
+    {
+        var f = new Fixture();
+        f.Unique = false;
+        var site = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddSite",
+                    NativeSiteId = f.NativeSite,
+                    Name = "Site",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        var probe = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "ProbeLibrary",
+                    SiteId = site.CatalogId,
+                    ListId = f.List,
+                    NativeParentId = f.NativeParent,
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Equal("Captured", probe.Status);
+        Assert.True(probe.Observation!.Inherits, "The probe records that the library inherits");
+        var refused = Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() =>
+                f.Admin.Execute(
+                    new CatalogRequest
+                    {
+                        Command = "Approve",
+                        Key = probe.Key,
+                        RowVersion = probe.RowVersion,
+                        Name = "General",
+                    },
+                    true
+                )
+            )
+        );
+        Assert.StartsWith(InheritanceWarning, refused.Message);
+        Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
+        var approved = f.Admin.Execute(
+            new CatalogRequest
+            {
+                Command = "Approve",
+                Key = probe.Key,
+                RowVersion = probe.RowVersion,
+                Name = "General",
+                BreakInheritance = true,
+            },
+            true
+        );
+        Assert.True(f.Service.Rows[approved.CatalogId].GetAttributeValue<bool>("asx_approved"));
+        var policy = new DocumentStore(f.Service)
+            .Require<PolicyDocument>("asx_policy", "policy:" + approved.CatalogId.ToString("N"))
+            .Value;
+        Assert.True(policy.BreakInheritance, "Approval records the admin's consent");
+        Assert.Equal("Missing", policy.Status);
+        Assert.Equal(System.Guid.Empty, policy.Generation);
+    }
+
+    [Fact]
+    public void AddingAnInheritingLibraryCarriesTheAcknowledgementIntoAutomaticApproval()
+    {
+        var f = new Fixture();
+        f.Unique = false;
+        var site = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddSite",
+                    NativeSiteId = f.NativeSite,
+                    Name = "Site",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        var discovery = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "DiscoverLibraries",
+                    SiteId = site.CatalogId,
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Contains("HasUniqueRoleAssignments", f.Reads.Last());
+        Assert.False(discovery.Observation!.Libraries.Single().Unique);
+        var blocked = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = site.CatalogId,
+                    ListId = f.List,
+                    NativeParentId = f.NativeParent,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Equal("Blocked", blocked.Status);
+        Assert.StartsWith(InheritanceWarning, blocked.Issue);
+        Assert.True(blocked.Observation!.Inherits);
+        var added = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = site.CatalogId,
+                    ListId = f.List,
+                    NativeParentId = f.NativeParent,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                    BreakInheritance = true,
+                },
+                true
+            ).Key
+        );
+        Assert.Equal("Approved", added.Status);
+        Assert.True(
+            new DocumentStore(f.Service)
+                .Require<PolicyDocument>("asx_policy", "policy:" + added.CatalogId.ToString("N"))
+                .Value.BreakInheritance
+        );
+    }
+
     [Fact]
     public void SiteIdentityIncludesHostnameAndRejectsIncompleteIdentity()
     {
@@ -873,6 +1014,9 @@ public sealed class CatalogApprovalTests
         public string Url = "https://example.sharepoint.com/sites/proto";
         public bool Nested,
             UniqueFolders;
+
+        /// <summary>Whether the library has its own permissions or inherits the site's.</summary>
+        public bool Unique = true;
         public int AncestorReads;
         public List<string> Reads = new List<string>();
         public Guid NestedEntry = Guid.NewGuid();
@@ -930,7 +1074,11 @@ public sealed class CatalogApprovalTests
                         },
                         true
                     );
-                    Assert.Contains(work.Status, new[] { "Captured", "Approved", "Discovered" });
+                    // An automatic approval the admin has not consented to stops here.
+                    Assert.Contains(
+                        work.Status,
+                        new[] { "Captured", "Approved", "Discovered", "Blocked" }
+                    );
                     return Admin.Execute(
                         new CatalogRequest { Command = "Inspect", Key = key },
                         true
@@ -959,6 +1107,7 @@ public sealed class CatalogApprovalTests
                                         Id = List,
                                         Title = "General",
                                         BaseTemplate = 101,
+                                        Unique = Unique,
                                     },
                                 },
                                 Next = work.Http.RelativeUri.Contains("skiptoken")
@@ -981,7 +1130,7 @@ public sealed class CatalogApprovalTests
                             new CatalogLibraryObservation
                             {
                                 Id = List,
-                                Unique = true,
+                                Unique = Unique,
                                 Root = new FolderObservation
                                 {
                                     Id = Entry,

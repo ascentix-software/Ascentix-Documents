@@ -2274,6 +2274,134 @@ public sealed class SecurityWorkerTests
         Assert.Single(f.Members);
     }
 
+    private static void ConsentToBreakInheritance(Fixture f) =>
+        f.Store.Create(
+            "asx_policy",
+            new PolicyDocument
+            {
+                Key = "policy:" + f.Library.ToString("N"),
+                Status = "Missing",
+                LibraryId = f.Library,
+                BreakInheritance = true,
+            }
+        );
+
+    private static string BreakInheritanceUri(Fixture f) =>
+        "_api/web/lists(guid'"
+        + f.List.ToString("D")
+        + "')/breakroleinheritance(copyRoleAssignments=true,clearSubscopes=false)";
+
+    [Fact]
+    public void ApprovedInheritingLibraryStopsInheritanceBeforeAnyGroupOrGrant()
+    {
+        var f = new Fixture();
+        f.Unique = false;
+        ConsentToBreakInheritance(f);
+        f.Queue("Read");
+        Assert.True(f.Operation().BreakInheritance);
+        Assert.False(f.Policy().BreakInheritance, "The consent is used by this run only");
+        f.Drive();
+        Assert.Equal("BreakInheritance", f.Writes.First());
+        Assert.Equal(1, f.Writes.Count(w => w == "BreakInheritance"));
+        Assert.Equal("POST", f.Posts.First().Method);
+        Assert.Equal(BreakInheritanceUri(f), f.Posts.First().RelativeUri);
+        Assert.Contains(
+            f.Policy().Notices,
+            n => n.Contains("stopped this library's permission inheritance")
+        );
+        Assert.Equal("Read", f.Policy().Applied.Single().Access);
+        Assert.Equal(2, f.Roles(42).Single());
+    }
+
+    [Theory]
+    [InlineData("timeout", false)]
+    [InlineData("timeout", true)]
+    [InlineData("lost", false)]
+    [InlineData("lost", true)]
+    public void UnknownInheritanceBreakIsReadBackAndNeverRepeated(string outcome, bool landed)
+    {
+        var f = new Fixture();
+        f.Unique = false;
+        ConsentToBreakInheritance(f);
+        f.Queue("Read");
+        var work = f.Observe(f.Start());
+        Assert.Equal("ReadyToCreate", work.Status);
+        Assert.Equal("BreakInheritance", f.Operation().MutationKind);
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        if (landed)
+            f.Apply();
+        if (outcome == "timeout")
+        {
+            Assert.Equal("RetryWait", f.Call("CreateResponse", work, status: 0).Status);
+            var stored = f.Store.Require<SecurityOperation>("asx_operation", f.Key);
+            stored.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+            f.Store.Save(stored);
+        }
+        else
+        {
+            Assert.Equal("Quarantined", f.Start().Status);
+            ExpireClaim(f);
+        }
+        int reads = f.LibraryReads;
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.True(f.LibraryReads > reads, "The library is read back before any new write");
+        Assert.Equal(1, f.Writes.Count(w => w == "BreakInheritance"));
+        Assert.True(f.Unique);
+    }
+
+    [Fact]
+    public void LibraryResetToInheritBlocksUntilApplyAccessStopsItAgain()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        f.Drive();
+        // An admin resets the library to inherit the site's permissions in SharePoint.
+        f.Unique = false;
+        f.Queue("Contribute");
+        var blocked = f.Drive(expectApplied: false);
+        Assert.Equal("Blocked", blocked.Status);
+        const string notice =
+            "This library inherits permissions again. Use Apply access to let Documents stop the inheritance again.";
+        Assert.Equal(notice, f.Operation().ErrorCode);
+        Assert.True(f.Policy().Inherits);
+        Assert.DoesNotContain("BreakInheritance", f.Writes);
+        var old = f.Key;
+        var policy = f.Store.Require<PolicyDocument>(
+            "asx_policy",
+            "policy:" + f.Library.ToString("N")
+        );
+        var applied = f.Service.Transaction(() =>
+            f.Admin.Execute(
+                new SecurityRequest
+                {
+                    Command = "ApplyPolicy",
+                    LibraryId = f.Library,
+                    RowVersion = policy.Row.RowVersion,
+                    Entries = new[]
+                    {
+                        new PolicyEntry { TeamId = f.Team, Access = "Contribute" },
+                    },
+                    ReadRole = f.Read,
+                    ContributeRole = f.Contribute,
+                    BreakInheritance = true,
+                },
+                true
+            )
+        );
+        Assert.Equal(
+            "Cancelled",
+            f.Store.Require<SecurityOperation>("asx_operation", old).Value.Status
+        );
+        f.Key = applied.Policy!.OperationKey!;
+        Assert.NotEqual(old, f.Key);
+        Assert.False(f.Policy().Inherits);
+        f.Drive();
+        Assert.Equal(1, f.Writes.Count(w => w == "BreakInheritance"));
+        Assert.Equal("Contribute", f.Policy().Applied.Single().Access);
+        Assert.False(f.Policy().Inherits);
+    }
+
     private sealed class Fixture
     {
         public DurableWorkerTests.MemoryService Service { get; } =
@@ -2306,6 +2434,12 @@ public sealed class SecurityWorkerTests
         public List<string> AclReads = new List<string>();
         public List<int> AclStatuses = new List<int>();
         public int NextGroupId = 42;
+
+        /// <summary>Whether the library has its own permissions or inherits the site's.</summary>
+        public bool Unique = true;
+
+        /// <summary>How many times the library's inheritance state was read.</summary>
+        public int LibraryReads;
 
         /// <summary>Answers a member or grant write with this HTTP status instead of applying it.</summary>
         public Func<SecurityOperation, int?>? Reject;
@@ -2502,8 +2636,9 @@ public sealed class SecurityWorkerTests
             switch (work.ProbeKind)
             {
                 case "SecurityLibrary":
+                    LibraryReads++;
                     body = Envelope(
-                        new SecurityLibraryObservation { Id = List, UniquePermissions = true }
+                        new SecurityLibraryObservation { Id = List, UniquePermissions = Unique }
                     );
                     break;
                 case "SecurityReadRole":
@@ -2634,6 +2769,9 @@ public sealed class SecurityWorkerTests
                     break;
                 case "PrincipalEnsure":
                     // ensureuser adds the principal to the site, not to any group.
+                    break;
+                case "BreakInheritance":
+                    Unique = true;
                     break;
                 case "MemberAdd":
                     Members.Add(
