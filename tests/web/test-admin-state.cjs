@@ -528,10 +528,10 @@ async function change(n, value) {
         createdon: '2026-10-05T10:00:00Z',
       },
     ];
+    const fetches = [];
     xrm.WebApi.retrieveMultipleRecords = async (name, options) => {
       if (name === 'asyncoperation') {
-        assert.match(options, /statuscode eq 31/);
-        assert.match(options, /_owningextensionid_value eq step-1/);
+        fetches.push(options);
         return { entities: failed };
       }
       return { entities: [] };
@@ -544,6 +544,22 @@ async function change(n, value) {
       return { ok: true, json: async () => ({ Result: JSON.stringify({ Status: 'Pending' }) }) };
     };
     await nodes.loadFailedJobs.onclick();
+    const fetch = decodeURIComponent(fetches[0].replace(/^\?fetchXml=/, ''));
+    assert.match(fetch, /<condition attribute="statuscode" operator="eq" value="31"\/>/);
+    assert.match(fetch, /<order attribute="createdon" descending="true"\/>/);
+    assert.match(
+      fetch,
+      /<link-entity name="sdkmessageprocessingstep" from="sdkmessageprocessingstepid" to="owningextensionid" link-type="inner"><link-entity name="plugintype" from="plugintypeid" to="eventhandler" link-type="inner">/,
+    );
+    for (const handler of [
+      'RecordInvalidationPlugin',
+      'TeamRetirementPlugin',
+      'TeamMembershipInvalidationPlugin',
+    ])
+      assert(fetch.includes('<value>Ascentix.Documents.Plugins.' + handler + '</value>'));
+    assert.doesNotMatch(fetch, /step-1/, 'No step IDs in the query');
+    assert.match(fetch, /<fetch count="50" page="1">/, 'Same page size as the other lists');
+    assert.equal(nodes.moreFailedJobs.hidden, true);
     assert.match(nodes.failedJobs.textContent, /account.*rec-1.*incomplete/);
     nodes.failedJobs.children[0].children[0].checked = true;
     await nodes.replanFailed.onclick();
@@ -555,6 +571,86 @@ async function change(n, value) {
       ],
     );
     assert.notEqual(queued[0].RequestId, queued[1].RequestId);
+  }
+  {
+    // With 500 enabled tables (1,500 event steps) the query is the same size, and Load more
+    // pages with the paging cookie Dataverse returns.
+    const tables = Array.from({ length: 500 }, (_, i) => 'table' + i);
+    const steps = tables.flatMap((t, n) =>
+      [0, 1, 2].map((m) => String(n * 3 + m).padStart(8, '0') + '-0000-0000-0000-000000000000'),
+    );
+    xrm.WebApi.retrieveMultipleRecords = async (name) => ({
+      entities:
+        name === 'asx_runtime'
+          ? [{ asx_runtimeid: 'runtime-1' }]
+          : name === 'systemuser'
+            ? [{ systemuserid: 'worker-1', fullname: 'Documents worker' }]
+            : [],
+    });
+    xrm.WebApi.online.execute = async () => ({
+      ok: true,
+      json: async () => ({
+        Result: JSON.stringify({
+          WorkerId: 'worker-1',
+          Tables: tables,
+          SharePointHosts: [],
+          Enabled: true,
+          ProcessRecordUpdates: false,
+          RowVersion: '50',
+          Registration: {
+            Readiness: tables.map((t) => ({ Scope: t, Status: 'Ready' })),
+            ExtraSteps: 0,
+            StepIds: steps,
+          },
+        }),
+      }),
+    });
+    await nodes.loadRuntime.onclick();
+    assert.equal(steps.length, 1500);
+    const pages = [];
+    const cookie =
+      '<cookie pagenumber="2" pagingcookie="%253ccookie%2520page%253d%25221%2522%253e%253casyncoperationid%2520last%253d%2522%257bA%257d%2522%2520first%253d%2522%257bB%257d%2522%2520%252f%253e%253c%252fcookie%253e" istracking="False" />';
+    xrm.WebApi.retrieveMultipleRecords = async (name, options) => {
+      assert.equal(name, 'asyncoperation');
+      pages.push(options);
+      return pages.length === 1
+        ? {
+            entities: Array.from({ length: 50 }, (_, i) => ({
+              _regardingobjectid_value: 'rec-' + i,
+              '_regardingobjectid_value@Microsoft.Dynamics.CRM.lookuplogicalname': tables[i],
+              message: 'Failed.',
+              createdon: '2026-10-05T12:00:00Z',
+            })),
+            fetchXmlPagingCookie: cookie,
+          }
+        : {
+            entities: [
+              {
+                _regardingobjectid_value: 'rec-50',
+                '_regardingobjectid_value@Microsoft.Dynamics.CRM.lookuplogicalname': tables[50],
+                message: 'Failed.',
+                createdon: '2026-10-05T11:00:00Z',
+              },
+            ],
+          };
+    };
+    await nodes.loadFailedJobs.onclick();
+    assert(pages[0].length < 2048, 'The query stays far below the URL limit: ' + pages[0].length);
+    assert.equal(nodes.failedJobs.children.length, 50);
+    assert.equal(nodes.moreFailedJobs.hidden, false);
+    await nodes.moreFailedJobs.onclick();
+    const next = decodeURIComponent(pages[1].replace(/^\?fetchXml=/, ''));
+    assert.match(
+      next,
+      /<fetch count="50" page="2" paging-cookie="&lt;cookie page=&quot;1&quot;&gt;&lt;asyncoperationid last=&quot;\{A\}&quot; first=&quot;\{B\}&quot; \/&gt;&lt;\/cookie&gt;">/,
+    );
+    assert(pages[1].length < 2048);
+    assert.equal(nodes.failedJobs.children.length, 51, 'Load more appends');
+    assert.equal(nodes.moreFailedJobs.hidden, true);
+    xrm.WebApi.retrieveMultipleRecords = async () => ({ entities: [] });
+    await nodes.loadFailedJobs.onclick();
+    assert.equal(nodes.failedJobs.children.length, 0);
+    assert.equal(nodes.status.textContent, 'No failed capture jobs.');
   }
   {
     xrm.WebApi.retrieveMultipleRecords = async (name) =>
@@ -725,9 +821,27 @@ async function change(n, value) {
         modifiedon: '2026-10-05T17:00:00Z',
       },
     ];
-    const jobQueries = [];
+    const jobQueries = [],
+      waitQueries = [];
+    const waitRows = [
+      {
+        asx_payload: JSON.stringify({
+          Key: 'folderjob:slow',
+          Status: 'RetryWait',
+          ErrorCode: 'Waiting to retry after a temporary error (HTTP 503); attempt 9.',
+        }),
+        asx_nextattempt: '2026-10-05T18:15:00Z',
+        asx_retrycount: 9,
+      },
+    ];
     xrm.WebApi.retrieveMultipleRecords = async (name, options, size) => {
       assert.equal(name, 'asx_operation');
+      if (/RetryWait|waits2/.test(options)) {
+        waitQueries.push([options, size]);
+        return waitQueries.length === 1
+          ? { entities: waitRows, nextLink: 'https://example.test/api?$skiptoken=waits2' }
+          : { entities: [] };
+      }
       jobQueries.push([options, size]);
       return jobQueries.length === 1
         ? { entities: jobRows, nextLink: 'https://example.test/api?$skiptoken=jobs2' }
@@ -736,6 +850,14 @@ async function change(n, value) {
               {
                 asx_payload: JSON.stringify({ Key: 'policywork:p', Status: 'Blocked' }),
                 modifiedon: '2026-10-05T17:01:00Z',
+              },
+              {
+                asx_payload: JSON.stringify({
+                  Key: 'librarycreate:lost',
+                  Status: 'RecoveryRequired',
+                  ErrorCode: 'Library request outcome is unknown.',
+                }),
+                modifiedon: '2026-10-05T17:02:00Z',
               },
             ],
           };
@@ -747,7 +869,28 @@ async function change(n, value) {
       return { ok: true, json: async () => ({ Result: JSON.stringify({ Status: 'Pending' }) }) };
     };
     await nodes.loadBlockedJobs.onclick();
-    assert.match(jobQueries[0][0], /asx_status eq 'Blocked'/);
+    assert.match(jobQueries[0][0], /asx_status eq 'Blocked' or asx_status eq 'RecoveryRequired'/);
+    // Jobs waiting to retry are listed too, the longest-waiting first, with their next attempt.
+    assert.match(html, /<h5>Waiting to retry<\/h5>/);
+    assert.match(waitQueries[0][0], /asx_status eq 'RetryWait'/);
+    assert.match(waitQueries[0][0], /orderby=asx_retrycount desc/);
+    assert.equal(waitQueries[0][1], 50);
+    assert.match(
+      nodes.waitingJobs.textContent,
+      /folderjob:slow · Folder job · Waiting to retry after a temporary error \(HTTP 503\); attempt 9\. · next attempt 2026-10-05T18:15:00Z · attempt 9/,
+    );
+    assert.equal(nodes.moreWaitingJobs.hidden, false);
+    await nodes.moreWaitingJobs.onclick();
+    assert.equal(waitQueries[1][0], '?$skiptoken=waits2');
+    assert.equal(nodes.moreWaitingJobs.hidden, true);
+    const waitButtons = nodes.waitingJobs.children[0].children.filter(
+      (n) => n.tagName === 'BUTTON',
+    );
+    assert.deepEqual(
+      waitButtons.map((n) => n.textContent),
+      ['Retry', 'Cancel'],
+      'A waiting job can be retried now or cancelled',
+    );
     assert.match(jobQueries[0][0], /orderby=modifiedon desc/);
     assert.equal(jobQueries[0][1], 50, 'Same page size as the blocked-records list');
     assert.match(
@@ -757,7 +900,7 @@ async function change(n, value) {
     assert.equal(nodes.moreBlockedJobs.hidden, false);
     await nodes.moreBlockedJobs.onclick();
     assert.equal(jobQueries[1][0], '?$skiptoken=jobs2');
-    assert.equal(nodes.blockedJobs.children.length, 2, 'Load more appends');
+    assert.equal(nodes.blockedJobs.children.length, 3, 'Load more appends');
     assert.match(
       nodes.blockedJobs.children[1].textContent,
       /policywork:p.*Access policy.*No notice/,
@@ -809,11 +952,66 @@ async function change(n, value) {
       nodes.status.textContent,
       'Job cancelled. Nothing in SharePoint was undone or deleted.',
     );
+    // A library setup that needs recovery opens the recovery panel, filled in for it.
+    const lost = nodes.blockedJobs.children[2];
+    assert.match(lost.textContent, /librarycreate:lost · Library setup · Needs recovery/);
+    const open = lost.children.find((n) => n.textContent === 'Open recovery');
+    assert(open, 'RecoveryRequired offers the recovery panel');
+    const inspected = [];
+    xrm.WebApi.online.execute = async (req) => {
+      assert.equal(req.getMetadata().operationName, 'asx_ManageWork');
+      inspected.push(JSON.parse(req.Request));
+      return {
+        ok: true,
+        json: async () => ({
+          Result: JSON.stringify({
+            Status: 'RecoveryRequired',
+            Notices: ['Library request outcome is unknown.'],
+            RunId: 'flow/run-7',
+            Token: '11111111-2222-3333-4444-555555555555',
+            LeaseUntilUtc: '2026-10-05T17:05:00Z',
+          }),
+        }),
+      };
+    };
+    nodes.operations.open = false;
+    nodes.recoveryPanel.open = false;
+    await open.onclick();
+    assert.deepEqual(inspected, [{ Command: 'Inspect', Key: 'librarycreate:lost' }]);
+    assert.equal(nodes.operations.open, true);
+    assert.equal(nodes.recoveryPanel.open, true);
+    assert.equal(nodes.operation.value, 'librarycreate:lost');
+    assert.equal(nodes.operationKey.value, 'librarycreate:lost');
+    assert.equal(nodes.recoveryRun.value, 'flow/run-7');
+    assert.equal(nodes.recoveryToken.value, '11111111-2222-3333-4444-555555555555');
+    assert.match(nodes.operationStatus.textContent, /RecoveryRequired/);
+    // Any operation can be inspected by its pasted key, beyond the latest 50.
+    nodes.operationKey.value = '  folderjob:old  ';
+    await nodes.inspectOperationKey.onclick();
+    assert.deepEqual(inspected.at(-1), { Command: 'Inspect', Key: 'folderjob:old' });
+    assert.equal(nodes.operation.value, 'folderjob:old');
+    assert(nodes.operation.children.some((o) => o.value === 'folderjob:old'));
+    const recorded = [];
+    xrm.WebApi.online.execute = async (req) => {
+      recorded.push([req.getMetadata().operationName, JSON.parse(req.Request)]);
+      return { ok: true, json: async () => ({ Result: JSON.stringify({ Status: 'Pending' }) }) };
+    };
+    nodes.recoveryEvidence.value = 'Run flow/run-7 was cancelled; no call outstanding.';
+    nodes.operation.value = 'librarycreate:lost';
+    await nodes.recoverOperation.onclick();
+    assert.equal(recorded[0][0], 'asx_RecoverWorker');
+    assert.equal(recorded[0][1].Key, 'librarycreate:lost');
+    assert.equal(recorded[0][1].RunId, 'flow/run-7');
+    nodes.operationKey.value = '';
+    await nodes.inspectOperationKey.onclick();
+    assert.match(nodes.status.textContent, /Paste an operation key/);
     xrm.WebApi.retrieveMultipleRecords = async () => ({ entities: [] });
     await nodes.loadBlockedJobs.onclick();
     assert.equal(nodes.blockedJobs.children.length, 0);
     assert.equal(nodes.moreBlockedJobs.hidden, true);
-    assert.equal(nodes.status.textContent, 'No blocked jobs.');
+    assert.equal(nodes.waitingJobs.children.length, 0);
+    assert.equal(nodes.moreWaitingJobs.hidden, true);
+    assert.equal(nodes.status.textContent, 'No blocked jobs. No jobs waiting to retry.');
   }
   {
     // Tables panel: enabled tables come from asx_runtimetable; add, remove and enable are server commands.
@@ -901,7 +1099,7 @@ async function change(n, value) {
     xrm.WebApi.retrieveMultipleRecords = retrieve;
   }
   console.log(
-    'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, blocked-record retry, waiting-record replan, blocked job retry and cancel, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
+    'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, blocked-record retry, waiting-record replan, blocked job retry and cancel, recovery and waiting jobs, inspect by key, failed jobs at 500 tables, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
   );
 })().catch((e) => {
   console.error(e);

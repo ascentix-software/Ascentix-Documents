@@ -22,13 +22,13 @@ Run **Remove all event registrations** (Unregister) in Runtime administration be
 
 Runtime administration has three recovery lists.
 
-- **Failed capture jobs** lists record or team events whose background job failed. Fix the cause, select the records, and click **Replan selected records**. Replan asks Documents to evaluate the records again.
+- **Failed capture jobs** lists record or team events whose background job failed. Fix the cause, select the records, and click **Replan selected records**. Replan asks Documents to evaluate the records again. The list finds the jobs through the Documents event handlers, so it works however many tables are enabled.
 - **Blocked records** lists outbox rows that were blocked. Each has **Retry**. A record blocked for a reason that still holds blocks again. Records blocked before the 0.1.0.4 upgrade can be retried here. Its **Waiting** section lists records with folders that wait (see [Folder names](#folder-names)), each with its notice and **Replan**.
-- **Blocked jobs** lists blocked operations. Each has **Retry** and **Cancel**. Cancel asks in the page first and never undoes or deletes anything in SharePoint.
+- **Blocked jobs** lists blocked operations and library setups in `RecoveryRequired`. Each has **Retry** and **Cancel**. Cancel asks in the page first and never undoes or deletes anything in SharePoint. A setup in `RecoveryRequired` also has **Open recovery**, which opens the recovery panel filled in for it. Its **Waiting to retry** section lists jobs waiting after a temporary error, those that have waited longest first, with their notice and next attempt.
 
 Temporary failures wait and retry on their own. There is no attempt cap. A waiting job shows a notice and the time of its next attempt. **Cancel** stops a waiting job.
 
-Unknown outcomes are handled by type. Reads retry. For folder and access writes, after the 5-minute claim expires, Documents re-checks the result and then finishes the work. Only library creation still needs the evidence-based recovery panel (`RecoveryRequired`), described in the next section.
+Unknown outcomes are handled by type. Reads retry. For folder and access writes, after the 5-minute claim expires, Documents re-checks the result and then finishes the work. Only library creation still needs the evidence-based recovery panel (`RecoveryRequired`), described in the next section. The panel inspects any operation by its pasted key, not only the latest 50.
 
 ## Admin actions
 

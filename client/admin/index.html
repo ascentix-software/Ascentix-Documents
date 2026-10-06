@@ -445,13 +445,20 @@ Select up to five records for a published-revision impact review.</pre>
 
           <h4>Blocked jobs</h4>
           <p class="hint">
-            Folder, access and library jobs that stopped on an error that is not temporary. Fix the
-            cause, then retry. Jobs waiting after a temporary error retry on their own and are not
-            listed here.
+            Folder, access and library jobs that stopped on an error that is not temporary, and
+            library setups that need recovery. Fix the cause, then retry, or open the recovery
+            panel.
           </p>
           <button id="loadBlockedJobs" class="secondary">Load blocked jobs</button>
           <ul id="blockedJobs"></ul>
           <button id="moreBlockedJobs" class="secondary" hidden>Load more</button>
+          <h5>Waiting to retry</h5>
+          <p class="hint">
+            Jobs waiting after a temporary error retry on their own. Those that have waited longest
+            come first, with their notice and next attempt.
+          </p>
+          <ul id="waitingJobs"></ul>
+          <button id="moreWaitingJobs" class="secondary" hidden>Load more</button>
         </details>
         <details id="operations" class="card">
           <summary>Operations and recovery</summary>
@@ -461,12 +468,14 @@ Select up to five records for a published-revision impact review.</pre>
               <option value="">Load operations first</option>
             </select></label
           >
+          <label>Or paste an operation key<input id="operationKey" /></label
+          ><button id="inspectOperationKey" class="secondary">Inspect</button>
           <pre id="operationStatus">Select an operation.</pre>
           <div class="row">
             <button id="retryOperation" class="secondary">Retry after repair</button
             ><button id="cancelOperation" class="secondary">Cancel unstarted work</button>
           </div>
-          <details>
+          <details id="recoveryPanel">
             <summary>Expired writer recovery</summary>
             <p>
               Verify the prior flow run has terminated and outstanding calls have resolved before

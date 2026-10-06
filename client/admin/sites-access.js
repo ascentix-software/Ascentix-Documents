@@ -228,15 +228,19 @@
     }
     return { stages, step, done, stopped, label, message, status };
   }
+  // Whether a tracked operation belongs to another site or selection. A re-point is matched by
+  // its site's ID, since re-pointing a site changes its address.
+  function elsewhere(key, o) {
+    if (state.selectedOperation && state.selectedOperation !== key) return true;
+    if (!state.site) return false;
+    if (o.siteId) return o.siteId !== state.site.asx_siteid;
+    return !!o.url && state.site.asx_url !== o.url;
+  }
   function drawProgress() {
     const area = $('ad-provision-progress');
     area.replaceChildren();
     for (const [key, o] of new Map([...state.completed, ...state.operations])) {
-      if (
-        (state.selectedOperation && state.selectedOperation !== key) ||
-        (state.site && o.url && state.site.asx_url !== o.url)
-      )
-        continue;
+      if (elsewhere(key, o)) continue;
       const p = progressState(o),
         card = node('section'),
         heading = node('div'),
@@ -736,12 +740,14 @@
       'asx_operation',
       append
         ? nextOptions(state.nextActivity)
-        : "?$select=asx_workkey,asx_workkind,asx_displayname,asx_siteurl,asx_status&$orderby=createdon desc&$filter=(asx_workkind eq 'SiteValidation' or asx_workkind eq 'LibrarySetup' or asx_workkind eq 'LibraryValidation' or asx_workkind eq 'LibraryDiscovery') and asx_status ne 'Discovered' and asx_status ne 'Applied' and asx_status ne 'Approved' and asx_status ne 'Cancelled' and asx_status ne 'Superseded'",
+        : "?$select=asx_workkey,asx_workkind,asx_displayname,asx_siteurl,asx_status&$orderby=createdon desc&$filter=(asx_workkind eq 'SiteValidation' or asx_workkind eq 'LibrarySetup' or asx_workkind eq 'LibraryValidation' or asx_workkind eq 'LibraryDiscovery' or asx_workkind eq 'Repoint') and asx_status ne 'Discovered' and asx_status ne 'Applied' and asx_status ne 'Approved' and asx_status ne 'Cancelled' and asx_status ne 'Superseded'",
     );
+    // A re-point's command and ID come from its probe when it is first read (see
+    // refreshOperations), so a blocked re-point still offers "Re-point again" after a reload.
     for (const r of rows.entities)
       state.operations.set(r.asx_workkey, {
         name: r.asx_displayname,
-        url: r.asx_siteurl,
+        url: r.asx_workkind === 'Repoint' ? undefined : r.asx_siteurl,
         kind: r.asx_workkind,
         status: r.asx_status,
       });
@@ -756,16 +762,19 @@
   async function refreshOperations() {
     const observations = [];
     for (const [key, o] of state.operations) {
-      if (
-        (state.selectedOperation && state.selectedOperation !== key) ||
-        (state.site && o.url && state.site.asx_url !== o.url)
-      )
-        continue;
+      if (elsewhere(key, o)) continue;
       observations.push([key, o, await catalog({ Command: 'Inspect', Key: key })]);
     }
+    const noList = '00000000-0000-0000-0000-000000000000';
     for (const [key, o, result] of observations) {
       o.result = result;
       o.status = result.Status;
+      const probe = result.Observation;
+      if (o.kind === 'Repoint' && probe?.CatalogId) {
+        o.command = probe.ListId && probe.ListId !== noList ? 'RepointLibrary' : 'RepointSite';
+        o.id = probe.CatalogId;
+        o.siteId = probe.SiteId;
+      }
     }
     const signature = JSON.stringify([
       state.site?.asx_siteid,

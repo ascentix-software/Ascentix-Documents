@@ -1621,17 +1621,47 @@
       runtimeResult(await runtimeCommand({ Command: 'Unregister' }));
       message('All Documents event registrations were removed.');
     });
-  const failedJobs = { next: null };
-  function failedJobQuery() {
-    const steps = security.runtime?.Registration?.StepIds || [];
-    if (!steps.length)
-      throw new Error('Load the runtime profile first; no event steps are registered.');
-    return (
-      '?$select=asyncoperationid,message,createdon,_regardingobjectid_value' +
-      '&$filter=statuscode eq 31 and (' +
-      steps.map((id) => '_owningextensionid_value eq ' + id).join(' or ') +
-      ')&$orderby=createdon desc'
-    );
+  // Failed background jobs of the Documents event steps. FetchXML joins each job to its step
+  // and the step to the Documents plug-in type, so the query stays the same size however many
+  // tables are enabled (an OData filter listing every step ID outgrows the URL limit).
+  const failedJobs = { page: 0, cookie: null };
+  const captureHandlers = [
+    'Ascentix.Documents.Plugins.RecordInvalidationPlugin',
+    'Ascentix.Documents.Plugins.TeamRetirementPlugin',
+    'Ascentix.Documents.Plugins.TeamMembershipInvalidationPlugin',
+  ];
+  const xmlText = (value) =>
+    String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  function failedJobQuery(page, cookie) {
+    const fetch =
+      '<fetch count="50" page="' +
+      page +
+      '"' +
+      (cookie ? ' paging-cookie="' + xmlText(cookie) + '"' : '') +
+      '><entity name="asyncoperation">' +
+      '<attribute name="asyncoperationid"/><attribute name="message"/>' +
+      '<attribute name="createdon"/><attribute name="regardingobjectid"/>' +
+      '<filter><condition attribute="statuscode" operator="eq" value="31"/></filter>' +
+      '<order attribute="createdon" descending="true"/>' +
+      '<link-entity name="sdkmessageprocessingstep" from="sdkmessageprocessingstepid" to="owningextensionid" link-type="inner">' +
+      '<link-entity name="plugintype" from="plugintypeid" to="eventhandler" link-type="inner">' +
+      '<filter><condition attribute="typename" operator="in">' +
+      captureHandlers.map((name) => '<value>' + xmlText(name) + '</value>').join('') +
+      '</condition></filter></link-entity></link-entity></entity></fetch>';
+    return '?fetchXml=' + encodeURIComponent(fetch);
+  }
+  // The paging cookie Dataverse returns for the next FetchXML page; null pages by number only.
+  function pagingCookie(value) {
+    const encoded = /pagingcookie="([^"]*)"/.exec(value || '');
+    try {
+      return encoded ? decodeURIComponent(decodeURIComponent(encoded[1])) : null;
+    } catch {
+      return null;
+    }
   }
   function renderFailed(rows, append) {
     if (!append) $('failedJobs').replaceChildren();
@@ -1657,16 +1687,20 @@
       $('failedJobs').append(item);
     }
   }
-  async function loadFailedPage(options, append) {
-    const result = await xrm.WebApi.retrieveMultipleRecords('asyncoperation', options, 50);
+  async function loadFailedPage(append) {
+    const page = append ? failedJobs.page + 1 : 1;
+    const result = await xrm.WebApi.retrieveMultipleRecords(
+      'asyncoperation',
+      failedJobQuery(page, append ? failedJobs.cookie : null),
+    );
     renderFailed(result.entities, append);
-    failedJobs.next = result.nextLink
-      ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
-      : null;
-    $('moreFailedJobs').hidden = !failedJobs.next;
+    failedJobs.page = page;
+    failedJobs.cookie = pagingCookie(result.fetchXmlPagingCookie);
+    $('moreFailedJobs').hidden = !result.fetchXmlPagingCookie;
+    if (!append && !result.entities.length) message('No failed capture jobs.');
   }
-  $('loadFailedJobs').onclick = () => task(() => loadFailedPage(failedJobQuery(), false));
-  $('moreFailedJobs').onclick = () => task(() => loadFailedPage(failedJobs.next, true));
+  $('loadFailedJobs').onclick = () => task(() => loadFailedPage(false));
+  $('moreFailedJobs').onclick = () => task(() => loadFailedPage(true));
   $('replanFailed').onclick = () =>
     task(async () => {
       const picked = [...$('failedJobs').children]
@@ -1839,44 +1873,79 @@
     const prefix = Object.keys(jobKinds).find((p) => (key || '').startsWith(p));
     return prefix ? jobKinds[prefix] : 'Folder job';
   }
+  // One listed job: its key, kind, notice and time, with Retry and Cancel. A job in
+  // RecoveryRequired also opens the recovery panel, filled in for it.
+  function renderJob(list, row, when) {
+    const job = blockedWork(row);
+    const item = document.createElement('li');
+    const text = document.createElement('span');
+    text.textContent =
+      (job.Key || 'No key') +
+      ' · ' +
+      jobKind(job.Key) +
+      (job.Status === 'RecoveryRequired' ? ' · Needs recovery' : '') +
+      ' · ' +
+      (job.ErrorCode || 'No notice') +
+      ' · ' +
+      when +
+      ' ';
+    item.append(text);
+    const retry = document.createElement('button');
+    retry.className = 'secondary';
+    retry.textContent = 'Retry';
+    retry.disabled = !job.Key;
+    retry.onclick = () =>
+      task(async () => {
+        const result = JSON.parse(
+          await api('asx_ManageWork', {
+            Request: JSON.stringify({ Command: 'Retry', Key: job.Key }),
+          }),
+        );
+        retry.disabled = true;
+        message(
+          result.Status === 'Pending'
+            ? 'Job queued to run again. It blocks again if the cause remains.'
+            : 'Job is ' + result.Status + '; nothing to retry.',
+        );
+      });
+    item.append(retry);
+    if (job.Status === 'RecoveryRequired' && job.Key)
+      item.append(
+        button('Open recovery', () =>
+          task(async () => {
+            $('operations').open = true;
+            $('recoveryPanel').open = true;
+            $('operationKey').value = job.Key;
+            await inspectOperation(job.Key);
+            message(
+              'Recovery panel filled in for ' +
+                job.Key +
+                '. Add the termination evidence and, for a new library, the original create response.',
+            );
+          }),
+        ),
+      );
+    item.append(...cancelJob(job, [retry]));
+    list.append(item);
+  }
   function renderBlockedJobs(rows, append) {
     if (!append) $('blockedJobs').replaceChildren();
-    for (const row of rows) {
-      const job = blockedWork(row);
-      const item = document.createElement('li');
-      const text = document.createElement('span');
-      text.textContent =
-        (job.Key || 'No key') +
-        ' · ' +
-        jobKind(job.Key) +
-        ' · ' +
-        (job.ErrorCode || 'No notice') +
-        ' · ' +
-        row.modifiedon +
-        ' ';
-      item.append(text);
-      const retry = document.createElement('button');
-      retry.className = 'secondary';
-      retry.textContent = 'Retry';
-      retry.disabled = !job.Key;
-      retry.onclick = () =>
-        task(async () => {
-          const result = JSON.parse(
-            await api('asx_ManageWork', {
-              Request: JSON.stringify({ Command: 'Retry', Key: job.Key }),
-            }),
-          );
-          retry.disabled = true;
-          message(
-            result.Status === 'Pending'
-              ? 'Job queued to run again. It blocks again if the cause remains.'
-              : 'Job is ' + result.Status + '; nothing to retry.',
-          );
-        });
-      item.append(retry);
-      item.append(...cancelJob(job, [retry]));
-      $('blockedJobs').append(item);
-    }
+    for (const row of rows) renderJob($('blockedJobs'), row, row.modifiedon);
+  }
+  // Jobs waiting after a temporary error retry on their own. All of them are listed, those
+  // that have waited longest first, with their notice and next attempt.
+  const waitingJobs = { next: null };
+  function renderWaitingJobs(rows, append) {
+    if (!append) $('waitingJobs').replaceChildren();
+    for (const row of rows)
+      renderJob(
+        $('waitingJobs'),
+        row,
+        'next attempt ' +
+          (row.asx_nextattempt || 'not set') +
+          ' · attempt ' +
+          (row.asx_retrycount ?? 0),
+      );
   }
   // Cancel for a listed job, asked in the page like Remove in the Tables panel. Cancel never
   // undoes or deletes anything in SharePoint; the server keeps its rules for a job a flow
@@ -1933,16 +2002,35 @@
       ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
       : null;
     $('moreBlockedJobs').hidden = !blockedJobs.next;
-    if (!append && !result.entities.length) message('No blocked jobs.');
+    return result.entities.length;
+  }
+  async function loadWaitingJobsPage(options, append) {
+    const result = await xrm.WebApi.retrieveMultipleRecords('asx_operation', options, 50);
+    renderWaitingJobs(result.entities, append);
+    waitingJobs.next = result.nextLink
+      ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
+      : null;
+    $('moreWaitingJobs').hidden = !waitingJobs.next;
+    return result.entities.length;
   }
   $('loadBlockedJobs').onclick = () =>
-    task(() =>
-      loadBlockedJobsPage(
-        "?$select=asx_payload,modifiedon&$filter=asx_status eq 'Blocked'&$orderby=modifiedon desc",
+    task(async () => {
+      const blocked = await loadBlockedJobsPage(
+        "?$select=asx_payload,modifiedon&$filter=asx_status eq 'Blocked' or asx_status eq 'RecoveryRequired'&$orderby=modifiedon desc",
         false,
-      ),
-    );
+      );
+      const waiting = await loadWaitingJobsPage(
+        "?$select=asx_payload,asx_nextattempt,asx_retrycount&$filter=asx_status eq 'RetryWait'&$orderby=asx_retrycount desc,asx_nextattempt asc",
+        false,
+      );
+      const empty = [
+        blocked ? '' : 'No blocked jobs.',
+        waiting ? '' : 'No jobs waiting to retry.',
+      ].filter(Boolean);
+      if (empty.length) message(empty.join(' '));
+    });
   $('moreBlockedJobs').onclick = () => task(() => loadBlockedJobsPage(blockedJobs.next, true));
+  $('moreWaitingJobs').onclick = () => task(() => loadWaitingJobsPage(waitingJobs.next, true));
   $('loadOperations').onclick = () =>
     task(async () => {
       const rows = await xrm.WebApi.retrieveMultipleRecords(
@@ -1956,22 +2044,35 @@
       );
       message('Latest operations loaded. This is a bounded activity view.');
     });
+  // Inspects one operation for the recovery panel: one picked from the latest operations, a
+  // pasted key, or a job opened from Blocked jobs.
+  async function inspectOperation(key) {
+    if (![...$('operation').options].some((o) => o.value === key))
+      $('operation').append(option(key, key));
+    $('operation').value = key;
+    const result = JSON.parse(
+      await api('asx_ManageWork', {
+        Request: JSON.stringify({ Command: 'Inspect', Key: key }),
+      }),
+    );
+    $('operationStatus').textContent =
+      result.Status +
+      '\n' +
+      (result.Notices || []).join('\n') +
+      (result.LeaseUntilUtc ? '\nClaim expiry: ' + result.LeaseUntilUtc : '');
+    $('recoveryResponse').value = '';
+    $('recoveryRun').value = result.RunId || '';
+    $('recoveryToken').value = result.RunId ? result.Token : '';
+  }
   $('operation').onchange = () =>
     task(async () => {
-      if (!$('operation').value) return;
-      const result = JSON.parse(
-        await api('asx_ManageWork', {
-          Request: JSON.stringify({ Command: 'Inspect', Key: $('operation').value }),
-        }),
-      );
-      $('operationStatus').textContent =
-        result.Status +
-        '\n' +
-        (result.Notices || []).join('\n') +
-        (result.LeaseUntilUtc ? '\nClaim expiry: ' + result.LeaseUntilUtc : '');
-      $('recoveryResponse').value = '';
-      $('recoveryRun').value = result.RunId || '';
-      $('recoveryToken').value = result.RunId ? result.Token : '';
+      if ($('operation').value) await inspectOperation($('operation').value);
+    });
+  $('inspectOperationKey').onclick = () =>
+    task(async () => {
+      const key = $('operationKey').value.trim();
+      if (!key) throw new Error('Paste an operation key.');
+      await inspectOperation(key);
     });
   async function manage(command) {
     if (!$('operation').value) throw new Error('Select an operation.');

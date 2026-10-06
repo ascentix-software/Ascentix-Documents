@@ -804,8 +804,90 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     assert(!apis.includes('asx_ManageWork'), 'Sites never needs the Operator role');
     delete inspectByKey['librarycreate:test'];
   }
+  {
+    // After a reload, a re-point still running or blocked is found again with the other setup
+    // activity, and its command and ID come from its probe, so "Re-point again" still works.
+    const fresh = {},
+      later = [],
+      sent = [],
+      activity = [];
+    for (const m of html.matchAll(/<([a-z]+)[^>]*\bid="([^"]+)"[^>]*>/g))
+      fresh[m[2]] = new Node(m[1]);
+    const reloaded = {
+      Xrm: {
+        Utility: xrm.Utility,
+        Navigation: xrm.Navigation,
+        WebApi: {
+          retrieveMultipleRecords: async (table, options) => {
+            if (table === 'asx_operation') {
+              activity.push(options);
+              return {
+                entities: [
+                  {
+                    asx_workkey: 'catalogprobe:repoint:old',
+                    asx_workkind: 'Repoint',
+                    asx_displayname: 'General',
+                    asx_siteurl: 'https://example.sharepoint.com/sites/moved',
+                    asx_status: 'Blocked',
+                  },
+                ],
+              };
+            }
+            return {
+              entities: table === 'asx_site' ? [site] : table === 'asx_library' ? [lib] : [],
+            };
+          },
+          retrieveRecord: xrm.WebApi.retrieveRecord,
+          online: {
+            execute: async (req) => {
+              const command = JSON.parse(req.Request);
+              sent.push(command);
+              const result =
+                command.Command === 'Inspect'
+                  ? {
+                      Status: 'Blocked',
+                      Key: command.Key,
+                      Issue:
+                        'This library no longer exists on the site. Remove it, or register the new library.',
+                      Observation: {
+                        Repoint: true,
+                        CatalogId: id(3),
+                        SiteId: id(1),
+                        ListId: id(21),
+                      },
+                    }
+                  : command.Command === 'GetPolicy'
+                    ? { Status: 'Applied', RowVersion: '1', Policy: { Desired: [], Applied: [] } }
+                    : { Status: 'Pending', Key: 'catalogprobe:repoint:again' };
+              return { ok: true, json: async () => ({ Result: JSON.stringify(result) }) };
+            },
+          },
+        },
+      },
+      AsxdAdmin: { refreshCatalog: async () => {} },
+    };
+    vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), {
+      window: reloaded,
+      document: { getElementById: (key) => fresh[key], createElement: (t) => new Node(t) },
+      URL,
+      crypto: { randomUUID: () => id(22) },
+      setTimeout: (fn) => later.push(fn),
+    });
+    await reloaded.AsxdSites.open();
+    assert.match(activity[0], /asx_workkind eq 'Repoint'/);
+    await later.shift()();
+    const card = fresh['ad-provision-progress'];
+    assert.match(card.textContent, /General.*no longer exists on the site/);
+    const again = find(card, (n) => n.textContent === 'Re-point again');
+    assert(again, 'A blocked re-point found after a reload offers to re-point again');
+    await again.onclick();
+    assert.deepEqual(
+      sent.filter((c) => c.Command === 'RepointLibrary').map((c) => c.CatalogId),
+      [id(3)],
+    );
+  }
   console.log(
-    'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, stuck access runs and library setups with Retry and Cancel, and author deep link. Mocked APIs; connected acceptance pending.',
+    'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, stuck access runs and library setups with Retry and Cancel, re-point found again after a reload, and author deep link. Mocked APIs; connected acceptance pending.',
   );
 })().catch((e) => {
   console.error(e);
