@@ -105,6 +105,12 @@
   };
   const guid = (v) =>
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v || '');
+  // A server time ("/Date(ms)/" or ISO) as "YYYY-MM-DD hh:mm UTC".
+  const when = (value) => {
+    const ms = /^\/Date\((-?\d+)/.exec(value || '');
+    const date = new Date(ms ? Number(ms[1]) : value);
+    return isNaN(date) ? String(value) : date.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+  };
   async function api(name, request) {
     const input = {
       Request: JSON.stringify(request),
@@ -291,6 +297,28 @@
             await runConfirmed({ kind: o.command, id: o.id, name: o.name });
           });
         card.append(again);
+      } else if (
+        o.kind === 'LibrarySetup' &&
+        ['Blocked', 'RecoveryRequired', 'RetryWait'].includes(p.status)
+      ) {
+        // Through the catalog API, so a Documents Security Administrator needs no Operator
+        // role. The server keeps its rules: Retry of a create that may have reached SharePoint
+        // is refused with the way out, and Cancel deletes nothing in SharePoint.
+        const retry = node('button', 'Retry');
+        retry.onclick = () =>
+          action(async () => {
+            const result = await catalog({ Command: 'RetrySetup', Key: key });
+            o.result = result;
+            o.status = result.Status;
+            state.progressSignature = null;
+            issue('Setup queued to run again. It stops again if the cause remains.');
+          });
+        const cancel = node('button', 'Cancel setup');
+        cancel.onclick = () => {
+          state.confirm = { kind: 'CancelSetup', id: key, name: o.name };
+          render();
+        };
+        card.append(retry, cancel);
       } else if (p.status === 'Blocked') {
         const retry = node('button', 'Retry after repair');
         retry.onclick = () =>
@@ -383,6 +411,12 @@
         : 'Access setup pending';
     }
     $('ad-teams').replaceChildren();
+    // The queued access run: one that stopped or waits is shown with its notice and can be
+    // retried or cancelled here. A run stopped because the library inherits again, or one that
+    // stopped (Blocked), is replaced by Apply access.
+    const run = p?.result.RunStatus,
+      stuck = ['Blocked', 'RetryWait'].includes(run) && !inherits(p),
+      running = !!p?.result.Policy?.OperationKey && !inherits(p) && run !== 'Blocked';
     if (p) {
       p.entries.forEach((e) => {
         const tr = node('tr'),
@@ -392,7 +426,7 @@
           select.append(opt(level, level === 'None' ? 'Remove access' : level)),
         );
         select.value = e.Access;
-        select.disabled = state.busy || !!p.result.Policy?.OperationKey;
+        select.disabled = state.busy || running;
         select.setAttribute('aria-label', (state.teams.get(e.TeamId) || 'Team') + ' access');
         select.onchange = () => {
           e.Access = select.value;
@@ -406,8 +440,7 @@
           cell,
           node(
             'td',
-            (current === 'None' ? 'No managed access' : current) +
-              (p.result.Policy?.OperationKey ? ' · applying' : ''),
+            (current === 'None' ? 'No managed access' : current) + (running ? ' · applying' : ''),
           ),
         );
         $('ad-teams').append(tr);
@@ -420,24 +453,35 @@
         $('ad-teams').append(tr);
       }
     }
-    // A run stopped because the library inherits again is replaced by Apply access.
-    const running = !!p?.result.Policy?.OperationKey && !inherits(p);
-    $('ad-apply').disabled =
-      state.busy || !p || running || (!changed(p) && p.result.Status !== 'Missing' && !inherits(p));
+    // A cancelled run leaves the policy to review: Apply access starts a new run.
+    const reapply = inherits(p) || ['Missing', 'NeedsReview'].includes(p?.result.Status);
+    $('ad-apply').disabled = state.busy || !p || running || (!changed(p) && !reapply);
     $('ad-add-team').disabled = state.busy || !p || running;
     $('ad-change-status').textContent = !p
       ? 'Loading access…'
-      : running
-        ? 'Applying access and syncing members…'
-        : inherits(p)
-          ? inheritsAgain
-          : changed(p)
-            ? 'Changes not yet applied.'
-            : p.result.Status === 'Missing'
-              ? 'Apply to confirm this library’s access.'
-              : p.result.Status === 'Applied'
-                ? 'Access and team membership confirmed.'
-                : p.result.Status;
+      : stuck
+        ? 'Needs attention: ' +
+          (p.result.RunNotice || 'the access run stopped.') +
+          (run === 'RetryWait' && p.result.RunNextAttemptUtc
+            ? ' Next check: ' + when(p.result.RunNextAttemptUtc) + '.'
+            : '')
+        : running
+          ? 'Applying access and syncing members…'
+          : inherits(p)
+            ? inheritsAgain
+            : changed(p)
+              ? 'Changes not yet applied.'
+              : p.result.Status === 'Missing'
+                ? 'Apply to confirm this library’s access.'
+                : p.result.Status === 'NeedsReview'
+                  ? 'The access run was cancelled. Apply access to run it again.'
+                  : p.result.Status === 'Applied'
+                    ? 'Access and team membership confirmed.'
+                    : p.result.Status;
+    $('ad-change-status').className = stuck ? 'ad-issue' : 'ad-muted';
+    $('ad-run-actions').hidden = !stuck;
+    $('ad-run-retry').disabled = state.busy;
+    $('ad-run-cancel').disabled = state.busy;
     // What the last access sync skipped or reconciled, such as members SharePoint could not take.
     const notices = (p && p.result.Policy?.Notices) || [];
     $('ad-access-notices').replaceChildren(...notices.map((n) => node('li', n)));
@@ -461,6 +505,7 @@
     $('ad-confirm').hidden = !c;
     $('ad-confirm-text').textContent = c ? confirmText(c) : '';
     $('ad-confirm-go').textContent = c ? confirmLabel(c) : 'Confirm';
+    $('ad-confirm-cancel').textContent = c?.kind.startsWith('Cancel') ? 'Keep it' : 'Cancel';
     $('ad-changes').replaceChildren(...state.changes.map((t) => node('li', t)));
     $('ad-changes').hidden = !state.changes.length;
     $('ad-repoint-site').disabled = state.busy || !state.site;
@@ -503,20 +548,65 @@
           c.name +
           ' from Documents? Nothing in SharePoint is deleted or changed. Remove its libraries first.'
         );
+      case 'CancelAccessRun':
+        return (
+          'Cancel the access run for ' +
+          c.name +
+          '? Access already set in SharePoint stays as it is; nothing is undone or deleted. Apply access again when you are ready.'
+        );
+      case 'CancelSetup':
+        return (
+          'Cancel the setup of ' +
+          c.name +
+          '? Nothing in SharePoint is deleted. If SharePoint already created the library, add it as an existing library.'
+        );
       default:
         return '';
     }
   }
   const confirmLabel = (c) =>
-    c.kind.startsWith('Repoint')
-      ? 'Re-point'
-      : c.kind === 'RemoveLibrary'
-        ? 'Remove library'
-        : 'Remove site';
+    ({
+      RepointSite: 'Re-point',
+      RepointLibrary: 'Re-point',
+      RemoveLibrary: 'Remove library',
+      RemoveSite: 'Remove site',
+      CancelAccessRun: 'Cancel access run',
+      CancelSetup: 'Cancel setup',
+    })[c.kind];
   // Runs a confirmed site or library command.
   async function runConfirmed(c) {
     state.confirm = null;
     state.changes = [];
+    if (c.kind === 'CancelAccessRun') {
+      const result = await security({
+        Command: 'CancelAccessRun',
+        LibraryId: c.id,
+        OperationKey: c.key,
+      });
+      const p = state.policies.get(c.id);
+      if (p) p.result = result;
+      issue(
+        'The access run for ' +
+          c.name +
+          ' was cancelled. Nothing in SharePoint was undone or deleted.',
+      );
+      return;
+    }
+    if (c.kind === 'CancelSetup') {
+      const result = await catalog({ Command: 'CancelSetup', Key: c.id });
+      state.changes = result.Notices || [];
+      state.progressSignature = null;
+      const o = state.operations.get(c.id);
+      if (result.Status === 'Cancelled') {
+        state.operations.delete(c.id);
+        state.completed.delete(c.id);
+      } else if (o) {
+        o.result = result;
+        o.status = result.Status;
+      }
+      issue('The setup of ' + c.name + ' was cancelled.');
+      return;
+    }
     if (c.kind.startsWith('Remove')) {
       // Refused while a Draft or published template uses the library; the error names them.
       const removed = await catalog({ Command: c.kind, CatalogId: c.id });
@@ -1018,7 +1108,8 @@
         throw new Error(
           'Library access changed since you opened it. Reload the page and review the current access before applying.',
         );
-      if (latest.Policy?.OperationKey && !latest.Policy.Inherits)
+      // A run that stopped is replaced by this apply; one still running is not.
+      if (latest.Policy?.OperationKey && !latest.Policy.Inherits && latest.RunStatus !== 'Blocked')
         throw new Error(
           'An access synchronization is in progress. Wait for it to finish, then apply your changes.',
         );
@@ -1035,6 +1126,29 @@
       p.saved = JSON.stringify(p.entries);
       issue('Access submitted. Team membership syncing is onboarded automatically.');
     });
+  $('ad-run-retry').onclick = () =>
+    action(async () => {
+      const p = policy(),
+        key = p?.result.Policy?.OperationKey;
+      if (!key) throw new Error('This library has no access run to retry.');
+      p.result = await security({
+        Command: 'RetryAccessRun',
+        LibraryId: state.library.asx_libraryid,
+        OperationKey: key,
+      });
+      issue('Access run queued to run again. It stops again if the cause remains.');
+    });
+  $('ad-run-cancel').onclick = () => {
+    const key = policy()?.result.Policy?.OperationKey;
+    if (!key || !state.library) return;
+    state.confirm = {
+      kind: 'CancelAccessRun',
+      id: state.library.asx_libraryid,
+      key,
+      name: state.library.asx_name,
+    };
+    render();
+  };
   $('ad-repoint-site').onclick = () => {
     if (!state.site) return;
     state.confirm = { kind: 'RepointSite', id: state.site.asx_siteid, name: state.site.asx_name };

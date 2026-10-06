@@ -1810,8 +1810,57 @@
           );
         });
       item.append(retry);
+      item.append(...cancelJob(job, [retry]));
       $('blockedJobs').append(item);
     }
+  }
+  // Cancel for a listed job, asked in the page like Remove in the Tables panel. Cancel never
+  // undoes or deletes anything in SharePoint; the server keeps its rules for a job a flow
+  // still holds.
+  function cancelJob(job, others) {
+    const ask = el('div', null, 'callout');
+    ask.hidden = true;
+    const cancel = button('Cancel', () => {
+      ask.hidden = false;
+    });
+    cancel.disabled = !job.Key;
+    ask.append(
+      el(
+        'p',
+        'Cancel ' +
+          jobKind(job.Key).toLowerCase() +
+          ' ' +
+          job.Key +
+          '? Nothing in SharePoint is undone or deleted.',
+      ),
+      button(
+        'Cancel job',
+        () =>
+          task(async () => {
+            const result = JSON.parse(
+              await api('asx_ManageWork', {
+                Request: JSON.stringify({ Command: 'Cancel', Key: job.Key }),
+              }),
+            );
+            ask.hidden = true;
+            cancel.disabled = true;
+            others.forEach((b) => (b.disabled = true));
+            message(
+              [
+                result.Status === 'Cancelled'
+                  ? 'Job cancelled. Nothing in SharePoint was undone or deleted.'
+                  : 'Job is ' + result.Status + '.',
+                ...(result.Notices || []),
+              ].join(' '),
+            );
+          }),
+        'danger',
+      ),
+      button('Keep job', () => {
+        ask.hidden = true;
+      }),
+    );
+    return [cancel, ask];
   }
   async function loadBlockedJobsPage(options, append) {
     const result = await xrm.WebApi.retrieveMultipleRecords('asx_operation', options, 50);

@@ -259,6 +259,13 @@ public sealed class SecurityRequest
     /// </summary>
     [DataMember]
     public bool BreakInheritance { get; set; }
+
+    /// <summary>
+    /// RetryAccessRun and CancelAccessRun: the access run the admin saw on the library, so a
+    /// newer run queued meanwhile is never retried or cancelled by mistake.
+    /// </summary>
+    [DataMember]
+    public string? OperationKey { get; set; }
 }
 
 [DataContract]
@@ -275,6 +282,18 @@ public sealed class SecurityResult
 
     [DataMember]
     public string[] Diff { get; set; } = Array.Empty<string>();
+
+    /// <summary>The status of the library's queued access run, such as Blocked or RetryWait.</summary>
+    [DataMember]
+    public string? RunStatus { get; set; }
+
+    /// <summary>What the queued access run reports first: why it stopped or why it waits.</summary>
+    [DataMember]
+    public string? RunNotice { get; set; }
+
+    /// <summary>When a waiting access run checks again (UTC).</summary>
+    [DataMember]
+    public DateTime? RunNextAttemptUtc { get; set; }
 }
 
 [DataContract]

@@ -707,6 +707,39 @@ async function change(n, value) {
     const second = nodes.blockedJobs.children[1].children.find((n) => n.tagName === 'BUTTON');
     await second.onclick();
     assert.match(nodes.status.textContent, /Applied; nothing to retry/);
+    // Cancel sits next to Retry and asks in the page first, like Remove in the Tables panel.
+    const row = nodes.blockedJobs.children[0];
+    const cancel = row.children.find((n) => n.tagName === 'BUTTON' && n.textContent === 'Cancel');
+    assert(cancel, 'Blocked jobs offer Cancel next to Retry');
+    const cancelled = [];
+    xrm.WebApi.online.execute = async (req) => {
+      assert.equal(req.getMetadata().operationName, 'asx_ManageWork');
+      cancelled.push(JSON.parse(req.Request));
+      return { ok: true, json: async () => ({ Result: JSON.stringify({ Status: 'Cancelled' }) }) };
+    };
+    cancel.onclick();
+    assert.equal(cancelled.length, 0, 'Nothing is cancelled before the admin confirms');
+    const ask = row.children.find((n) => n.className === 'callout');
+    assert.equal(ask.hidden, false);
+    assert.equal(
+      ask.children[0].textContent,
+      'Cancel folder job folderjob:abc? Nothing in SharePoint is undone or deleted.',
+    );
+    const [go, keep] = ask.children.filter((n) => n.tagName === 'BUTTON');
+    assert.equal(go.textContent, 'Cancel job');
+    keep.onclick();
+    assert.equal(ask.hidden, true);
+    assert.equal(cancelled.length, 0);
+    cancel.onclick();
+    await go.onclick();
+    assert.deepEqual(cancelled, [{ Command: 'Cancel', Key: 'folderjob:abc' }]);
+    assert.equal(ask.hidden, true);
+    assert.equal(cancel.disabled, true);
+    assert.equal(retry.disabled, true);
+    assert.equal(
+      nodes.status.textContent,
+      'Job cancelled. Nothing in SharePoint was undone or deleted.',
+    );
     xrm.WebApi.retrieveMultipleRecords = async () => ({ entities: [] });
     await nodes.loadBlockedJobs.onclick();
     assert.equal(nodes.blockedJobs.children.length, 0);
@@ -799,7 +832,7 @@ async function change(n, value) {
     xrm.WebApi.retrieveMultipleRecords = retrieve;
   }
   console.log(
-    'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, blocked-record retry, blocked job retry, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
+    'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, blocked-record retry, blocked job retry and cancel, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
   );
 })().catch((e) => {
   console.error(e);

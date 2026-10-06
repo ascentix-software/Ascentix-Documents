@@ -153,8 +153,11 @@ public sealed class SecurityAdministration
         var existing = store.Find<PolicyDocument>("asx_policy", policyKey);
         if (request.Command == "GetPolicy")
             return Result(existing);
-        if (request.Command == "ApplyPolicy" && request.BreakInheritance && existing != null)
-            existing = ReplaceInheritanceStop(existing, request);
+        // Before the catalog check: a stuck run of a suspended library can be cancelled too.
+        if (request.Command == "RetryAccessRun" || request.Command == "CancelAccessRun")
+            return ManageRun(existing, request);
+        if (request.Command == "ApplyPolicy" && existing != null)
+            existing = ReplaceBlockedRun(existing, request);
         var catalog = new SecurityCatalog(service, request.LibraryId);
         string? expectedVersion = request.RowVersion;
         if (request.Command == "SavePolicy" || request.Command == "ApplyPolicy")
@@ -352,21 +355,32 @@ public sealed class SecurityAdministration
     }
 
     /// <summary>
-    /// Apply access with the inheritance acknowledgement replaces the run that stopped because
-    /// the library inherits again. That run never wrote to SharePoint; it is cancelled with the
-    /// existing Cancel semantics and the admin's apply continues in this transaction.
+    /// The admin's Apply access replaces a run that stopped (Blocked), the same way a newer team
+    /// snapshot replaces idle work in SecurityRefresh: the stopped run is cancelled with the
+    /// existing Cancel semantics (nothing in SharePoint is undone) and the apply continues in
+    /// this transaction, so the admin's newer intent wins. A run with a write whose outcome is
+    /// not known yet, or one a flow still holds, is never replaced; Apply then refuses as before.
     /// </summary>
-    private StoredRow<PolicyDocument> ReplaceInheritanceStop(
+    private StoredRow<PolicyDocument> ReplaceBlockedRun(
         StoredRow<PolicyDocument> policy,
         SecurityRequest request
     )
     {
-        if (!policy.Value.Inherits || policy.Value.OperationKey == null)
+        if (policy.Value.OperationKey == null)
+            return policy;
+        var stopped = store.Require<SecurityOperation>("asx_operation", policy.Value.OperationKey);
+        if (
+            stopped.Value.Status != "Blocked"
+            || stopped.Value.ExternalSubmitted && !stopped.Value.ExternalResponseKnown
+        )
+            return policy;
+        var claim = store.Find<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(service, stopped.Value.Key)
+        );
+        if (claim?.Value.OperationKey == stopped.Value.Key && claim.Value.RunId != null)
             return policy;
         Version(policy.Row, request.RowVersion);
-        var stopped = store.Require<SecurityOperation>("asx_operation", policy.Value.OperationKey);
-        if (stopped.Value.Status != "Blocked" || stopped.Value.ExternalSubmitted)
-            return policy;
         new SecurityWorker(service).Execute(
             new WorkerRequest { Command = "Cancel", Key = stopped.Value.Key },
             true
@@ -374,6 +388,33 @@ public sealed class SecurityAdministration
         var current = store.Require<PolicyDocument>("asx_policy", policy.Value.Key);
         request.RowVersion = current.Row.RowVersion;
         return current;
+    }
+
+    /// <summary>
+    /// Retry or Cancel of the library's queued access run, from the library in Sites. It acts
+    /// only on the run the admin saw, and keeps the operator rules (SecurityWorker.Manage): a
+    /// run a flow still holds waits for its claim to expire, Retry reads back any write whose
+    /// outcome is unknown before writing again, and Cancel never undoes anything in SharePoint.
+    /// </summary>
+    private SecurityResult ManageRun(StoredRow<PolicyDocument>? policy, SecurityRequest request)
+    {
+        if (
+            policy == null
+            || string.IsNullOrEmpty(request.OperationKey)
+            || policy.Value.OperationKey != request.OperationKey
+        )
+            throw new EvaluationBlockedException(
+                "This library's access run changed. Refresh the library and try again."
+            );
+        new SecurityWorker(service).Execute(
+            new WorkerRequest
+            {
+                Command = request.Command == "RetryAccessRun" ? "Retry" : "Cancel",
+                Key = request.OperationKey!,
+            },
+            true
+        );
+        return Result(store.Require<PolicyDocument>("asx_policy", policy.Value.Key));
     }
 
     public static void Validate(PolicyEntry[] entries, PolicyRole read, PolicyRole contribute)
@@ -440,7 +481,27 @@ public sealed class SecurityAdministration
             );
     }
 
-    private static SecurityResult Result(StoredRow<PolicyDocument>? row) =>
+    /// <summary>
+    /// The policy with its diff, and the queued access run's status and first notice, so the
+    /// library shows a run that stopped or waits instead of "Applying access" forever.
+    /// </summary>
+    private SecurityResult Result(StoredRow<PolicyDocument>? row)
+    {
+        var result = Describe(row);
+        var run =
+            row?.Value.OperationKey == null
+                ? null
+                : store.Find<SecurityOperation>("asx_operation", row.Value.OperationKey)?.Value;
+        if (run != null)
+        {
+            result.RunStatus = run.Status;
+            result.RunNotice = run.ErrorCode ?? run.Notices.FirstOrDefault();
+            result.RunNextAttemptUtc = run.Status == "RetryWait" ? run.NextAttemptUtc : null;
+        }
+        return result;
+    }
+
+    private static SecurityResult Describe(StoredRow<PolicyDocument>? row) =>
         new SecurityResult
         {
             Status = row?.Value.Status ?? "Missing",

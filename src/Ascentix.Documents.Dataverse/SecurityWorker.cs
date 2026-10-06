@@ -35,6 +35,10 @@ public sealed class SecurityWorker
     public const string InheritsAgainNotice =
         "This library inherits permissions again. Use Apply access to let Documents stop the inheritance again.";
 
+    /// <summary>The setup of a new library whose first access run was cancelled or replaced.</summary>
+    public const string SetupAccessCancelled =
+        "Library created. Its first access run was cancelled; apply access on the library.";
+
     public const string InheritanceStoppedNotice =
         "Documents stopped this library's permission inheritance and kept a copy of the site's permissions.";
 
@@ -261,6 +265,10 @@ public sealed class SecurityWorker
             || WorkCoordination.Stops(service, op.Value.LibraryId) != "suspended"
         )
             return null;
+        // A step must hold the run's claim, as every step does: a stale step of a run that
+        // already waits must not push its next check further out.
+        if (request.Command != "Claim")
+            Assert(request);
         var claim = store.Find<DispatcherDocument>(
             "asx_claim",
             WorkCoordination.Operation(service, request.Key)
@@ -346,6 +354,19 @@ public sealed class SecurityWorker
         policy.Value.Queued = Array.Empty<PolicyEntry>();
         policy.Value.Status = "NeedsReview";
         store.Save(policy);
+        // The library a setup created stays; its setup ends here instead of showing its first
+        // access run as applying for ever. Access is applied again from the library.
+        if (op.Value.LibrarySetupKey != null)
+        {
+            var setup = store.Find<LibrarySetup>("asx_operation", op.Value.LibrarySetupKey);
+            if (setup?.Value.Status == "AccessPending")
+            {
+                setup.Value.Status = "Applied";
+                setup.Value.CompletedUtc = clock();
+                setup.Value.ErrorCode = SetupAccessCancelled;
+                store.Save(setup);
+            }
+        }
         // Cancel works whatever the library's approval: a suspended or removed library too.
         var library = service.Retrieve(
             "asx_library",

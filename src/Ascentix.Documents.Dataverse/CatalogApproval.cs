@@ -262,6 +262,11 @@ public sealed class CatalogAdministration
             && request.Key.StartsWith("librarycreate:", StringComparison.Ordinal)
         )
             return new LibraryProvisioning(service, clock).Inspect(request.Key);
+        if (request.Command == "RetrySetup" || request.Command == "CancelSetup")
+            return new LibraryProvisioning(service, clock).ManageSetup(
+                request.Key,
+                request.Command == "RetrySetup"
+            );
         if (request.Command == "RepointLibrary" || request.Command == "RepointSite")
             return QueueRepoint(request);
         if (request.Command == "RemoveLibrary")

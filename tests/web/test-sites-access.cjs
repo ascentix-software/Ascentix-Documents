@@ -54,9 +54,13 @@ const site = {
   };
 // The refusal RemoveLibrary answers with, or null to remove.
 let removalRefusal = null;
+// The refusal RetrySetup answers with, or null to retry.
+let retrySetupRefusal = null;
 const libraryQueries = [],
   siteQueries = [];
 const requests = [],
+  // The API each request went to, in the same order as requests.
+  apis = [],
   timers = [],
   teamQueries = [];
 // Owner, Entra group and Microsoft 365 group teams. Dataverse fills group team members only as
@@ -158,6 +162,7 @@ const xrm = {
       execute: async (req) => {
         const command = JSON.parse(req.Request);
         requests.push(command);
+        apis.push(req.getMetadata().operationName);
         if (command.Command === 'Inspect' && inspectFails)
           throw new Error('Temporary status request failure');
         if (command.Command === 'RemoveLibrary' && removalRefusal)
@@ -172,8 +177,25 @@ const xrm = {
               }),
             }),
           };
+        if (command.Command === 'RetrySetup' && retrySetupRefusal)
+          return { ok: false, text: async () => retrySetupRefusal };
         let result;
         if (command.Command === 'GetPolicy') result = policy;
+        else if (command.Command === 'RetryAccessRun')
+          result = policy = { ...policy, RunStatus: 'Pending', RunNotice: null };
+        else if (command.Command === 'CancelAccessRun')
+          result = policy = {
+            Status: 'NeedsReview',
+            RowVersion: '41',
+            Policy: { ...policy.Policy, OperationKey: null },
+          };
+        else if (command.Command === 'RetrySetup') result = { Status: 'Pending', Key: command.Key };
+        else if (command.Command === 'CancelSetup')
+          result = {
+            Status: 'Cancelled',
+            Key: command.Key,
+            Notices: ['Cancelled. Nothing in SharePoint was deleted.'],
+          };
         else if (command.Command === 'ApplyPolicy')
           result = policy = {
             Status: 'Queued',
@@ -657,8 +679,133 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   assert.equal(requests.at(-1).Command, 'RemoveSite');
   assert.equal(requests.at(-1).CatalogId, id(1));
   assert.match(siteQueries.at(-1), /statecode eq 0/, 'Removed sites are hidden');
+  {
+    // An access run that stopped or waits shows its notice on the library, with Retry and
+    // Cancel in place; Apply access replaces a run that stopped.
+    const stuck = {
+      Status: 'Queued',
+      RowVersion: '40',
+      Policy: {
+        Desired: [{ TeamId: id(4), Access: 'Read' }],
+        Applied: [],
+        OperationKey: 'policywork:stuck',
+      },
+      RunStatus: 'Blocked',
+      RunNotice: 'SharePoint refused the write (HTTP 403).',
+    };
+    policy = stuck;
+    lib2.asx_libraryid = id(20);
+    lib2.asx_name = 'Stuck';
+    await window.AsxdSites.selectLibrary(id(13));
+    assert.equal(
+      nodes['ad-change-status'].textContent,
+      'Needs attention: SharePoint refused the write (HTTP 403).',
+    );
+    assert.equal(nodes['ad-change-status'].className, 'ad-issue');
+    assert.equal(nodes['ad-run-actions'].hidden, false);
+    assert.equal(nodes['ad-add-team'].disabled, false, 'A stopped run does not lock the teams');
+    await nodes['ad-run-retry'].onclick();
+    assert.deepEqual(requests.at(-1), {
+      Command: 'RetryAccessRun',
+      LibraryId: id(20),
+      OperationKey: 'policywork:stuck',
+    });
+    assert.equal(apis.at(-1), 'asx_SecurityAdmin');
+    assert.equal(nodes['ad-change-status'].textContent, 'Applying access and syncing members…');
+    assert.equal(nodes['ad-run-actions'].hidden, true);
+    assert.equal(nodes['ad-add-team'].disabled, true);
+    policy = {
+      ...stuck,
+      RunStatus: 'RetryWait',
+      RunNotice: 'Waiting to retry after a temporary error (HTTP 503); attempt 4.',
+      RunNextAttemptUtc: '/Date(1791225000000)/',
+    };
+    await timers.shift()();
+    assert.equal(
+      nodes['ad-change-status'].textContent,
+      'Needs attention: Waiting to retry after a temporary error (HTTP 503); attempt 4. Next check: 2026-10-05 18:30 UTC.',
+    );
+    const cancels = () => requests.filter((r) => r.Command === 'CancelAccessRun');
+    nodes['ad-run-cancel'].onclick();
+    assert.equal(cancels().length, 0, 'Nothing is cancelled before the admin confirms');
+    assert.equal(nodes['ad-confirm'].hidden, false);
+    assert.match(
+      nodes['ad-confirm-text'].textContent,
+      /^Cancel the access run for Stuck\? .*nothing is undone or deleted/,
+    );
+    assert.equal(nodes['ad-confirm-go'].textContent, 'Cancel access run');
+    assert.equal(nodes['ad-confirm-cancel'].textContent, 'Keep it');
+    await nodes['ad-confirm-go'].onclick();
+    assert.deepEqual(cancels(), [
+      { Command: 'CancelAccessRun', LibraryId: id(20), OperationKey: 'policywork:stuck' },
+    ]);
+    assert.match(nodes['ad-message'].textContent, /Nothing in SharePoint was undone or deleted/);
+    assert.equal(
+      nodes['ad-change-status'].textContent,
+      'The access run was cancelled. Apply access to run it again.',
+    );
+    assert.equal(nodes['ad-apply'].disabled, false, 'Apply access starts a new run');
+    // Apply access replaces a stopped run with the admin's newer access.
+    policy = stuck;
+    const team = nodes['ad-teams'].children[0].children[1].children[0];
+    team.value = 'Contribute';
+    team.onchange();
+    const before = requests.filter((r) => r.Command === 'ApplyPolicy').length;
+    await nodes['ad-apply'].onclick();
+    const replaced = requests.filter((r) => r.Command === 'ApplyPolicy');
+    assert.equal(replaced.length, before + 1, 'A stopped run does not refuse Apply');
+    assert.equal(replaced.at(-1).Entries[0].Access, 'Contribute');
+  }
+  {
+    // A library setup that needs attention offers Retry and Cancel through the catalog API, so
+    // a Documents Security Administrator needs no Operator role.
+    nodes['ad-create'].onclick();
+    nodes['ad-library-name'].value = 'Stalled';
+    nodes['ad-initial-team'].value = '';
+    await nodes['ad-provision'].onclick();
+    inspectByKey['librarycreate:test'] = {
+      Status: 'RecoveryRequired',
+      Key: 'librarycreate:test',
+      Issue: 'The library create may have reached SharePoint and its answer was lost.',
+    };
+    await timers.shift()();
+    const area = nodes['ad-provision-progress'],
+      named = (text) => find(area, (n) => n.textContent === text);
+    assert.match(area.textContent, /Stalled.*Needs attention/);
+    assert.match(area.textContent, /answer was lost/);
+    retrySetupRefusal =
+      'The library create may have reached SharePoint and its answer was lost. Recover it with the original create response from the flow run, or Cancel the setup.';
+    await named('Retry').onclick();
+    assert.deepEqual(requests.at(-1), { Command: 'RetrySetup', Key: 'librarycreate:test' });
+    assert.equal(apis.at(-1), 'asx_CatalogAdmin');
+    assert.match(nodes['ad-message'].textContent, /original create response/);
+    assert.equal(nodes['ad-message'].className, 'ad-issue');
+    retrySetupRefusal = null;
+    await named('Retry').onclick();
+    assert.equal(apis.at(-1), 'asx_CatalogAdmin');
+    assert.match(nodes['ad-message'].textContent, /queued to run again/);
+    await timers.shift()();
+    named('Cancel setup').onclick();
+    assert.equal(
+      requests.filter((r) => r.Command === 'CancelSetup').length,
+      0,
+      'Nothing is cancelled before the admin confirms',
+    );
+    assert.match(
+      nodes['ad-confirm-text'].textContent,
+      /^Cancel the setup of Stalled\? Nothing in SharePoint is deleted\./,
+    );
+    assert.equal(nodes['ad-confirm-go'].textContent, 'Cancel setup');
+    await nodes['ad-confirm-go'].onclick();
+    assert.deepEqual(requests.at(-1), { Command: 'CancelSetup', Key: 'librarycreate:test' });
+    assert.equal(apis.at(-1), 'asx_CatalogAdmin');
+    assert.doesNotMatch(area.textContent, /Stalled/, 'A cancelled setup leaves the list');
+    assert.match(nodes['ad-changes'].textContent, /Nothing in SharePoint was deleted/);
+    assert(!apis.includes('asx_ManageWork'), 'Sites never needs the Operator role');
+    delete inspectByKey['librarycreate:test'];
+  }
   console.log(
-    'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, and author deep link. Mocked APIs; connected acceptance pending.',
+    'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, stuck access runs and library setups with Retry and Cancel, and author deep link. Mocked APIs; connected acceptance pending.',
   );
 })().catch((e) => {
   console.error(e);

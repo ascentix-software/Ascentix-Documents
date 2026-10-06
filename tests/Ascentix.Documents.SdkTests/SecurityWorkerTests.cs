@@ -572,6 +572,159 @@ public sealed class SecurityWorkerTests
         Assert.Equal("NeedsReview", g.Policy().Status);
     }
 
+    /// <summary>A run that stopped on a member write SharePoint refused (403).</summary>
+    private static Fixture BlockedRun()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        f.Reject = op => op.MutationKind == "MemberAdd" ? 403 : (int?)null;
+        Assert.Equal("Blocked", f.Drive(false).Status);
+        return f;
+    }
+
+    private static SecurityResult Library(Fixture f, string command, string? run = null) =>
+        f.Service.Transaction(() =>
+            f.Admin.Execute(
+                new SecurityRequest
+                {
+                    Command = command,
+                    LibraryId = f.Library,
+                    OperationKey = run,
+                },
+                true
+            )
+        );
+
+    private static SecurityResult ApplyAccess(Fixture f, string access) =>
+        f.Service.Transaction(() =>
+            f.Admin.Execute(
+                new SecurityRequest
+                {
+                    Command = "ApplyPolicy",
+                    LibraryId = f.Library,
+                    RowVersion = f
+                        .Store.Require<PolicyDocument>(
+                            "asx_policy",
+                            "policy:" + f.Library.ToString("N")
+                        )
+                        .Row.RowVersion,
+                    Entries = new[]
+                    {
+                        new PolicyEntry { TeamId = f.Team, Access = access },
+                    },
+                    ReadRole = f.Read,
+                    ContributeRole = f.Contribute,
+                },
+                true
+            )
+        );
+
+    [Fact]
+    public void LibraryShowsItsStoppedOrWaitingAccessRunWithItsNotice()
+    {
+        var f = BlockedRun();
+        var shown = Library(f, "GetPolicy");
+        Assert.Equal(f.Key, shown.Policy!.OperationKey);
+        Assert.Equal("Blocked", shown.RunStatus);
+        Assert.Equal("SecurityWriteRejected", shown.RunNotice);
+        Assert.Null(shown.RunNextAttemptUtc);
+
+        var g = new Fixture();
+        g.Queue("Read");
+        Assert.Equal("RetryWait", g.Call("Observe", g.Start(), status: 429).Status);
+        var waiting = Library(g, "GetPolicy");
+        Assert.Equal("RetryWait", waiting.RunStatus);
+        Assert.Equal(
+            "Waiting to retry after a temporary error (HTTP 429); attempt 1.",
+            waiting.RunNotice
+        );
+        Assert.Equal(g.Operation().NextAttemptUtc, waiting.RunNextAttemptUtc);
+
+        // A library with no queued run shows none.
+        var h = new Fixture();
+        h.Queue("Read");
+        h.Drive();
+        Assert.Null(Library(h, "GetPolicy").RunStatus);
+    }
+
+    [Fact]
+    public void SecurityAdministratorRetriesOrCancelsTheLibrarysStuckAccessRun()
+    {
+        var f = BlockedRun();
+        // Only the run the admin saw is acted on.
+        var changed = Assert.Throws<EvaluationBlockedException>(() =>
+            Library(f, "RetryAccessRun", "policywork:" + Guid.NewGuid().ToString("N"))
+        );
+        Assert.Contains("access run changed", changed.Message);
+        Assert.Equal("Blocked", f.Operation().Status);
+        f.Reject = null;
+        var retried = Library(f, "RetryAccessRun", f.Key);
+        Assert.Equal("Pending", retried.RunStatus);
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Single(f.Members);
+
+        // Cancel works for a suspended library too, and undoes nothing in SharePoint.
+        var g = BlockedRun();
+        g.Service.Rows[g.Library]["asx_approved"] = false;
+        var writes = g.Writes.Count;
+        var cancelled = Library(g, "CancelAccessRun", g.Key);
+        Assert.Equal("NeedsReview", cancelled.Status);
+        Assert.Null(cancelled.Policy!.OperationKey);
+        Assert.Null(cancelled.RunStatus);
+        Assert.Equal("Cancelled", g.Operation().Status);
+        Assert.Equal(writes, g.Writes.Count);
+    }
+
+    [Fact]
+    public void ApplyReplacesAStoppedAccessRunButNeverOneWithAWriteOutstanding()
+    {
+        var f = BlockedRun();
+        var stopped = f.Key;
+        f.Reject = null;
+        var applied = ApplyAccess(f, "Contribute");
+        Assert.NotEqual(stopped, applied.Policy!.OperationKey);
+        Assert.Equal("Pending", applied.RunStatus);
+        Assert.Equal(
+            "Cancelled",
+            f.Store.Require<SecurityOperation>("asx_operation", stopped).Value.Status
+        );
+        f.Key = applied.Policy.OperationKey!;
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Equal("Contribute", f.Policy().Applied.Single().Access);
+
+        // A write whose answer was lost is read back first: Apply cannot replace that run.
+        var g = new Fixture();
+        g.AddUser();
+        g.Queue("Read");
+        var work = g.Start();
+        while (work.Status == "Read")
+            work = g.Observe(work);
+        work = g.Call("PrepareCreate", work);
+        Assert.Equal("Quarantined", g.Call("CreateResponse", work, status: 0).Status);
+        ExpireClaim(g);
+        Assert.Throws<EvaluationBlockedException>(() => ApplyAccess(g, "Contribute"));
+        Assert.Equal(g.Key, g.Policy().OperationKey);
+        Assert.Equal("ExternalUnknown", g.Operation().Status);
+    }
+
+    [Fact]
+    public void StaleStepOfAWaitingAccessRunDoesNotPushItsNextCheckOut()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        var work = f.Start();
+        f.Service.Rows[f.Library]["asx_approved"] = false;
+        Assert.Equal("RetryWait", f.Observe(work).Status);
+        var waiting = f.Operation();
+        // The same run's next step arrives after its claim was released.
+        Assert.Throws<EvaluationBlockedException>(() => f.Call("Renew", work));
+        var after = f.Operation();
+        Assert.Equal(waiting.RetryCount, after.RetryCount);
+        Assert.Equal(waiting.NextAttemptUtc, after.NextAttemptUtc);
+    }
+
     [Theory]
     [InlineData("asx_operation")]
     [InlineData("asx_membership")]

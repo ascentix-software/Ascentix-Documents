@@ -24,7 +24,7 @@ Runtime administration has three recovery lists.
 
 - **Failed capture jobs** lists record or team events whose background job failed. Fix the cause, select the records, and click **Replan selected records**. Replan asks Documents to evaluate the records again.
 - **Blocked records** lists outbox rows that were blocked. Each has **Retry**. A record blocked for a reason that still holds blocks again. Records blocked before the 0.1.0.4 upgrade can be retried here.
-- **Blocked jobs** lists blocked operations. Each has **Retry**.
+- **Blocked jobs** lists blocked operations. Each has **Retry** and **Cancel**. Cancel asks in the page first and never undoes or deletes anything in SharePoint.
 
 Temporary failures wait and retry on their own. There is no attempt cap. A waiting job shows a notice and the time of its next attempt. **Cancel** stops a waiting job.
 
@@ -34,9 +34,9 @@ Unknown outcomes are handled by type. Reads retry. For folder and access writes,
 
 Suspend, approve, and queue or apply access always work while folder jobs run. Writes that were already submitted finish.
 
-- **Suspend** holds the library's folder jobs, its queued access run and, for a site, its library setups. Each one waits with a notice and resumes by itself once the library and its site are approved again; no Cancel or Retry is needed. Approving again is refused only while the access run has a write whose result is not known yet. The daily access refresh and team events skip a suspended library with a notice on its access policy; other libraries are not affected.
+- **Suspend** holds the library's folder jobs, its queued access run and, for a site, its library setups. Each one waits with a notice and resumes by itself once the library and its site are approved again. The exception is a library setup whose create may already have reached SharePoint: it goes to `RecoveryRequired` and needs the original create response, or **Cancel** (see below). Approving again is refused only while the access run has a write whose result is not known yet. The daily access refresh and team events skip a suspended library with a notice on its access policy; other libraries are not affected.
 - **Removing a table** from the Tables panel cancels its unsent folder jobs and its queued records, with a notice. Nothing in SharePoint is deleted. Enable the table again and replan the records to plan them.
-- A library setup interrupted before its create was permitted (for example by a pause) reads SharePoint again and continues by itself. **Retry** and **Cancel** also work on a setup in `RecoveryRequired`. Retry of a create that may have reached SharePoint still needs the original response; setups saved before 0.1.0.4 count as possibly sent. **Cancel** never deletes anything; creating the same library again starts over with fresh reads.
+- A library setup interrupted before its create was permitted (for example by a pause) reads SharePoint again and continues by itself. **Retry** and **Cancel** also work on a setup in `RecoveryRequired`. Retry of a create that may have reached SharePoint still needs the original response; setups saved before 0.1.0.4 count as possibly sent. **Cancel** never deletes anything; creating the same library again starts over with fresh reads. In Sites, a setup card that needs attention (`RecoveryRequired`, blocked or waiting) has **Retry** and **Cancel setup**; a Documents Security Administrator can use them without the Operator role.
 
 - **Re-point** follows a library that was renamed, or a site that moved within the same tenant. If the site URL changes, first update the SharePoint host in Runtime administration and the Dataverse SharePoint site record. Re-point names exactly what to change. Existing folders keep working.
 - **Remove** is always accepted. A destination used by a Draft or Published template is refused, and the refusal lists the templates. A destination still referenced by history is hidden rather than deleted. Nothing in SharePoint is ever deleted.
@@ -47,6 +47,7 @@ Documents manages only its own SharePoint groups and their grants on the library
 
 - A hand edit to the permission level of a Documents group is reverted, with a notice. A Documents group deleted by hand is recreated.
 - A team member that SharePoint rejects is skipped with a notice and retried on every scheduled refresh. A 401 or 403 Blocks the job, because it means a permission was lost.
+- A library whose access run stopped or waits shows **Needs attention** with the run's notice, and **Retry access run** and **Cancel access run**. **Apply access** replaces a stopped run with the new access, unless that run has a write whose result is not known yet. Cancel undoes nothing in SharePoint.
 - B2B guests are supported.
 - Entra security-group and Microsoft 365 group teams are granted as the group itself.
   - "Members" teams also give the group's guests access.

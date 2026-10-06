@@ -199,6 +199,35 @@ public sealed class LibraryProvisioning
     public CatalogResult Inspect(string key) =>
         Result(store.Require<LibrarySetup>("asx_operation", key));
 
+    /// <summary>
+    /// Retry or Cancel of a library setup from its card in Sites, through the catalog API, so a
+    /// Documents Security Administrator needs no Operator role. The operator rules apply
+    /// unchanged (see Manage): Retry of a create that may have reached SharePoint stays
+    /// refused, and Cancel deletes nothing in SharePoint. Once the library is created, the
+    /// setup waits on its first access run, so Retry and Cancel act on that run.
+    /// </summary>
+    /// <param name="key">The library setup key.</param>
+    /// <param name="retry">True for Retry, false for Cancel.</param>
+    /// <returns>The setup's current status, with what the action left in place.</returns>
+    public CatalogResult ManageSetup(string key, bool retry)
+    {
+        if (!key.StartsWith("librarycreate:", StringComparison.Ordinal))
+            throw new EvaluationBlockedException("Select a library setup.");
+        var op = store.Require<LibrarySetup>("asx_operation", key);
+        var command = new WorkerRequest { Command = retry ? "Retry" : "Cancel", Key = key };
+        WorkerResult done;
+        if (op.Value.Status == "AccessPending" && op.Value.PolicyOperation != null)
+        {
+            command.Key = op.Value.PolicyOperation;
+            done = new SecurityWorker(service, clock).Execute(command, true);
+        }
+        else
+            done = Manage(command, op);
+        var result = Result(store.Require<LibrarySetup>("asx_operation", key));
+        result.Notices = done.Notices;
+        return result;
+    }
+
     private CatalogResult Result(StoredRow<LibrarySetup> op)
     {
         string status = op.Value.Status == "Applied" ? "Ready" : op.Value.Status;
@@ -254,9 +283,9 @@ public sealed class LibraryProvisioning
             "asx_claim",
             WorkCoordination.Operation(service, request.Key)
         );
+        // Another run holding the site's writer is no reason to stay listed: this setup is not
+        // claimed, so it waits with the same backoff and takes no dispatch slot meanwhile.
         bool held = claim?.Value.RunId != null && claim.Value.OperationKey == request.Key;
-        if (claim?.Value.RunId != null && !held)
-            return new WorkerResult { Status = "Busy", Key = request.Key };
         if (held && claim!.Value.LeaseUntilUtc > clock() && !claim.Value.RecoveryPermitted)
             return new WorkerResult { Status = "Quarantined", Key = request.Key };
         if (NeverSent(op.Value))

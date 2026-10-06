@@ -389,6 +389,93 @@ public sealed class LibraryProvisioningTests
     }
 
     [Fact]
+    public void SetupOfASuspendedSiteWhoseWriterAnotherRunHoldsBacksOffInsteadOfStayingListed()
+    {
+        var f = new Fixture();
+        var key = f.Queue().Key;
+        var other = f.Service.Transaction(() =>
+            f.Worker.Queue(
+                new CatalogRequest
+                {
+                    SiteId = f.Site,
+                    Name = "Other",
+                    RequestId = Guid.NewGuid(),
+                    Entries = Array.Empty<PolicyEntry>(),
+                }
+            )
+        );
+        Assert.Equal("Read", f.Call("Claim", new WorkerResult { Key = other.Key }).Status);
+        f.Service.Rows[f.Site]["asx_approved"] = false;
+        Assert.Equal("RetryWait", f.Call("Claim", new WorkerResult { Key = key }).Status);
+        var op = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
+        Assert.Equal("RetryWait", op.Status);
+        Assert.Contains("suspended", op.ErrorCode);
+        Assert.True(op.NextAttemptUtc > DateTime.UtcNow);
+        Assert.DoesNotContain(key, f.Store.Pending("asx_operation"));
+        // The other run keeps its writer.
+        Assert.Equal(other.Key, f.Claim(key).OperationKey);
+    }
+
+    private static CatalogResult Catalog(Fixture f, string command, string key) =>
+        f.Service.Transaction(() =>
+            new CatalogAdministration(f.Service).Execute(
+                new CatalogRequest { Command = command, Key = key },
+                true
+            )
+        );
+
+    [Fact]
+    public void SecurityAdministratorRetriesAndCancelsASetupThroughTheCatalog()
+    {
+        // A create never permitted is simply prepared again.
+        var (f, key, _) = PreparedCreate();
+        f.Expire(key);
+        Assert.Equal("Pending", Catalog(f, "RetrySetup", key).Status);
+        CreatedOnce(f, key);
+
+        // A create that may have reached SharePoint keeps evidence-based recovery; Cancel works
+        // and deletes nothing.
+        var (g, sent, prepared) = PreparedCreate();
+        Assert.Equal("Permit", g.Permit(prepared).Status);
+        g.Expire(sent);
+        Assert.Equal("Quarantined", g.Call("Claim", new WorkerResult { Key = sent }).Status);
+        Assert.Equal("RecoveryRequired", Catalog(g, "Inspect", sent).Status);
+        Assert.Contains(
+            "original create response",
+            Assert
+                .Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
+                    Catalog(g, "RetrySetup", sent)
+                )
+                .Message
+        );
+        var cancelled = Catalog(g, "CancelSetup", sent);
+        Assert.Equal("Cancelled", cancelled.Status);
+        Assert.Contains(cancelled.Notices, n => n.Contains("Nothing in SharePoint was deleted"));
+        Assert.DoesNotContain(g.Service.Rows.Values, r => r.LogicalName == "asx_library");
+
+        Assert.Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
+            Catalog(g, "CancelSetup", "catalogprobe:" + Guid.NewGuid().ToString("N"))
+        );
+    }
+
+    [Fact]
+    public void CancellingANewLibrarysFirstAccessRunEndsItsSetupAndKeepsTheLibrary()
+    {
+        var f = new Fixture();
+        var key = f.Queue().Key;
+        Assert.Equal("AccessPending", f.Run(key).Status);
+        var access = f.Store.Require<LibrarySetup>("asx_operation", key).Value.PolicyOperation!;
+        var done = Catalog(f, "CancelSetup", key);
+        Assert.Equal("Ready", done.Status);
+        Assert.Equal(SecurityWorker.SetupAccessCancelled, done.Issue);
+        Assert.Equal(
+            "Cancelled",
+            f.Store.Require<SecurityOperation>("asx_operation", access).Value.Status
+        );
+        Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
+    }
+
+    [Fact]
     public void UnknownCreationIsQuarantinedWithoutDeletingOrAdoptingContent()
     {
         var f = new Fixture { UnknownCreate = true };
