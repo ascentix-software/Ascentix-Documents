@@ -1,5 +1,4 @@
 using System;
-using Ascentix.Documents.Conditions;
 using Ascentix.Documents.Dataverse;
 using Xunit;
 
@@ -57,13 +56,15 @@ public sealed class AdminStopTests
         var ready = f.Observe(f.Preflight(f.Claim()), "{}");
         Assert.Equal("ReadyToCreate", ready.Status);
         Suspend(f);
-        var stopped = Assert.Throws<EvaluationBlockedException>(() =>
-            f.Call("PrepareCreate", ready)
-        );
-        Assert.Contains("suspended", stopped.Message);
+        // The job is held until the library is approved again; it prepares no write.
+        var stopped = f.Call("PrepareCreate", ready);
+        Assert.Equal("RetryWait", stopped.Status);
+        Assert.Contains(stopped.Notices, n => n.Contains("suspended"));
+        Assert.DoesNotContain(f.Results, r => r.Status == "Create");
         var g = new DurableWorkerTests.Fixture();
         Suspend(g);
-        Assert.Throws<EvaluationBlockedException>(() => g.Claim());
+        Assert.Equal("RetryWait", g.Claim().Status);
+        Assert.DoesNotContain(g.Results, r => r.Status == "Read");
     }
 
     [Fact]

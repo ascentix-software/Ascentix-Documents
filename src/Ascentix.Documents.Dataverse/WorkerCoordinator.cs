@@ -54,7 +54,12 @@ public sealed class WorkerCoordinator
             }.Contains(request.Command)
         )
         {
-            var stopped = StopUnavailable(request) ?? StopRemoved(request);
+            var stopped =
+                StopUnavailable(request)
+                ?? StopRemoved(request)
+                ?? StopTable(request)
+                ?? StopSuperseded(request)
+                ?? StopSuspended(request);
             if (stopped != null)
                 return stopped;
         }
@@ -229,7 +234,19 @@ public sealed class WorkerCoordinator
             ?? throw new EvaluationBlockedException("Template is unpublished.");
         // Only the template's own table must be enabled. Lookup source tables are read with the
         // worker's Read privilege; their changes queue no replans unless they are enabled too.
-        Allowed(job.Value.Table);
+        // A row whose table was removed stops cleanly, like one for an inactive template.
+        if (!IsAllowed(job.Value.Table))
+        {
+            job.Value.Status = "Cancelled";
+            job.Value.Notices = new[] { TableNotEnabled(job.Value.Table) };
+            store.Save(job);
+            return new WorkerResult
+            {
+                Status = "Cancelled",
+                Key = key,
+                Notices = job.Value.Notices,
+            };
+        }
         if (
             job.Value.PinnedRevision
             && (
@@ -404,35 +421,8 @@ public sealed class WorkerCoordinator
             || operation.Value.Status == "Cancelled"
         )
             return new WorkerResult { Status = operation.Value.Status, Key = request.Key };
+        // Unsent work a newer plan replaced was already stopped as Superseded (StopSuperseded).
         var binding = operation.Value.Folder;
-        var published = TemplateLifecycle
-            .Find(service, binding.TemplateId)
-            ?.GetAttributeValue<EntityReference>("asx_publishedrevisionid");
-        var existingClaim = store.Find<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(service, request.Key)
-        );
-        var selection = store.Find<RecordPlanDocument>(
-            "asx_outbox",
-            "recordplan:" + binding.TemplateId.ToString("N") + ":" + binding.RecordId.ToString("N")
-        );
-        bool excluded =
-            Retired(binding.Table, binding.RecordId)
-            || selection != null
-                && (
-                    selection.Value.RevisionId != operation.Value.RevisionId
-                    || !selection.Value.Operations.Contains(operation.Value.Key)
-                );
-        if (
-            (published?.Id != operation.Value.RevisionId || excluded)
-            && !operation.Value.ExternalSubmitted
-            && existingClaim?.Value.OperationKey != request.Key
-        )
-        {
-            operation.Value.Status = "Superseded";
-            store.Save(operation);
-            return new WorkerResult { Status = "Superseded", Key = request.Key };
-        }
         if (
             !WorkCoordination.HasCapacity(
                 service,
@@ -1213,43 +1203,81 @@ public sealed class WorkerCoordinator
         return new WorkerResult { Status = "RecoveryPermitted", Key = request.Key };
     }
 
-    private WorkerResult? StopUnavailable(WorkerRequest request)
+    /// <summary>
+    /// Whether the job has no write in SharePoint whose result is still to come, and is not
+    /// finished: an admin stop may end or hold it at its next step.
+    /// </summary>
+    private static bool Unsent(OperationDocument operation) =>
+        !operation.HistoryCompacted
+        && !operation.ExternalSubmitted
+        && operation.Folders.Length > 0
+        && operation.Status != "Applied"
+        && operation.Status != "Cancelled"
+        && operation.Status != "Superseded";
+
+    /// <summary>
+    /// Releases the writer this job holds before it stops: the run's own claim on its steps, or
+    /// a claim whose lease expired when the next run claims. A request with no recorded answer
+    /// can only be a read here (the job sent no write), so it is cleared too. Returns Busy while
+    /// another run's claim is live; that stop happens once it expires.
+    /// </summary>
+    private WorkerResult? ReleaseForStop(WorkerRequest request)
     {
-        var operation = store.Require<OperationDocument>("asx_operation", request.Key);
-        if (
-            operation.Value.HistoryCompacted
-            || operation.Value.ExternalSubmitted
-            || operation.Value.Status == "Applied"
-        )
-            return null;
-        var binding = operation.Value.Folder;
-        if (TemplateLifecycle.Active(TemplateLifecycle.Find(service, binding.TemplateId), clock()))
-            return null;
         var claim = store.Find<DispatcherDocument>(
             "asx_claim",
             WorkCoordination.Operation(service, request.Key)
         );
-        if (claim?.Value.OperationKey == request.Key && claim.Value.RunId != null)
-        {
-            // Only the holder may release an active writer. A different run cannot take it over.
-            if (request.Command == "Claim" && !claim.Value.RecoveryPermitted)
-                return new WorkerResult { Status = "Busy", Key = request.Key };
-            if (request.Command != "Claim")
-                claim = Assert(request);
-            Release(claim);
-        }
-        operation.Value.Status = "Cancelled";
-        operation.Value.ErrorCode = "TemplateUnavailable";
+        if (claim?.Value.OperationKey != request.Key || claim.Value.RunId == null)
+            return null;
+        if (request.Command != "Claim")
+            claim = Assert(request);
+        else if (!claim.Value.RecoveryPermitted && claim.Value.LeaseUntilUtc > clock())
+            return new WorkerResult { Status = "Busy", Key = request.Key };
+        claim.Value.HttpOutstanding = false;
+        Release(claim);
+        return null;
+    }
+
+    /// <summary>Ends unsent work for an admin stop with Cancel semantics and the notice shown.</summary>
+    private WorkerResult Stop(WorkerRequest request, string code, string notice)
+    {
+        var busy = ReleaseForStop(request);
+        if (busy != null)
+            return busy;
+        var operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        bool superseded = code == "Superseded";
+        operation.Value.Status = superseded ? "Superseded" : "Cancelled";
+        if (!superseded)
+            operation.Value.ErrorCode = code;
+        operation.Value.NextAttemptUtc = null;
+        operation.Value.ProbeId = Guid.Empty;
+        operation.Value.AbsenceVerified = false;
         store.Save(operation);
+        Audit(request.Key, request.RunId ?? "worker", superseded ? "Superseded" : "Cancel");
         return new WorkerResult
         {
-            Status = "Cancelled",
+            Status = operation.Value.Status,
             Key = request.Key,
-            Notices = new[]
-            {
-                "Template is deleted, deactivated or outside its schedule. Existing SharePoint content is unchanged.",
-            },
+            Notices = new[] { notice },
         };
+    }
+
+    private WorkerResult? StopUnavailable(WorkerRequest request)
+    {
+        var operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        if (
+            !Unsent(operation.Value)
+            || TemplateLifecycle.Active(
+                TemplateLifecycle.Find(service, operation.Value.Folder.TemplateId),
+                clock()
+            )
+        )
+            return null;
+        return Stop(
+            request,
+            "TemplateUnavailable",
+            "Template is deleted, deactivated or outside its schedule. Existing SharePoint content is unchanged."
+        );
     }
 
     /// <summary>
@@ -1259,46 +1287,101 @@ public sealed class WorkerCoordinator
     private WorkerResult? StopRemoved(WorkerRequest request)
     {
         var operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        if (!Unsent(operation.Value) || !catalog.Removed(operation.Value.Folder.LibraryId))
+            return null;
+        return Stop(
+            request,
+            "DestinationRemoved",
+            "The library was removed from Documents. Unsent folder work was cancelled; nothing in SharePoint was deleted."
+        );
+    }
+
+    /// <summary>
+    /// Cancels unsent folder work for a table that is no longer enabled, like a removed
+    /// destination. A create already sent finishes first (see Current).
+    /// </summary>
+    private WorkerResult? StopTable(WorkerRequest request)
+    {
+        var operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        if (!Unsent(operation.Value) || IsAllowed(operation.Value.Folder.Table))
+            return null;
+        return Stop(request, "TableNotEnabled", TableNotEnabled(operation.Value.Folder.Table));
+    }
+
+    /// <summary>Shown when work for a table that is no longer enabled is cancelled.</summary>
+    public static string TableNotEnabled(string table) =>
+        "The table "
+        + table
+        + " is no longer enabled in Documents, so this work was cancelled; nothing in SharePoint was deleted. Enable the table and replan the record to plan it again.";
+
+    /// <summary>
+    /// Stops unsent work that a newer plan of the record no longer selects, or whose revision
+    /// is no longer published, at any step: Superseded, as Claim always did, not a failure.
+    /// </summary>
+    private WorkerResult? StopSuperseded(WorkerRequest request)
+    {
+        var operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        if (!Unsent(operation.Value) || operation.Value.Status == "Blocked")
+            return null;
+        var binding = operation.Value.Folder;
+        var published = TemplateLifecycle
+            .Find(service, binding.TemplateId)
+            ?.GetAttributeValue<EntityReference>("asx_publishedrevisionid");
+        var selection = store.Find<RecordPlanDocument>(
+            "asx_outbox",
+            "recordplan:" + binding.TemplateId.ToString("N") + ":" + binding.RecordId.ToString("N")
+        );
+        bool excluded =
+            Retired(binding.Table, binding.RecordId)
+            || selection != null
+                && (
+                    selection.Value.RevisionId != operation.Value.RevisionId
+                    || !selection.Value.Operations.Contains(operation.Value.Key)
+                );
+        if (published?.Id == operation.Value.RevisionId && !excluded)
+            return null;
+        return Stop(
+            request,
+            "Superseded",
+            "A newer plan of this record replaced this folder work before it wrote anything."
+        );
+    }
+
+    /// <summary>
+    /// Holds unsent work while its library or site is suspended: it waits in RetryWait with a
+    /// notice, and its next check backs off (at most 15 minutes apart), so it takes no dispatch
+    /// slot meanwhile and resumes by itself once both are approved again. Nothing is written
+    /// while suspended; a create already sent may finish (see Current).
+    /// </summary>
+    private WorkerResult? StopSuspended(WorkerRequest request)
+    {
+        var operation = store.Require<OperationDocument>("asx_operation", request.Key);
         if (
-            operation.Value.HistoryCompacted
-            || operation.Value.ExternalSubmitted
-            || operation.Value.Status == "Applied"
-            || operation.Value.Status == "Cancelled"
-            || operation.Value.Folders.Length == 0
-            || !catalog.Removed(operation.Value.Folder.LibraryId)
+            !Unsent(operation.Value)
+            || operation.Value.Status == "Blocked"
+            || operation.Value.NextAttemptUtc > clock()
+            || WorkCoordination.Stops(service, operation.Value.Folder.LibraryId) != "suspended"
         )
             return null;
-        var claim = store.Find<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(service, request.Key)
-        );
-        if (claim?.Value.OperationKey == request.Key && claim.Value.RunId != null)
-        {
-            if (request.Command == "Claim" && !claim.Value.RecoveryPermitted)
-            {
-                // A live claim of another run is left to expire, then cancelled here.
-                if (claim.Value.LeaseUntilUtc > clock())
-                    return new WorkerResult { Status = "Busy", Key = request.Key };
-            }
-            else if (request.Command != "Claim")
-                claim = Assert(request);
-            Release(claim);
-        }
+        var busy = ReleaseForStop(request);
+        if (busy != null)
+            return busy;
         operation = store.Require<OperationDocument>("asx_operation", request.Key);
-        operation.Value.Status = "Cancelled";
-        operation.Value.ErrorCode = "DestinationRemoved";
-        operation.Value.NextAttemptUtc = null;
+        operation.Value.RetryCount++;
+        operation.Value.Status = "RetryWait";
+        operation.Value.NextAttemptUtc = RetryAt(clock(), operation.Value.RetryCount, null);
         operation.Value.ProbeId = Guid.Empty;
+        operation.Value.AbsenceVerified = false;
+        operation.Value.ErrorCode =
+            "Waiting: the library or its site is suspended. This job resumes by itself once both are approved again; check "
+            + operation.Value.RetryCount.ToString(CultureInfo.InvariantCulture)
+            + ".";
         store.Save(operation);
-        Audit(request.Key, request.RunId ?? "worker", "Cancel");
         return new WorkerResult
         {
-            Status = "Cancelled",
+            Status = "RetryWait",
             Key = request.Key,
-            Notices = new[]
-            {
-                "The library was removed from Documents. Unsent folder work was cancelled; nothing in SharePoint was deleted.",
-            },
+            Notices = new[] { operation.Value.ErrorCode },
         };
     }
 
@@ -1566,9 +1649,12 @@ public sealed class WorkerCoordinator
         };
     }
 
+    private bool IsAllowed(string table) =>
+        allowedTables == null || allowedTables.Contains(table, StringComparer.Ordinal);
+
     private void Allowed(string table)
     {
-        if (allowedTables != null && !allowedTables.Contains(table, StringComparer.Ordinal))
+        if (!IsAllowed(table))
             throw new EvaluationBlockedException(
                 "Record source is outside the approved runtime scope."
             );

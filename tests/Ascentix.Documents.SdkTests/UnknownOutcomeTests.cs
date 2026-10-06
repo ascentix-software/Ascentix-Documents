@@ -114,14 +114,15 @@ public sealed class UnknownOutcomeTests
     {
         var f = new DurableWorkerTests.Fixture();
         Assert.Equal("Read", f.Claim().Status);
-        f.Service.Rows[f.LibraryId]["asx_approved"] = false;
+        // The library's entry folder changed, so claiming the job fails until it is re-pointed.
+        f.Service.Rows[f.LibraryId]["asx_entryid"] = Guid.NewGuid().ToString();
         var fail = new WorkerRequest
         {
             Command = "FailUnclaimed",
             Key = f.Operation.Key,
             StatusCode = 400,
             ErrorCode = "0x80040265",
-            Error = "Site or library is suspended.",
+            Error = "Approved destination entry changed.",
         };
         // While the run's claim is live, nothing changes.
         Assert.Equal("Quarantined", f.Execute(fail).Status);
@@ -134,7 +135,7 @@ public sealed class UnknownOutcomeTests
         Assert.Equal("RetryWait", f.Execute(fail).Status);
         var op = Op(f);
         Assert.Equal(f.Now.AddSeconds(30), op.NextAttemptUtc);
-        Assert.Contains("suspended", op.ErrorCode);
+        Assert.Contains("entry changed", op.ErrorCode);
         Assert.Contains("attempt 1", op.ErrorCode);
         Assert.Null(Writer(f).RunId);
         Assert.Empty(

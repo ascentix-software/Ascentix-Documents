@@ -120,17 +120,17 @@ public sealed class LookupSourceTests
     }
 
     [Fact]
-    public void PlanningIsRefusedWhenTheRootTableIsNotEnabled()
+    public void PlanningStopsCleanlyWhenTheRootTableIsNotEnabled()
     {
         var f = LookupTemplate();
         var queued = f.Service.Transaction(() => f.Coordinator.Execute(Queue(f), true));
         var scoped = new WorkerCoordinator(f.Service, () => f.Now, new[] { "contact" });
 
-        Assert.Throws<EvaluationBlockedException>(() =>
-            f.Service.Transaction(() =>
-                scoped.Execute(new WorkerRequest { Command = "Plan", Key = queued.Key }, true)
-            )
+        var planned = f.Service.Transaction(() =>
+            scoped.Execute(new WorkerRequest { Command = "Plan", Key = queued.Key }, true)
         );
+        Assert.Equal("Cancelled", planned.Status);
+        Assert.Contains(planned.Notices, n => n.Contains("account is no longer enabled"));
         Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_operation");
     }
 

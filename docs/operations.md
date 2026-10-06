@@ -34,6 +34,10 @@ Unknown outcomes are handled by type. Reads retry. For folder and access writes,
 
 Suspend, approve, and queue or apply access always work while folder jobs run. Writes that were already submitted finish.
 
+- **Suspend** holds the library's unsent folder jobs. Each one waits with a notice and resumes by itself once the library and its site are approved again. The daily access refresh and team events skip a suspended library with a notice on its access policy; other libraries are not affected.
+- **Removing a table** from the Tables panel cancels its unsent folder jobs and its queued records, with a notice. Nothing in SharePoint is deleted. Enable the table again and replan the records to plan them.
+- A library setup interrupted before its create was permitted (for example by a pause) reads SharePoint again and continues by itself. **Retry** and **Cancel** also work on a setup in `RecoveryRequired`. Retry of a create that may have reached SharePoint still needs the original response. **Cancel** never deletes anything; creating the same library again starts over with fresh reads.
+
 - **Re-point** follows a library that was renamed, or a site that moved within the same tenant. If the site URL changes, first update the SharePoint host in Runtime administration and the Dataverse SharePoint site record. Re-point names exactly what to change. Existing folders keep working.
 - **Remove** is always accepted. A destination used by a Draft or Published template is refused, and the refusal lists the templates. A destination still referenced by history is hidden rather than deleted. Nothing in SharePoint is ever deleted.
 

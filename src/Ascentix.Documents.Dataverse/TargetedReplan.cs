@@ -70,8 +70,21 @@ public sealed class TargetedReplan
     {
         if (job.Value.Status != "Pending")
             return new WorkerResult { Key = job.Value.Key, Status = job.Value.Status };
-        if (!allowed.Contains(job.Value.RelatedTable) || job.Value.RelatedRecordId == Guid.Empty)
+        if (job.Value.RelatedRecordId == Guid.Empty)
             throw new EvaluationBlockedException("Related event is outside runtime source scope.");
+        // A change to a table that is no longer enabled queues nothing; it stops cleanly.
+        if (!allowed.Contains(job.Value.RelatedTable))
+        {
+            job.Value.Status = "Cancelled";
+            job.Value.Notices = new[] { WorkerCoordinator.TableNotEnabled(job.Value.RelatedTable) };
+            store.Save(job);
+            return new WorkerResult
+            {
+                Key = job.Value.Key,
+                Status = job.Value.Status,
+                Notices = job.Value.Notices,
+            };
+        }
         var query = new QueryExpression("asx_outbox")
         {
             ColumnSet = new ColumnSet("asx_payload"),
@@ -119,8 +132,10 @@ public sealed class TargetedReplan
                     "Related selection index differs from its receipt."
                 );
             // Root updates have their own filtered event; this fan-out is for direct related sources only.
+            // A record of a table that is no longer enabled is not planned again.
             if (
-                store.Find<OutboxDocument>(
+                !allowed.Contains(selection.Table)
+                || store.Find<OutboxDocument>(
                     "asx_outbox",
                     WorkerCoordinator.RetirementKey(selection.Table, selection.RecordId)
                 ) != null

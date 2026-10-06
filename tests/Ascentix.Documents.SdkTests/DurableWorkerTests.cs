@@ -350,16 +350,12 @@ public sealed class DurableWorkerTests
         var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
         Assert.Equal("ReadyToCreate", work.Status);
         f.AllowedTables = new[] { "contact" };
-        var stopped = Assert.Throws<EvaluationBlockedException>(() =>
-            f.Call("PrepareCreate", work)
-        );
-        Assert.Contains("outside the approved runtime scope", stopped.Message);
-        Assert.False(
-            f.Store.Require<OperationDocument>(
-                "asx_operation",
-                f.Operation.Key
-            ).Value.ExternalSubmitted
-        );
+        var stopped = f.Call("PrepareCreate", work);
+        Assert.Equal("Cancelled", stopped.Status);
+        Assert.Contains(stopped.Notices, n => n.Contains("account is no longer enabled"));
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.False(stored.ExternalSubmitted);
+        Assert.Equal("TableNotEnabled", stored.ErrorCode);
     }
 
     [Fact]
@@ -688,13 +684,10 @@ public sealed class DurableWorkerTests
                 IncludedSections = Array.Empty<string>(),
             }
         );
-        Assert.Throws<EvaluationBlockedException>(() => f.Call("PrepareCreate", absent));
-        Assert.False(
-            f.Store.Require<OperationDocument>(
-                "asx_operation",
-                f.Operation.Key
-            ).Value.ExternalSubmitted
-        );
+        Assert.Equal("Superseded", f.Call("PrepareCreate", absent).Status);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.False(stored.ExternalSubmitted);
+        Assert.Equal("Superseded", stored.Status);
     }
 
     [Fact]
@@ -1388,18 +1381,12 @@ public sealed class DurableWorkerTests
             )
         );
         AssertNotSent(f, Begin(f, work));
-        // Suspension stops new claims (A6); nothing was sent, so nothing waits for recovery.
-        Assert.Throws<EvaluationBlockedException>(() => f.Claim("next-run"));
-        Assert.Equal(
-            "Blocked",
-            f.Execute(new WorkerRequest { Command = "FailUnclaimed", Key = f.Operation.Key }).Status
-        );
-        Assert.False(
-            f.Store.Require<OperationDocument>(
-                "asx_operation",
-                f.Operation.Key
-            ).Value.ExternalSubmitted
-        );
+        // The next claim holds the job while suspended; nothing was sent, so nothing waits for
+        // recovery, and it resumes by itself once approved again.
+        Assert.Equal("RetryWait", f.Claim("next-run").Status);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.False(stored.ExternalSubmitted);
+        Assert.Contains("suspended", stored.ErrorCode);
     }
 
     [Fact]
@@ -1479,6 +1466,158 @@ public sealed class DurableWorkerTests
         var work = f.Claim();
         Assert.Equal("Removed", RemoveLibrary(f).Status);
         Assert.Equal("Permit", Begin(f, work).Status);
+    }
+
+    private static DispatcherDocument WriterOf(Fixture f) =>
+        f
+            .Store.Require<DispatcherDocument>(
+                "asx_claim",
+                WorkCoordination.Operation(f.Service, f.Operation.Key)
+            )
+            .Value;
+
+    private static OperationDocument StoredJob(Fixture f) =>
+        f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+
+    [Theory]
+    [InlineData("removed")]
+    [InlineData("unavailable")]
+    public void StopAfterAnUnansweredReadPermitReleasesTheWriter(string stop)
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = f.Claim();
+        // The read was permitted, then the run ended before its answer was recorded.
+        Assert.Equal("Permit", Begin(f, work).Status);
+        if (stop == "removed")
+            Assert.Equal("Removed", RemoveLibrary(f).Status);
+        else
+            f.Service.Rows[f.TemplateId]["asx_disabled"] = true;
+        f.Now = f.Now.AddMinutes(6);
+        Assert.Equal("Cancelled", f.Claim("run-2").Status);
+        Assert.Null(WriterOf(f).RunId);
+        Assert.False(WriterOf(f).HttpOutstanding);
+        Assert.Empty(
+            f.Store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey).Value.Writers
+        );
+    }
+
+    [Fact]
+    public void JobANewerPlanNoLongerSelectsStopsAsSupersededMidDrive()
+    {
+        var f = new Fixture();
+        var work = f.Claim();
+        // A record update planned the record again while this job was reading.
+        f.Store.Create(
+            "asx_outbox",
+            new RecordPlanDocument
+            {
+                Key = "recordplan:" + f.TemplateId.ToString("N") + ":" + f.RecordId.ToString("N"),
+                Table = "account",
+                TemplateId = f.TemplateId,
+                RecordId = f.RecordId,
+                RevisionId = f.RevisionId,
+                Status = "Selection",
+                Operations = new[] { "folderjob:newer" },
+            }
+        );
+        Assert.Equal("Superseded", f.Observe(work, f.LibraryBody()).Status);
+        Assert.Equal("Superseded", StoredJob(f).Status);
+        Assert.Null(WriterOf(f).RunId);
+        Assert.DoesNotContain(f.Results, r => r.Status == "Create");
+    }
+
+    [Fact]
+    public void FolderJobOfARemovedTableIsCancelledWithANotice()
+    {
+        var f = new Fixture { AllowedTables = new[] { "account" } };
+        var work = f.Claim();
+        f.AllowedTables = new[] { "contact" };
+        var stopped = f.Observe(work, f.LibraryBody());
+        Assert.Equal("Cancelled", stopped.Status);
+        Assert.Contains(stopped.Notices, n => n.Contains("account"));
+        Assert.Equal("Cancelled", StoredJob(f).Status);
+        Assert.Equal("TableNotEnabled", StoredJob(f).ErrorCode);
+        Assert.Null(WriterOf(f).RunId);
+        Assert.DoesNotContain(f.Results, r => r.Status == "Create");
+    }
+
+    [Fact]
+    public void OutboxRowsOfARemovedTableAreCancelledWithANotice()
+    {
+        var f = new Fixture(seedBinding: false) { AllowedTables = new[] { "account", "contact" } };
+        f.SeedTemplate();
+        var queued = f.Execute(
+            new WorkerRequest
+            {
+                Command = "Queue",
+                TemplateId = f.TemplateId,
+                RecordId = f.RecordId,
+                RequestId = Guid.NewGuid(),
+            }
+        );
+        f.Store.Create(
+            "asx_outbox",
+            new OutboxDocument
+            {
+                Key = "related:contact",
+                RelatedTable = "contact",
+                RelatedRecordId = Guid.NewGuid(),
+            }
+        );
+        f.AllowedTables = new[] { "lead" };
+        foreach (var key in new[] { queued.Key, "related:contact" })
+        {
+            var planned = f.Execute(new WorkerRequest { Command = "Plan", Key = key });
+            Assert.Equal("Cancelled", planned.Status);
+            var row = f.Store.Require<OutboxDocument>("asx_outbox", key).Value;
+            Assert.Equal("Cancelled", row.Status);
+            Assert.Contains(row.Notices, n => n.Contains("no longer enabled"));
+        }
+        Assert.Empty(f.Store.Pending("asx_outbox"));
+    }
+
+    [Theory]
+    [InlineData("asx_library")]
+    [InlineData("asx_site")]
+    public void JobOfASuspendedDestinationWaitsAndResumesByItselfAfterReapproval(string table)
+    {
+        var f = new Fixture();
+        Guid id = table == "asx_site" ? f.SiteId : f.LibraryId;
+        var work = f.Claim();
+        f.Service.Rows[id]["asx_approved"] = false;
+        Assert.Equal("RetryWait", f.Observe(work, f.LibraryBody()).Status);
+        var waiting = StoredJob(f);
+        Assert.Equal("RetryWait", waiting.Status);
+        Assert.Contains("suspended", waiting.ErrorCode);
+        Assert.Null(WriterOf(f).RunId);
+        // It takes no dispatch slot until its next check is due.
+        Assert.DoesNotContain(
+            f.Operation.Key,
+            f.Execute(new WorkerRequest { Command = "ListOperations" }).Keys
+        );
+        f.Now = waiting.NextAttemptUtc!.Value;
+        Assert.Contains(
+            f.Operation.Key,
+            f.Execute(new WorkerRequest { Command = "ListOperations" }).Keys
+        );
+        // Still suspended: it waits again, longer.
+        Assert.Equal("RetryWait", f.Claim("run-2").Status);
+        Assert.Equal(2, StoredJob(f).RetryCount);
+        Assert.True(StoredJob(f).NextAttemptUtc > f.Now);
+        // Approved again, it resumes by itself at its next check.
+        f.Service.Rows[id]["asx_approved"] = true;
+        f.Now = StoredJob(f).NextAttemptUtc!.Value;
+        var prepared = f.Call(
+            "PrepareCreate",
+            f.Observe(f.Preflight(f.Claim("run-3")), Rows<ItemObservation>())
+        );
+        Assert.Equal("Create", prepared.Status);
+        var verified = f.ObserveAndFinalize(
+            f.Call("CreateResponse", prepared, CreateBody(), 200),
+            f.Item(Guid.NewGuid(), null)
+        );
+        Assert.Equal("Applied", f.Call("Complete", verified).Status);
     }
 
     [Fact]
@@ -1896,11 +2035,11 @@ public sealed class DurableWorkerTests
             f.Service.Rows.Values,
             r => r.LogicalName == "asx_operation" && r.Id != f.OperationRowId
         );
-        Assert.Throws<EvaluationBlockedException>(() => f.Claim());
-        Assert.Equal(
-            "Pending",
-            f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value.Status
-        );
+        // A queued folder job is held, not blocked, while the destination is suspended.
+        Assert.Equal("RetryWait", f.Claim().Status);
+        var held = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.Equal("RetryWait", held.Status);
+        Assert.Contains("suspended", held.ErrorCode);
     }
 
     [Theory]
