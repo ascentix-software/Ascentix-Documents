@@ -11,6 +11,15 @@ public sealed class TeamRegistration : StoredDocument
 
     [DataMember]
     public bool Enabled { get; set; }
+
+    /// <summary>
+    /// True for an Entra or Microsoft 365 group team, which is granted through its group, so a
+    /// person signing in creates no membership work. teamtype is fixed when a team is created.
+    /// Null for registrations written before this was stored, until their next registration or
+    /// Apply; those keep queuing membership events, which then change nothing.
+    /// </summary>
+    [DataMember]
+    public bool? Group { get; set; }
 }
 
 [DataContract]
@@ -222,6 +231,13 @@ public sealed class SecurityRequest
 
     [DataMember]
     public PolicyRole ContributeRole { get; set; } = new PolicyRole();
+
+    /// <summary>
+    /// The admin saw and accepted that a group team gives access to more people than the
+    /// Dataverse team holds (see TeamPrincipal.BroaderAccess).
+    /// </summary>
+    [DataMember]
+    public bool AcknowledgeBroaderAccess { get; set; }
 }
 
 [DataContract]

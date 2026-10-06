@@ -49,11 +49,18 @@ public sealed class TeamMembershipInvalidationPlugin : IPlugin
             (IOrganizationServiceFactory)provider.GetService(typeof(IOrganizationServiceFactory))
         ).CreateOrganizationService(context.UserId);
         var store = new DocumentStore(service);
+        // A group team is granted through its group, so a person signing in (which is when
+        // Dataverse adds them to the team) changes nothing and creates no work. Registrations
+        // written before the kind was stored (Group null) keep queuing until their next Apply.
         var registered = teams
             .Where(team =>
-                store.Find<TeamRegistration>("asx_teamregistration", "team:" + team.ToString("N"))
-                != null
-            )
+            {
+                var registration = store.Find<TeamRegistration>(
+                    "asx_teamregistration",
+                    "team:" + team.ToString("N")
+                );
+                return registration != null && registration.Value.Group != true;
+            })
             .ToArray();
         if (registered.Length == 0)
             return;

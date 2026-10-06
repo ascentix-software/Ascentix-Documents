@@ -150,6 +150,14 @@ public sealed class SecurityWorker
             case "Complete":
                 return Complete(op, claim, catalog);
             case "Fail":
+                // Resolving a group claim changes no access and can be repeated, so its unknown
+                // outcome is dropped and the claim resolved again; the failure itself decides.
+                if (
+                    op.Value.MutationKind == "PrincipalEnsure"
+                    && op.Value.ExternalSubmitted
+                    && !op.Value.ExternalResponseKnown
+                )
+                    ClearMutation(op.Value);
                 if (
                     TransientFailure.Is(request)
                     && !(op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)

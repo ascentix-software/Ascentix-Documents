@@ -10,14 +10,24 @@ namespace Ascentix.Documents.SdkTests;
 public sealed class LibraryProvisioningTests
 {
     [Theory]
-    [InlineData(2, 0, null)]
-    [InlineData(3, 2, null)]
-    [InlineData(3, 3, "only the guests")]
-    [InlineData(1, 0, "Access teams")]
+    [InlineData(2, 0, null, false)]
+    [InlineData(3, 2, null, false)]
+    [InlineData(3, 3, "only the guests", true)]
+    [InlineData(1, 0, "Access teams", true)]
+    [InlineData(3, 1, "The group's guests will also have access to this library.", false)]
+    [InlineData(
+        2,
+        2,
+        "All members of the group will have access to this library, not only its owners.",
+        false
+    )]
+    [InlineData(3, 1, null, true)]
+    [InlineData(2, 2, null, true)]
     public void NewLibraryAcceptsGroupTeamsAndRefusesTeamsSharePointCannotIdentify(
         int type,
         int membership,
-        string? reason
+        string? reason,
+        bool acknowledged
     )
     {
         var f = new Fixture();
@@ -26,9 +36,13 @@ public sealed class LibraryProvisioningTests
         team["teamtype"] = new Microsoft.Xrm.Sdk.OptionSetValue(type);
         team["membershiptype"] = new Microsoft.Xrm.Sdk.OptionSetValue(membership);
         team["azureactivedirectoryobjectid"] = Guid.NewGuid();
+        f.Acknowledge = acknowledged;
         if (reason == null)
         {
-            Assert.Equal("Pending", f.Queue().Status);
+            var queued = f.Queue();
+            Assert.Equal("Pending", queued.Status);
+            // The consent travels with the setup to the access policy it applies later.
+            Assert.Equal("AccessPending", f.Run(queued.Key).Status);
             return;
         }
         Assert.Contains(
@@ -265,6 +279,7 @@ public sealed class LibraryProvisioningTests
             OwnerAccess,
             UnknownCreate;
         public int ThrottledCreates;
+        public bool Acknowledge;
         public List<string> Posts = new List<string>();
 
         public Fixture()
@@ -295,6 +310,7 @@ public sealed class LibraryProvisioningTests
                         SiteId = Site,
                         Name = "Documents",
                         RequestId = Guid.NewGuid(),
+                        AcknowledgeBroaderAccess = Acknowledge,
                         Entries = new[]
                         {
                             new PolicyEntry { TeamId = Team, Access = "Read" },

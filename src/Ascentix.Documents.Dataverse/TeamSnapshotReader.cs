@@ -12,9 +12,10 @@ namespace Ascentix.Documents.Dataverse;
 /// Decides how a Dataverse team gets library access. An owner team's members are synced into
 /// the Documents group one by one. An Entra security group team or a Microsoft 365 group team is
 /// represented by its group: the Documents group holds the group's SharePoint claim as its only
-/// managed member, so membership is always exact and Dataverse team members are never read.
-/// Dataverse fills a group team's member list only when each person first signs in, so it could
-/// not be copied reliably.
+/// managed member, so new group members get access with no Documents run and Dataverse team
+/// members are never read. Dataverse fills a group team's member list only when each person first
+/// signs in, so it could not be copied reliably. Where the claim reaches more people than the
+/// team holds, the admin must accept that when configuring access (<see cref="BroaderAccess"/>).
 /// </summary>
 public static class TeamPrincipal
 {
@@ -26,7 +27,8 @@ public static class TeamPrincipal
     private const int OwnerTeam = 0,
         SecurityGroupTeam = 2,
         Microsoft365GroupTeam = 3;
-    private const int OwnersOnly = 2,
+    private const int MembersOnly = 1,
+        OwnersOnly = 2,
         GuestsOnly = 3;
 
     public static ColumnSet Columns() =>
@@ -44,12 +46,52 @@ public static class TeamPrincipal
         return type == SecurityGroupTeam || type == Microsoft365GroupTeam;
     }
 
-    /// <summary>Refuses a team that cannot get library access, with the reason.</summary>
+    public const string GuestsAlsoWarning =
+        "The group's guests will also have access to this library.";
+    public const string AllMembersWarning =
+        "All members of the group will have access to this library, not only its owners.";
+
+    /// <summary>
+    /// Refuses a team that cannot get library access, and a team whose group reaches more people
+    /// than the team unless the admin accepted that.
+    /// </summary>
     /// <param name="team">The team row, read with <see cref="Columns"/>.</param>
-    public static void Validate(Entity team)
+    /// <param name="acknowledged">The request's AcknowledgeBroaderAccess.</param>
+    public static void Validate(Entity team, bool acknowledged)
+    {
+        RequireEligible(team);
+        string? warning = BroaderAccess(team);
+        if (warning != null && !acknowledged)
+            throw new EvaluationBlockedException(warning);
+    }
+
+    /// <summary>Refuses a team that cannot get library access, with the reason.</summary>
+    public static void RequireEligible(Entity team)
     {
         if (!Eligible(team, out var reason))
             throw new EvaluationBlockedException(reason!);
+    }
+
+    /// <summary>
+    /// The warning an admin must accept when the team's group claim gives access to more people
+    /// than the Dataverse team holds; null when it does not.
+    /// - Members: SharePoint has no claim for a group's members without its guests, so the plain
+    ///   group claim also admits the guests.
+    /// - Security group Owners: SharePoint has no owners claim for a security group, so the whole
+    ///   group is granted.
+    /// </summary>
+    public static string? BroaderAccess(Entity team)
+    {
+        if (!IsGroup(team))
+            return null;
+        if (Membership(team) == MembersOnly)
+            return GuestsAlsoWarning;
+        if (
+            team.GetAttributeValue<OptionSetValue>("teamtype").Value == SecurityGroupTeam
+            && Membership(team) == OwnersOnly
+        )
+            return AllMembersWarning;
+        return null;
     }
 
     /// <summary>
@@ -80,11 +122,6 @@ public static class TeamPrincipal
                 "Team '"
                 + name
                 + "' includes only the guests of its group. SharePoint has no sign-in claim for only the guests of a group, so this team cannot get library access. Use a team whose membership type is Members, or Members and guests.";
-        else if (type == SecurityGroupTeam && Membership(team) == OwnersOnly)
-            reason =
-                "Team '"
-                + name
-                + "' includes only the owners of its Microsoft Entra security group. SharePoint has no sign-in claim for only the owners of a security group, so this team cannot get library access. Use a team whose membership type is Members, or Members and guests.";
         else
             return true;
         return false;
@@ -106,12 +143,13 @@ public static class TeamPrincipal
     ///   (https://learn.microsoft.com/answers/questions/349797 and /873831).
     /// - Microsoft 365 group owners: the same claim with the suffix _o. No Microsoft page states
     ///   it; community documentation of group-connected sites does, so it is verified live.
-    /// Membership type Members and Members and guests share one claim: SharePoint has no claim
-    /// for only the members of a group without its guests.
+    /// Members and Members and guests share the plain group claim, and a security group's Owners
+    /// team uses the security group claim, since SharePoint has no narrower claim for either; the
+    /// admin accepts that when configuring access (<see cref="BroaderAccess"/>).
     /// </remarks>
     public static string Claim(Entity team)
     {
-        Validate(team);
+        RequireEligible(team);
         string id = team.GetAttributeValue<Guid>("azureactivedirectoryobjectid").ToString("D");
         if (team.GetAttributeValue<OptionSetValue>("teamtype").Value == SecurityGroupTeam)
             return "c:0t.c|tenant|" + id;
@@ -155,7 +193,7 @@ public sealed class TeamSnapshotReader
         var team = service.Retrieve("team", teamId, TeamPrincipal.Columns());
         if (TeamPrincipal.IsGroup(team))
             return GroupSnapshot(team);
-        TeamPrincipal.Validate(team);
+        TeamPrincipal.RequireEligible(team);
         string teamName = TeamPrincipal.Name(team);
         var query = new QueryExpression("systemuser")
         {

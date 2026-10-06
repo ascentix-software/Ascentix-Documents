@@ -46,6 +46,10 @@ public sealed class CatalogRequest
 
     [DataMember]
     public string Name { get; set; } = "";
+
+    /// <summary>CreateLibrary: the admin accepted the initial team's broader access.</summary>
+    [DataMember]
+    public bool AcknowledgeBroaderAccess { get; set; }
 }
 
 [DataContract]

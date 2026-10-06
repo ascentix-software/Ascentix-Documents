@@ -49,6 +49,10 @@ public sealed class LibrarySetup : OperationDocument
     [DataMember]
     public PolicyEntry[] Entries { get; set; } = Array.Empty<PolicyEntry>();
 
+    /// <summary>The admin's consent to the initial team's broader access, applied with it later.</summary>
+    [DataMember]
+    public bool AcknowledgeBroaderAccess { get; set; }
+
     [DataMember]
     public CatalogLibraryObservation? Library { get; set; }
 
@@ -127,7 +131,10 @@ public sealed class LibraryProvisioning
                 "Select distinct teams with Read or Contribute access."
             );
         foreach (var entry in request.Entries)
-            TeamPrincipal.Validate(service.Retrieve("team", entry.TeamId, TeamPrincipal.Columns()));
+            TeamPrincipal.Validate(
+                service.Retrieve("team", entry.TeamId, TeamPrincipal.Columns()),
+                request.AcknowledgeBroaderAccess
+            );
         var site = service.Retrieve(
             "asx_site",
             request.SiteId,
@@ -162,6 +169,7 @@ public sealed class LibraryProvisioning
                 WebUrl = TemplateStore.Text(site, "asx_url"),
                 Name = request.Name,
                 Entries = request.Entries,
+                AcknowledgeBroaderAccess = request.AcknowledgeBroaderAccess,
             }
         );
         return Result(store.Require<LibrarySetup>("asx_operation", key));
@@ -630,6 +638,7 @@ public sealed class LibraryProvisioning
                 Command = "ApplyPolicy",
                 LibraryId = v.CatalogId,
                 Entries = v.Entries,
+                AcknowledgeBroaderAccess = v.AcknowledgeBroaderAccess,
                 ReadRole = v.ReadRole,
                 ContributeRole = v.ContributeRole,
             },

@@ -1831,6 +1831,7 @@ public sealed class SecurityWorkerTests
     {
         var f = new Fixture();
         f.MakeGroupTeam(3, membership);
+        f.Acknowledge = membership == 1;
         f.Queue("Contribute");
         f.Drive();
         Assert.Equal(
@@ -1844,7 +1845,6 @@ public sealed class SecurityWorkerTests
     [Theory]
     [InlineData(3, 3, true, "only the guests")]
     [InlineData(2, 3, true, "only the guests")]
-    [InlineData(2, 2, true, "only the owners")]
     [InlineData(2, 0, false, "object ID")]
     [InlineData(3, 1, false, "object ID")]
     public void GroupTeamsSharePointCannotIdentifyAreRefusedWithTheReason(
@@ -1875,6 +1875,214 @@ public sealed class SecurityWorkerTests
             )
         );
         Assert.Equal(applied.Message, registered.Message);
+    }
+
+    [Theory]
+    [InlineData(
+        3,
+        1,
+        "c:0o.c|federateddirectoryclaimprovider|",
+        "The group's guests will also have access to this library."
+    )]
+    [InlineData(
+        2,
+        1,
+        "c:0t.c|tenant|",
+        "The group's guests will also have access to this library."
+    )]
+    [InlineData(
+        2,
+        2,
+        "c:0t.c|tenant|",
+        "All members of the group will have access to this library, not only its owners."
+    )]
+    public void GroupTeamsThatReachMorePeopleNeedTheAdminsConsent(
+        int type,
+        int membership,
+        string claim,
+        string warning
+    )
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(type, membership);
+        Assert.Equal(
+            warning,
+            Assert.Throws<EvaluationBlockedException>(() => f.Queue("Read")).Message
+        );
+        SecurityRequest Register(bool acknowledged) =>
+            new SecurityRequest
+            {
+                Command = "RegisterTeam",
+                TeamId = f.Team,
+                Enabled = true,
+                RowVersion = f
+                    .Store.Require<TeamRegistration>(
+                        "asx_teamregistration",
+                        "team:" + f.Team.ToString("N")
+                    )
+                    .Row.RowVersion,
+                AcknowledgeBroaderAccess = acknowledged,
+            };
+        Assert.Equal(
+            warning,
+            Assert
+                .Throws<EvaluationBlockedException>(() =>
+                    f.Service.Transaction(() => f.Admin.Execute(Register(false), true))
+                )
+                .Message
+        );
+        f.Service.Transaction(() => f.Admin.Execute(Register(true), true));
+        f.Acknowledge = true;
+        f.Queue("Read");
+        f.Drive();
+        Assert.Equal(claim + f.GroupObject.ToString("D"), f.Members.Single().Login);
+        Assert.Equal(new[] { f.Read.Id }, f.Roles(42));
+        // Consent is asked when access is configured, never by the background sync.
+        var refreshed = f.Service.Transaction(() =>
+            new SecurityRefresh(f.Service, () => DateTime.UtcNow.AddDays(2)).Scan()
+        );
+        Assert.Empty(refreshed.Keys);
+    }
+
+    [Theory]
+    [InlineData(2, true)]
+    [InlineData(3, true)]
+    [InlineData(0, false)]
+    public void ApplyAndRegistrationRecordWhetherTheTeamIsAGroupTeam(int type, bool group)
+    {
+        var f = new Fixture();
+        if (type != 0)
+            f.MakeGroupTeam(type);
+        Assert.Null(Registration(f).Value.Group);
+        f.Service.Transaction(() =>
+            f.Admin.Execute(
+                new SecurityRequest
+                {
+                    Command = "ApplyPolicy",
+                    LibraryId = f.Library,
+                    Entries = new[]
+                    {
+                        new PolicyEntry { TeamId = f.Team, Access = "Read" },
+                    },
+                    ReadRole = f.Read,
+                    ContributeRole = f.Contribute,
+                },
+                true
+            )
+        );
+        Assert.Equal(group, Registration(f).Value.Group);
+        // A registration written before the kind was stored gets it on its next registration.
+        var registration = Registration(f);
+        registration.Value.Group = null;
+        f.Store.Save(registration);
+        f.Service.Transaction(() =>
+            f.Admin.Execute(
+                new SecurityRequest
+                {
+                    Command = "RegisterTeam",
+                    TeamId = f.Team,
+                    Enabled = true,
+                    RowVersion = Registration(f).Row.RowVersion,
+                },
+                true
+            )
+        );
+        Assert.Equal(group, Registration(f).Value.Group);
+    }
+
+    private static StoredRow<TeamRegistration> Registration(Fixture f) =>
+        f.Store.Require<TeamRegistration>("asx_teamregistration", "team:" + f.Team.ToString("N"));
+
+    [Fact]
+    public void PersonAddedByHandToAGroupTeamsDocumentsGroupIsRemoved()
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(2);
+        f.Queue("Read");
+        f.Drive();
+        f.Members.Add(
+            new SitePerson
+            {
+                Id = 901,
+                Login = "i:0#.f|membership|handadded@example.com",
+                Type = 1,
+            }
+        );
+        f.Writes.Clear();
+        f.Queue("Read");
+        f.Drive();
+        Assert.Equal(new[] { "MemberRemove" }, f.Writes);
+        Assert.Equal("c:0t.c|tenant|" + f.GroupObject.ToString("D"), f.Members.Single().Login);
+        Assert.Empty(f.Policy().Notices);
+    }
+
+    /// <summary>Drives a group team's run until its PrincipalEnsure is submitted to SharePoint.</summary>
+    private static WorkerResult SubmitEnsure(Fixture f)
+    {
+        var work = f.Start();
+        for (int i = 0; ; i++)
+        {
+            Assert.True(i < 200, "PrincipalEnsure never prepared.");
+            if (work.Status == "Read")
+                work = f.Observe(work);
+            else if (
+                work.Status == "ReadyToCreate"
+                && f.Operation().MutationKind == "PrincipalEnsure"
+            )
+                return f.Call("PrepareCreate", work);
+            else if (work.Status == "ReadyToCreate")
+                work = f.Call("PrepareCreate", work);
+            else if (work.Status == "Create")
+            {
+                f.Apply();
+                work = f.Call("CreateResponse", work, status: 200);
+            }
+            else
+                throw new Exception(work.Status);
+        }
+    }
+
+    [Fact]
+    public void TakeoverAfterAnUnansweredGroupResolveResolvesAgain()
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(2);
+        f.Queue("Read");
+        Assert.Equal("Create", SubmitEnsure(f).Status);
+        Assert.True(f.Operation().ExternalSubmitted);
+        // The run stops before SharePoint answers; the next run takes over once the lease ends.
+        ExpireClaim(f);
+        f.Writes.Clear();
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Equal(new[] { "PrincipalEnsure", "MemberAdd", "GrantAdd" }, f.Writes);
+        Assert.Single(f.Members);
+    }
+
+    [Fact]
+    public void FlowFailureWhileAGroupResolveIsUnansweredWaitsAndResolvesAgain()
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(2);
+        f.Queue("Read");
+        var work = SubmitEnsure(f);
+        var failed = f.Service.Transaction(() =>
+            new SecurityWorker(f.Service).Execute(
+                new WorkerRequest
+                {
+                    Command = "Fail",
+                    Key = f.Key,
+                    RunId = "security/run-1",
+                    Token = work.Token,
+                    StatusCode = 0,
+                },
+                true
+            )
+        );
+        Assert.Equal("RetryWait", failed.Status);
+        Due(f);
+        f.Writes.Clear();
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Equal(new[] { "PrincipalEnsure", "MemberAdd", "GrantAdd" }, f.Writes);
     }
 
     [Fact]
@@ -1929,6 +2137,7 @@ public sealed class SecurityWorkerTests
     {
         var f = new Fixture();
         f.MakeGroupTeam(3, 1);
+        f.Acknowledge = true;
         f.Queue("Read");
         f.Drive();
         f.Writes.Clear();
@@ -1974,6 +2183,7 @@ public sealed class SecurityWorkerTests
     {
         var f = new Fixture();
         f.MakeGroupTeam(3, 1);
+        f.Acknowledge = true;
         f.Queue("Read");
         f.Drive();
         f.Service.Rows[f.Team]["membershiptype"] = new OptionSetValue(2);
@@ -2164,6 +2374,9 @@ public sealed class SecurityWorkerTests
             Service.Seed(row);
         }
 
+        /// <summary>Sent as AcknowledgeBroaderAccess when the fixture saves its policy.</summary>
+        public bool Acknowledge;
+
         public Guid GroupObject = Guid.Parse("7d1e0c55-2f4b-4a77-9c1d-0b6a5e2f9a31");
         public List<HttpIntent> Posts = new List<HttpIntent>();
 
@@ -2228,6 +2441,7 @@ public sealed class SecurityWorkerTests
                         ReadRole = Read,
                         ContributeRole = Contribute,
                         RowVersion = existing?.Row.RowVersion,
+                        AcknowledgeBroaderAccess = Acknowledge,
                     },
                     true
                 )

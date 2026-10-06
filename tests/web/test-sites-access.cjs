@@ -88,7 +88,21 @@ const teams = [
     membershiptype: 2,
     azureactivedirectoryobjectid: id(18),
   },
+  {
+    teamid: id(12),
+    name: 'Project Y',
+    teamtype: 3,
+    membershiptype: 1,
+    azureactivedirectoryobjectid: id(19),
+  },
 ];
+const lib2 = {
+  asx_libraryid: id(13),
+  asx_name: 'Contracts',
+  _asx_siteid_value: id(1),
+  asx_approved: true,
+  asx_policyapplied: true,
+};
 let discovery = false;
 let operationStatus = 'Verified';
 let inspectIssue = null,
@@ -115,7 +129,13 @@ const xrm = {
       };
     },
     retrieveRecord: async (table, key) =>
-      table === 'asx_library' ? lib : table === 'asx_site' ? site : { name: 'Operations' },
+      table === 'asx_library'
+        ? key === id(13)
+          ? lib2
+          : lib
+        : table === 'asx_site'
+          ? site
+          : { name: 'Operations' },
     online: {
       execute: async (req) => {
         const command = JSON.parse(req.Request);
@@ -196,8 +216,17 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     );
     assert.equal(byId(10).disabled, true, 'A team with no group object ID cannot be chosen');
     assert.match(byId(10).textContent, /no Microsoft Entra group object ID/);
-    assert.equal(byId(11).disabled, true);
-    assert.match(byId(11).textContent, /only the owners of a security group/);
+    // Teams whose group reaches more people than the team are labelled and need consent.
+    assert.equal(byId(11).disabled, false);
+    assert.equal(
+      byId(11).textContent,
+      'Finance owners (Entra group, owners; all members get access)',
+    );
+    assert.equal(byId(12).disabled, false);
+    assert.equal(
+      byId(12).textContent,
+      'Project Y (Microsoft 365 group, members; guests also get access)',
+    );
   }
   nodes['ad-add-team'].onclick();
   nodes['ad-team-choice'].value = id(4);
@@ -383,6 +412,62 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   await window.AsxdSites.selectLibrary(id(3));
   assert.equal(nodes['ad-library-status'].textContent, 'Needs attention');
   lib.asx_approved = true;
+  // Consent: a team whose group reaches more people is applied only after the admin confirms
+  // the warning shown in the page.
+  policy = { Status: 'Applied', RowVersion: '20', Policy: { Desired: [], Applied: [] } };
+  await window.AsxdSites.selectLibrary(id(13));
+  assert.equal(nodes['ad-library-title'].textContent, 'Contracts');
+  assert.equal(nodes['ad-apply-warning'].hidden, true);
+  nodes['ad-add-team'].onclick();
+  nodes['ad-team-choice'].value = id(11);
+  nodes['ad-team-access'].value = 'Read';
+  nodes['ad-stage-team'].onclick();
+  const applies = () => requests.filter((r) => r.Command === 'ApplyPolicy').length;
+  const beforeConsent = applies();
+  await nodes['ad-apply'].onclick();
+  assert.equal(applies(), beforeConsent, 'Nothing is applied before the admin confirms');
+  assert.equal(nodes['ad-apply-warning'].hidden, false);
+  assert.match(
+    nodes['ad-apply-warning'].textContent,
+    /All members of the group will have access to this library, not only its owners\./,
+  );
+  assert.match(nodes['ad-apply'].textContent, /Confirm and apply/);
+  await nodes['ad-apply'].onclick();
+  const consented = requests.filter((r) => r.Command === 'ApplyPolicy').at(-1);
+  assert.equal(applies(), beforeConsent + 1);
+  assert.equal(consented.AcknowledgeBroaderAccess, true);
+  assert.equal(consented.Entries[0].TeamId, id(11));
+  assert.equal(nodes['ad-apply-warning'].hidden, true);
+  assert.match(nodes['ad-apply'].textContent, /Apply access changes/);
+  // The same for a new library's initial team.
+  nodes['ad-create'].onclick();
+  nodes['ad-library-name'].value = 'Partners';
+  nodes['ad-initial-team'].value = id(12);
+  nodes['ad-initial-access'].value = 'Read';
+  const creates = () => requests.filter((r) => r.Command === 'CreateLibrary').length;
+  const beforeCreate = creates();
+  await nodes['ad-provision'].onclick();
+  assert.equal(creates(), beforeCreate, 'No library is created before the admin confirms');
+  assert.equal(nodes['ad-provision-warning'].hidden, false);
+  assert.equal(
+    nodes['ad-provision-warning'].textContent,
+    "The group's guests will also have access to this library. Select Confirm and create to continue.",
+  );
+  await nodes['ad-provision'].onclick();
+  const createdWithConsent = requests.filter((r) => r.Command === 'CreateLibrary').at(-1);
+  assert.equal(creates(), beforeCreate + 1);
+  assert.equal(createdWithConsent.AcknowledgeBroaderAccess, true);
+  assert.equal(nodes['ad-provision-warning'].hidden, true);
+  // An owner team needs no consent.
+  nodes['ad-create'].onclick();
+  nodes['ad-library-name'].value = 'Ledger';
+  nodes['ad-initial-team'].value = id(4);
+  await nodes['ad-provision'].onclick();
+  assert.equal(creates(), beforeCreate + 2);
+  assert.equal(
+    requests.filter((r) => r.Command === 'CreateLibrary').at(-1).AcknowledgeBroaderAccess,
+    undefined,
+  );
   console.log(
     'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, and author deep link. Mocked APIs; connected acceptance pending.',
   );

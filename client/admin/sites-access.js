@@ -8,6 +8,10 @@
     sites: [],
     libraries: [],
     teams: new Map(),
+    // Team ID to the broader-access warning its group carries.
+    warnings: new Map(),
+    // The selection whose warnings are shown: { kind: 'apply' | 'provision', key, warnings }.
+    consent: null,
     policies: new Map(),
     site: null,
     library: null,
@@ -37,23 +41,50 @@
     return o;
   };
   // Owner teams sync their members. An Entra or Microsoft 365 group team is granted through its
-  // group, so it is labelled with its kind. Teams SharePoint cannot identify are listed disabled
-  // with the reason, matching the server's refusal (team.teamtype 2 security group, 3 Microsoft
-  // 365 group; membershiptype 2 owners, 3 guests).
+  // group, so it is labelled with its kind. This mirrors the server (TeamPrincipal), with
+  // team.teamtype 2 security group, 3 Microsoft 365 group and membershiptype 1 members,
+  // 2 owners, 3 guests:
+  // - teams SharePoint cannot identify are listed disabled with the reason;
+  // - teams whose group reaches more people than the team carry a warning the admin confirms.
   const teamLabel = (t) => {
-    if (t.teamtype !== 2 && t.teamtype !== 3) return { text: t.name, reason: null };
-    const kind = t.teamtype === 2 ? 'Entra group' : 'Microsoft 365 group',
-      owners = t.membershiptype === 2;
+    if (t.teamtype !== 2 && t.teamtype !== 3) return { text: t.name, reason: null, warning: null };
+    const security = t.teamtype === 2,
+      kind = security ? 'Entra group' : 'Microsoft 365 group';
     const reason = !t.azureactivedirectoryobjectid
       ? 'no Microsoft Entra group object ID, so SharePoint cannot identify its group'
       : t.membershiptype === 3
         ? 'guests only: SharePoint has no sign-in claim for only the guests of a group'
-        : owners && t.teamtype === 2
-          ? 'owners only: SharePoint has no sign-in claim for only the owners of a security group'
+        : null;
+    if (reason) return { text: t.name + ' (' + kind + ') - ' + reason, reason, warning: null };
+    const warning =
+      t.membershiptype === 1
+        ? "The group's guests will also have access to this library."
+        : security && t.membershiptype === 2
+          ? 'All members of the group will have access to this library, not only its owners.'
           : null;
-    const text = t.name + ' (' + kind + (owners && !reason ? ', owners' : '') + ')';
-    return { text: reason ? text + ' - ' + reason : text, reason };
+    const scope =
+      t.membershiptype === 1
+        ? ', members; guests also get access'
+        : t.membershiptype === 2
+          ? security
+            ? ', owners; all members get access'
+            : ', owners'
+          : '';
+    return { text: t.name + ' (' + kind + scope + ')', reason: null, warning };
   };
+  // Warnings for the chosen teams that still need the admin's confirmation, shown in the page.
+  // A second select of the same button with the same choice confirms them.
+  const warningsFor = (teamIds) => [
+    ...new Set(teamIds.map((id) => state.warnings.get(id)).filter(Boolean)),
+  ];
+  function consent(kind, key, teamIds) {
+    const warnings = warningsFor(teamIds);
+    if (!warnings.length) return { go: true, ack: false };
+    if (state.consent?.kind === kind && state.consent.key === key) return { go: true, ack: true };
+    state.consent = { kind, key, warnings };
+    return { go: false };
+  }
+  const applyKey = (p) => (state.library?.asx_libraryid || '') + JSON.stringify(p?.entries || []);
   const issue = (text, error = false) => {
     $('ad-message').textContent = text;
     $('ad-message').className = error ? 'ad-issue' : 'ad-status';
@@ -365,6 +396,20 @@
     const notices = (p && p.result.Policy?.Notices) || [];
     $('ad-access-notices').replaceChildren(...notices.map((n) => node('li', n)));
     $('ad-access-notices').hidden = !notices.length;
+    // A shown warning belongs to one exact selection; any change asks again.
+    if (state.consent?.kind === 'apply' && state.consent.key !== applyKey(p)) state.consent = null;
+    const confirmApply = state.consent?.kind === 'apply',
+      confirmCreate = state.consent?.kind === 'provision';
+    $('ad-apply').textContent = confirmApply ? 'Confirm and apply' : 'Apply access changes';
+    $('ad-apply-warning').textContent = confirmApply
+      ? state.consent.warnings.join(' ') + ' Select Confirm and apply to continue.'
+      : '';
+    $('ad-apply-warning').hidden = !confirmApply;
+    $('ad-provision').textContent = confirmCreate ? 'Confirm and create' : 'Create library';
+    $('ad-provision-warning').textContent = confirmCreate
+      ? state.consent.warnings.join(' ') + ' Select Confirm and create to continue.'
+      : '';
+    $('ad-provision-warning').hidden = !confirmCreate;
     [
       'ad-validate',
       'ad-provision',
@@ -434,7 +479,9 @@
           e.TeamId,
           '?$select=name,teamtype,membershiptype,azureactivedirectoryobjectid',
         );
-        state.teams.set(e.TeamId, teamLabel(team).text);
+        const label = teamLabel(team);
+        state.teams.set(e.TeamId, label.text);
+        if (label.warning) state.warnings.set(e.TeamId, label.warning);
       }
     if (result.Status === 'Applied') {
       l.asx_policyapplied = true;
@@ -460,6 +507,7 @@
     teams.forEach((t) => {
       const label = teamLabel(t);
       state.teams.set(t.teamid, label.text);
+      if (label.warning) state.warnings.set(t.teamid, label.warning);
       ['ad-team-choice', 'ad-initial-team'].forEach((id) => {
         const o = opt(t.teamid, label.text);
         o.disabled = !!label.reason;
@@ -732,22 +780,35 @@
   $('ad-create').onclick = () => {
     $('ad-library-form').hidden = false;
     $('ad-library-name').value = '';
+    state.consent = null;
+    render();
   };
   $('ad-cancel-library').onclick = () => {
     $('ad-library-form').hidden = true;
+    state.consent = null;
+    render();
   };
   $('ad-provision').onclick = () =>
     action(async () => {
       const name = $('ad-library-name').value.trim();
       if (!name) throw new Error('Enter a library name.');
-      const team = $('ad-initial-team').value;
+      const team = $('ad-initial-team').value,
+        access = $('ad-initial-access').value;
+      const agreed = consent(
+        'provision',
+        JSON.stringify([state.site.asx_siteid, name, team, access]),
+        team ? [team] : [],
+      );
+      if (!agreed.go) return;
       const result = await catalog({
         Command: 'CreateLibrary',
         SiteId: state.site.asx_siteid,
         Name: name,
-        Entries: team ? [{ TeamId: team, Access: $('ad-initial-access').value }] : [],
+        Entries: team ? [{ TeamId: team, Access: access }] : [],
         RequestId: crypto.randomUUID(),
+        ...(agreed.ack ? { AcknowledgeBroaderAccess: true } : {}),
       });
+      state.consent = null;
       state.progressSignature = null;
       state.completed.delete(result.Key);
       state.operations.set(result.Key, { name, kind: 'LibrarySetup', url: state.site.asx_url });
@@ -777,6 +838,12 @@
     action(async () => {
       const p = policy();
       if (!p) throw new Error('Select a library.');
+      const agreed = consent(
+        'apply',
+        applyKey(p),
+        p.entries.filter((e) => e.Access !== 'None').map((e) => e.TeamId),
+      );
+      if (!agreed.go) return;
       const latest = await security({
         Command: 'GetPolicy',
         LibraryId: state.library.asx_libraryid,
@@ -800,7 +867,9 @@
         LibraryId: state.library.asx_libraryid,
         RowVersion: latest.RowVersion || null,
         Entries: p.entries,
+        ...(agreed.ack ? { AcknowledgeBroaderAccess: true } : {}),
       });
+      state.consent = null;
       p.result = result;
       p.saved = JSON.stringify(p.entries);
       issue('Access submitted. Team membership syncing is onboarded automatically.');

@@ -262,6 +262,39 @@ public sealed class LifecycleTests
     }
 
     [Fact]
+    public void SignInToAGroupTeamCreatesNoWork()
+    {
+        // Dataverse adds a person to a group team when they first sign in. The group itself is
+        // granted on the library, so there is nothing to sync.
+        var f = Setup();
+        Guid team = Guid.NewGuid();
+        f.Store.Create(
+            "asx_teamregistration",
+            new TeamRegistration
+            {
+                Key = "team:" + team.ToString("N"),
+                TeamId = team,
+                Enabled = true,
+                Group = true,
+                Status = "Enabled",
+            }
+        );
+        var inputs = new ParameterCollection
+        {
+            ["Target"] = new EntityReference("team", team),
+            ["RelatedEntities"] = new EntityReferenceCollection
+            {
+                new EntityReference("systemuser", Guid.NewGuid()),
+            },
+            ["Relationship"] = new Relationship("teammembership_association"),
+        };
+        new TeamMembershipInvalidationPlugin().Execute(
+            new Provider(f, Event(f, "Associate", inputs))
+        );
+        Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_outbox");
+    }
+
+    [Fact]
     public void OtherRelationshipsProduceNoProductWork()
     {
         var f = Setup();

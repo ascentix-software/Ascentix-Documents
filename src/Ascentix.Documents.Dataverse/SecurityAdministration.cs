@@ -106,10 +106,12 @@ public sealed class SecurityAdministration
         {
             if (request.TeamId == Guid.Empty)
                 throw new EvaluationBlockedException("Team ID required.");
+            Entity? team = null;
             if (request.Enabled)
-                TeamPrincipal.Validate(
-                    service.Retrieve("team", request.TeamId, TeamPrincipal.Columns())
-                );
+            {
+                team = service.Retrieve("team", request.TeamId, TeamPrincipal.Columns());
+                TeamPrincipal.Validate(team, request.AcknowledgeBroaderAccess);
+            }
             string key = "team:" + request.TeamId.ToString("N");
             var old = store.Find<TeamRegistration>("asx_teamregistration", key);
             if (old == null)
@@ -123,6 +125,7 @@ public sealed class SecurityAdministration
                         Key = key,
                         TeamId = request.TeamId,
                         Enabled = request.Enabled,
+                        Group = team == null ? (bool?)null : TeamPrincipal.IsGroup(team),
                         Status = request.Enabled ? "Enabled" : "Revoking",
                     }
                 );
@@ -131,6 +134,8 @@ public sealed class SecurityAdministration
             {
                 Version(old.Row, request.RowVersion);
                 old.Value.Enabled = request.Enabled;
+                if (team != null)
+                    old.Value.Group = TeamPrincipal.IsGroup(team);
                 old.Value.Status = request.Enabled ? "Enabled" : "Revoking";
                 store.Save(old);
             }
@@ -164,11 +169,13 @@ public sealed class SecurityAdministration
             foreach (var entry in request.Entries.Where(e => e.Access != "None"))
             {
                 // Saving a draft validates eligibility; only applying explicitly onboards syncing.
-                TeamPrincipal.Validate(
-                    service.Retrieve("team", entry.TeamId, TeamPrincipal.Columns())
-                );
+                var team = service.Retrieve("team", entry.TeamId, TeamPrincipal.Columns());
+                TeamPrincipal.Validate(team, request.AcknowledgeBroaderAccess);
                 if (request.Command == "ApplyPolicy")
                 {
+                    // teamtype is fixed when a team is created, so the kind recorded here stays
+                    // true; membership events for group teams are then skipped at the source.
+                    bool group = TeamPrincipal.IsGroup(team);
                     string teamKey = "team:" + entry.TeamId.ToString("N");
                     var registration = store.Find<TeamRegistration>(
                         "asx_teamregistration",
@@ -182,12 +189,14 @@ public sealed class SecurityAdministration
                                 Key = teamKey,
                                 TeamId = entry.TeamId,
                                 Enabled = true,
+                                Group = group,
                                 Status = "Enabled",
                             }
                         );
-                    else if (!registration.Value.Enabled)
+                    else if (!registration.Value.Enabled || registration.Value.Group != group)
                     {
                         registration.Value.Enabled = true;
+                        registration.Value.Group = group;
                         registration.Value.Status = "Enabled";
                         store.Save(registration);
                     }
