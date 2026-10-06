@@ -696,6 +696,92 @@ public sealed class LibraryProvisioningTests
         Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
     }
 
+    /// <summary>
+    /// A verbose OData create-list response of about the given length, as SharePoint returns
+    /// it: metadata, deferred navigation links and many properties around Id and Title.
+    /// </summary>
+    internal static string FullCreateResponse(Guid id, string title, int length)
+    {
+        var parts = new List<string>
+        {
+            "\"__metadata\":{\"id\":\"https://example.sharepoint.com/sites/test/_api/Web/Lists(guid'"
+                + id
+                + "')\",\"uri\":\"https://example.sharepoint.com/sites/test/_api/Web/Lists(guid'"
+                + id
+                + "')\",\"etag\":\"\\\"1\\\"\",\"type\":\"SP.List\"}",
+        };
+        for (int i = 0; string.Join(",", parts).Length < length - 200; i++)
+            parts.Add(
+                "\"Navigation"
+                    + i
+                    + "\":{\"__deferred\":{\"uri\":\"https://example.sharepoint.com/sites/test/_api/Web/Lists(guid'"
+                    + id
+                    + "')/Navigation"
+                    + i
+                    + "\"}}"
+            );
+        parts.Add("\"Id\":\"" + id + "\"");
+        parts.Add("\"Title\":\"" + title + "\"");
+        parts.Add("\"BaseTemplate\":101");
+        return "{\"d\":{" + string.Join(",", parts) + "}}";
+    }
+
+    [Theory]
+    [InlineData(6546)]
+    [InlineData(100000)]
+    public void RecoveryAcceptsTheFullOriginalCreateResponse(int length)
+    {
+        var f = new Fixture { UnknownCreate = true };
+        var key = f.Queue().Key;
+        f.Run(key);
+        var lost = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
+        string body = FullCreateResponse(f.List, "Documents", length);
+        Assert.InRange(body.Length, length - 300, length + 300);
+        var request = new WorkerRequest
+        {
+            Key = key,
+            RunId = lost.RecoveryRunId!,
+            Token = lost.RecoveryToken,
+            Evidence = "Original run ended; its 201 response was copied from the run history.",
+            ResponseBody = body,
+        };
+        Assert.Equal(
+            "RecoveryPermitted",
+            f.Service.Transaction(() =>
+                new WorkerCoordinator(f.Service).PermitRecovery(request, true)
+            ).Status
+        );
+        Assert.Equal(f.List, f.Store.Require<LibrarySetup>("asx_operation", key).Value.ListId);
+        f.UnknownCreate = false;
+        Assert.Equal("AccessPending", f.Run(key).Status);
+        Assert.Single(f.Posts, p => p == "_api/web/lists");
+    }
+
+    [Theory]
+    [InlineData("not json")]
+    [InlineData("{\"d\":{\"Title\":\"Documents\"}}")]
+    public void RecoveryRefusesEvidenceThatDoesNotParseToTheLibrary(string body)
+    {
+        var f = new Fixture { UnknownCreate = true };
+        var key = f.Queue().Key;
+        f.Run(key);
+        var lost = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
+        var request = new WorkerRequest
+        {
+            Key = key,
+            RunId = lost.RecoveryRunId!,
+            Token = lost.RecoveryToken,
+            Evidence = "Original run ended.",
+            ResponseBody = body,
+        };
+        Assert.ThrowsAny<Exception>(() =>
+            f.Service.Transaction(() =>
+                new WorkerCoordinator(f.Service).PermitRecovery(request, true)
+            )
+        );
+        Assert.Equal("RecoveryRequired", f.Status(key));
+    }
+
     internal sealed class Fixture
     {
         public readonly DurableWorkerTests.MemoryService Service =

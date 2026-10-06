@@ -1257,15 +1257,14 @@ public sealed class WorkerCoordinator
             var setup = awaiting;
             if (setup.Value.Mutation == "CreateLibrary" && setup.Value.ListId == Guid.Empty)
             {
-                if (
-                    string.IsNullOrWhiteSpace(request.ResponseBody)
-                    || request.ResponseBody!.Length > 16000
-                )
+                // The evidence is judged by what it says, not by its size: a real create
+                // response is several kilobytes of verbose OData around the Id and Title.
+                if (string.IsNullOrWhiteSpace(request.ResponseBody))
                     throw new EvaluationBlockedException(
                         "Recover the successful original create response from the terminated flow run. A same-name lookup is insufficient."
                     );
                 var created = JsonWire
-                    .Read<ODataEnvelope<CreatedLibrary>>(request.ResponseBody)
+                    .Read<ODataEnvelope<CreatedLibrary>>(request.ResponseBody!)
                     .Data;
                 if (
                     created == null
@@ -1280,7 +1279,7 @@ public sealed class WorkerCoordinator
                 Audit(
                     request.Key,
                     request.RunId,
-                    "RecoveredCreateResponse:" + DocumentStore.Hash(request.ResponseBody)
+                    "RecoveredCreateResponse:" + DocumentStore.ContentHash(request.ResponseBody!)
                 );
                 setup = store.Require<LibrarySetup>("asx_operation", request.Key);
             }

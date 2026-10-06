@@ -55,6 +55,20 @@ public sealed class DocumentStore
                 .ToLowerInvariant();
     }
 
+    /// <summary>
+    /// The SHA-256 of content of any length, such as recovery evidence, for an audit record.
+    /// Unlike <see cref="Hash"/>, which identifies a stable key and refuses one that is not a
+    /// key, it takes any text.
+    /// </summary>
+    public static string ContentHash(string content)
+    {
+        using (var hash = SHA256.Create())
+            return BitConverter
+                .ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(content)))
+                .Replace("-", "")
+                .ToLowerInvariant();
+    }
+
     public static Guid StableId(string key)
     {
         var hex = Hash(key);
