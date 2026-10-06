@@ -249,6 +249,17 @@ public static class WorkCoordination
         claim = store.Require<DispatcherDocument>("asx_claim", claim.Value.Key);
         claim.Value.HttpOutstanding = true;
         store.Save(claim);
+        // A library setup records that its prepared write may now be sent. Until then a run
+        // that stops leaves nothing unknown in SharePoint (LibraryProvisioning.NeverSent).
+        if (request.Key.StartsWith("librarycreate:", StringComparison.Ordinal))
+        {
+            var setup = store.Require<LibrarySetup>("asx_operation", request.Key);
+            if (Writing(setup.Value))
+            {
+                setup.Value.WritePermitted = true;
+                store.Save(setup);
+            }
+        }
         return new WorkerResult { Status = "Permit", Key = request.Key };
     }
 
@@ -384,7 +395,7 @@ public static class WorkCoordination
     private static bool Writing(OperationDocument op) =>
         op.ExternalSubmitted && !op.ExternalResponseKnown;
 
-    private static void Unsend(OperationDocument op)
+    internal static void Unsend(OperationDocument op)
     {
         op.ExternalSubmitted = false;
         op.ExternalResponseKnown = false;
@@ -395,7 +406,7 @@ public static class WorkCoordination
     }
 
     // "removed" or "suspended" when the library (or its site) no longer takes writes.
-    private static string? Stops(IOrganizationService service, Guid libraryId)
+    internal static string? Stops(IOrganizationService service, Guid libraryId)
     {
         var library = Find(service, "asx_library", libraryId, "asx_siteid");
         var state = library == null ? null : Read(service, "asx_library", libraryId);

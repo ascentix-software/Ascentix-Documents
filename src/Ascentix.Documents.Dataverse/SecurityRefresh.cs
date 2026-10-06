@@ -179,6 +179,11 @@ public sealed class SecurityRefresh
                 || onlyTeam != Guid.Empty && !policy.Value.Approved.Any(e => e.TeamId == onlyTeam)
             )
                 continue;
+            // A suspended or removed library (or site) is the admin's stop for that library
+            // only: it is skipped with a notice, and every other library still refreshes.
+            if (Paused(policy))
+                continue;
+            policy = store.Require<PolicyDocument>("asx_policy", pointer.Key);
             if (
                 store
                     .Find<DispatcherDocument>(
@@ -272,5 +277,34 @@ public sealed class SecurityRefresh
                 queued.Add(result.Policy.OperationKey);
         }
         return queued.ToArray();
+    }
+
+    public const string SuspendedNotice =
+        "Access refresh is paused because this library or its site is suspended. Existing access is unchanged; the refresh resumes by itself once both are approved again.";
+
+    public const string RemovedNotice =
+        "Access refresh stopped because this library or its site was removed from Documents. Existing access is unchanged.";
+
+    /// <summary>
+    /// True when the policy's library or site is suspended or removed, after recording that on
+    /// the policy once. Otherwise clears an earlier pause notice.
+    /// </summary>
+    private bool Paused(StoredRow<PolicyDocument> policy)
+    {
+        string? stop = WorkCoordination.Stops(service, policy.Value.LibraryId);
+        string? notice =
+            stop == "suspended" ? SuspendedNotice
+            : stop == null ? null
+            : RemovedNotice;
+        var kept = policy
+            .Value.Notices.Where(n => n != SuspendedNotice && n != RemovedNotice)
+            .ToArray();
+        var notices = notice == null ? kept : kept.Concat(new[] { notice }).ToArray();
+        if (!notices.SequenceEqual(policy.Value.Notices))
+        {
+            policy.Value.Notices = notices;
+            store.Save(policy);
+        }
+        return stop != null;
     }
 }

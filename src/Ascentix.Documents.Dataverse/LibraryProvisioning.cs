@@ -61,6 +61,14 @@ public sealed class LibrarySetup : OperationDocument
 
     [DataMember]
     public HttpIntent? Intent { get; set; }
+
+    /// <summary>
+    /// For a prepared write: false until the shared connection permits sending it, then true.
+    /// A write never permitted was never sent, so it has no unknown outcome in SharePoint.
+    /// Null in setups stored before this was recorded (see LibraryProvisioning.NeverSent).
+    /// </summary>
+    [DataMember]
+    public bool? WritePermitted { get; set; }
 }
 
 [DataContract]
@@ -150,6 +158,19 @@ public sealed class LibraryProvisioning
                 request.SiteId.ToString("N") + ":" + request.Name.ToUpperInvariant()
             );
         var old = store.Find<LibrarySetup>("asx_operation", key);
+        if (old != null && old.Value.Status == "Cancelled")
+        {
+            // A cancelled setup is started again: fresh reads decide everything, so a library
+            // an earlier attempt may have made is found by them, never created twice.
+            var again = old.Value;
+            Unsend(again);
+            again.Entries = request.Entries;
+            again.AcknowledgeBroaderAccess = request.AcknowledgeBroaderAccess;
+            again.ErrorCode = null;
+            again.RetryCount = 0;
+            store.Save(old);
+            return Result(store.Require<LibrarySetup>("asx_operation", key));
+        }
         if (old != null)
         {
             if (JsonWire.Write(old.Value.Entries) != JsonWire.Write(request.Entries))
@@ -210,6 +231,114 @@ public sealed class LibraryProvisioning
     private string List(LibrarySetup op) => "_api/web/lists(guid'" + op.ListId.ToString("D") + "')";
 
     /// <summary>
+    /// True when the setup's prepared write was never permitted, so SharePoint never received
+    /// it: a pause, a lost Prepare response or a run that ended before its permit. Setups stored
+    /// before the permit was recorded use their held claim, whose outstanding-request flag is
+    /// set with every permit and cleared only once the answer is recorded.
+    /// </summary>
+    /// <param name="op">The library setup.</param>
+    /// <param name="claim">The site writer row, or null when it is not known.</param>
+    internal static bool NeverSent(LibrarySetup op, DispatcherDocument? claim) =>
+        op.ExternalSubmitted
+        && !op.ExternalResponseKnown
+        && (
+            op.WritePermitted == false
+            || op.WritePermitted == null
+                && claim != null
+                && claim.OperationKey == op.Key
+                && claim.RunId != null
+                && !claim.RecoveryPermitted
+                && !claim.HttpOutstanding
+        );
+
+    /// <summary>Puts a write that was never sent back to Pending, to be read and prepared again.</summary>
+    internal static void Unsend(LibrarySetup op)
+    {
+        op.Intent = null;
+        op.Mutation = "";
+        op.WritePermitted = null;
+        WorkCoordination.Unsend(op);
+    }
+
+    /// <summary>
+    /// The operator's Retry or Cancel, once no run holds a live claim. A write that was never
+    /// sent is simply prepared again. A library create that may have been sent keeps
+    /// evidence-based recovery for Retry; Cancel always works and deletes nothing in SharePoint.
+    /// </summary>
+    private WorkerResult Manage(WorkerRequest request, StoredRow<LibrarySetup> op)
+    {
+        bool retry = request.Command == "Retry";
+        if (op.Value.Status == "Cancelled" && !retry)
+            return new WorkerResult { Key = request.Key, Status = op.Value.Status };
+        if (
+            op.Value.Status == "Applied"
+            || op.Value.Status == "AccessPending"
+            || op.Value.Status == "Cancelled"
+        )
+            throw new EvaluationBlockedException(
+                op.Value.Status == "Cancelled"
+                    ? "Cancelled setup cannot retry. Create the library again to start over."
+                    : "The library is created; its access run is managed with the library."
+            );
+        var claim = store.Find<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(service, request.Key)
+        );
+        bool unknown = op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
+        bool neverSent = NeverSent(op.Value, claim?.Value);
+        bool sentCreate =
+            unknown
+            && !neverSent
+            && op.Value.Mutation == "CreateLibrary"
+            && op.Value.ListId == Guid.Empty;
+        if (retry && sentCreate)
+            throw new EvaluationBlockedException(
+                "The library create may have reached SharePoint and its answer was lost. Recover it with the original create response from the flow run, or Cancel the setup. Cancel deletes nothing in SharePoint."
+            );
+        bool released = store.ReleaseExpired(request.Key, clock(), request.Command);
+        if (
+            retry
+            && !released
+            && op.Value.Status != "Blocked"
+            && op.Value.Status != "RetryWait"
+            && op.Value.Status != "RecoveryRequired"
+        )
+            throw new EvaluationBlockedException("Only interrupted setup can retry.");
+        op = store.Require<LibrarySetup>("asx_operation", request.Key);
+        if (neverSent)
+            Unsend(op.Value);
+        else if (unknown && retry)
+            // A boundary or owner-access write: the next run reads the library before any write.
+            op.Value.ExternalResponseKnown = true;
+        var notices = Array.Empty<string>();
+        if (retry)
+        {
+            op.Value.Status = "Pending";
+            op.Value.ErrorCode = null;
+        }
+        else
+        {
+            op.Value.Status = "Cancelled";
+            notices = new[]
+            {
+                sentCreate
+                    ? "Cancelled. Nothing in SharePoint was deleted. If SharePoint created the library, add it as an existing library."
+                    : "Cancelled. Nothing in SharePoint was deleted.",
+            };
+        }
+        op.Value.NextAttemptUtc = null;
+        op.Value.RetryCount = 0;
+        op.Value.ProbeId = Guid.Empty;
+        store.Save(op);
+        return new WorkerResult
+        {
+            Key = request.Key,
+            Status = op.Value.Status,
+            Notices = notices,
+        };
+    }
+
+    /// <summary>
     /// Advances library creation, permission setup, and catalog registration from persisted observations.
     /// </summary>
     /// <param name="request">The worker command, operation identity, and command-specific inputs.</param>
@@ -223,26 +352,7 @@ public sealed class LibraryProvisioning
         if (request.Command == "FailUnclaimed")
             return store.FailUnclaimed<LibrarySetup>(request.Key, request, clock());
         if (request.Command == "Retry" || request.Command == "Cancel")
-        {
-            var active = store.Find<DispatcherDocument>(
-                "asx_claim",
-                WorkCoordination.Operation(service, request.Key)
-            );
-            if (
-                active?.Value.OperationKey == request.Key
-                || op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown
-            )
-                throw new EvaluationBlockedException(
-                    "An outstanding library request must be reconciled before retry."
-                );
-            if (op.Value.Status != "Blocked" && op.Value.Status != "RetryWait")
-                throw new EvaluationBlockedException("Only interrupted setup can retry.");
-            op.Value.Status = request.Command == "Retry" ? "Pending" : "Cancelled";
-            op.Value.NextAttemptUtc = null;
-            op.Value.RetryCount = 0;
-            store.Save(op);
-            return new WorkerResult { Key = request.Key, Status = op.Value.Status };
-        }
+            return Manage(request, op);
         if (request.Command == "Claim")
         {
             if (
@@ -306,6 +416,17 @@ public sealed class LibraryProvisioning
                 // An expired lease is taken over only when no library write is outstanding; an
                 // unknown write keeps operator recovery, since a second create could duplicate it.
                 bool unknownWrite = op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
+                // A prepared write the connection never permitted was never sent: the run that
+                // held it stopped first. It is read and prepared again, not recovered.
+                if (
+                    unknownWrite
+                    && claim.Value.LeaseUntilUtc <= clock()
+                    && NeverSent(op.Value, claim.Value)
+                )
+                {
+                    Unsend(op.Value);
+                    unknownWrite = false;
+                }
                 if (
                     !claim.Value.RecoveryPermitted
                     && (claim.Value.LeaseUntilUtc > clock() || unknownWrite)
@@ -372,6 +493,9 @@ public sealed class LibraryProvisioning
         }
         if (request.Command == "Fail")
         {
+            // The run failed before its prepared write was permitted, so nothing was sent.
+            if (NeverSent(op.Value, lease.Value))
+                Unsend(op.Value);
             if (
                 TransientFailure.Is(request)
                 && !(op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)
@@ -389,6 +513,8 @@ public sealed class LibraryProvisioning
                 throw new EvaluationBlockedException("No library mutation is ready.");
             op.Value.ExternalSubmitted = true;
             op.Value.ExternalResponseKnown = false;
+            // Not sent until the shared connection permits it (WorkCoordination.BeginHttp).
+            op.Value.WritePermitted = false;
             op.Value.Status = "ExternalUnknown";
             store.Save(op);
             return Work(op.Value, lease.Value, "Create", op.Value.Intent);
@@ -397,6 +523,8 @@ public sealed class LibraryProvisioning
         {
             if (!op.Value.ExternalSubmitted || op.Value.ExternalResponseKnown)
                 throw new EvaluationBlockedException("No library mutation is outstanding.");
+            // An answer, even a lost one, means the write was sent.
+            op.Value.WritePermitted = true;
             if (request.HttpStatus == 429)
             {
                 // SharePoint does not execute a throttled request, so nothing was created or

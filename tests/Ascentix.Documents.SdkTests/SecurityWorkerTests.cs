@@ -1026,6 +1026,89 @@ public sealed class SecurityWorkerTests
         );
     }
 
+    /// <summary>
+    /// Applies access on the fixture library A, then on a second library B of the same site for
+    /// the same team, and suspends A. Returns A and B; the fixture is left on B.
+    /// </summary>
+    private static (Guid A, Guid B) SuspendedBesideAnActiveLibrary(Fixture f)
+    {
+        f.AddUser();
+        f.Queue("Read");
+        f.Drive();
+        var a = f.Library;
+        var b = Guid.NewGuid();
+        f.List = Guid.NewGuid();
+        f.Service.Seed(
+            new Entity("asx_library", b)
+            {
+                ["asx_siteid"] = new EntityReference("asx_site", f.Site),
+                ["asx_listid"] = f.List.ToString(),
+                ["asx_entryurl"] = "https://example.sharepoint.com/sites/proto/Second",
+                ["asx_approved"] = true,
+            }
+        );
+        f.Library = b;
+        f.Queue("Read");
+        f.Drive();
+        f.Service.Rows[a]["asx_approved"] = false;
+        // The team changed, so every library it reaches has access to refresh.
+        f.AddPerson("new@example.com", "New");
+        return (a, b);
+    }
+
+    private static PolicyDocument PolicyOf(Fixture f, Guid library) =>
+        f.Store.Require<PolicyDocument>("asx_policy", "policy:" + library.ToString("N")).Value;
+
+    [Fact]
+    public void ScheduledRefreshSkipsASuspendedLibraryAndRefreshesTheOthers()
+    {
+        var f = new Fixture();
+        var (a, b) = SuspendedBesideAnActiveLibrary(f);
+        var refreshed = f.Service.Transaction(() =>
+            new SecurityRefresh(f.Service, () => DateTime.UtcNow.AddDays(2)).Scan()
+        );
+        var key = Assert.Single(refreshed.Keys);
+        Assert.Equal(b, f.Store.Require<SecurityOperation>("asx_operation", key).Value.LibraryId);
+        var suspended = PolicyOf(f, a);
+        Assert.Null(suspended.OperationKey);
+        Assert.Contains(suspended.Notices, n => n.Contains("suspended"));
+        // Its review moved on, so it no longer holds a place among the oldest due policies.
+        Assert.True(suspended.NextReviewUtc > DateTime.UtcNow.AddDays(2));
+        // Approved again, it is refreshed like any other library and the notice goes.
+        f.Service.Rows[a]["asx_approved"] = true;
+        f.Service.Transaction(() =>
+            new SecurityRefresh(f.Service, () => DateTime.UtcNow.AddDays(4)).Scan()
+        );
+        Assert.DoesNotContain(PolicyOf(f, a).Notices, n => n.Contains("suspended"));
+    }
+
+    [Fact]
+    public void TeamEventForATeamASuspendedLibraryUsesStillRefreshesTheOthers()
+    {
+        var f = new Fixture();
+        var (a, b) = SuspendedBesideAnActiveLibrary(f);
+        f.Store.Create(
+            "asx_outbox",
+            new OutboxDocument
+            {
+                Key = "team-event:shared",
+                SecurityTeamId = f.Team,
+                SecurityPage = 1,
+            }
+        );
+        var planned = f.Service.Transaction(() =>
+            new WorkerCoordinator(f.Service).Execute(
+                new WorkerRequest { Command = "Plan", Key = "team-event:shared" },
+                true
+            )
+        );
+        Assert.Equal("Planned", planned.Status);
+        var key = Assert.Single(planned.Keys);
+        Assert.Equal(b, f.Store.Require<SecurityOperation>("asx_operation", key).Value.LibraryId);
+        Assert.Null(PolicyOf(f, a).OperationKey);
+        Assert.Contains(PolicyOf(f, a).Notices, n => n.Contains("suspended"));
+    }
+
     [Fact]
     public void RejectedMemberRemovalIsSkippedWithANotice()
     {

@@ -269,6 +269,17 @@ public sealed class DocumentStore
         // A live claim belongs to a running flow (or an operator recovery): leave it alone.
         if (held && (claim!.Value.LeaseUntilUtc > now || claim.Value.RecoveryPermitted))
             return new WorkerResult { Status = "Quarantined", Key = key };
+        // A library write the connection never permitted was never sent, so nothing about it
+        // is unknown: it is prepared again after fresh reads, like any interrupted setup.
+        if (
+            unknown
+            && op.Value is LibrarySetup setup
+            && LibraryProvisioning.NeverSent(setup, claim?.Value)
+        )
+        {
+            LibraryProvisioning.Unsend(setup);
+            unknown = false;
+        }
         if (held || unknown)
         {
             // The run that held this job stopped and claiming it again failed. Without this the

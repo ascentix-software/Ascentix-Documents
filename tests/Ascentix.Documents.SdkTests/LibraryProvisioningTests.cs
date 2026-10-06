@@ -203,6 +203,143 @@ public sealed class LibraryProvisioningTests
         Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
     }
 
+    /// <summary>Queues a setup and runs it until its create is prepared; the run then stops.</summary>
+    private static (Fixture F, string Key, WorkerResult Prepared) PreparedCreate()
+    {
+        var f = new Fixture { StopBeforePost = true };
+        var key = f.Queue().Key;
+        var prepared = f.Run(key);
+        Assert.Equal("Create", prepared.Status);
+        f.StopBeforePost = false;
+        return (f, key, prepared);
+    }
+
+    private static void CreatedOnce(Fixture f, string key)
+    {
+        Assert.Equal("AccessPending", f.Run(key).Status);
+        Assert.Single(f.Posts, p => p == "_api/web/lists");
+        Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
+    }
+
+    [Fact]
+    public void CreateNeverPermittedIsTakenOverAndReadAgainInsteadOfNeedingRecovery()
+    {
+        var (f, key, _) = PreparedCreate();
+        f.Expire(key);
+        // Nothing was sent, so the next run reads again and creates the library once.
+        CreatedOnce(f, key);
+    }
+
+    [Fact]
+    public void ClaimFailureOnACreateNeverPermittedWaitsAndThenCreates()
+    {
+        var (f, key, _) = PreparedCreate();
+        f.Expire(key);
+        var failed = f.Manage("FailUnclaimed", key);
+        Assert.Equal("RetryWait", failed.Status);
+        var op = f.Store.Require<LibrarySetup>("asx_operation", key);
+        Assert.False(op.Value.ExternalSubmitted);
+        op.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+        f.Store.Save(op);
+        CreatedOnce(f, key);
+    }
+
+    [Fact]
+    public void FlowFailureBeforeThePermitWaitsInsteadOfNeedingRecovery()
+    {
+        var (f, key, prepared) = PreparedCreate();
+        var failed = f.Service.Transaction(() =>
+            f.Worker.Execute(
+                new WorkerRequest
+                {
+                    Command = "Fail",
+                    Key = key,
+                    RunId = "library-test",
+                    Token = prepared.Token,
+                    StatusCode = 0,
+                },
+                true
+            )
+        );
+        Assert.Equal("RetryWait", failed.Status);
+        var op = f.Store.Require<LibrarySetup>("asx_operation", key);
+        op.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+        f.Store.Save(op);
+        CreatedOnce(f, key);
+    }
+
+    [Fact]
+    public void OperatorRetryOfACreateNeverPermittedReadsAgainAndCreatesOnce()
+    {
+        var (f, key, _) = PreparedCreate();
+        // A run is still working on it: Retry waits for its claim to expire.
+        Assert.Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
+            f.Manage("Retry", key)
+        );
+        f.Expire(key);
+        Assert.Equal("Pending", f.Manage("Retry", key).Status);
+        Assert.Null(f.Claim(key).RunId);
+        CreatedOnce(f, key);
+    }
+
+    [Fact]
+    public void CancelOfACreateNeverPermittedStopsAndTheNameCanBeCreatedAgain()
+    {
+        var (f, key, _) = PreparedCreate();
+        f.Expire(key);
+        Assert.Equal("Cancelled", f.Manage("Cancel", key).Status);
+        Assert.Null(f.Claim(key).RunId);
+        Assert.False(f.Claim(key).HttpOutstanding);
+        Assert.Empty(f.Posts);
+        // Creating the same library again starts over with fresh reads.
+        Assert.Equal("Pending", f.Queue().Status);
+        CreatedOnce(f, key);
+    }
+
+    [Fact]
+    public void PermittedCreateWithAnUnknownOutcomeKeepsRecoveryAndCancelDeletesNothing()
+    {
+        var (f, key, prepared) = PreparedCreate();
+        Assert.Equal("Permit", f.Permit(prepared).Status);
+        // The POST may have been sent; the run stopped before its answer was recorded.
+        f.Expire(key);
+        Assert.Equal("Quarantined", f.Call("Claim", new WorkerResult { Key = key }).Status);
+        Assert.Equal("RecoveryRequired", f.Status(key));
+        var refused = Assert.Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
+            f.Manage("Retry", key)
+        );
+        Assert.Contains("original create response", refused.Message);
+        Assert.Contains("Cancel", refused.Message);
+        var cancelled = f.Manage("Cancel", key);
+        Assert.Equal("Cancelled", cancelled.Status);
+        Assert.Contains(cancelled.Notices, n => n.Contains("Nothing in SharePoint was deleted"));
+        Assert.Null(f.Claim(key).RunId);
+        Assert.False(f.Claim(key).HttpOutstanding);
+        Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
+        Assert.DoesNotContain(f.Posts, p => p.Contains("delete"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SetupStoredBeforeTheMarkerUsesTheClaimToTellWhetherTheCreateWasPermitted(
+        bool permitted
+    )
+    {
+        var (f, key, prepared) = PreparedCreate();
+        if (permitted)
+            Assert.Equal("Permit", f.Permit(prepared).Status);
+        LegacyPayload.Strip(f.Service, "asx_operation", "WritePermitted");
+        f.Expire(key);
+        if (permitted)
+        {
+            Assert.Equal("Quarantined", f.Call("Claim", new WorkerResult { Key = key }).Status);
+            Assert.Equal("RecoveryRequired", f.Status(key));
+            return;
+        }
+        CreatedOnce(f, key);
+    }
+
     [Fact]
     public void UnknownCreationIsQuarantinedWithoutDeletingOrAdoptingContent()
     {
@@ -302,7 +439,43 @@ public sealed class LibraryProvisioningTests
             UnknownCreate;
         public int ThrottledCreates;
         public bool Acknowledge;
+        public bool StopBeforePost;
         public List<string> Posts = new List<string>();
+
+        public DispatcherDocument Claim(string key) =>
+            Store
+                .Require<DispatcherDocument>("asx_claim", WorkCoordination.Operation(Service, key))
+                .Value;
+
+        /// <summary>Lets the run's 5-minute claim expire.</summary>
+        public void Expire(string key)
+        {
+            var claim = Store.Require<DispatcherDocument>(
+                "asx_claim",
+                WorkCoordination.Operation(Service, key)
+            );
+            claim.Value.LeaseUntilUtc = DateTime.UtcNow.AddMinutes(-1);
+            Store.Save(claim);
+        }
+
+        /// <summary>The shared connection's admission of the prepared write, as the flow asks.</summary>
+        public WorkerResult Permit(WorkerResult work) =>
+            Service.Transaction(() =>
+                WorkCoordination.BeginHttp(
+                    Service,
+                    new WorkerRequest
+                    {
+                        Command = "BeginHttp",
+                        Key = work.Key,
+                        RunId = "library-test",
+                        Token = work.Token,
+                    },
+                    DateTime.UtcNow
+                )
+            );
+
+        public string Status(string key) =>
+            Store.Require<LibrarySetup>("asx_operation", key).Value.Status;
 
         public Fixture()
         {
@@ -356,6 +529,9 @@ public sealed class LibraryProvisioningTests
                 }
                 if (work.Status == "Create")
                 {
+                    // The run stops after preparing the create, before any write permit.
+                    if (StopBeforePost && work.Http!.RelativeUri == "_api/web/lists")
+                        return work;
                     Posts.Add(work.Http!.RelativeUri);
                     int status = 200;
                     string body = "{}";
