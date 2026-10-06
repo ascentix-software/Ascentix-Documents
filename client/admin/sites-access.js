@@ -96,6 +96,9 @@
     'This library inherits permissions from the site. When you apply access, Documents stops the inheritance, keeps a copy of the current site permissions, and then manages team access on it.';
   const inheritsAgain =
     'This library inherits permissions again. Use Apply access to let Documents stop the inheritance again.';
+  // Applied while the queued run could not be replaced yet (PolicyDocument.ApplyPending).
+  const pendingNotice =
+    'Your change is saved. It is applied right after the access run in progress, as soon as that run is between steps and SharePoint has answered its last write.';
   // The last access run stopped because the library inherits the site's permissions.
   const inherits = (p) => !!p?.result.Policy?.Inherits;
   const applyKey = (p) => (state.library?.asx_libraryid || '') + JSON.stringify(p?.entries || []);
@@ -416,11 +419,13 @@
     }
     $('ad-teams').replaceChildren();
     // The queued access run: one that stopped or waits is shown with its notice and can be
-    // retried or cancelled here. A run stopped because the library inherits again, or one that
-    // stopped (Blocked), is replaced by Apply access.
+    // retried or cancelled here. Teams stay editable while a run is queued or running: Apply
+    // access replaces the run, or, while a flow holds it or SharePoint has not answered its
+    // write, the change waits for it (ApplyPending) and is applied right after.
     const run = p?.result.RunStatus,
       stuck = ['Blocked', 'RetryWait'].includes(run) && !inherits(p),
-      running = !!p?.result.Policy?.OperationKey && !inherits(p) && run !== 'Blocked';
+      running = !!p?.result.Policy?.OperationKey && !inherits(p) && run !== 'Blocked',
+      pending = !!p?.result.Policy?.ApplyPending;
     if (p) {
       p.entries.forEach((e) => {
         const tr = node('tr'),
@@ -430,7 +435,7 @@
           select.append(opt(level, level === 'None' ? 'Remove access' : level)),
         );
         select.value = e.Access;
-        select.disabled = state.busy || running;
+        select.disabled = state.busy;
         select.setAttribute('aria-label', (state.teams.get(e.TeamId) || 'Team') + ' access');
         select.onchange = () => {
           e.Access = select.value;
@@ -459,29 +464,31 @@
     }
     // A cancelled run leaves the policy to review: Apply access starts a new run.
     const reapply = inherits(p) || ['Missing', 'NeedsReview'].includes(p?.result.Status);
-    $('ad-apply').disabled = state.busy || !p || running || (!changed(p) && !reapply);
-    $('ad-add-team').disabled = state.busy || !p || running;
+    $('ad-apply').disabled = state.busy || !p || (!changed(p) && !reapply);
+    $('ad-add-team').disabled = state.busy || !p;
     $('ad-change-status').textContent = !p
       ? 'Loading access…'
-      : stuck
-        ? 'Needs attention: ' +
-          (p.result.RunNotice || 'the access run stopped.') +
-          (run === 'RetryWait' && p.result.RunNextAttemptUtc
-            ? ' Next check: ' + when(p.result.RunNextAttemptUtc) + '.'
-            : '')
-        : running
-          ? 'Applying access and syncing members…'
-          : inherits(p)
-            ? inheritsAgain
-            : changed(p)
-              ? 'Changes not yet applied.'
-              : p.result.Status === 'Missing'
-                ? 'Apply to confirm this library’s access.'
-                : p.result.Status === 'NeedsReview'
-                  ? 'The access run was cancelled. Apply access to run it again.'
-                  : p.result.Status === 'Applied'
-                    ? 'Access and team membership confirmed.'
-                    : p.result.Status;
+      : pending && !changed(p)
+        ? pendingNotice
+        : stuck
+          ? 'Needs attention: ' +
+            (p.result.RunNotice || 'the access run stopped.') +
+            (run === 'RetryWait' && p.result.RunNextAttemptUtc
+              ? ' Next check: ' + when(p.result.RunNextAttemptUtc) + '.'
+              : '')
+          : running
+            ? 'Applying access and syncing members…'
+            : inherits(p)
+              ? inheritsAgain
+              : changed(p)
+                ? 'Changes not yet applied.'
+                : p.result.Status === 'Missing'
+                  ? 'Apply to confirm this library’s access.'
+                  : p.result.Status === 'NeedsReview'
+                    ? 'The access run was cancelled. Apply access to run it again.'
+                    : p.result.Status === 'Applied'
+                      ? 'Access and team membership confirmed.'
+                      : p.result.Status;
     $('ad-change-status').className = stuck ? 'ad-issue' : 'ad-muted';
     $('ad-run-actions').hidden = !stuck;
     $('ad-run-retry').disabled = state.busy;
@@ -1117,11 +1124,8 @@
         throw new Error(
           'Library access changed since you opened it. Reload the page and review the current access before applying.',
         );
-      // A run that stopped is replaced by this apply; one still running is not.
-      if (latest.Policy?.OperationKey && !latest.Policy.Inherits && latest.RunStatus !== 'Blocked')
-        throw new Error(
-          'An access synchronization is in progress. Wait for it to finish, then apply your changes.',
-        );
+      // A queued run is replaced by this apply; one a flow holds, or one whose SharePoint write
+      // is unanswered, finishes first and the change is applied right after it.
       const result = await security({
         Command: 'ApplyPolicy',
         LibraryId: state.library.asx_libraryid,
@@ -1133,7 +1137,11 @@
       state.consent = null;
       p.result = result;
       p.saved = JSON.stringify(p.entries);
-      issue('Access submitted. Team membership syncing is onboarded automatically.');
+      issue(
+        result.Policy?.ApplyPending
+          ? pendingNotice
+          : 'Access submitted. Team membership syncing is onboarded automatically.',
+      );
     });
   $('ad-run-retry').onclick = () =>
     action(async () => {

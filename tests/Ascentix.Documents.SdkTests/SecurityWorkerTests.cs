@@ -270,7 +270,7 @@ public sealed class SecurityWorkerTests
     }
 
     [Fact]
-    public void ApplyPolicyRejectsStaleEditsAndCannotReplaceQueuedWork()
+    public void ApplyPolicyRejectsStaleEditsAndReplacesQueuedWork()
     {
         var f = new Fixture();
         f.Queue("Read");
@@ -297,14 +297,17 @@ public sealed class SecurityWorkerTests
         Assert.Equal("Read", f.Policy().Desired.Single().Access);
         request.RowVersion = row.Row.RowVersion;
         f.Service.Transaction(() => f.Admin.Execute(request, true));
-        var key = f.Policy().OperationKey;
+        var key = f.Policy().OperationKey!;
         request.RowVersion = f
             .Store.Require<PolicyDocument>("asx_policy", row.Value.Key)
             .Row.RowVersion;
-        Assert.Throws<EvaluationBlockedException>(() =>
-            f.Service.Transaction(() => f.Admin.Execute(request, true))
+        // A newer apply replaces the queued run that has not started.
+        f.Service.Transaction(() => f.Admin.Execute(request, true));
+        Assert.NotEqual(key, f.Policy().OperationKey);
+        Assert.Equal(
+            "Cancelled",
+            f.Store.Require<SecurityOperation>("asx_operation", key).Value.Status
         );
-        Assert.Equal(key, f.Policy().OperationKey);
     }
 
     [Fact]
@@ -677,7 +680,7 @@ public sealed class SecurityWorkerTests
     }
 
     [Fact]
-    public void ApplyReplacesAStoppedAccessRunButNeverOneWithAWriteOutstanding()
+    public void ApplyReplacesAStoppedAccessRunAndAWriteOutstandingMakesTheChangeWait()
     {
         var f = BlockedRun();
         var stopped = f.Key;
@@ -685,6 +688,7 @@ public sealed class SecurityWorkerTests
         var applied = ApplyAccess(f, "Contribute");
         Assert.NotEqual(stopped, applied.Policy!.OperationKey);
         Assert.Equal("Pending", applied.RunStatus);
+        Assert.False(applied.Policy.ApplyPending);
         Assert.Equal(
             "Cancelled",
             f.Store.Require<SecurityOperation>("asx_operation", stopped).Value.Status
@@ -693,7 +697,7 @@ public sealed class SecurityWorkerTests
         Assert.Equal("Applied", f.Drive().Status);
         Assert.Equal("Contribute", f.Policy().Applied.Single().Access);
 
-        // A write whose answer was lost is read back first: Apply cannot replace that run.
+        // A write whose answer was lost is read back first: the newer change waits for it.
         var g = new Fixture();
         g.AddUser();
         g.Queue("Read");
@@ -703,9 +707,154 @@ public sealed class SecurityWorkerTests
         work = g.Call("PrepareCreate", work);
         Assert.Equal("Quarantined", g.Call("CreateResponse", work, status: 0).Status);
         ExpireClaim(g);
-        Assert.Throws<EvaluationBlockedException>(() => ApplyAccess(g, "Contribute"));
-        Assert.Equal(g.Key, g.Policy().OperationKey);
+        var waiting = ApplyAccess(g, "Contribute");
+        Assert.True(waiting.Policy!.ApplyPending);
+        Assert.Equal(g.Key, waiting.Policy.OperationKey);
+        Assert.Equal("Contribute", waiting.Policy.Desired.Single().Access);
         Assert.Equal("ExternalUnknown", g.Operation().Status);
+        AppliesOnceTheRunIsDone(g);
+    }
+
+    /// <summary>
+    /// Finishes the run in progress; the next access review then applies the change that waited
+    /// for it, and that change is driven to the end.
+    /// </summary>
+    private static void AppliesOnceTheRunIsDone(Fixture f)
+    {
+        var old = f.Key;
+        // While the run still holds its write or claim, the review leaves the change waiting.
+        var now = DateTime.UtcNow.AddMinutes(1);
+        f.Service.Transaction(() => new SecurityRefresh(f.Service, () => now).Scan());
+        Assert.Equal(old, f.Policy().OperationKey);
+        Assert.True(f.Policy().ApplyPending);
+        Assert.True(f.Policy().NextReviewUtc <= now.AddMinutes(1));
+        // The run is taken over and finished.
+        ExpireClaim(f);
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Equal("Read", f.Policy().Applied.Single().Access);
+        now = now.AddMinutes(1);
+        var queued = f.Service.Transaction(() => new SecurityRefresh(f.Service, () => now).Scan());
+        f.Key = Assert.Single(queued.Keys);
+        Assert.NotEqual(old, f.Key);
+        Assert.False(f.Policy().ApplyPending);
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Equal("Contribute", f.Policy().Applied.Single().Access);
+    }
+
+    [Fact]
+    public void AStoppedRunWithAWriteOutstandingIsNeverReplaced()
+    {
+        // From the F2 review: the run stopped, but SharePoint never answered its write.
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        var work = f.Start();
+        while (work.Status == "Read")
+            work = f.Observe(work);
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Quarantined", f.Call("CreateResponse", work, status: 0).Status);
+        ExpireClaim(f);
+        var run = f.Store.Require<SecurityOperation>("asx_operation", f.Key);
+        run.Value.Status = "Blocked";
+        f.Store.Save(run);
+        var waiting = ApplyAccess(f, "Contribute");
+        Assert.True(waiting.Policy!.ApplyPending);
+        Assert.Equal(f.Key, waiting.Policy.OperationKey);
+        Assert.Equal("Blocked", f.Operation().Status);
+    }
+
+    [Fact]
+    public void AStoppedRunAFlowStillHoldsIsReplacedOnceTheFlowLetsGo()
+    {
+        // From the F2 review: a flow still holds the stopped run's claim.
+        var f = BlockedRun();
+        f.Reject = null;
+        var claim = f.Store.Require<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(f.Service, f.Key)
+        );
+        claim.Value.OperationKey = f.Key;
+        claim.Value.RunId = "security/run-2";
+        claim.Value.Token = Guid.NewGuid();
+        claim.Value.LeaseUntilUtc = DateTime.UtcNow.AddMinutes(5);
+        f.Store.Save(claim);
+        var waiting = ApplyAccess(f, "Contribute");
+        Assert.True(waiting.Policy!.ApplyPending);
+        Assert.Equal(f.Key, waiting.Policy.OperationKey);
+        Assert.Equal("Blocked", f.Operation().Status);
+        // Once the claim is free, the next review replaces the stopped run.
+        ExpireClaim(f);
+        var old = f.Key;
+        var queued = f.Service.Transaction(() =>
+            new SecurityRefresh(f.Service, () => DateTime.UtcNow.AddMinutes(1)).Scan()
+        );
+        f.Key = Assert.Single(queued.Keys);
+        Assert.Equal(
+            "Cancelled",
+            f.Store.Require<SecurityOperation>("asx_operation", old).Value.Status
+        );
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Equal("Contribute", f.Policy().Applied.Single().Access);
+    }
+
+    [Fact]
+    public void TeamsCanBeEditedWhileARunIsQueuedAndTheNewerChangeReplacesIt()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        var first = f.Key;
+        // Saving a draft while the run waits for a worker is allowed and leaves the run alone.
+        var saved = f.Service.Transaction(() =>
+            f.Admin.Execute(
+                new SecurityRequest
+                {
+                    Command = "SavePolicy",
+                    LibraryId = f.Library,
+                    RowVersion = f
+                        .Store.Require<PolicyDocument>(
+                            "asx_policy",
+                            "policy:" + f.Library.ToString("N")
+                        )
+                        .Row.RowVersion,
+                    Entries = new[]
+                    {
+                        new PolicyEntry { TeamId = f.Team, Access = "Contribute" },
+                    },
+                    ReadRole = f.Read,
+                    ContributeRole = f.Contribute,
+                },
+                true
+            )
+        );
+        Assert.Equal(first, saved.Policy!.OperationKey);
+        Assert.Equal("Contribute", saved.Policy.Desired.Single().Access);
+        // Applying it replaces the unsubmitted run with the newer change.
+        var applied = ApplyAccess(f, "Contribute");
+        Assert.NotEqual(first, applied.Policy!.OperationKey);
+        Assert.Equal(
+            "Cancelled",
+            f.Store.Require<SecurityOperation>("asx_operation", first).Value.Status
+        );
+        f.Key = applied.Policy.OperationKey!;
+        Assert.Equal("Applied", f.Drive().Status);
+        Assert.Equal("Contribute", f.Policy().Applied.Single().Access);
+    }
+
+    [Fact]
+    public void AChangeAppliedWhileAFlowRunsWaitsForTheRunToBeFree()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        var work = f.Start();
+        // A flow holds the run between reads; the newer change waits instead of cutting in.
+        var waiting = ApplyAccess(f, "Contribute");
+        Assert.True(waiting.Policy!.ApplyPending);
+        Assert.Equal(f.Key, waiting.Policy.OperationKey);
+        // The flow carries on with the run it holds.
+        Assert.Equal("Read", f.Observe(work).Status);
+        AppliesOnceTheRunIsDone(f);
     }
 
     [Fact]
@@ -1611,7 +1760,10 @@ public sealed class SecurityWorkerTests
                 true
             )
         );
-        Assert.Throws<EvaluationBlockedException>(() =>
+        // Editing the teams while a run is queued is allowed and leaves the run alone.
+        var key = f.Key;
+        Assert.Equal(
+            key,
             f.Admin.Execute(
                 new SecurityRequest
                 {
@@ -1628,7 +1780,7 @@ public sealed class SecurityWorkerTests
                     ContributeRole = f.Contribute,
                 },
                 true
-            )
+            ).Policy!.OperationKey
         );
     }
 
@@ -1905,71 +2057,123 @@ public sealed class SecurityWorkerTests
         Assert.DoesNotContain("MemberRemove", f.Writes);
     }
 
+    // SharePoint PermissionKind bits, one-based within the 64-bit mask (Low holds 1-32).
+    private const uint DeleteListItems = 1u << 3,
+        ManageLists = 1u << 11,
+        ManagePermissions = 1u << 25,
+        ManageWeb = 1u << 30;
+
+    private static PolicyRole Role(int id, uint high, uint low) =>
+        new PolicyRole
+        {
+            Id = id,
+            High = high.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            Low = low.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        };
+
     [Theory]
-    [InlineData(true, 4u)]
-    [InlineData(false, 2048u)]
-    [InlineData(false, 33554432u)]
-    [InlineData(false, 1073741824u)]
-    public void NamedRolesRejectWriteOrAdministrativePermissionsOutsideTheirMeaning(
+    [InlineData(false, ManageLists, "ManageLists")]
+    [InlineData(false, ManagePermissions, "ManagePermissions")]
+    [InlineData(true, ManageWeb, "ManageWeb")]
+    [InlineData(true, ManagePermissions | ManageWeb, "ManagePermissions, ManageWeb")]
+    public void PermissionLevelsWithAdministrativeRightsAreRefusedNamingThem(
         bool read,
-        uint added
+        uint added,
+        string named
     )
     {
         var f = new Fixture();
         var role = read ? f.Read : f.Contribute;
-        role.Low = (uint.Parse(role.Low) | added).ToString(
-            System.Globalization.CultureInfo.InvariantCulture
+        var refused = Assert.Throws<EvaluationBlockedException>(() =>
+            SecurityAdministration.ValidateRole(
+                Role(role.Id, uint.Parse(role.High), uint.Parse(role.Low) | added),
+                read
+            )
         );
-        Assert.Throws<EvaluationBlockedException>(() =>
-            SecurityAdministration.ValidateRole(role, read)
+        Assert.Contains((read ? "Read" : "Contribute") + " permission level", refused.Message);
+        Assert.Contains("(" + named + ")", refused.Message);
+        // Full Control's mask grants everything.
+        var full = Assert.Throws<EvaluationBlockedException>(() =>
+            SecurityAdministration.ValidateRole(Role(role.Id, 2147483647u, uint.MaxValue), read)
         );
+        Assert.Contains("FullMask", full.Message);
     }
 
     [Fact]
-    public void RolesRequireDocumentAccessAndCanonicalMasks()
+    public void CustomizedReadAndContributeLevelsAreAccepted()
     {
-        Assert.Throws<EvaluationBlockedException>(() =>
-            SecurityAdministration.ValidateRole(
-                new PolicyRole
-                {
-                    Id = 2,
-                    High = "0",
-                    Low = "1",
-                },
-                true
-            )
+        var f = new Fixture();
+        // Contribute without "Delete items", and Read with it: both are the site's own choice.
+        SecurityAdministration.ValidateRole(
+            Role(3, uint.Parse(f.Contribute.High), uint.Parse(f.Contribute.Low) & ~DeleteListItems),
+            false
         );
-        Assert.Throws<EvaluationBlockedException>(() =>
-            SecurityAdministration.ValidateRole(
+        SecurityAdministration.ValidateRole(
+            Role(2, uint.Parse(f.Read.High), uint.Parse(f.Read.Low) | DeleteListItems),
+            true
+        );
+        SecurityAdministration.ValidateRole(Role(2, 0, 1), true);
+    }
+
+    [Fact]
+    public void RolesRequireAnIdAndCanonicalMasks()
+    {
+        foreach (
+            var role in new[]
+            {
                 new PolicyRole
                 {
                     Id = 2,
                     High = "0176",
                     Low = "138612833",
                 },
-                true
-            )
-        );
-        Assert.Throws<EvaluationBlockedException>(() =>
-            SecurityAdministration.ValidateRole(
                 new PolicyRole
                 {
-                    Id = 3,
+                    Id = 2,
+                    High = "176",
+                    Low = "",
+                },
+                new PolicyRole
+                {
+                    Id = 0,
                     High = "176",
                     Low = "138612833",
                 },
-                false
-            )
+            }
+        )
+            Assert.Throws<EvaluationBlockedException>(() =>
+                SecurityAdministration.ValidateRole(role, true)
+            );
+    }
+
+    [Fact]
+    public void APermissionLevelCustomizedBetweenRunsIsReadAgainAndAccepted()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Contribute");
+        // After approval the site's Contribute level loses "Delete items".
+        f.Contribute.Low = (uint.Parse(f.Contribute.Low) & ~DeleteListItems).ToString(
+            System.Globalization.CultureInfo.InvariantCulture
         );
-        SecurityAdministration.ValidateRole(
-            new PolicyRole
-            {
-                Id = 2,
-                High = "0",
-                Low = "200737",
-            },
-            true
+        f.Drive();
+        Assert.Contains("GrantAdd", f.Writes);
+        Assert.Equal(f.Contribute.Low, f.Operation().ContributeRole.Low);
+    }
+
+    [Fact]
+    public void APermissionLevelGivenAdministrativeRightsStopsTheRunNamingThem()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Contribute");
+        f.Contribute.Low = (uint.Parse(f.Contribute.Low) | ManagePermissions).ToString(
+            System.Globalization.CultureInfo.InvariantCulture
         );
+        var stopped = f.Drive(expectApplied: false);
+        Assert.Equal("Blocked", stopped.Status);
+        Assert.Contains("ManagePermissions", f.Operation().ErrorCode);
+        Assert.DoesNotContain("GrantAdd", f.Writes);
     }
 
     [Theory]

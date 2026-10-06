@@ -138,6 +138,14 @@ public sealed class PolicyDocument : StoredDocument
     public string[] Notices { get; set; } = Array.Empty<string>();
 
     /// <summary>
+    /// The admin applied Desired while the queued run could not be replaced yet: a flow held it
+    /// or SharePoint had not answered its write. The next access review replaces the run and
+    /// queues Desired as soon as it can. Rows written before 0.1.0.4 read as false.
+    /// </summary>
+    [DataMember]
+    public bool ApplyPending { get; set; }
+
+    /// <summary>
     /// The admin accepted that Documents stops this library's permission inheritance. The next
     /// queued access run carries it and it is cleared here.
     /// </summary>

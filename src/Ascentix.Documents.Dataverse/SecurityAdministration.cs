@@ -156,8 +156,21 @@ public sealed class SecurityAdministration
         // Before the catalog check: a stuck run of a suspended library can be cancelled too.
         if (request.Command == "RetryAccessRun" || request.Command == "CancelAccessRun")
             return ManageRun(existing, request);
-        if (request.Command == "ApplyPolicy" && existing != null)
-            existing = ReplaceBlockedRun(existing, request);
+        if (
+            (request.Command == "ApplyPolicy" || workerRefresh && request.Command == "ApplyPending")
+            && existing != null
+        )
+            existing = ReplaceQueuedRun(existing, request);
+        if (request.Command == "ApplyPending")
+        {
+            // The next access review applies what the admin applied while the run could not
+            // be replaced; until it can be, the change keeps waiting.
+            if (existing == null || !existing.Value.ApplyPending)
+                return Result(existing);
+            if (existing.Value.OperationKey != null)
+                return Result(existing);
+            request.RowVersion = existing.Row.RowVersion;
+        }
         var catalog = new SecurityCatalog(service, request.LibraryId);
         string? expectedVersion = request.RowVersion;
         if (request.Command == "SavePolicy" || request.Command == "ApplyPolicy")
@@ -227,19 +240,30 @@ public sealed class SecurityAdministration
             else
             {
                 Version(existing.Row, request.RowVersion);
-                if (existing.Value.OperationKey != null)
-                    throw new EvaluationBlockedException(
-                        "Queued policy must finish or be reviewed before editing."
-                    );
+                // A queued or running access run keeps its own copy of the teams, so the team
+                // list may change meanwhile; the run's status stays until it ends.
                 existing.Value.Desired = request.Entries;
                 existing.Value.ReadRole = request.ReadRole;
                 existing.Value.ContributeRole = request.ContributeRole;
-                existing.Value.Status = "Draft";
+                if (existing.Value.OperationKey == null)
+                    existing.Value.Status = "Draft";
                 store.Save(existing);
             }
             existing = store.Require<PolicyDocument>("asx_policy", policyKey);
             if (request.Command == "SavePolicy")
                 return Result(existing);
+            if (existing.Value.OperationKey != null)
+            {
+                // The run in progress could not be replaced yet: a flow holds it, or SharePoint
+                // has not answered its write. The change waits and the next access review, a
+                // minute later, applies it as soon as it can.
+                existing.Value.ApplyPending = true;
+                if (request.BreakInheritance)
+                    existing.Value.BreakInheritance = true;
+                existing.Value.NextReviewUtc = DateTime.UtcNow;
+                store.Save(existing);
+                return Result(store.Require<PolicyDocument>("asx_policy", policyKey));
+            }
             expectedVersion = existing.Row.RowVersion; // Apply continues in this same transaction; any failure rolls back the save.
         }
         if (
@@ -247,6 +271,7 @@ public sealed class SecurityAdministration
                 request.Command != "QueuePolicy"
                 && request.Command != "ApplyPolicy"
                 && !(workerRefresh && request.Command == "RefreshPolicy")
+                && !(workerRefresh && request.Command == "ApplyPending")
             )
             || existing == null
         )
@@ -278,7 +303,10 @@ public sealed class SecurityAdministration
         }
         if (dispatcher != null)
             store.Save(dispatcher);
-        var desired = workerRefresh ? existing.Value.Approved : existing.Value.Desired;
+        // A scheduled refresh repeats what was applied; an admin's apply, also one that waited
+        // for the run before it, applies the teams the admin chose.
+        bool admin = !workerRefresh || request.Command == "ApplyPending";
+        var desired = admin ? existing.Value.Desired : existing.Value.Approved;
         var entries = desired
             .Concat(
                 existing
@@ -295,7 +323,7 @@ public sealed class SecurityAdministration
         existing.Value.BreakInheritance = false;
         if (breakInheritance)
             existing.Value.Inherits = false;
-        if (!workerRefresh)
+        if (admin)
         {
             existing.Value.ApprovedReadRole = existing.Value.ReadRole;
             existing.Value.ApprovedContributeRole = existing.Value.ContributeRole;
@@ -308,6 +336,7 @@ public sealed class SecurityAdministration
         existing.Value.Generation = generation;
         existing.Value.Queued = entries;
         existing.Value.OperationKey = operationKey;
+        existing.Value.ApplyPending = false;
         existing.Value.Status = "Queued";
         store.Save(existing);
         store.Create(
@@ -355,36 +384,42 @@ public sealed class SecurityAdministration
     }
 
     /// <summary>
-    /// The admin's Apply access replaces a run that stopped (Blocked), the same way a newer team
-    /// snapshot replaces idle work in SecurityRefresh: the stopped run is cancelled with the
+    /// The admin's Apply access replaces the library's queued access run, the same way a newer
+    /// team snapshot replaces idle work in SecurityRefresh: the run is cancelled with the
     /// existing Cancel semantics (nothing in SharePoint is undone) and the apply continues in
-    /// this transaction, so the admin's newer intent wins. A run with a write whose outcome is
-    /// not known yet, or one a flow still holds, is never replaced; Apply then refuses as before.
+    /// this transaction, so the admin's newer intent wins. A run with a write SharePoint has not
+    /// answered, or one a flow holds right now, is never replaced: the change then waits
+    /// (ApplyPending) and the next access review applies it once the run can be replaced.
     /// </summary>
-    private StoredRow<PolicyDocument> ReplaceBlockedRun(
+    private StoredRow<PolicyDocument> ReplaceQueuedRun(
         StoredRow<PolicyDocument> policy,
         SecurityRequest request
     )
     {
         if (policy.Value.OperationKey == null)
             return policy;
-        var stopped = store.Require<SecurityOperation>("asx_operation", policy.Value.OperationKey);
-        if (
-            stopped.Value.Status != "Blocked"
-            || stopped.Value.ExternalSubmitted && !stopped.Value.ExternalResponseKnown
-        )
+        var queued = store.Require<SecurityOperation>("asx_operation", policy.Value.OperationKey);
+        if (queued.Value.ExternalSubmitted && !queued.Value.ExternalResponseKnown)
             return policy;
         var claim = store.Find<DispatcherDocument>(
             "asx_claim",
-            WorkCoordination.Operation(service, stopped.Value.Key)
+            WorkCoordination.Operation(service, queued.Value.Key)
         );
-        if (claim?.Value.OperationKey == stopped.Value.Key && claim.Value.RunId != null)
+        if (
+            claim?.Value.OperationKey == queued.Value.Key
+            && claim.Value.RunId != null
+            && claim.Value.LeaseUntilUtc > DateTime.UtcNow
+            && !claim.Value.RecoveryPermitted
+        )
             return policy;
         Version(policy.Row, request.RowVersion);
         new SecurityWorker(service).Execute(
-            new WorkerRequest { Command = "Cancel", Key = stopped.Value.Key },
+            new WorkerRequest { Command = "Cancel", Key = queued.Value.Key },
             true
         );
+        var replaced = store.Require<SecurityOperation>("asx_operation", queued.Value.Key);
+        replaced.Value.ErrorCode = "Replaced by a newer access change.";
+        store.Save(replaced);
         var current = store.Require<PolicyDocument>("asx_policy", policy.Value.Key);
         request.RowVersion = current.Row.RowVersion;
         return current;
@@ -436,16 +471,27 @@ public sealed class SecurityAdministration
             throw new EvaluationBlockedException("Read and Contribute roles must be distinct.");
     }
 
+    // Rights that administer the site rather than its documents, as SharePoint's PermissionKind
+    // names them, with their one-based bit position in the 64-bit permission mask
+    // (https://learn.microsoft.com/dotnet/api/microsoft.sharepoint.client.permissionkind).
+    // Documents grants teams only Read and Contribute, so a level carrying any of these is
+    // refused. Every other right is the site's own choice: a customized level is accepted.
+    private static readonly (string Name, int Bit)[] AdministrativeRights =
+    {
+        ("ManageLists", 12),
+        ("ManageSubwebs", 24),
+        ("CreateGroups", 25),
+        ("ManagePermissions", 26),
+        ("ManageWeb", 31),
+        ("EnumeratePermissions", 63),
+    };
+
+    /// <summary>
+    /// Accepts the site's Read or Contribute permission level, customized or not, unless it
+    /// carries administrative rights; the refusal names them. Read again at every access run.
+    /// </summary>
     public static void ValidateRole(PolicyRole role, bool read)
     {
-        // PermissionKind uses one-based bit positions. Allow the documented default role permissions,
-        // require document read/write fundamentals, and reject all unknown or administrative bits.
-        const uint readHigh = 176,
-            readLow = 138612833,
-            contributeHigh = 432,
-            contributeLow = 1011028719;
-        const uint readRequired = 200737,
-            contributeRequired = 200751;
         if (
             role == null
             || role.Id <= 0
@@ -463,13 +509,28 @@ public sealed class SecurityAdministration
             )
             || role.High != high.ToString(System.Globalization.CultureInfo.InvariantCulture)
             || role.Low != low.ToString(System.Globalization.CultureInfo.InvariantCulture)
-            || (high & ~(read ? readHigh : contributeHigh)) != 0
-            || (low & ~(read ? readLow : contributeLow)) != 0
-            || (low & (read ? readRequired : contributeRequired))
-                != (read ? readRequired : contributeRequired)
         )
             throw new EvaluationBlockedException(
-                "Reviewed role permissions do not match bounded Read/Contribute semantics."
+                "SharePoint returned an unreadable permission mask for the site's "
+                    + (read ? "Read" : "Contribute")
+                    + " permission level."
+            );
+        ulong mask = ((ulong)high << 32) | low;
+        // FullMask (Full Control) sets every bit SharePoint defines.
+        var held =
+            high == int.MaxValue && low == uint.MaxValue
+                ? new[] { "FullMask" }
+                : AdministrativeRights
+                    .Where(right => (mask & (1UL << (right.Bit - 1))) != 0)
+                    .Select(right => right.Name)
+                    .ToArray();
+        if (held.Length > 0)
+            throw new EvaluationBlockedException(
+                "The site's "
+                    + (read ? "Read" : "Contribute")
+                    + " permission level includes administrative rights ("
+                    + string.Join(", ", held)
+                    + "). Documents grants teams only Read and Contribute, so remove these rights from the permission level in SharePoint, then try again."
             );
     }
 

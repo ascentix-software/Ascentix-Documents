@@ -125,7 +125,11 @@ public sealed class SecurityRefresh
                 keys.AddRange(Refresh(new[] { row }, Guid.Empty));
                 var pointer = JsonWire.Read<PolicyDocument>(TemplateStore.Text(row, "asx_payload"));
                 var current = store.Require<PolicyDocument>("asx_policy", pointer.Key);
-                current.Value.NextReviewUtc = clock().AddDays(1);
+                // A change still waiting for the run before it is looked at again by the next
+                // dispatch run, a minute later (the flow's recurrence).
+                current.Value.NextReviewUtc = current.Value.ApplyPending
+                    ? clock().AddMinutes(1)
+                    : clock().AddDays(1);
                 store.Save(current);
             }
         }
@@ -229,6 +233,24 @@ public sealed class SecurityRefresh
             if (Paused(policy))
                 continue;
             policy = store.Require<PolicyDocument>("asx_policy", pointer.Key);
+            if (policy.Value.ApplyPending)
+            {
+                // An admin's change that waited for the run before it: applied once that run
+                // can be replaced, otherwise it waits for the next review.
+                var applied = new SecurityAdministration(service).Execute(
+                    new SecurityRequest
+                    {
+                        Command = "ApplyPending",
+                        LibraryId = policy.Value.LibraryId,
+                        RowVersion = policy.Row.RowVersion,
+                    },
+                    true,
+                    true
+                );
+                if (applied.Policy?.ApplyPending == false && applied.Policy.OperationKey != null)
+                    queued.Add(applied.Policy.OperationKey);
+                continue;
+            }
             if (
                 store
                     .Find<DispatcherDocument>(

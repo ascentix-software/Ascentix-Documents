@@ -508,17 +508,25 @@ public sealed class SecurityWorker
                     var role = SharePointObservations.Body<SecurityRoleObservation>(request);
                     bool read = op.Value.ProbeKind == "SecurityReadRole";
                     var expected = read ? op.Value.ReadRole : op.Value.ContributeRole;
-                    if (
-                        role.Id != expected.Id
-                        || role.Type != (read ? 2 : 3)
-                        || role.Permissions == null
-                        || role.Permissions.High != expected.High
-                        || role.Permissions.Low != expected.Low
-                    )
+                    if (role.Id != expected.Id || role.Type != (read ? 2 : 3))
                         throw new EvaluationBlockedException(
-                            "Reviewed role ID/type/permission mask changed."
+                            "SharePoint returned a different permission level than the site's "
+                                + (read ? "Read" : "Contribute")
+                                + " level."
                         );
-                    SecurityAdministration.ValidateRole(expected, read);
+                    // The level is read again at every run: a customization since approval is
+                    // accepted unless it adds administrative rights.
+                    var current = new PolicyRole
+                    {
+                        Id = role.Id,
+                        High = role.Permissions?.High ?? "",
+                        Low = role.Permissions?.Low ?? "",
+                    };
+                    SecurityAdministration.ValidateRole(current, read);
+                    if (read)
+                        op.Value.ReadRole = current;
+                    else
+                        op.Value.ContributeRole = current;
                     if (read)
                         return Probe(op, claim.Value, catalog, "SecurityContributeRole");
                     return NextTeam(op, claim.Value, catalog);

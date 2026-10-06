@@ -197,11 +197,23 @@ const xrm = {
             Notices: ['Cancelled. Nothing in SharePoint was deleted.'],
           };
         else if (command.Command === 'ApplyPolicy')
-          result = policy = {
-            Status: 'Queued',
-            RowVersion: '2',
-            Policy: { Desired: command.Entries, Applied: [], OperationKey: 'policywork:test' },
-          };
+          // A run a flow is working on is not replaced: the change waits for it.
+          result = policy =
+            policy?.Policy?.OperationKey === 'background'
+              ? {
+                  ...policy,
+                  RowVersion: '2',
+                  Policy: { ...policy.Policy, Desired: command.Entries, ApplyPending: true },
+                }
+              : {
+                  Status: 'Queued',
+                  RowVersion: '2',
+                  Policy: {
+                    Desired: command.Entries,
+                    Applied: [],
+                    OperationKey: 'policywork:test',
+                  },
+                };
         else if (command.Command === 'Inspect' && inspectByKey[command.Key])
           result = inspectByKey[command.Key];
         else if (command.Command === 'Inspect')
@@ -363,13 +375,19 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     RowVersion: '7',
     Policy: { Desired: removal.Entries, Applied: removal.Entries, OperationKey: 'background' },
   };
+  await timers.shift()();
+  // While a run is in progress the teams stay editable and Apply is sent: the change waits for
+  // the run and is applied right after it.
+  assert.equal(nodes['ad-teams'].children[0].children[1].children[0].disabled, false);
+  assert.equal(nodes['ad-add-team'].disabled, false);
   await nodes['ad-apply'].onclick();
   assert.equal(
     requests.filter((r) => r.Command === 'ApplyPolicy').length,
-    beforeConflict,
-    'Do not replace active worker generation',
+    beforeConflict + 1,
+    'An apply during a run is sent and waits for that run',
   );
-  assert.match(nodes['ad-message'].textContent, /in progress/i);
+  assert.match(nodes['ad-message'].textContent, /applied right after the access run in progress/);
+  assert.match(nodes['ad-change-status'].textContent, /applied right after the access run/);
   policy = {
     Status: 'Applied',
     RowVersion: '8',
@@ -713,7 +731,11 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     assert.equal(apis.at(-1), 'asx_SecurityAdmin');
     assert.equal(nodes['ad-change-status'].textContent, 'Applying access and syncing members…');
     assert.equal(nodes['ad-run-actions'].hidden, true);
-    assert.equal(nodes['ad-add-team'].disabled, true);
+    assert.equal(
+      nodes['ad-add-team'].disabled,
+      false,
+      'A running access run does not lock the teams',
+    );
     policy = {
       ...stuck,
       RunStatus: 'RetryWait',
