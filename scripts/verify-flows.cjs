@@ -22,6 +22,13 @@ const MAX_CONCURRENCY = 5;
 
 // Failure branches pass the failed action's status, error code and message to the worker so it
 // can wait after a temporary failure instead of blocking.
+// A SharePoint write runs only when BeginHttp granted it. BeginHttp answers Stopped when the
+// destination was removed or suspended after the write was prepared; the drive then ends
+// cleanly with no write and no further worker call for that operation.
+const PERMITTED = "@equals(variables('HttpAdmission')?['Status'],'Permit')";
+const PERMIT_OR_STOPPED =
+  "@or(equals(variables('HttpAdmission')?['Status'],'Permit'),equals(variables('HttpAdmission')?['Status'],'Stopped'))";
+
 const FAILURE_BRANCHES = [
   'Record_blocked_outbox',
   'Record_failed_claim',
@@ -57,7 +64,8 @@ function checkFlow(flow) {
     [{ name: 'WorkerAction', type: 'string', value: 'asx_DocumentWorker' }],
   );
   const names = new Set();
-  function actions(block) {
+  // scope: the enclosing If (key, action, parent block) and whether this block is its else.
+  function actions(block, scope) {
     for (const [key, action] of Object.entries(block)) {
       assert(!names.has(key), 'Duplicate action name: ' + key);
       names.add(key);
@@ -83,8 +91,33 @@ function checkFlow(flow) {
             action.inputs.parameters['request/url'],
             "@concat(variables('Work')?['SiteUrl'],'/',variables('Work')?['Http']?['RelativeUri'])",
           );
-          assert.deepEqual(Object.keys(action.runAfter).length, 1);
-          assert(Object.keys(action.runAfter)[0].startsWith('Await_'));
+          if (action.inputs.parameters['request/method'] === 'GET') {
+            assert.deepEqual(Object.keys(action.runAfter).length, 1);
+            assert(Object.keys(action.runAfter)[0].startsWith('Await_'));
+          } else {
+            // A write is reachable only in the true branch of the Permit check, which runs
+            // right after its admission loop.
+            assert(
+              scope && !scope.otherwise && scope.action.type === 'If',
+              'SharePoint write must sit inside the Permit check: ' + key,
+            );
+            assert.equal(
+              scope.action.expression,
+              PERMITTED,
+              'SharePoint write must run only on Permit: ' + key,
+            );
+            assert.deepEqual(action.runAfter, {}, 'SharePoint write runs first in its branch');
+            const after = Object.keys(scope.action.runAfter);
+            assert.equal(after.length, 1);
+            assert(after[0].startsWith('Await_'), 'The Permit check follows its admission loop');
+            // A stopped permit ends the drive: the else branch only hands the result to the
+            // loop and makes no worker or SharePoint call.
+            const otherwise = Object.values(scope.action.else?.actions || {});
+            assert.equal(otherwise.length, 1, 'Stopped permit ends the drive with one step');
+            assert.equal(otherwise[0].type, 'SetVariable');
+            assert.equal(otherwise[0].inputs.name, 'Work');
+            assert.equal(otherwise[0].inputs.value, "@variables('HttpAdmission')");
+          }
         } else {
           assert.deepEqual(
             action.inputs.retryPolicy,
@@ -138,19 +171,24 @@ function checkFlow(flow) {
         if (key.startsWith('Await_')) {
           assert.equal(action.limit.count, 120);
           assert.equal(action.limit.timeout, 'PT2H');
-          assert(action.expression.includes('Permit'));
+          assert.equal(
+            action.expression,
+            key.includes('read') ? PERMITTED : PERMIT_OR_STOPPED,
+            'Admission loop exit: ' + key,
+          );
         } else {
           assert.equal(action.limit.count, 80);
           assert.equal(action.limit.timeout, 'PT3H');
         }
       }
-      if (action.actions) actions(action.actions);
-      for (const item of Object.values(action.cases || {})) actions(item.actions);
-      if (action.default?.actions) actions(action.default.actions);
-      if (action.else?.actions) actions(action.else.actions);
+      const inner = action.type === 'If' ? { key, action, otherwise: false } : scope;
+      if (action.actions) actions(action.actions, inner);
+      for (const item of Object.values(action.cases || {})) actions(item.actions, null);
+      if (action.default?.actions) actions(action.default.actions, null);
+      if (action.else?.actions) actions(action.else.actions, { key, action, otherwise: true });
     }
   }
-  actions(flow.properties.definition.actions);
+  actions(flow.properties.definition.actions, null);
   for (const [key, trigger] of Object.entries(flow.properties.definition.triggers)) {
     const runs = trigger.runtimeConfiguration?.concurrency?.runs;
     assert(
@@ -223,6 +261,26 @@ function selfTest(flow) {
         f.properties.definition.actions,
         (_, a) => a.inputs?.host?.connectionName === 'shared_webcontents',
       ).inputs.retryPolicy = { ...DATAVERSE_RETRY };
+    },
+    'SharePoint write without the Permit check': (f) => {
+      const guard = find(f.properties.definition.actions, (k) => k === 'Write_when_permitted');
+      guard.expression = PERMIT_OR_STOPPED;
+    },
+    'SharePoint write in the stopped branch': (f) => {
+      const guard = find(f.properties.definition.actions, (k) => k === 'Write_when_permitted');
+      [guard.actions, guard.else.actions] = [guard.else.actions, guard.actions];
+    },
+    'SharePoint write right after its admission loop': (f) => {
+      const create = find(f.properties.definition.actions, (_, a) => a.cases?.Create).cases.Create
+        .actions;
+      const guard = create.Write_when_permitted;
+      delete create.Write_when_permitted;
+      Object.assign(create, guard.actions);
+      create.Create_HTTP.runAfter = { Await_create_slot: ['Succeeded'] };
+    },
+    'stopped permit that does not end the drive': (f) => {
+      const guard = find(f.properties.definition.actions, (k) => k === 'Write_when_permitted');
+      guard.else.actions.Save_stopped_state.inputs.value = "@json(body('Begin_create')?['Result'])";
     },
     'failure branch without its cause': (f) => {
       const branch = find(f.properties.definition.actions, (k) => k === 'Record_failed_claim');

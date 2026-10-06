@@ -1012,6 +1012,7 @@ public sealed class CatalogAdministration
             id,
             new ColumnSet("asx_name", "asx_nativeparentid", "statecode")
         );
+        TouchWriter(WorkCoordination.Library(service, id));
         var destinations = new QueryExpression("asx_destination")
         {
             ColumnSet = new ColumnSet("asx_revisionid"),
@@ -1165,6 +1166,7 @@ public sealed class CatalogAdministration
         if (id == Guid.Empty)
             throw new EvaluationBlockedException("Select a site.");
         var site = service.Retrieve("asx_site", id, new ColumnSet("asx_url", "statecode"));
+        TouchWriter(WorkCoordination.Site(service, id));
         var query = new QueryExpression("asx_library")
         {
             ColumnSet = new ColumnSet("asx_name", "statecode"),
@@ -1219,6 +1221,20 @@ public sealed class CatalogAdministration
             CatalogId = id,
             Notices = notices,
         };
+    }
+
+    /// <summary>
+    /// Saves the site's writer row, as suspension does, so a removal and a concurrent claim or
+    /// write permit on the same site serialize on its version: whichever commits second
+    /// re-reads and sees the other.
+    /// </summary>
+    private void TouchWriter(string key)
+    {
+        var writer = store.Find<DispatcherDocument>("asx_claim", key);
+        if (writer != null)
+            store.Save(writer);
+        else
+            store.Create("asx_claim", new DispatcherDocument { Key = key, Status = "Idle" });
     }
 
     // Folder locations Documents made for records under the library's own location.

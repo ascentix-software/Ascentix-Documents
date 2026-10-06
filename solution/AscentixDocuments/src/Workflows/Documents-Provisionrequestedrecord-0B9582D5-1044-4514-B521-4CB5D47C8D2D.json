@@ -581,7 +581,7 @@
                                   "Succeeded"
                                 ]
                               },
-                              "expression": "@equals(variables('HttpAdmission')?['Status'],'Permit')",
+                              "expression": "@or(equals(variables('HttpAdmission')?['Status'],'Permit'),equals(variables('HttpAdmission')?['Status'],'Stopped'))",
                               "limit": {
                                 "count": 120,
                                 "timeout": "PT2H"
@@ -589,76 +589,95 @@
                               "type": "Until",
                               "operationOptions": "FailWhenLimitsReached"
                             },
-                            "Create_HTTP": {
+                            "Write_when_permitted": {
+                              "actions": {
+                                "Create_HTTP": {
+                                  "runAfter": {},
+                                  "type": "OpenApiConnection",
+                                  "inputs": {
+                                    "host": {
+                                      "apiId": "/providers/Microsoft.PowerApps/apis/shared_webcontents",
+                                      "connectionName": "shared_webcontents",
+                                      "operationId": "InvokeHttp"
+                                    },
+                                    "parameters": {
+                                      "request/method": "POST",
+                                      "request/url": "@concat(variables('Work')?['SiteUrl'],'/',variables('Work')?['Http']?['RelativeUri'])",
+                                      "request/headers": {
+                                        "Accept": "application/json;odata=verbose",
+                                        "Content-Type": "application/json;odata=verbose"
+                                      },
+                                      "request/body": "@variables('Work')?['Http']?['Body']"
+                                    },
+                                    "authentication": "@parameters('$authentication')",
+                                    "retryPolicy": {
+                                      "type": "none"
+                                    }
+                                  }
+                                },
+                                "Record_create_response": {
+                                  "runAfter": {
+                                    "Create_HTTP": [
+                                      "Succeeded",
+                                      "Failed",
+                                      "TimedOut"
+                                    ]
+                                  },
+                                  "type": "OpenApiConnection",
+                                  "inputs": {
+                                    "host": {
+                                      "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                                      "connectionName": "shared_commondataserviceforapps",
+                                      "operationId": "PerformUnboundAction"
+                                    },
+                                    "parameters": {
+                                      "actionName": "@variables('WorkerAction')",
+                                      "item": {
+                                        "Request": "@string(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','CreateResponse'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']),'HttpStatus',coalesce(outputs('Create_HTTP')?['statusCode'],0)),'ResponseBody',string(body('Create_HTTP'))),'RetryAfter',coalesce(outputs('Create_HTTP')?['headers']?['Retry-After'],outputs('Create_HTTP')?['headers']?['retry-after'],'')))"
+                                      }
+                                    },
+                                    "authentication": "@parameters('$authentication')",
+                                    "retryPolicy": {
+                                      "type": "exponential",
+                                      "count": 4,
+                                      "interval": "PT10S",
+                                      "minimumInterval": "PT5S",
+                                      "maximumInterval": "PT1H"
+                                    }
+                                  }
+                                },
+                                "Save_create_state": {
+                                  "runAfter": {
+                                    "Record_create_response": [
+                                      "Succeeded"
+                                    ]
+                                  },
+                                  "type": "SetVariable",
+                                  "inputs": {
+                                    "name": "Work",
+                                    "value": "@json(body('Record_create_response')?['Result'])"
+                                  }
+                                }
+                              },
                               "runAfter": {
                                 "Await_create_slot": [
                                   "Succeeded"
                                 ]
                               },
-                              "type": "OpenApiConnection",
-                              "inputs": {
-                                "host": {
-                                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_webcontents",
-                                  "connectionName": "shared_webcontents",
-                                  "operationId": "InvokeHttp"
-                                },
-                                "parameters": {
-                                  "request/method": "POST",
-                                  "request/url": "@concat(variables('Work')?['SiteUrl'],'/',variables('Work')?['Http']?['RelativeUri'])",
-                                  "request/headers": {
-                                    "Accept": "application/json;odata=verbose",
-                                    "Content-Type": "application/json;odata=verbose"
-                                  },
-                                  "request/body": "@variables('Work')?['Http']?['Body']"
-                                },
-                                "authentication": "@parameters('$authentication')",
-                                "retryPolicy": {
-                                  "type": "none"
-                                }
-                              }
-                            },
-                            "Record_create_response": {
-                              "runAfter": {
-                                "Create_HTTP": [
-                                  "Succeeded",
-                                  "Failed",
-                                  "TimedOut"
-                                ]
-                              },
-                              "type": "OpenApiConnection",
-                              "inputs": {
-                                "host": {
-                                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
-                                  "connectionName": "shared_commondataserviceforapps",
-                                  "operationId": "PerformUnboundAction"
-                                },
-                                "parameters": {
-                                  "actionName": "@variables('WorkerAction')",
-                                  "item": {
-                                    "Request": "@string(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','CreateResponse'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']),'HttpStatus',coalesce(outputs('Create_HTTP')?['statusCode'],0)),'ResponseBody',string(body('Create_HTTP'))),'RetryAfter',coalesce(outputs('Create_HTTP')?['headers']?['Retry-After'],outputs('Create_HTTP')?['headers']?['retry-after'],'')))"
+                              "else": {
+                                "actions": {
+                                  "Save_stopped_state": {
+                                    "runAfter": {},
+                                    "type": "SetVariable",
+                                    "inputs": {
+                                      "name": "Work",
+                                      "value": "@variables('HttpAdmission')"
+                                    }
                                   }
-                                },
-                                "authentication": "@parameters('$authentication')",
-                                "retryPolicy": {
-                                  "type": "exponential",
-                                  "count": 4,
-                                  "interval": "PT10S",
-                                  "minimumInterval": "PT5S",
-                                  "maximumInterval": "PT1H"
                                 }
-                              }
-                            },
-                            "Save_create_state": {
-                              "runAfter": {
-                                "Record_create_response": [
-                                  "Succeeded"
-                                ]
                               },
-                              "type": "SetVariable",
-                              "inputs": {
-                                "name": "Work",
-                                "value": "@json(body('Record_create_response')?['Result'])"
-                              }
+                              "expression": "@equals(variables('HttpAdmission')?['Status'],'Permit')",
+                              "type": "If"
                             }
                           }
                         },

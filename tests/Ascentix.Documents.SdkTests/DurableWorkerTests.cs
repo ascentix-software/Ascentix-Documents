@@ -1432,6 +1432,45 @@ public sealed class DurableWorkerTests
         Assert.Equal("Applied", f.Call("Complete", verified).Status);
     }
 
+    [Theory]
+    [InlineData("RemoveLibrary")]
+    [InlineData("RemoveSite")]
+    public void RemoveSerializesWithAConcurrentPermitOnTheSiteWriter(string command)
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = PreparedAndRenewed(f);
+        string writer = WorkCoordination.Operation(f.Service, f.Operation.Key);
+        // A permit grant read the writer row before the removal committed.
+        var seenByPermit = f.Store.Require<DispatcherDocument>("asx_claim", writer);
+        if (command == "RemoveSite")
+        {
+            Assert.Equal("Removed", RemoveLibrary(f).Status);
+            seenByPermit = f.Store.Require<DispatcherDocument>("asx_claim", writer);
+        }
+        var removed = f.Service.Transaction(() =>
+            new CatalogAdministration(f.Service).Execute(
+                new CatalogRequest
+                {
+                    Command = command,
+                    CatalogId = command == "RemoveSite" ? f.SiteId : f.LibraryId,
+                },
+                true
+            )
+        );
+        Assert.Equal("Removed", removed.Status);
+        // The removal saved the writer row, so the permit's write of the row it read conflicts
+        // and is retried against the removal.
+        Assert.Throws<InvalidOperationException>(() =>
+            f.Service.Transaction(() =>
+            {
+                f.Store.Save(seenByPermit);
+                return 0;
+            })
+        );
+        Assert.Equal("Stopped", Begin(f, work).Status);
+    }
+
     [Fact]
     public void ReadPermitIsStillGrantedForARemovedDestination()
     {
