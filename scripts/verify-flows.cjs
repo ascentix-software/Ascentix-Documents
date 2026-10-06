@@ -22,12 +22,17 @@ const MAX_CONCURRENCY = 5;
 
 // Failure branches pass the failed action's status, error code and message to the worker so it
 // can wait after a temporary failure instead of blocking.
-// A SharePoint write runs only when BeginHttp granted it. BeginHttp answers Stopped when the
-// destination was removed or suspended after the write was prepared; the drive then ends
-// cleanly with no write and no further worker call for that operation.
+// A SharePoint read or write runs only when BeginHttp granted it. BeginHttp answers Stopped when
+// the destination was removed or suspended after the write was prepared, and every worker call
+// answers Disabled while the runtime is paused; the drive then ends cleanly (Succeeded) with no
+// SharePoint call and no further worker call for that operation, which waits for the next run.
 const PERMITTED = "@equals(variables('HttpAdmission')?['Status'],'Permit')";
 const PERMIT_OR_STOPPED =
   "@or(equals(variables('HttpAdmission')?['Status'],'Permit'),equals(variables('HttpAdmission')?['Status'],'Stopped'))";
+const READ_EXIT =
+  "@or(equals(variables('HttpAdmission')?['Status'],'Permit'),equals(variables('HttpAdmission')?['Status'],'Disabled'))";
+const CREATE_EXIT =
+  "@or(equals(variables('HttpAdmission')?['Status'],'Permit'),equals(variables('HttpAdmission')?['Status'],'Stopped'),equals(variables('HttpAdmission')?['Status'],'Disabled'))";
 
 const FAILURE_BRANCHES = [
   'Record_blocked_outbox',
@@ -91,33 +96,28 @@ function checkFlow(flow) {
             action.inputs.parameters['request/url'],
             "@concat(variables('Work')?['SiteUrl'],'/',variables('Work')?['Http']?['RelativeUri'])",
           );
-          if (action.inputs.parameters['request/method'] === 'GET') {
-            assert.deepEqual(Object.keys(action.runAfter).length, 1);
-            assert(Object.keys(action.runAfter)[0].startsWith('Await_'));
-          } else {
-            // A write is reachable only in the true branch of the Permit check, which runs
-            // right after its admission loop.
-            assert(
-              scope && !scope.otherwise && scope.action.type === 'If',
-              'SharePoint write must sit inside the Permit check: ' + key,
-            );
-            assert.equal(
-              scope.action.expression,
-              PERMITTED,
-              'SharePoint write must run only on Permit: ' + key,
-            );
-            assert.deepEqual(action.runAfter, {}, 'SharePoint write runs first in its branch');
-            const after = Object.keys(scope.action.runAfter);
-            assert.equal(after.length, 1);
-            assert(after[0].startsWith('Await_'), 'The Permit check follows its admission loop');
-            // A stopped permit ends the drive: the else branch only hands the result to the
-            // loop and makes no worker or SharePoint call.
-            const otherwise = Object.values(scope.action.else?.actions || {});
-            assert.equal(otherwise.length, 1, 'Stopped permit ends the drive with one step');
-            assert.equal(otherwise[0].type, 'SetVariable');
-            assert.equal(otherwise[0].inputs.name, 'Work');
-            assert.equal(otherwise[0].inputs.value, "@variables('HttpAdmission')");
-          }
+          // A read or write is reachable only in the true branch of the Permit check, which
+          // runs right after its admission loop.
+          assert(
+            scope && !scope.otherwise && scope.action.type === 'If',
+            'SharePoint call must sit inside the Permit check: ' + key,
+          );
+          assert.equal(
+            scope.action.expression,
+            PERMITTED,
+            'SharePoint call must run only on Permit: ' + key,
+          );
+          assert.deepEqual(action.runAfter, {}, 'SharePoint call runs first in its branch');
+          const after = Object.keys(scope.action.runAfter);
+          assert.equal(after.length, 1);
+          assert(after[0].startsWith('Await_'), 'The Permit check follows its admission loop');
+          // A stopped or paused permit ends the drive: the else branch only hands the result
+          // to the loop and makes no worker or SharePoint call.
+          const otherwise = Object.values(scope.action.else?.actions || {});
+          assert.equal(otherwise.length, 1, 'A permit not granted ends the drive with one step');
+          assert.equal(otherwise[0].type, 'SetVariable');
+          assert.equal(otherwise[0].inputs.name, 'Work');
+          assert.equal(otherwise[0].inputs.value, "@variables('HttpAdmission')");
         } else {
           assert.deepEqual(
             action.inputs.retryPolicy,
@@ -171,9 +171,11 @@ function checkFlow(flow) {
         if (key.startsWith('Await_')) {
           assert.equal(action.limit.count, 120);
           assert.equal(action.limit.timeout, 'PT2H');
+          // Exits on Disabled too: during a pause it would otherwise call BeginHttp up to its
+          // limit without waiting and then fail the run.
           assert.equal(
             action.expression,
-            key.includes('read') ? PERMITTED : PERMIT_OR_STOPPED,
+            key.includes('read') ? READ_EXIT : CREATE_EXIT,
             'Admission loop exit: ' + key,
           );
         } else {
@@ -281,6 +283,29 @@ function selfTest(flow) {
     'stopped permit that does not end the drive': (f) => {
       const guard = find(f.properties.definition.actions, (k) => k === 'Write_when_permitted');
       guard.else.actions.Save_stopped_state.inputs.value = "@json(body('Begin_create')?['Result'])";
+    },
+    'read admission loop that ignores a pause': (f) => {
+      find(f.properties.definition.actions, (k) => k === 'Await_read_slot').expression = PERMITTED;
+    },
+    'write admission loop that ignores a pause': (f) => {
+      find(f.properties.definition.actions, (k) => k === 'Await_create_slot').expression =
+        PERMIT_OR_STOPPED;
+    },
+    'SharePoint read without the Permit check': (f) => {
+      const read = find(f.properties.definition.actions, (_, a) => a.cases?.Read).cases.Read
+        .actions;
+      const guard = read.Read_when_permitted;
+      delete read.Read_when_permitted;
+      Object.assign(read, guard.actions);
+      read.Read_HTTP.runAfter = { Await_read_slot: ['Succeeded'] };
+    },
+    'SharePoint read in the paused branch': (f) => {
+      const guard = find(f.properties.definition.actions, (k) => k === 'Read_when_permitted');
+      [guard.actions, guard.else.actions] = [guard.else.actions, guard.actions];
+    },
+    'paused read that does not end the drive': (f) => {
+      const guard = find(f.properties.definition.actions, (k) => k === 'Read_when_permitted');
+      guard.else.actions.Save_paused_state.inputs.value = "@json(body('Begin_read')?['Result'])";
     },
     'failure branch without its cause': (f) => {
       const branch = find(f.properties.definition.actions, (k) => k === 'Record_failed_claim');

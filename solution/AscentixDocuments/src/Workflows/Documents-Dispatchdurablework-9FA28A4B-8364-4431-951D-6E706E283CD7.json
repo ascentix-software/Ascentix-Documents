@@ -473,7 +473,7 @@
                               "Succeeded"
                             ]
                           },
-                          "expression": "@equals(variables('HttpAdmission')?['Status'],'Permit')",
+                          "expression": "@or(equals(variables('HttpAdmission')?['Status'],'Permit'),equals(variables('HttpAdmission')?['Status'],'Disabled'))",
                           "limit": {
                             "count": 120,
                             "timeout": "PT2H"
@@ -481,74 +481,93 @@
                           "type": "Until",
                           "operationOptions": "FailWhenLimitsReached"
                         },
-                        "Read_HTTP": {
+                        "Read_when_permitted": {
+                          "actions": {
+                            "Read_HTTP": {
+                              "runAfter": {},
+                              "type": "OpenApiConnection",
+                              "inputs": {
+                                "host": {
+                                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_webcontents",
+                                  "connectionName": "shared_webcontents",
+                                  "operationId": "InvokeHttp"
+                                },
+                                "parameters": {
+                                  "request/method": "GET",
+                                  "request/url": "@concat(variables('Work')?['SiteUrl'],'/',variables('Work')?['Http']?['RelativeUri'])",
+                                  "request/headers": {
+                                    "Accept": "application/json;odata=verbose"
+                                  }
+                                },
+                                "authentication": "@parameters('$authentication')",
+                                "retryPolicy": {
+                                  "type": "none"
+                                }
+                              }
+                            },
+                            "Observe_read": {
+                              "runAfter": {
+                                "Read_HTTP": [
+                                  "Succeeded",
+                                  "Failed",
+                                  "TimedOut"
+                                ]
+                              },
+                              "type": "OpenApiConnection",
+                              "inputs": {
+                                "host": {
+                                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+                                  "connectionName": "shared_commondataserviceforapps",
+                                  "operationId": "PerformUnboundAction"
+                                },
+                                "parameters": {
+                                  "actionName": "@variables('WorkerAction')",
+                                  "item": {
+                                    "Request": "@string(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','Observe'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']),'ProbeId',variables('Work')?['ProbeId']),'ProbeKind',variables('Work')?['ProbeKind']),'HttpStatus',coalesce(outputs('Read_HTTP')?['statusCode'],0)),'ResponseBody',string(body('Read_HTTP'))),'RetryAfter',coalesce(outputs('Read_HTTP')?['headers']?['Retry-After'],outputs('Read_HTTP')?['headers']?['retry-after'],'')))"
+                                  }
+                                },
+                                "authentication": "@parameters('$authentication')",
+                                "retryPolicy": {
+                                  "type": "exponential",
+                                  "count": 4,
+                                  "interval": "PT10S",
+                                  "minimumInterval": "PT5S",
+                                  "maximumInterval": "PT1H"
+                                }
+                              }
+                            },
+                            "Save_read_state": {
+                              "runAfter": {
+                                "Observe_read": [
+                                  "Succeeded"
+                                ]
+                              },
+                              "type": "SetVariable",
+                              "inputs": {
+                                "name": "Work",
+                                "value": "@json(body('Observe_read')?['Result'])"
+                              }
+                            }
+                          },
                           "runAfter": {
                             "Await_read_slot": [
                               "Succeeded"
                             ]
                           },
-                          "type": "OpenApiConnection",
-                          "inputs": {
-                            "host": {
-                              "apiId": "/providers/Microsoft.PowerApps/apis/shared_webcontents",
-                              "connectionName": "shared_webcontents",
-                              "operationId": "InvokeHttp"
-                            },
-                            "parameters": {
-                              "request/method": "GET",
-                              "request/url": "@concat(variables('Work')?['SiteUrl'],'/',variables('Work')?['Http']?['RelativeUri'])",
-                              "request/headers": {
-                                "Accept": "application/json;odata=verbose"
+                          "else": {
+                            "actions": {
+                              "Save_paused_state": {
+                                "runAfter": {},
+                                "type": "SetVariable",
+                                "inputs": {
+                                  "name": "Work",
+                                  "value": "@variables('HttpAdmission')"
+                                }
                               }
-                            },
-                            "authentication": "@parameters('$authentication')",
-                            "retryPolicy": {
-                              "type": "none"
                             }
-                          }
-                        },
-                        "Observe_read": {
-                          "runAfter": {
-                            "Read_HTTP": [
-                              "Succeeded",
-                              "Failed",
-                              "TimedOut"
-                            ]
                           },
-                          "type": "OpenApiConnection",
-                          "inputs": {
-                            "host": {
-                              "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
-                              "connectionName": "shared_commondataserviceforapps",
-                              "operationId": "PerformUnboundAction"
-                            },
-                            "parameters": {
-                              "actionName": "@variables('WorkerAction')",
-                              "item": {
-                                "Request": "@string(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(json('{}'),'Command','Observe'),'Key',variables('Work')?['Key']),'RunId',concat(workflow()?['name'],'/',workflow()?['run']?['name'])),'Token',variables('Work')?['Token']),'ProbeId',variables('Work')?['ProbeId']),'ProbeKind',variables('Work')?['ProbeKind']),'HttpStatus',coalesce(outputs('Read_HTTP')?['statusCode'],0)),'ResponseBody',string(body('Read_HTTP'))),'RetryAfter',coalesce(outputs('Read_HTTP')?['headers']?['Retry-After'],outputs('Read_HTTP')?['headers']?['retry-after'],'')))"
-                              }
-                            },
-                            "authentication": "@parameters('$authentication')",
-                            "retryPolicy": {
-                              "type": "exponential",
-                              "count": 4,
-                              "interval": "PT10S",
-                              "minimumInterval": "PT5S",
-                              "maximumInterval": "PT1H"
-                            }
-                          }
-                        },
-                        "Save_read_state": {
-                          "runAfter": {
-                            "Observe_read": [
-                              "Succeeded"
-                            ]
-                          },
-                          "type": "SetVariable",
-                          "inputs": {
-                            "name": "Work",
-                            "value": "@json(body('Observe_read')?['Result'])"
-                          }
+                          "expression": "@equals(variables('HttpAdmission')?['Status'],'Permit')",
+                          "type": "If"
                         }
                       }
                     },
@@ -703,7 +722,7 @@
                               "Succeeded"
                             ]
                           },
-                          "expression": "@or(equals(variables('HttpAdmission')?['Status'],'Permit'),equals(variables('HttpAdmission')?['Status'],'Stopped'))",
+                          "expression": "@or(equals(variables('HttpAdmission')?['Status'],'Permit'),equals(variables('HttpAdmission')?['Status'],'Stopped'),equals(variables('HttpAdmission')?['Status'],'Disabled'))",
                           "limit": {
                             "count": 120,
                             "timeout": "PT2H"
