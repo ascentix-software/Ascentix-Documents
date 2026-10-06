@@ -23,7 +23,7 @@ Run **Remove all event registrations** (Unregister) in Runtime administration be
 Runtime administration has three recovery lists.
 
 - **Failed capture jobs** lists record or team events whose background job failed. Fix the cause, select the records, and click **Replan selected records**. Replan asks Documents to evaluate the records again.
-- **Blocked records** lists outbox rows that were blocked. Each has **Retry**. A record blocked for a reason that still holds blocks again. Records blocked before the 0.1.0.4 upgrade can be retried here.
+- **Blocked records** lists outbox rows that were blocked. Each has **Retry**. A record blocked for a reason that still holds blocks again. Records blocked before the 0.1.0.4 upgrade can be retried here. Its **Waiting** section lists records with folders that wait (see [Folder names](#folder-names)), each with its notice and **Replan**.
 - **Blocked jobs** lists blocked operations. Each has **Retry** and **Cancel**. Cancel asks in the page first and never undoes or deletes anything in SharePoint.
 
 Temporary failures wait and retry on their own. There is no attempt cap. A waiting job shows a notice and the time of its next attempt. **Cancel** stops a waiting job.
@@ -60,8 +60,8 @@ Documents manages only its own SharePoint groups and their grants on the library
 
 - Characters SharePoint forbids are replaced with "-". Trailing dots and spaces are trimmed. Reserved names get "_".
 - "Forms" is reserved only at the library root.
-- A blank naming value makes that folder wait until the field has a value.
-- If sibling folders get the same name, the first one (by order) is kept and the rest wait.
+- A blank naming value makes that folder, and the folders below it, wait. The record is listed under **Waiting** in Blocked records until a later plan includes the folder. With record updates on, filling in a field of the record itself creates the folder at the record's next update. With record updates off, or for a field of a related record, fill in the field and then **Replan** the record. The notice says which applies.
+- If sibling folders get the same name, the first one (by order) is kept and the rest wait, listed the same way, until a change to the record makes the names differ and the record is updated or replanned.
 - **Risk:** Documents does not follow a record's folder if it is renamed or deleted in SharePoint. Document locations point at the old folder. Do not rename or delete record folders in SharePoint.
 
 ## Limits and pacing

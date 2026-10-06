@@ -171,6 +171,13 @@ public sealed class RecordPlanDocument : StoredDocument
         get => notices ?? Array.Empty<string>();
         set => notices = value;
     }
+
+    /// <summary>
+    /// The notices of folders the plan skipped until the record changes, each with what it
+    /// needs. While any wait, the row's status is Waiting, which Blocked records lists.
+    /// </summary>
+    [DataMember]
+    public string[] Waiting { get; set; } = Array.Empty<string>();
 }
 
 [DataContract]

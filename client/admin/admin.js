@@ -1753,16 +1753,80 @@
       ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
       : null;
     $('moreBlockedRecords').hidden = !blockedRecords.next;
-    if (!append && !result.entities.length) message('No blocked records.');
+    return result.entities.length;
+  }
+  // Records whose plan skipped folders until the record changes (status Waiting on the
+  // record's plan row). Replan queues the record again with the published template.
+  const waitingRecords = { next: null };
+  function renderWaiting(rows, append) {
+    if (!append) $('waitingRecords').replaceChildren();
+    for (const row of rows) {
+      const plan = blockedWork(row);
+      const waits = plan.Waiting?.length ? plan.Waiting : plan.Notices || [];
+      const item = el(
+        'li',
+        (plan.Table || 'No table') +
+          ' ' +
+          (plan.RecordId || plan.Key || '') +
+          ' · ' +
+          (waits[0] || 'No notice') +
+          (waits.length > 1 ? ' (+' + (waits.length - 1) + ' more)' : '') +
+          ' · ' +
+          row.modifiedon +
+          ' ',
+      );
+      const replan = button('Replan', () =>
+        task(async () => {
+          const result = JSON.parse(
+            await api('asx_ManageWork', {
+              Request: JSON.stringify({
+                Command: 'Replan',
+                TemplateId: plan.TemplateId,
+                RecordId: plan.RecordId,
+                RequestId: crypto.randomUUID(),
+              }),
+            }),
+          );
+          replan.disabled = true;
+          message(
+            result.Status === 'Inactive'
+              ? 'No work queued. The template is deactivated or outside its scheduled dates.'
+              : 'Record queued for replanning. A folder whose name still has no value keeps waiting.',
+          );
+        }),
+      );
+      replan.disabled = !plan.TemplateId || !plan.RecordId;
+      item.append(replan);
+      $('waitingRecords').append(item);
+    }
+  }
+  async function loadWaitingPage(options, append) {
+    const result = await xrm.WebApi.retrieveMultipleRecords('asx_outbox', options, 50);
+    renderWaiting(result.entities, append);
+    waitingRecords.next = result.nextLink
+      ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
+      : null;
+    $('moreWaitingRecords').hidden = !waitingRecords.next;
+    return result.entities.length;
   }
   $('loadBlockedRecords').onclick = () =>
-    task(() =>
-      loadBlockedPage(
+    task(async () => {
+      const blocked = await loadBlockedPage(
         "?$select=asx_payload,modifiedon&$filter=asx_status eq 'Blocked'&$orderby=modifiedon desc",
         false,
-      ),
-    );
+      );
+      const waiting = await loadWaitingPage(
+        "?$select=asx_payload,modifiedon&$filter=asx_status eq 'Waiting'&$orderby=modifiedon desc",
+        false,
+      );
+      const empty = [
+        blocked ? '' : 'No blocked records.',
+        waiting ? '' : 'No waiting records.',
+      ].filter(Boolean);
+      if (empty.length) message(empty.join(' '));
+    });
   $('moreBlockedRecords').onclick = () => task(() => loadBlockedPage(blockedRecords.next, true));
+  $('moreWaitingRecords').onclick = () => task(() => loadWaitingPage(waitingRecords.next, true));
   const blockedJobs = { next: null };
   // Operation keys start with their kind; any other key is a folder job.
   const jobKinds = {

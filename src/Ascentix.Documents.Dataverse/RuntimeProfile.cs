@@ -92,6 +92,23 @@ public sealed class RuntimeProfile
     }
 
     /// <summary>
+    /// Whether record updates are processed, read alone. Used only to word what a waiting
+    /// folder needs, so a missing profile reads as Off: a replan works either way.
+    /// </summary>
+    public static bool RecordUpdates(IOrganizationService service)
+    {
+        var query = new QueryExpression("asx_runtime")
+        {
+            ColumnSet = new ColumnSet("asx_processrecordupdates"),
+            TopCount = 2,
+        };
+        query.Criteria.AddCondition("asx_name", ConditionOperator.Equal, "Default");
+        var rows = service.RetrieveMultiple(query);
+        return rows.Entities.Count == 1
+            && rows.Entities[0].GetAttributeValue<bool>("asx_processrecordupdates");
+    }
+
+    /// <summary>
     /// Whether an active SharePoint site record has exactly this address, as the transport gate
     /// (ValidateTransport) requires before Documents calls the site.
     /// </summary>

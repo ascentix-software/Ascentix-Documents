@@ -16,11 +16,17 @@ public sealed class WorkerCoordinator
     private readonly WorkerCatalog catalog;
     private readonly Func<DateTime> clock;
     private readonly string[]? allowedTables;
+    private readonly bool? recordUpdates;
 
+    /// <param name="recordUpdates">
+    /// Whether record updates are processed, as the worker API read it from the runtime
+    /// profile; null reads it when a plan has waiting folders to word.
+    /// </param>
     public WorkerCoordinator(
         IOrganizationService service,
         Func<DateTime>? clock = null,
-        string[]? allowedTables = null
+        string[]? allowedTables = null,
+        bool? recordUpdates = null
     )
     {
         this.service = service;
@@ -28,6 +34,59 @@ public sealed class WorkerCoordinator
         catalog = new WorkerCatalog(service);
         this.clock = clock ?? (() => DateTime.UtcNow);
         this.allowedTables = allowedTables;
+        this.recordUpdates = recordUpdates;
+    }
+
+    /// <summary>The record-plan status of a record whose plan skipped folders until it changes.</summary>
+    public const string WaitingStatus = "Waiting";
+
+    /// <summary>
+    /// What a waiting folder needs, added to its notice. With record updates on, filling in a
+    /// field of the record itself plans it on the record's Update event; anything else, and
+    /// every case with record updates off, needs a replan.
+    /// </summary>
+    public static string WaitFollowUp(FolderWait wait, bool updates) =>
+        wait.Field == null
+            ? updates
+                ? "The folder is created when a change to the record gives it a usable name of its own."
+                : "Change the record so the folder gets a usable name of its own, then replan the record."
+            : updates && wait.Field.Source == "root"
+                ? "The folder is created when '" + wait.Field + "' has a value."
+                : "Fill in '" + wait.Field + "', then replan the record.";
+
+    /// <summary>The plan's notices, each waiting folder's with what it needs; and those alone.</summary>
+    private string[] PlanNotices(FolderPlan plan, out string[] waiting)
+    {
+        waiting = Array.Empty<string>();
+        if (plan.Waits.Count == 0)
+            return plan.Notices.ToArray();
+        bool updates = recordUpdates ?? RuntimeProfile.RecordUpdates(service);
+        var followed = plan
+            .Waits.GroupBy(w => w.Notice, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Key + " " + WaitFollowUp(g.First(), updates),
+                StringComparer.Ordinal
+            );
+        waiting = followed.Values.ToArray();
+        return plan.Notices.Select(n => followed.TryGetValue(n, out var f) ? f : n).ToArray();
+    }
+
+    /// <summary>
+    /// Ends a record's waiting marker when it is not planned again: its record was deleted, its
+    /// template is inactive or its table was removed. Its folders no longer wait for a value.
+    /// </summary>
+    private void EndWait(OutboxDocument job)
+    {
+        var selection = store.Find<RecordPlanDocument>(
+            "asx_outbox",
+            "recordplan:" + job.TemplateId.ToString("N") + ":" + job.RecordId.ToString("N")
+        );
+        if (selection?.Value.Status != WaitingStatus)
+            return;
+        selection.Value.Status = "Selection";
+        selection.Value.Waiting = Array.Empty<string>();
+        store.Save(selection);
     }
 
     /// <summary>
@@ -206,6 +265,7 @@ public sealed class WorkerCoordinator
                 "Record deleted; existing documents and receipts are retained.",
             };
             store.Save(job);
+            EndWait(job.Value);
             return new WorkerResult
             {
                 Status = job.Value.Status,
@@ -222,6 +282,7 @@ public sealed class WorkerCoordinator
                 "Template is deleted, deactivated or outside its schedule. Existing SharePoint content is unchanged.",
             };
             store.Save(job);
+            EndWait(job.Value);
             return new WorkerResult
             {
                 Status = "Cancelled",
@@ -240,6 +301,7 @@ public sealed class WorkerCoordinator
             job.Value.Status = "Cancelled";
             job.Value.Notices = new[] { TableNotEnabled(job.Value.Table) };
             store.Save(job);
+            EndWait(job.Value);
             return new WorkerResult
             {
                 Status = "Cancelled",
@@ -274,6 +336,7 @@ public sealed class WorkerCoordinator
             throw new EvaluationBlockedException("Queued template/table identity changed.");
         var snapshot = new SnapshotReader(service).Read(template, job.Value.RecordId);
         var intents = FolderPlanner.Plan(template, job.Value.RecordId, snapshot.Values);
+        var notices = PlanNotices(intents, out var waiting);
         for (int i = 0; i < snapshot.Records.Count; i++)
         {
             var record = snapshot.Records[i];
@@ -314,7 +377,7 @@ public sealed class WorkerCoordinator
                     RevisionId = revision.Id,
                     Sources = sourceVersions,
                     IncludedSections = included,
-                    Notices = intents.Notices.ToArray(),
+                    Notices = notices,
                 }
             );
         else
@@ -325,7 +388,7 @@ public sealed class WorkerCoordinator
             selected.Value.RevisionId = revision.Id;
             selected.Value.Sources = sourceVersions;
             selected.Value.IncludedSections = included;
-            selected.Value.Notices = intents.Notices.ToArray();
+            selected.Value.Notices = notices;
             store.Save(selected);
         }
         var operations = new List<string>();
@@ -389,10 +452,13 @@ public sealed class WorkerCoordinator
         }
         var completedSelection = store.Require<RecordPlanDocument>("asx_outbox", planKey);
         completedSelection.Value.Operations = operations.ToArray();
-        completedSelection.Value.Status = "Selection";
+        // A plan that skipped folders keeps the record listed as Waiting until a later plan
+        // includes them, so an admin sees it and can replan it after filling in the record.
+        completedSelection.Value.Status = waiting.Length > 0 ? WaitingStatus : "Selection";
+        completedSelection.Value.Waiting = waiting;
         store.Save(completedSelection);
         job.Value.Operations = operations.ToArray();
-        job.Value.Notices = intents.Notices.ToArray();
+        job.Value.Notices = notices;
         job.Value.Status = "Planned";
         store.Save(job);
         return new WorkerResult
@@ -1331,19 +1397,26 @@ public sealed class WorkerCoordinator
             "asx_outbox",
             "recordplan:" + binding.TemplateId.ToString("N") + ":" + binding.RecordId.ToString("N")
         );
-        bool excluded =
-            Retired(binding.Table, binding.RecordId)
-            || selection != null
-                && (
-                    selection.Value.RevisionId != operation.Value.RevisionId
-                    || !selection.Value.Operations.Contains(operation.Value.Key)
-                );
-        if (published?.Id == operation.Value.RevisionId && !excluded)
+        bool retired = Retired(binding.Table, binding.RecordId);
+        bool replanned =
+            selection != null
+            && (
+                selection.Value.RevisionId != operation.Value.RevisionId
+                || !selection.Value.Operations.Contains(operation.Value.Key)
+            );
+        if (published?.Id == operation.Value.RevisionId && !retired && !replanned)
             return null;
+        // The notice names the cause: only a newer plan or revision supersedes the job.
+        string reason =
+            retired ? "The record was deleted, so this folder job stopped."
+            : published == null
+                ? "The template revision this folder job used is no longer published, so the job stopped."
+            : replanned ? "Superseded by a newer plan of this record."
+            : "Superseded by a newer published revision of the template.";
         return Stop(
             request,
             "Superseded",
-            "Superseded by a newer plan of this record. Folders it already created are kept; nothing in SharePoint was deleted."
+            reason + " Folders it already created are kept; nothing in SharePoint was deleted."
         );
     }
 

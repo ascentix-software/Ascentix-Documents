@@ -1530,6 +1530,40 @@ public sealed class DurableWorkerTests
         Assert.DoesNotContain(f.Results, r => r.Status == "Create");
     }
 
+    [Theory]
+    [InlineData("deleted", "The record was deleted, so this folder job stopped.")]
+    [InlineData(
+        "unpublished",
+        "The template revision this folder job used is no longer published, so the job stopped."
+    )]
+    [InlineData("republished", "Superseded by a newer published revision of the template.")]
+    public void StoppedJobsNoticeNamesWhyItStopped(string cause, string reason)
+    {
+        var f = new Fixture();
+        var work = f.Claim();
+        if (cause == "deleted")
+            f.Store.Create(
+                "asx_outbox",
+                new OutboxDocument
+                {
+                    Key = WorkerCoordinator.RetirementKey("account", f.RecordId),
+                    Status = "DecommissionReview",
+                    Table = "account",
+                    RecordId = f.RecordId,
+                }
+            );
+        else
+            f.Service.Rows[f.TemplateId]["asx_publishedrevisionid"] =
+                cause == "unpublished" ? null : new EntityReference("asx_revision", Guid.NewGuid());
+        var stopped = f.Observe(work, f.LibraryBody());
+        Assert.Equal("Superseded", stopped.Status);
+        Assert.Equal(
+            reason + " Folders it already created are kept; nothing in SharePoint was deleted.",
+            Assert.Single(stopped.Notices)
+        );
+        Assert.DoesNotContain(f.Results, r => r.Status == "Create");
+    }
+
     [Fact]
     public void FolderJobOfARemovedTableIsCancelledWithANotice()
     {
@@ -1806,17 +1840,50 @@ public sealed class DurableWorkerTests
         Assert.Equal("Applied", f.Call("Complete", work).Status);
     }
 
+    /// <summary>The record's plan row, which carries the waiting marker.</summary>
+    private static RecordPlanDocument Selection(Fixture f) =>
+        f
+            .Store.Require<RecordPlanDocument>(
+                "asx_outbox",
+                "recordplan:" + f.TemplateId.ToString("N") + ":" + f.RecordId.ToString("N")
+            )
+            .Value;
+
+    /// <summary>The keys of the outbox rows an admin list finds by their indexed status.</summary>
+    private static string[] Listed(Fixture f, string status)
+    {
+        var query = new QueryExpression("asx_outbox") { ColumnSet = new ColumnSet("asx_payload") };
+        query.Criteria.AddCondition("asx_status", ConditionOperator.Equal, status);
+        return f
+            .Service.RetrieveMultiple(query)
+            .Entities.Select(row =>
+                JsonWire.Read<StoredDocument>(row.GetAttributeValue<string>("asx_payload")).Key
+            )
+            .ToArray();
+    }
+
     [Fact]
     public void BlankRecordNameWaitsWithANoticeAndIsPlannedOnceFilledIn()
     {
-        var f = new Fixture(seedBinding: false);
+        var f = new Fixture(seedBinding: false) { RecordUpdates = false };
         f.SeedTemplate();
         f.Service.Rows[f.RecordId]["name"] = null;
         var waiting = f.PlanRecord();
         Assert.Equal("Planned", waiting.Status);
         Assert.Empty(waiting.Keys);
-        const string notice = "Folder 'general/root' is waiting for 'root.name' to have a value.";
+        // Record updates are off, so filling in the field alone plans nothing: the notice says
+        // to replan.
+        const string notice =
+            "Folder 'general/root' is waiting for 'root.name' to have a value. Fill in 'root.name', then replan the record.";
         Assert.Equal(new[] { notice }, waiting.Notices);
+        var marked = Selection(f);
+        Assert.Equal(WorkerCoordinator.WaitingStatus, marked.Status);
+        Assert.Equal(new[] { notice }, marked.Waiting);
+        Assert.Equal(f.RecordId, marked.RecordId);
+        Assert.Equal(f.TemplateId, marked.TemplateId);
+        // The marker is an indexed status, so the admin list finds the record without reading
+        // every payload.
+        Assert.Contains(marked.Key, Listed(f, WorkerCoordinator.WaitingStatus));
         var inspected = RecordInspection.Read(
             f.Service,
             new WorkerRequest { TemplateId = f.TemplateId, RecordId = f.RecordId },
@@ -1824,7 +1891,7 @@ public sealed class DurableWorkerTests
         );
         Assert.Equal("NoCurrentOperations", inspected.Status);
         Assert.Contains(notice, inspected.Notices);
-        // The record's Update event queues the record again once the field is filled in.
+        // A replan once the field is filled in plans the folder and clears the marker.
         f.Service.Rows[f.RecordId]["name"] = "Example";
         var planned = f.PlanRecord();
         Assert.Equal("Planned", planned.Status);
@@ -1836,6 +1903,9 @@ public sealed class DurableWorkerTests
                 Assert.Single(planned.Keys)
             ).Value.Folder.Candidate
         );
+        Assert.Equal("Selection", Selection(f).Status);
+        Assert.Empty(Selection(f).Waiting);
+        Assert.Empty(Listed(f, WorkerCoordinator.WaitingStatus));
         Assert.DoesNotContain(
             notice,
             RecordInspection
@@ -1848,10 +1918,84 @@ public sealed class DurableWorkerTests
         );
     }
 
+    [Theory]
+    [InlineData(true, "The folder is created when 'root.name' has a value.")]
+    [InlineData(false, "Fill in 'root.name', then replan the record.")]
+    [InlineData(null, "Fill in 'root.name', then replan the record.")]
+    public void WaitingNoticeSaysHowTheFolderIsCreatedForTheRecordUpdateSetting(
+        bool? updates,
+        string followUp
+    )
+    {
+        var f = new Fixture(seedBinding: false) { RecordUpdates = updates };
+        f.SeedTemplate();
+        f.Service.Rows[f.RecordId]["name"] = null;
+        Assert.Equal(
+            "Folder 'general/root' is waiting for 'root.name' to have a value. " + followUp,
+            Assert.Single(f.PlanRecord().Notices)
+        );
+    }
+
+    [Fact]
+    public void WaitingOnARelatedRecordsFieldNeedsAReplanEvenWithRecordUpdatesOn()
+    {
+        // Only the record's own Update event plans it again; a related record's change does not.
+        var wait = new Ascentix.Documents.Domain.FolderWait(
+            "general",
+            "root",
+            new FieldReference("customer", "name"),
+            ""
+        );
+        Assert.Equal(
+            "Fill in 'customer.name', then replan the record.",
+            WorkerCoordinator.WaitFollowUp(wait, true)
+        );
+        Assert.Equal(
+            "The folder is created when a change to the record gives it a usable name of its own.",
+            WorkerCoordinator.WaitFollowUp(
+                new Ascentix.Documents.Domain.FolderWait("general", "b", null, ""),
+                true
+            )
+        );
+        Assert.Equal(
+            "Change the record so the folder gets a usable name of its own, then replan the record.",
+            WorkerCoordinator.WaitFollowUp(
+                new Ascentix.Documents.Domain.FolderWait("general", "b", null, ""),
+                false
+            )
+        );
+    }
+
+    [Fact]
+    public void WaitingRecordWhoseTableIsRemovedLeavesTheWaitingList()
+    {
+        var f = new Fixture(seedBinding: false) { RecordUpdates = false };
+        f.SeedTemplate();
+        f.Service.Rows[f.RecordId]["name"] = null;
+        f.PlanRecord();
+        Assert.Equal(WorkerCoordinator.WaitingStatus, Selection(f).Status);
+        var queued = f.Execute(
+            new WorkerRequest
+            {
+                Command = "Queue",
+                TemplateId = f.TemplateId,
+                RecordId = f.RecordId,
+                RequestId = Guid.NewGuid(),
+            }
+        );
+        f.AllowedTables = new[] { "lead" };
+        Assert.Equal(
+            "Cancelled",
+            f.Execute(new WorkerRequest { Command = "Plan", Key = queued.Key }).Status
+        );
+        Assert.Equal("Selection", Selection(f).Status);
+        Assert.Empty(Listed(f, WorkerCoordinator.WaitingStatus));
+    }
+
     [Fact]
     public void DuplicateSiblingWaitsAndIsPlannedWhenTheRecordChanges()
     {
-        var f = new Fixture(seedBinding: false);
+        var f = new Fixture(seedBinding: false) { RecordUpdates = true };
         f.SeedTemplate();
         foreach (
             var (key, expression, order) in new[] { ("a", "{root.name}", 1), ("b", "Example", 2) }
@@ -1872,10 +2016,11 @@ public sealed class DurableWorkerTests
         Assert.Equal(
             new[]
             {
-                "Folder 'general/b' has the same name 'Example' as 'general/a'; it waits until the names differ.",
+                "Folder 'general/b' has the same name 'Example' as 'general/a'; it waits until the names differ. The folder is created when a change to the record gives it a usable name of its own.",
             },
             waiting.Notices
         );
+        Assert.Equal(WorkerCoordinator.WaitingStatus, Selection(f).Status);
         Assert.Equal(
             new[] { "root", "a" },
             f.Store.Require<OperationDocument>("asx_operation", Assert.Single(waiting.Keys))
@@ -1885,6 +2030,7 @@ public sealed class DurableWorkerTests
         f.Service.Rows[f.RecordId]["name"] = "Other";
         var planned = f.PlanRecord();
         Assert.Empty(planned.Notices);
+        Assert.Equal("Selection", Selection(f).Status);
         Assert.Equal(
             new[] { "Other", "Other", "Example" },
             f.Store.Require<OperationDocument>("asx_operation", Assert.Single(planned.Keys))
@@ -2356,10 +2502,13 @@ public sealed class DurableWorkerTests
         public MemoryService Service { get; } = new MemoryService();
         public DocumentStore Store => new DocumentStore(Service);
         public WorkerCoordinator Coordinator =>
-            new WorkerCoordinator(Service, () => Now, AllowedTables);
+            new WorkerCoordinator(Service, () => Now, AllowedTables, RecordUpdates);
 
         /// <summary>The enabled tables the worker API passes in; null means no scope check.</summary>
         public string[]? AllowedTables;
+
+        /// <summary>The record-update setting the worker API passes in; null reads the profile.</summary>
+        public bool? RecordUpdates;
 
         /// <summary>The operation Claim and Call drive; null means the seeded one.</summary>
         public string? OperationKey;

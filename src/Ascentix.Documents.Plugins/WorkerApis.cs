@@ -65,10 +65,11 @@ public sealed class DocumentWorkerApi : IPlugin
                 ? new CatalogWorker(service).Execute(request, context.IsInTransaction)
             : request.Key?.StartsWith("policywork:", StringComparison.Ordinal) == true
                 ? new SecurityWorker(service).Execute(request, context.IsInTransaction)
-            : new WorkerCoordinator(service, allowedTables: profile.Tables).Execute(
-                request,
-                context.IsInTransaction
-            );
+            : new WorkerCoordinator(
+                service,
+                allowedTables: profile.Tables,
+                recordUpdates: profile.ProcessRecordUpdates
+            ).Execute(request, context.IsInTransaction);
         profile.ValidateTransport(result);
         context.OutputParameters["Result"] = JsonWire.Write(result);
     }

@@ -231,6 +231,25 @@ public class FolderNameTests
     }
 
     [Fact]
+    public void EachSkippedFolderIsReportedAsAWaitWithItsFieldAndNotice()
+    {
+        var template = AcceptanceTests.Template();
+        template.Destinations[1].Nodes[0].Name = "Static";
+        var blank = FolderPlanner.Plan(template, Guid.NewGuid(), Names("Example", null));
+        var wait = Assert.Single(blank.Waits);
+        Assert.Equal(("general", "root"), (wait.Section, wait.Node));
+        Assert.Equal("customer.name", wait.Field?.ToString());
+        Assert.Equal(Assert.Single(blank.Notices), wait.Notice);
+        // A name SharePoint cannot take, or one a sibling took, waits for a different name.
+        template.Destinations[0].Nodes[0].Name = "{customer.name}";
+        var unusable = FolderPlanner.Plan(template, Guid.NewGuid(), Names("Example", "..."));
+        Assert.Null(Assert.Single(unusable.Waits).Field);
+        Assert.Contains(Assert.Single(unusable.Waits).Notice, unusable.Notices);
+        // Nothing waits once every name has a value of its own.
+        Assert.Empty(FolderPlanner.Plan(template, Guid.NewGuid(), Names("Example", "C")).Waits);
+    }
+
+    [Fact]
     public void PartlyBlankNamesArePlannedAndWhollyBlankNamesWait()
     {
         var template = AcceptanceTests.Template();

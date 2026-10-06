@@ -596,9 +596,48 @@ async function change(n, value) {
         modifiedon: '2026-10-05T16:02:40Z',
       },
     ];
-    const blockedQueries = [];
+    const blockedQueries = [],
+      waitingQueries = [];
+    // Waiting records: record plans that skipped folders until the record changes.
+    const waitingRows = [
+      {
+        asx_payload: JSON.stringify({
+          Key: 'recordplan:t1:rec-8',
+          Status: 'Waiting',
+          Table: 'account',
+          TemplateId: 'template-1',
+          RecordId: 'rec-8',
+          Notices: ["Folder name 'A:B' was adjusted to 'A-B' for SharePoint."],
+          Waiting: [
+            "Folder 'general/root' is waiting for 'root.name' to have a value. Fill in 'root.name', then replan the record.",
+            "Folder 'general/b' has the same name 'A' as 'general/a'; it waits until the names differ. Change the record so the folder gets a usable name of its own, then replan the record.",
+          ],
+        }),
+        modifiedon: '2026-10-05T16:04:00Z',
+      },
+    ];
     xrm.WebApi.retrieveMultipleRecords = async (name, options, size) => {
       assert.equal(name, 'asx_outbox');
+      if (/Waiting|wait2/.test(options)) {
+        waitingQueries.push([options, size]);
+        return waitingQueries.length === 1
+          ? { entities: waitingRows, nextLink: 'https://example.test/api?$skiptoken=wait2' }
+          : {
+              entities: [
+                {
+                  asx_payload: JSON.stringify({
+                    Key: 'recordplan:t2:rec-9',
+                    Status: 'Waiting',
+                    Table: 'contact',
+                    RecordId: 'rec-9',
+                    Waiting: [],
+                    Notices: [],
+                  }),
+                  modifiedon: '2026-10-05T16:05:00Z',
+                },
+              ],
+            };
+      }
       blockedQueries.push([options, size]);
       return blockedQueries.length === 1
         ? { entities: blockedRows, nextLink: 'https://example.test/api?$skiptoken=page2' }
@@ -636,11 +675,41 @@ async function change(n, value) {
     assert.deepEqual(retried, [{ Command: 'RetryOutbox', Key: 'request:aaa' }]);
     assert.equal(retry.disabled, true);
     assert.match(nodes.status.textContent, /queued for planning again/i);
+    // The Waiting section lists record plans with folders that wait, each with Replan.
+    assert.match(html, /<h5>Waiting<\/h5>/);
+    assert.match(waitingQueries[0][0], /asx_status eq 'Waiting'/);
+    assert.match(waitingQueries[0][0], /orderby=modifiedon desc/);
+    assert.equal(waitingQueries[0][1], 50, 'Same page size as the blocked-records list');
+    assert.equal(
+      nodes.waitingRecords.children[0].textContent,
+      "account rec-8 · Folder 'general/root' is waiting for 'root.name' to have a value. Fill in 'root.name', then replan the record. (+1 more) · 2026-10-05T16:04:00Z Replan",
+    );
+    assert.equal(nodes.moreWaitingRecords.hidden, false);
+    await nodes.moreWaitingRecords.onclick();
+    assert.equal(waitingQueries[1][0], '?$skiptoken=wait2');
+    assert.equal(nodes.waitingRecords.children.length, 2, 'Load more appends');
+    assert.equal(nodes.moreWaitingRecords.hidden, true);
+    const second = nodes.waitingRecords.children[1].children.find((n) => n.tagName === 'BUTTON');
+    assert.equal(second.disabled, true, 'Replan needs the template and the record');
+    const replan = nodes.waitingRecords.children[0].children.find((n) => n.tagName === 'BUTTON');
+    assert.equal(replan.textContent, 'Replan');
+    retried.length = 0;
+    await replan.onclick();
+    assert.equal(retried.length, 1);
+    assert.deepEqual(
+      [retried[0].Command, retried[0].TemplateId, retried[0].RecordId],
+      ['Replan', 'template-1', 'rec-8'],
+    );
+    assert.ok(retried[0].RequestId, 'Replan carries a fresh request ID');
+    assert.equal(replan.disabled, true);
+    assert.match(nodes.status.textContent, /queued for replanning/i);
     xrm.WebApi.retrieveMultipleRecords = async () => ({ entities: [] });
     await nodes.loadBlockedRecords.onclick();
     assert.equal(nodes.blockedRecords.children.length, 0);
     assert.equal(nodes.moreBlockedRecords.hidden, true);
-    assert.equal(nodes.status.textContent, 'No blocked records.');
+    assert.equal(nodes.waitingRecords.children.length, 0);
+    assert.equal(nodes.moreWaitingRecords.hidden, true);
+    assert.equal(nodes.status.textContent, 'No blocked records. No waiting records.');
   }
   {
     // Blocked jobs: Blocked asx_operation rows of every kind, each with the operator Retry in-page.
@@ -832,7 +901,7 @@ async function change(n, value) {
     xrm.WebApi.retrieveMultipleRecords = retrieve;
   }
   console.log(
-    'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, blocked-record retry, blocked job retry and cancel, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
+    'PASS admin handler contracts: destination isolation, site filter, stable keys, child and root conditions, independent folder lookups, optional schedule, top-bar actions, table-first workspace, server preview, stale-preview invalidation and workspace navigation, missing-probe/runtime setup, blocked-record retry, waiting-record replan, blocked job retry and cancel, empty input validation and table reset. Mocked DOM/API; visual QA separate.',
   );
 })().catch((e) => {
   console.error(e);

@@ -380,11 +380,43 @@ public sealed class FolderPlan : ReadOnlyCollection<FolderIntent>
     /// </summary>
     public IReadOnlyList<string> Notices { get; }
 
+    /// <summary>
+    /// Folders this plan skipped until the record changes: a blank or unusable name, or a name a
+    /// sibling already took. Each one's notice is also in <see cref="Notices"/> unless the
+    /// plan reached its notice limit.
+    /// </summary>
+    public IReadOnlyList<FolderWait> Waits { get; }
+
     public FolderPlan(IList<FolderIntent> intents, IList<string> notices)
+        : this(intents, notices, new List<FolderWait>()) { }
+
+    public FolderPlan(IList<FolderIntent> intents, IList<string> notices, IList<FolderWait> waits)
         : base(intents)
     {
         Notices = new ReadOnlyCollection<string>(notices);
+        Waits = new ReadOnlyCollection<FolderWait>(waits);
     }
+}
+
+/// <summary>A folder a plan skipped, and everything below it, until the record changes.</summary>
+public sealed class FolderWait
+{
+    public FolderWait(string section, string node, FieldReference? field, string notice)
+    {
+        Section = section;
+        Node = node;
+        Field = field;
+        Notice = notice;
+    }
+
+    public string Section { get; }
+    public string Node { get; }
+
+    /// <summary>The blank field the folder waits for; null when it waits for a different name.</summary>
+    public FieldReference? Field { get; }
+
+    /// <summary>The notice recorded for it, exactly as in the plan's notices.</summary>
+    public string Notice { get; }
 }
 
 public static class FolderPlanner
@@ -394,16 +426,16 @@ public static class FolderPlanner
     private const int NoticeLimit = 200;
     private const int NoticeLength = 600;
 
-    private static void Notice(IList<string> notices, string text)
+    /// <summary>Records a notice once and returns its bounded text.</summary>
+    private static string Notice(IList<string> notices, string text)
     {
         text = new string(text.Where(c => !char.IsControl(c)).ToArray());
         if (text.Length > NoticeLength)
             text = text.Substring(0, NoticeLength) + "...";
-        if (notices.Count >= NoticeLimit)
-            text = "More notices were not recorded.";
-        if (notices.Count > NoticeLimit || notices.Contains(text))
-            return;
-        notices.Add(text);
+        string recorded = notices.Count >= NoticeLimit ? "More notices were not recorded." : text;
+        if (notices.Count <= NoticeLimit && !notices.Contains(recorded))
+            notices.Add(recorded);
+        return text;
     }
 
     public static FolderPlan Plan(DocumentTemplate template, Guid recordId, Snapshot snapshot)
@@ -413,6 +445,7 @@ public static class FolderPlanner
             throw new EvaluationBlockedException("Persisted record identity required.");
         var result = new List<FolderIntent>();
         var notices = new List<string>();
+        var waits = new List<FolderWait>();
         foreach (var section in template.Destinations)
         {
             var binding =
@@ -436,15 +469,22 @@ public static class FolderPlanner
                     {
                         // Skip this folder and everything below it until the field is filled
                         // in; the record's next update or a replan plans it then.
-                        Notice(
-                            notices,
-                            "Folder '"
-                                + section.Key
-                                + "/"
-                                + node.Key
-                                + "' is waiting for '"
-                                + blank
-                                + "' to have a value."
+                        waits.Add(
+                            new FolderWait(
+                                section.Key,
+                                node.Key,
+                                blank,
+                                Notice(
+                                    notices,
+                                    "Folder '"
+                                        + section.Key
+                                        + "/"
+                                        + node.Key
+                                        + "' is waiting for '"
+                                        + blank
+                                        + "' to have a value."
+                                )
+                            )
                         );
                         continue;
                     }
@@ -453,15 +493,22 @@ public static class FolderPlanner
                     if (name == null)
                     {
                         // Skip this folder and everything below it; the rest of the plan goes on.
-                        Notice(
-                            notices,
-                            "Folder '"
-                                + section.Key
-                                + "/"
-                                + node.Key
-                                + "' is waiting for a usable name: '"
-                                + raw
-                                + "' has no characters SharePoint accepts."
+                        waits.Add(
+                            new FolderWait(
+                                section.Key,
+                                node.Key,
+                                null,
+                                Notice(
+                                    notices,
+                                    "Folder '"
+                                        + section.Key
+                                        + "/"
+                                        + node.Key
+                                        + "' is waiting for a usable name: '"
+                                        + raw
+                                        + "' has no characters SharePoint accepts."
+                                )
+                            )
                         );
                         continue;
                     }
@@ -478,19 +525,26 @@ public static class FolderPlanner
                     {
                         // The first sibling in Order, then Key, keeps the name. This one and
                         // everything below it wait until a change to the record tells them apart.
-                        Notice(
-                            notices,
-                            "Folder '"
-                                + section.Key
-                                + "/"
-                                + node.Key
-                                + "' has the same name '"
-                                + name
-                                + "' as '"
-                                + section.Key
-                                + "/"
-                                + first
-                                + "'; it waits until the names differ."
+                        waits.Add(
+                            new FolderWait(
+                                section.Key,
+                                node.Key,
+                                null,
+                                Notice(
+                                    notices,
+                                    "Folder '"
+                                        + section.Key
+                                        + "/"
+                                        + node.Key
+                                        + "' has the same name '"
+                                        + name
+                                        + "' as '"
+                                        + section.Key
+                                        + "/"
+                                        + first
+                                        + "'; it waits until the names differ."
+                                )
+                            )
                         );
                         continue;
                     }
@@ -524,6 +578,6 @@ public static class FolderPlanner
             };
             visit(null, "");
         }
-        return new FolderPlan(result, notices);
+        return new FolderPlan(result, notices, waits);
     }
 }
