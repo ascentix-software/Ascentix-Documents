@@ -6,11 +6,12 @@ Requires a System Administrator for step 3.
 
 ## Steps
 
-1. Turn the runtime off and stop the flows. Let the work queue empty.
+1. Let the work queue drain with the runtime on. Then turn the runtime off and turn both flows off. A paused runtime does not drain the queue.
 2. Import 0.1.0.4 managed with `--stage-and-upgrade`. This removes the old packaged event steps.
 3. As a System Administrator, open Runtime administration. Check the table list and click **Save**. Every table should show Ready.
-4. Turn the flows and runtime back on.
-5. Records saved between steps 2 and 3 have no event. Replan them (filter by modified date).
+4. Check the solution layers of both flows (**Dispatch durable work** and **Provision requested record**). If either has an active unmanaged layer, for example because it was edited in the environment, remove that active customization. Otherwise it stays on top of the upgraded flow and hides its retries, failure handling and write guard.
+5. Turn the flows and runtime back on.
+6. Records saved between steps 2 and 3 have no event. Replan them (filter by modified date).
 
 Use stage-and-upgrade. A plain update leaves the removed components behind.
 
@@ -26,6 +27,22 @@ Use stage-and-upgrade. A plain update leaves the removed components behind.
   The guard plug-ins still allow writes to Documents tables only through the product APIs. If you copied these roles, add the same privileges to your copies.
 - The worker application user needs organization-level Read on every enabled table. Registration refuses any table the worker cannot read and names it.
 - The worker must be an application user.
+
+## Behaviour changes
+
+These change what Documents does with existing data. Review them before you upgrade.
+
+- **Documents reverts hand changes to its own groups.** If someone changes the permission level of a Documents group on a library, or deletes the group, the next access run puts it back and records a notice. Documents never changes sharing links, Limited Access, or people and groups added by hand.
+- **Whole-library permission drift is no longer checked.** An access run reads only the Documents group's own assignment. Changes to other entries on the library no longer stop access runs or folder work.
+- **Customized permission levels are accepted.** The site's Read and Contribute levels may be customized, for example Contribute without "Delete items". A level is refused only when it carries administrative rights (ManageLists, ManageSubwebs, CreateGroups, ManagePermissions, ManageWeb, EnumeratePermissions or Full Control), and the notice names them. Every access run reads the level again, so a later customization no longer stops it.
+- **Folder names from record data are cleaned.** Characters SharePoint forbids become "-", trailing dots and spaces are trimmed, and reserved names get "_". Records that were Blocked before the upgrade get cleaned names when you retry them.
+- **Folders wait instead of blocking the record.** A blank or unusable name, a name a sibling already took, or a path longer than SharePoint's 400 characters makes that folder and the folders below it wait, with a notice. The rest of the record is planned. A path between 300 and 400 characters is created, with a notice that files inside need short names.
+- **Pause takes effect at once.** It no longer waits for active writers. A flow run that is working when you pause ends at its next step and the job continues after resume.
+- **Team edits are allowed while access is being applied.** Apply access replaces a queued access run. If a flow is working on the run, or SharePoint has not answered one of its writes, the change waits and is applied right after.
+- **Large teams no longer stop the access run.** A team or Documents group with more people than one run can store keeps its group members as they are, with a notice, and still gets its access. Each scheduled refresh tries again.
+- **The daily access review covers every library.** It reviews every due library on each run, within half of the 2-minute custom API limit, and continues with the rest on the next run.
+- **SharePoint hosts in every Microsoft cloud.** Hosts may be on `sharepoint.com`, `sharepoint.us` (GCC High), `sharepoint-mil.us` or `dps.mil` (DoD), or `sharepoint.cn` (21Vianet), and there is no host-count limit.
+- **Pre-upgrade work carries on.** Folder jobs, access runs and library setups saved by 0.1.0.3 continue after the upgrade. A setup whose create may have reached SharePoint goes to `RecoveryRequired` (see the [operations guide](operations.md#recovery-and-retries)).
 
 ## What changes
 

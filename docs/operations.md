@@ -18,6 +18,8 @@ The flow-details page shows a notice about dispatcher concurrency (trigger concu
 
 Run **Remove all event registrations** (Unregister) in Runtime administration before you uninstall. See [Upgrade, rollback and decommission](#upgrade-rollback-and-decommission).
 
+**System Customizer is an administrator role for Documents.** Dataverse gives System Customizer full access to new custom tables, so a System Customizer can edit the runtime settings row directly, including the worker identity. Assign System Customizer only to people you would make System Administrator.
+
 ## Recovery and retries
 
 Runtime administration has three recovery lists.
@@ -47,7 +49,10 @@ Documents manages only its own SharePoint groups and their grants on the library
 
 - A hand edit to the permission level of a Documents group is reverted, with a notice. A Documents group deleted by hand is recreated.
 - A team member that SharePoint rejects is skipped with a notice and retried on every scheduled refresh. A 401 or 403 Blocks the job, because it means a permission was lost.
-- A library whose access run stopped or waits shows **Needs attention** with the run's notice, and **Retry access run** and **Cancel access run**. **Apply access** replaces a stopped run with the new access, unless that run has a write whose result is not known yet. Cancel undoes nothing in SharePoint.
+- A library whose access run stopped or waits shows **Needs attention** with the run's notice, and **Retry access run** and **Cancel access run**. Cancel undoes nothing in SharePoint.
+- Teams can be added, changed or removed while an access run is queued or running. **Apply access** replaces the queued run with the new access. If a flow is working on the run, or SharePoint has not answered one of its writes, the change is saved and the library says it waits; the next access review, a minute later, applies it as soon as the run can be replaced. A run is never replaced while one of its writes is unanswered.
+- The site's Read and Contribute permission levels may be customized, for example Contribute without "Delete items". Documents refuses a level only when it carries administrative rights: ManageLists, ManageSubwebs, CreateGroups, ManagePermissions, ManageWeb, EnumeratePermissions, or Full Control. The refusal names the rights to remove. Every access run reads the level again, so a change made after approval is picked up.
+- A team whose people do not fit in one access run keeps the members of its Documents group as they are, with a notice, and still gets its access; every scheduled refresh tries again. The bound comes from the 500,000-character Dataverse row that stores a team's people twice (as the team has them and as SharePoint lists them), which is roughly 2,000 people with typical sign-in names. Use an Entra or Microsoft 365 group team for larger teams: it is granted as one group.
 - B2B guests are supported.
 - Entra security-group and Microsoft 365 group teams are granted as the group itself.
   - "Members" teams also give the group's guests access.
@@ -60,6 +65,7 @@ Documents manages only its own SharePoint groups and their grants on the library
 
 - Characters SharePoint forbids are replaced with "-". Trailing dots and spaces are trimmed. Reserved names get "_".
 - "Forms" is reserved only at the library root.
+- A folder whose full path, from the site root and including the library, is longer than 300 characters is created with a notice: SharePoint allows 400 characters including file names, so files inside need short names. A folder whose path would pass 400 characters waits, with the folders below it, and the rest of the record is planned. Shorten the record's value or the template's folder names, then replan the record.
 - A blank naming value makes that folder, and the folders below it, wait. The record is listed under **Waiting** in Blocked records until a later plan includes the folder. With record updates on, filling in a field of the record itself creates the folder at the record's next update. With record updates off, or for a field of a related record, fill in the field and then **Replan** the record. The notice says which applies.
 - If sibling folders get the same name, the first one (by order) is kept and the rest wait, listed the same way, until a change to the record makes the names differ and the record is updated or replanned.
 - **Risk:** Documents does not follow a record's folder if it is renamed or deleted in SharePoint. Document locations point at the old folder. Do not rename or delete record folders in SharePoint.
@@ -69,13 +75,23 @@ Documents manages only its own SharePoint groups and their grants on the library
 - SharePoint calls are paced at about 1 per second across the environment. This follows the documented limit of the HTTP connector: 100 calls per 60 seconds per connection. Throughput does not grow with the number of sites.
 - There is one writer per SharePoint site at a time. There is no environment-wide writer limit.
 - There is no limit on the number of enabled tables.
+- There is no limit on the number of SharePoint hosts. Hosts can be on any Microsoft SharePoint Online domain: `sharepoint.com` (worldwide and GCC), `sharepoint.us` (GCC High), `sharepoint-mil.us` or `dps.mil` (DoD), and `sharepoint.cn` (21Vianet). The list is stored in one column of 5,000 characters, about 190 typical hosts; a longer list is refused with that reason. Every call also needs an active SharePoint site record with the exact address.
+- The daily access review reviews every library that is due, oldest first, for up to one minute per dispatcher run (half of Dataverse's 2-minute limit for one custom API call). Libraries left over are reviewed on the next run, a minute later.
+- Removing a site or library reads every template destination and library that refers to it, however many there are.
 - Templates can use lookup columns from tables that are not enabled. Changes to those related records do not update folders until the main record changes or is replanned.
 - Field-secured columns are refused as naming sources, because folder names are not secured.
 - The worker must be an application user.
 
 ## Blocked or ambiguous operation
 
-Inspect the operation key and actual claim RunId, Token and LeaseUntilUtc in the operator panel. Read its receipt/error and independently inspect the exact resource. A known idle failure can be retried only after its cause is repaired. An ambiguous write retains the global claim: stop the originating flow run, establish that outstanding external requests have settled, wait for the lease to expire, and record specific evidence against the exact old identity. The recovery API grants permission to reread and reconcile; it is not proof that a remote writer was stopped. Never take over on expiry alone or repeatedly submit an unknown POST.
+Inspect the operation by its key in the recovery panel: its status, notice, claim RunId, Token and claim expiry. Read its notice, then check the exact resource in SharePoint. Repair the cause of a Blocked job before you **Retry** it; a cause that still holds blocks it again.
+
+A write whose answer was lost is never sent again blindly:
+
+- **Folder and access writes:** each job holds a 5-minute claim. Once the claim expires, the next dispatcher run takes the job over and reads SharePoint first. A folder that is there is adopted, and a group, member or grant change that took effect is recorded; only what is missing is written, once. No evidence is needed.
+- **Library creation:** a create that may have reached SharePoint goes to `RecoveryRequired`. Find the flow run that sent it, and record its original create response in the recovery panel (**Open recovery** in Blocked jobs fills it in). Without that response, **Cancel** the setup; it deletes nothing, and creating the library again starts over with fresh reads. A setup interrupted before its create was permitted, for example by a pause, continues by itself.
+
+The recovery panel records evidence; it does not stop a flow run that is still working.
 
 Cancellation stops idle work and work that is waiting to retry. Preserve all observed physical IDs/nonces and partial grant receipts. Batch replan requires a fresh impact review if source or publication changed. A deletion tombstone keeps documents and prevents new work; completed physical work can retain a decommission-review binding without creating native navigation to a deleted record.
 
@@ -85,7 +101,7 @@ Opt out a supported team or queue an approved None policy, then wait for indepen
 
 ## Connection or certificate rotation
 
-Drain the writer and pending unknown requests before changing runtime or connection configuration. Turn off schedules, verify the claim is idle, and disable the profile with its current row version. A tenant administrator rotates credentials in the managed connection through the approved platform procedure; never copy credentials into this repository or flow inputs. Revalidate the exact reference/worker/site binding and GET-only identity/denial probes before re-enabling. Reapproval or policy review is required if observed catalog/ACL state changed.
+Drain the writer and pending unknown requests before changing runtime or connection configuration. Turn off schedules, verify the claim is idle, and disable the profile with its current row version. A tenant administrator rotates credentials in the managed connection through the approved platform procedure; never copy credentials into this repository or flow inputs. Revalidate the exact reference/worker/site binding and GET-only identity/denial probes before re-enabling.
 
 ## Upgrade, rollback and decommission
 

@@ -11,7 +11,7 @@ Ascentix Documents provisions SharePoint folder structures from Dataverse record
 - Reuses existing managed folders when work is replayed or replanned.
 - Applies library Read and Contribute policies for registered Dataverse teams and reconciles membership changes.
 - Provides work inspection, retry, cancellation, and replan operations.
-- Offers a system-wide record-update switch, Off by default. Disabling it disables the Update and UpdateMultiple plugin steps.
+- Offers a system-wide record-update switch, Off by default. Turning it off deactivates the Update event steps Documents registers.
 - Retains document folders when their business record is deleted and marks the record for decommission review.
 
 ## New in 0.1.0.4
@@ -20,8 +20,11 @@ Ascentix Documents provisions SharePoint folder structures from Dataverse record
 - No table-count limit. Event registration is managed in the application.
 - Temporary failures retry automatically.
 - Admin stops always work.
-- B2B guests and Entra or Microsoft 365 group teams are supported.
+- B2B guests and Entra or Microsoft 365 group teams are supported (pending verification).
 - Re-point and Remove for destinations.
+- Stuck access runs, library setups, waiting folders and jobs waiting to retry are listed with **Retry**, **Cancel** or **Replan**.
+- Team access can be edited while it is being applied, and customized Read and Contribute permission levels are accepted.
+- SharePoint hosts in every Microsoft cloud, including GCC High, DoD and 21Vianet (pending verification outside the worldwide cloud).
 
 Upgrading from 0.1.0.3? Read the [upgrade notes](docs/upgrade-0.1.0.4.md).
 
@@ -31,7 +34,7 @@ Use a dedicated Dataverse and SharePoint evaluation environment. Follow the [man
 
 The [operations guide](docs/operations.md) covers work recovery, access changes, upgrades, and retention. Read [record-update processing](docs/record-update-processing.md) before enabling update monitoring.
 
-This preview has bounded live validation. Sustained high-volume capacity, advanced recovery, a fresh installation, and uninstall remain unverified. Entra and Microsoft 365 group claims and guest sign-in are verified in a test environment, not across tenants (pending). See the release notes for the remaining limitations.
+This preview has bounded live validation. Sustained high-volume capacity, advanced recovery, a fresh installation, and uninstall remain unverified. Entra and Microsoft 365 group teams and B2B guest access are pending verification. See the release notes for the remaining limitations.
 
 ## Build from source
 
