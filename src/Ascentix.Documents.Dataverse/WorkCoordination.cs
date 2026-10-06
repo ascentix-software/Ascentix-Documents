@@ -213,6 +213,9 @@ public static class WorkCoordination
             throw new EvaluationBlockedException(
                 "The previous HTTP request must complete before another can start."
             );
+        var stopped = StopWrite(service, store, claim, request.Key);
+        if (stopped != null)
+            return stopped;
         var budget = Budget(store);
         if (!budget.Value.Writers.Contains(claim.Value.Key))
             throw new EvaluationBlockedException(
@@ -294,6 +297,143 @@ public static class WorkCoordination
         claim.Value.HttpOutstanding = false;
         store.Save(claim);
         return null;
+    }
+
+    /// <summary>
+    /// The last moment before a SharePoint write: a write for a destination removed or
+    /// suspended since the step was prepared is not permitted. It was never sent, so it is put
+    /// back as not submitted and Pending, and the run's claim is released; the job's next claim
+    /// then runs the usual stop (cancelled for a removed destination, stopped at claim for a
+    /// suspended one). Reads are still permitted: they change nothing.
+    /// </summary>
+    private static WorkerResult? StopWrite(
+        IOrganizationService service,
+        DocumentStore store,
+        StoredRow<DispatcherDocument> claim,
+        string key
+    )
+    {
+        string? reason;
+        if (key.StartsWith("policywork:", StringComparison.Ordinal))
+        {
+            var access = store.Require<SecurityOperation>("asx_operation", key);
+            if (!Writing(access.Value) || (reason = Stops(service, access.Value.LibraryId)) == null)
+                return null;
+            access.Value.Mutation = null;
+            access.Value.MutationKind = "";
+            Unsend(access.Value);
+            store.Save(access);
+        }
+        else if (key.StartsWith("librarycreate:", StringComparison.Ordinal))
+        {
+            var setup = store.Require<LibrarySetup>("asx_operation", key);
+            if (!Writing(setup.Value) || (reason = StopsSite(service, setup.Value.SiteId)) == null)
+                return null;
+            setup.Value.Intent = null;
+            setup.Value.Mutation = "";
+            Unsend(setup.Value);
+            store.Save(setup);
+        }
+        else if (key.StartsWith("catalogprobe:", StringComparison.Ordinal))
+            return null;
+        else
+        {
+            var job = store.Require<OperationDocument>("asx_operation", key);
+            if (
+                !Writing(job.Value)
+                || job.Value.Folders.Length == 0
+                || (reason = Stops(service, job.Value.Folder.LibraryId)) == null
+            )
+                return null;
+            Unsend(job.Value);
+            store.Save(job);
+        }
+        claim.Value.HttpOutstanding = false;
+        claim.Value.RunId = null;
+        claim.Value.OperationKey = null;
+        claim.Value.Token = Guid.Empty;
+        claim.Value.RecoveryPermitted = false;
+        claim.Value.Status = "Idle";
+        store.Save(claim);
+        store.Create(
+            "asx_attempt",
+            new AttemptDocument
+            {
+                Key = "attempt:" + Guid.NewGuid().ToString("N"),
+                Status = "Recorded",
+                OperationKey = key,
+                RunId = "worker",
+                Event = "WriteNotPermitted",
+                AtUtc = DateTime.UtcNow,
+            }
+        );
+        return new WorkerResult
+        {
+            Status = "Stopped",
+            Key = key,
+            Notices = new[]
+            {
+                "The destination was "
+                    + reason
+                    + " before this write was sent. Nothing was written to SharePoint; the work stops at its next step.",
+            },
+        };
+    }
+
+    // A prepared write is about to be sent: submitted, with no response yet.
+    private static bool Writing(OperationDocument op) =>
+        op.ExternalSubmitted && !op.ExternalResponseKnown;
+
+    private static void Unsend(OperationDocument op)
+    {
+        op.ExternalSubmitted = false;
+        op.ExternalResponseKnown = false;
+        op.AbsenceVerified = false;
+        op.ProbeId = Guid.Empty;
+        op.NextAttemptUtc = null;
+        op.Status = "Pending";
+    }
+
+    // "removed" or "suspended" when the library (or its site) no longer takes writes.
+    private static string? Stops(IOrganizationService service, Guid libraryId)
+    {
+        var library = Find(service, "asx_library", libraryId, "asx_siteid");
+        var state = library == null ? null : Read(service, "asx_library", libraryId);
+        if (library == null || state == null || state.Value.removed)
+            return "removed";
+        var site = library.GetAttributeValue<EntityReference>("asx_siteid");
+        return !state.Value.approved ? "suspended"
+            : site == null ? "removed"
+            : StopsSite(service, site.Id);
+    }
+
+    private static string? StopsSite(IOrganizationService service, Guid siteId)
+    {
+        var state = Read(service, "asx_site", siteId);
+        return state == null || state.Value.removed ? "removed"
+            : !state.Value.approved ? "suspended"
+            : null;
+    }
+
+    private static (bool approved, bool removed)? Read(
+        IOrganizationService service,
+        string table,
+        Guid id
+    )
+    {
+        var query = new QueryExpression(table)
+        {
+            ColumnSet = new ColumnSet("asx_approved", "statecode"),
+            TopCount = 1,
+        };
+        query.Criteria.AddCondition(table + "id", ConditionOperator.Equal, id);
+        var row = service.RetrieveMultiple(query).Entities.FirstOrDefault();
+        if (row == null)
+            return null;
+        return (
+            row.GetAttributeValue<bool>("asx_approved"),
+            row.GetAttributeValue<OptionSetValue>("statecode")?.Value == 1
+        );
     }
 
     private static void Assert(DispatcherDocument claim, WorkerRequest request, DateTime now)

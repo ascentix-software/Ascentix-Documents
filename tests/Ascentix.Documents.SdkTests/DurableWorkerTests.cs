@@ -1306,6 +1306,170 @@ public sealed class DurableWorkerTests
         );
     }
 
+    /// <summary>Drives the job to a prepared create and renews its claim, as the flow does.</summary>
+    private static WorkerResult PreparedAndRenewed(Fixture f)
+    {
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        Assert.Equal("Renewed", f.Call("Renew", work).Status);
+        return work;
+    }
+
+    private static WorkerResult Begin(Fixture f, WorkerResult work) =>
+        f.Service.Transaction(() =>
+            WorkCoordination.BeginHttp(
+                f.Service,
+                new WorkerRequest
+                {
+                    Command = "BeginHttp",
+                    Key = f.OperationKey ?? f.Operation.Key,
+                    RunId = "run-1",
+                    Token = work.Token,
+                },
+                f.Now
+            )
+        );
+
+    private static void AssertNotSent(Fixture f, WorkerResult refused)
+    {
+        Assert.Equal("Stopped", refused.Status);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.False(stored.ExternalSubmitted, "The create was never sent");
+        Assert.Equal("Pending", stored.Status);
+        var claim = f
+            .Store.Require<DispatcherDocument>(
+                "asx_claim",
+                WorkCoordination.Operation(f.Service, f.Operation.Key)
+            )
+            .Value;
+        Assert.Null(claim.RunId);
+        Assert.False(claim.HttpOutstanding);
+        Assert.Empty(
+            f.Store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey).Value.Writers
+        );
+    }
+
+    [Fact]
+    public void RemoveBetweenRenewAndPermitSendsNoWriteAndCancelsTheJob()
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = PreparedAndRenewed(f);
+        Assert.Equal("Removed", RemoveLibrary(f).Status);
+        AssertNotSent(f, Begin(f, work));
+        // The run's later calls hold a released claim and stop.
+        Assert.Throws<EvaluationBlockedException>(() => Begin(f, work));
+        Assert.Equal("Cancelled", f.Claim("next-run").Status);
+        Assert.Equal(
+            "DestinationRemoved",
+            f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value.ErrorCode
+        );
+    }
+
+    [Theory]
+    [InlineData("asx_library")]
+    [InlineData("asx_site")]
+    public void SuspendBetweenRenewAndPermitSendsNoWriteAndStopsAtTheNextClaim(string table)
+    {
+        var f = new Fixture();
+        var work = PreparedAndRenewed(f);
+        f.Service.Transaction(() =>
+            new CatalogAdministration(f.Service, () => f.Now).Execute(
+                new CatalogRequest
+                {
+                    Command = table == "asx_site" ? "SuspendSite" : "SuspendLibrary",
+                    CatalogId = table == "asx_site" ? f.SiteId : f.LibraryId,
+                    CatalogRowVersion = f.Service
+                        .Rows[table == "asx_site" ? f.SiteId : f.LibraryId]
+                        .RowVersion,
+                },
+                true
+            )
+        );
+        AssertNotSent(f, Begin(f, work));
+        // Suspension stops new claims (A6); nothing was sent, so nothing waits for recovery.
+        Assert.Throws<EvaluationBlockedException>(() => f.Claim("next-run"));
+        Assert.Equal(
+            "Blocked",
+            f.Execute(new WorkerRequest { Command = "FailUnclaimed", Key = f.Operation.Key }).Status
+        );
+        Assert.False(
+            f.Store.Require<OperationDocument>(
+                "asx_operation",
+                f.Operation.Key
+            ).Value.ExternalSubmitted
+        );
+    }
+
+    [Fact]
+    public void WriteAlreadyPermittedBeforeRemovalFinishes()
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = PreparedAndRenewed(f);
+        Assert.Equal("Permit", Begin(f, work).Status);
+        Assert.Equal("Removed", RemoveLibrary(f).Status);
+        // The worker API records the HTTP outcome before the step, as for every response.
+        Assert.Null(
+            f.Service.Transaction(() =>
+                WorkCoordination.Response(
+                    f.Service,
+                    new WorkerRequest
+                    {
+                        Command = "CreateResponse",
+                        Key = f.Operation.Key,
+                        RunId = "run-1",
+                        Token = work.Token,
+                        HttpStatus = 200,
+                    },
+                    f.Now
+                )
+            )
+        );
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var verified = f.ObserveAndFinalize(work, f.Item(Guid.NewGuid(), null));
+        Assert.Equal("Applied", f.Call("Complete", verified).Status);
+    }
+
+    [Fact]
+    public void ReadPermitIsStillGrantedForARemovedDestination()
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = f.Claim();
+        Assert.Equal("Removed", RemoveLibrary(f).Status);
+        Assert.Equal("Permit", Begin(f, work).Status);
+    }
+
+    [Fact]
+    public void JobStoredBeforeEntryPathUsesTheFirstTopFolderWithAStoredPath()
+    {
+        var f = new Fixture(false);
+        var first = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        var second = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        second.Key += "-second";
+        second.Node = "second";
+        second.OriginalName = second.Candidate = "Second";
+        second.PhysicalId = Guid.NewGuid();
+        second.PhysicalPath = "/sites/proto/General/Second";
+        second.Status = "Applied";
+        var child = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        child.Key += "-child";
+        child.Node = "invoices";
+        child.ParentBinding = "second";
+        child.OriginalName = child.Candidate = "Invoices";
+        f.Operation.Folders = new[] { first, second, child };
+        f.Operation.Cursor = 2;
+        f.Store.Create("asx_operation", f.Operation);
+        Repointed(f, Moved);
+        var work = f.Claim("after-rename");
+        Assert.Equal("Library", work.ProbeKind);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.Equal(Moved + "/Second", stored.Folders[1].PhysicalPath);
+        Assert.Equal(Moved + "/Second", stored.ParentPath);
+    }
+
     [Fact]
     public void RemovingALibraryCancelsItsUnsentFolderWorkAtTheNextStep()
     {

@@ -1405,14 +1405,19 @@ public sealed class WorkerCoordinator
     /// </summary>
     private static string? StoredEntry(OperationDocument operation)
     {
-        int root = Array.FindIndex(operation.Folders, f => f.ParentBinding == null);
-        if (root < 0)
-            return null;
-        if (operation.Cursor == root && operation.ParentPath != null)
-            return operation.ParentPath;
-        string? path = operation.Folders[root].PhysicalPath;
-        int slash = path?.LastIndexOf('/') ?? -1;
-        return slash > 0 ? path!.Substring(0, slash) : null;
+        // The first top-level folder that has a usable stored path decides.
+        for (int i = 0; i < operation.Folders.Length; i++)
+        {
+            if (operation.Folders[i].ParentBinding != null)
+                continue;
+            if (operation.Cursor == i && operation.ParentPath != null)
+                return operation.ParentPath;
+            string? path = operation.Folders[i].PhysicalPath;
+            int slash = path?.LastIndexOf('/') ?? -1;
+            if (slash > 0)
+                return path!.Substring(0, slash);
+        }
+        return null;
     }
 
     /// <summary>

@@ -2447,6 +2447,62 @@ public sealed class SecurityWorkerTests
         Assert.Empty(f.Service.Transaction(() => new SecurityRefresh(f.Service).Scan()).Keys);
     }
 
+    [Theory]
+    [InlineData("remove")]
+    [InlineData("suspend")]
+    public void AccessWriteIsNotPermittedOnceTheLibraryIsRemovedOrSuspended(string change)
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        var work = f.Start();
+        while (work.Status == "Read")
+            work = f.Observe(work);
+        Assert.Equal("ReadyToCreate", work.Status);
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        Assert.Equal("Renewed", f.Call("Renew", work).Status);
+        if (change == "remove")
+            f.Service.Transaction(() =>
+                new CatalogAdministration(f.Service).Execute(
+                    new CatalogRequest { Command = "RemoveLibrary", CatalogId = f.Library },
+                    true
+                )
+            );
+        else
+            f.Service.Transaction(() =>
+                new CatalogAdministration(f.Service).Execute(
+                    new CatalogRequest
+                    {
+                        Command = "SuspendLibrary",
+                        CatalogId = f.Library,
+                        CatalogRowVersion = f.Service.Rows[f.Library].RowVersion,
+                    },
+                    true
+                )
+            );
+        var refused = f.Service.Transaction(() =>
+            WorkCoordination.BeginHttp(
+                f.Service,
+                new WorkerRequest
+                {
+                    Command = "BeginHttp",
+                    Key = f.Key,
+                    RunId = "security/run-1",
+                    Token = work.Token,
+                },
+                DateTime.UtcNow
+            )
+        );
+        Assert.Equal("Stopped", refused.Status);
+        Assert.False(f.Operation().ExternalSubmitted, "The write was never sent");
+        Assert.Equal("Pending", f.Operation().Status);
+        Assert.Empty(f.Writes);
+        if (change == "remove")
+            Assert.Equal("Cancelled", f.Start().Status);
+        else
+            Assert.Throws<EvaluationBlockedException>(() => f.Start());
+    }
+
     [Fact]
     public void RemoveSucceedsDuringALiveAccessRunWhichStopsAtItsNextStep()
     {
