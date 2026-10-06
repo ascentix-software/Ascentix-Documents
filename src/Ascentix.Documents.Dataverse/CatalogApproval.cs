@@ -778,6 +778,21 @@ public sealed class CatalogAdministration
             throw new EvaluationBlockedException(
                 "The site's address changed. Re-point the site first."
             );
+        // Documents can call only allowed hosts and registered site records (the transport
+        // gate), so a site moved outside them is named here, before anything is queued.
+        string host = new Uri(url).Host;
+        if (!RuntimeProfile.ReadHosts(service).Contains(host, StringComparer.OrdinalIgnoreCase))
+            throw new EvaluationBlockedException(
+                "The host "
+                    + host
+                    + " is not one of the SharePoint hosts allowed in the Runtime panel. Add it there, then re-point again."
+            );
+        if (!RuntimeProfile.Registered(service, url))
+            throw new EvaluationBlockedException(
+                "No active SharePoint site record in Dataverse has the address "
+                    + url
+                    + ". Set the site's SharePoint site record in Dataverse to exactly that address, then re-point again."
+            );
         Guid.TryParse(site.GetAttributeValue<string>("asx_collectionid"), out var collection);
         store.Create(
             "asx_operation",
@@ -869,6 +884,13 @@ public sealed class CatalogAdministration
         string entry = value.EntryUrl;
         string path = Uri.UnescapeDataString(new Uri(entry).AbsolutePath);
         new SharePointTarget(value.WebUrl, value.WebId, value.ListId, path);
+        // Every read and check comes first; nothing is written until all of them pass.
+        var native = new NativeLocations(service);
+        var location = library.GetAttributeValue<EntityReference>("asx_nativeparentid");
+        var locations =
+            location == null
+                ? Array.Empty<Entity>()
+                : native.Follow(location.Id, value.NativeSiteId, value.WebUrl, path);
         if (entry != old)
         {
             service.Execute(
@@ -884,16 +906,8 @@ public sealed class CatalogAdministration
             );
             changes.Add(old + " → " + entry);
         }
-        var location = library.GetAttributeValue<EntityReference>("asx_nativeparentid");
-        if (
-            location != null
-            && new NativeLocations(service).Follow(
-                location.Id,
-                value.NativeSiteId,
-                value.WebUrl,
-                path
-            )
-        )
+        native.Write(locations);
+        if (locations.Length > 0)
             changes.Add("The library's Dataverse document location now points to " + entry + ".");
         if (changes.Count == 0)
             changes.Add("The library's address has not changed.");
@@ -930,15 +944,8 @@ public sealed class CatalogAdministration
             && value.CollectionId != Guid.Empty
         )
             update["asx_identity"] = SiteIdentity.Key(url, value.CollectionId, value.WebId);
-        service.Execute(
-            new UpdateRequest
-            {
-                Target = update,
-                ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
-            }
-        );
+        var updates = new List<Entity> { update };
         changes.Add(old + " → " + url);
-        WorkCoordination.MoveWriter(service, old, url);
         string oldPath = Uri.UnescapeDataString(new Uri(old).AbsolutePath).TrimEnd('/');
         string newPath = Uri.UnescapeDataString(new Uri(url).AbsolutePath).TrimEnd('/');
         string origin = new Uri(url).GetLeftPart(UriPartial.Authority);
@@ -955,19 +962,31 @@ public sealed class CatalogAdministration
             if (!path.StartsWith(oldPath + "/", StringComparison.Ordinal))
                 continue;
             string moved = origin + newPath + path.Substring(oldPath.Length);
-            service.Execute(
-                new UpdateRequest
+            new SharePointTarget(
+                url,
+                value.WebId,
+                Guid.Parse(TemplateStore.Text(library, "asx_listid")),
+                Uri.UnescapeDataString(new Uri(moved).AbsolutePath)
+            );
+            updates.Add(
+                new Entity("asx_library", library.Id)
                 {
-                    Target = new Entity("asx_library", library.Id)
-                    {
-                        RowVersion = library.RowVersion,
-                        ["asx_entryurl"] = moved,
-                    },
-                    ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+                    RowVersion = library.RowVersion,
+                    ["asx_entryurl"] = moved,
                 }
             );
             changes.Add(entry + " → " + moved);
         }
+        // Every read and check came first; the writes follow together.
+        foreach (var target in updates)
+            service.Execute(
+                new UpdateRequest
+                {
+                    Target = target,
+                    ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+                }
+            );
+        WorkCoordination.MoveWriter(service, old, url);
     }
 
     /// <summary>Shown after a removal: Documents never deletes or changes anything in SharePoint.</summary>
@@ -1052,13 +1071,34 @@ public sealed class CatalogAdministration
         if (policy?.Value.OperationKey != null)
         {
             var queued = store.Find<SecurityOperation>("asx_operation", policy.Value.OperationKey);
-            if (queued != null && queued.Value.Status != "Applied")
+            if (
+                queued != null
+                && queued.Value.Status != "Applied"
+                && queued.Value.Status != "Cancelled"
+            )
             {
-                new SecurityWorker(service, clock).Execute(
-                    new WorkerRequest { Command = "Cancel", Key = queued.Value.Key },
-                    true
+                var claim = store.Find<DispatcherDocument>(
+                    "asx_claim",
+                    WorkCoordination.Operation(service, queued.Value.Key)
                 );
-                notices.Add("Unfinished access work for this library was cancelled.");
+                // Remove always succeeds: a run working now cancels itself at its next step
+                // (SecurityWorker.StopRemoved); idle work is cancelled here.
+                if (
+                    claim?.Value.OperationKey == queued.Value.Key
+                    && claim.Value.RunId != null
+                    && (claim.Value.LeaseUntilUtc > clock() || claim.Value.RecoveryPermitted)
+                )
+                    notices.Add(
+                        "The access run working on this library stops at its next step. Nothing it already changed in SharePoint is undone."
+                    );
+                else
+                {
+                    new SecurityWorker(service, clock).Execute(
+                        new WorkerRequest { Command = "Cancel", Key = queued.Value.Key },
+                        true
+                    );
+                    notices.Add("Unfinished access work for this library was cancelled.");
+                }
             }
             policy = store.Require<PolicyDocument>("asx_policy", policyKey);
         }
@@ -1437,6 +1477,9 @@ public sealed class CatalogWorker
                 op.Value.ErrorCode?.StartsWith("Waiting to retry", StringComparison.Ordinal) == true
             )
                 op.Value.ErrorCode = null;
+            // A re-point that failed while applying was rolled back; its message is the cause.
+            if (op.Value.Repoint && !string.IsNullOrWhiteSpace(request.Error))
+                op.Value.ErrorCode = Bounded(request.Error!);
             op.Value.ErrorCode =
                 op.Value.ErrorCode
                 ?? "Catalog worker failed before approval. Inspect the failed flow action, then retry after repair.";
@@ -1456,10 +1499,7 @@ public sealed class CatalogWorker
                 store.Save(op);
                 Release(claim);
                 if (op.Value.Repoint)
-                {
-                    new CatalogAdministration(service, clock).ApplyRepoint(request.Key);
-                    return new WorkerResult { Status = "Approved", Key = request.Key };
-                }
+                    return ApplyRepoint(request.Key);
                 if (op.Value.AutoApprove)
                 {
                     var fresh = store.Require<CatalogProbe>("asx_operation", request.Key);
@@ -1479,6 +1519,9 @@ public sealed class CatalogWorker
             }
             catch (EvaluationBlockedException error)
             {
+                // A re-point is all or nothing: its failure rolls back, then Fail records it.
+                if (op.Value.Repoint)
+                    throw;
                 op = store.Require<CatalogProbe>("asx_operation", request.Key);
                 op.Value.Status = "Blocked";
                 op.Value.ErrorCode = error.Message;
@@ -1809,8 +1852,25 @@ public sealed class CatalogWorker
         }
     }
 
+    /// <summary>
+    /// Applies a verified re-point in this transaction. Any failure propagates, so Dataverse
+    /// rolls the whole step back with no partial write; the flow's failure branch then reports
+    /// it with Fail, which records the Blocked probe and its message in a separate step.
+    /// </summary>
+    private WorkerResult ApplyRepoint(string key)
+    {
+        new CatalogAdministration(service, clock).ApplyRepoint(key);
+        return new WorkerResult { Status = "Approved", Key = key };
+    }
+
     private static string Origin(CatalogProbe op) =>
         new Uri(op.WebUrl).GetLeftPart(UriPartial.Authority);
+
+    private static string Bounded(string text)
+    {
+        text = new string(text.Where(c => !char.IsControl(c)).ToArray()).Trim();
+        return text.Length > 600 ? text.Substring(0, 600) + "..." : text;
+    }
 
     private WorkerResult Probe(StoredRow<CatalogProbe> op, DispatcherDocument claim, string kind)
     {

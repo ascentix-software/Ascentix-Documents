@@ -72,6 +72,44 @@ public sealed class RuntimeProfile
         };
     }
 
+    /// <summary>The SharePoint hosts the Runtime panel allows, without the rest of the profile.</summary>
+    public static string[] ReadHosts(IOrganizationService service)
+    {
+        var query = new QueryExpression("asx_runtime")
+        {
+            ColumnSet = new ColumnSet("asx_sharepointhosts"),
+            TopCount = 2,
+        };
+        query.Criteria.AddCondition("asx_name", ConditionOperator.Equal, "Default");
+        var rows = service.RetrieveMultiple(query);
+        if (rows.MoreRecords || rows.Entities.Count != 1)
+            throw new EvaluationBlockedException(
+                "An explicit approved runtime profile is required."
+            );
+        return JsonWire.Read<string[]>(
+                rows.Entities[0].GetAttributeValue<string>("asx_sharepointhosts")
+            ) ?? Array.Empty<string>();
+    }
+
+    /// <summary>
+    /// Whether an active SharePoint site record has exactly this address, as the transport gate
+    /// (ValidateTransport) requires before Documents calls the site.
+    /// </summary>
+    public static bool Registered(IOrganizationService service, string siteUrl)
+    {
+        var native = new QueryExpression("sharepointsite")
+        {
+            ColumnSet = new ColumnSet(false),
+            TopCount = 1,
+        };
+        var urls = new FilterExpression(LogicalOperator.Or);
+        urls.AddCondition("absoluteurl", ConditionOperator.Equal, siteUrl);
+        urls.AddCondition("absoluteurl", ConditionOperator.Equal, siteUrl + "/");
+        native.Criteria.AddFilter(urls);
+        native.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
+        return service.RetrieveMultiple(native).Entities.Count > 0;
+    }
+
     public static void ValidateHosts(string[] hosts)
     {
         if (

@@ -2448,6 +2448,37 @@ public sealed class SecurityWorkerTests
     }
 
     [Fact]
+    public void RemoveSucceedsDuringALiveAccessRunWhichStopsAtItsNextStep()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        var work = f.Start();
+        Assert.Equal("SecurityLibrary", work.ProbeKind);
+        var result = f.Service.Transaction(() =>
+            new CatalogAdministration(f.Service).Execute(
+                new CatalogRequest { Command = "RemoveLibrary", CatalogId = f.Library },
+                true
+            )
+        );
+        Assert.Equal("Removed", result.Status);
+        Assert.Contains(result.Notices, n => n.Contains("stops at its next step"));
+        Assert.NotEqual("Cancelled", f.Operation().Status);
+        var stopped = f.Observe(work);
+        Assert.Equal("Cancelled", stopped.Status);
+        Assert.Equal("DestinationRemoved", f.Operation().ErrorCode);
+        Assert.Null(
+            f.Store.Require<DispatcherDocument>(
+                "asx_claim",
+                WorkCoordination.Operation(f.Service, f.Key)
+            ).Value.RunId
+        );
+        Assert.Null(f.Policy().OperationKey);
+        Assert.Equal("Removed", f.Policy().Status);
+        Assert.Empty(f.Writes);
+        Assert.Empty(f.Posts);
+    }
+
+    [Fact]
     public void QueuedAccessRunFollowsARepointedSite()
     {
         var f = new Fixture();

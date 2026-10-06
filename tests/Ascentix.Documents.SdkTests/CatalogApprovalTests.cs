@@ -965,7 +965,8 @@ public sealed class CatalogApprovalTests
                     RequestId = Guid.NewGuid(),
                 },
                 true
-            ).Key
+            ).Key,
+            blocked: true
         );
         Assert.Equal("Blocked", blocked.Status);
         Assert.StartsWith(InheritanceWarning, blocked.Issue);
@@ -1023,20 +1024,84 @@ public sealed class CatalogApprovalTests
         );
     }
 
-    private static CatalogResult Repoint(Fixture f, string command, Guid id) =>
+    private static CatalogResult Repoint(
+        Fixture f,
+        string command,
+        Guid id,
+        bool blocked = false
+    ) =>
         f.Capture(
             f.Service.Transaction(() =>
                 f.Admin.Execute(
                     new CatalogRequest
                     {
                         Command = command,
-                        CatalogId = id,
+                        CatalogId = Runtime(f, id),
                         RequestId = Guid.NewGuid(),
                     },
                     true
                 )
-            ).Key
+            ).Key,
+            blocked
         );
+
+    /// <summary>Seeds the runtime profile (allowed hosts) once.</summary>
+    private static Guid Runtime(Fixture f, Guid id)
+    {
+        if (!f.Service.Rows.Values.Any(r => r.LogicalName == "asx_runtime"))
+            RuntimeSeed.Seed(f.Service, Guid.NewGuid());
+        return id;
+    }
+
+    [Fact]
+    public void RepointNamesAHostOrSiteRecordDocumentsCannotCall()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var siteId = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_siteid")
+            .Id;
+        Runtime(f, siteId);
+        CatalogRequest Request() =>
+            new CatalogRequest
+            {
+                Command = "RepointSite",
+                CatalogId = siteId,
+                RequestId = Guid.NewGuid(),
+            };
+        // The site moved to another tenant host that the Runtime panel does not allow.
+        f.Service.Rows[f.NativeSite]["absoluteurl"] = "https://contoso.sharepoint.com/sites/proto";
+        var host = Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() => f.Admin.Execute(Request(), true))
+        );
+        Assert.Equal(
+            "The host contoso.sharepoint.com is not one of the SharePoint hosts allowed in the Runtime panel. Add it there, then re-point again.",
+            host.Message
+        );
+        // A failed transaction restores copies of the rows, so the row is read again here.
+        f.Service.Rows.Values.Single(r => r.LogicalName == "asx_runtime")["asx_sharepointhosts"] =
+            "[\"example.sharepoint.com\",\"contoso.sharepoint.com\"]";
+        // The site record's text differs from the address Documents calls.
+        f.Service.Rows[f.NativeSite]["absoluteurl"] =
+            "https://contoso.sharepoint.com/sites/New Site";
+        var record = Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() => f.Admin.Execute(Request(), true))
+        );
+        Assert.Equal(
+            "No active SharePoint site record in Dataverse has the address https://contoso.sharepoint.com/sites/New%20Site. Set the site's SharePoint site record in Dataverse to exactly that address, then re-point again.",
+            record.Message
+        );
+        Assert.DoesNotContain(
+            f.Service.Rows.Values,
+            r => r.GetAttributeValue<string>("asx_workkind") == "Repoint"
+        );
+        f.Service.Rows[f.NativeSite]["absoluteurl"] = "https://contoso.sharepoint.com/sites/proto";
+        Assert.Equal(
+            "Pending",
+            f.Service.Transaction(() => f.Admin.Execute(Request(), true)).Status
+        );
+    }
 
     private static Entity Location(Fixture f, Guid library) =>
         f.Service.Rows[
@@ -1073,6 +1138,40 @@ public sealed class CatalogApprovalTests
             f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_listid")
         );
         Assert.All(f.Reads, r => Assert.DoesNotContain("roleassignments", r));
+    }
+
+    [Fact]
+    public void RepointThatCannotFollowTheLocationChainWritesNothing()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        // The library's document location now hangs under another site record.
+        var other = Guid.NewGuid();
+        f.Service.Seed(
+            new Entity("sharepointsite", other)
+            {
+                ["absoluteurl"] = "https://example.sharepoint.com/sites/other",
+                ["statecode"] = new OptionSetValue(0),
+            }
+        );
+        var location = Location(f, library.CatalogId);
+        location["parentsiteorlocation"] = new EntityReference("sharepointsite", other);
+        var libraryVersion = f.Service.Rows[library.CatalogId].RowVersion;
+        var locationVersion = location.RowVersion;
+        f.LibraryName = "Shared Documents";
+        var result = Repoint(f, "RepointLibrary", library.CatalogId, blocked: true);
+        Assert.Equal("Blocked", result.Status);
+        Assert.Equal("Native site differs from approval.", result.Issue);
+        Assert.Equal(libraryVersion, f.Service.Rows[library.CatalogId].RowVersion);
+        Assert.Equal(
+            f.Url + "/General",
+            f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_entryurl")
+        );
+        Assert.Equal(locationVersion, Location(f, library.CatalogId).RowVersion);
+        Assert.Equal(
+            "General",
+            Location(f, library.CatalogId).GetAttributeValue<string>("relativeurl")
+        );
     }
 
     [Fact]
@@ -1448,7 +1547,12 @@ public sealed class CatalogApprovalTests
             );
         }
 
-        public CatalogResult Capture(string key)
+        /// <summary>
+        /// Drives the probe as the flow does. Completion must succeed unless <paramref name="blocked"/>:
+        /// a refused automatic approval, or a re-point whose step failed, rolled back and was
+        /// reported with Fail by the flow's failure branch.
+        /// </summary>
+        public CatalogResult Capture(string key, bool blocked = false)
         {
             var work = Worker.Execute(
                 new WorkerRequest
@@ -1463,25 +1567,52 @@ public sealed class CatalogApprovalTests
             {
                 if (work.Status == "Verified")
                 {
-                    work = Worker.Execute(
-                        new WorkerRequest
-                        {
-                            Command = "Complete",
-                            Key = key,
-                            RunId = "probe/run",
-                            Token = work.Token,
-                        },
-                        true
-                    );
-                    // An automatic approval the admin has not consented to stops here.
-                    Assert.Contains(
-                        work.Status,
-                        new[] { "Captured", "Approved", "Discovered", "Blocked" }
-                    );
-                    return Admin.Execute(
+                    var token = work.Token;
+                    try
+                    {
+                        work = Service.Transaction(() =>
+                            Worker.Execute(
+                                new WorkerRequest
+                                {
+                                    Command = "Complete",
+                                    Key = key,
+                                    RunId = "probe/run",
+                                    Token = token,
+                                },
+                                true
+                            )
+                        );
+                    }
+                    catch (EvaluationBlockedException error)
+                    {
+                        work = Service.Transaction(() =>
+                            Worker.Execute(
+                                new WorkerRequest
+                                {
+                                    Command = "Fail",
+                                    Key = key,
+                                    RunId = "probe/run",
+                                    Token = token,
+                                    StatusCode = 400,
+                                    ErrorCode = "0x80040265",
+                                    Error = error.Message,
+                                },
+                                true
+                            )
+                        );
+                    }
+                    var inspected = Admin.Execute(
                         new CatalogRequest { Command = "Inspect", Key = key },
                         true
                     );
+                    if (blocked)
+                        Assert.Equal("Blocked", work.Status);
+                    else
+                        Assert.True(
+                            new[] { "Captured", "Approved", "Discovered" }.Contains(work.Status),
+                            work.Status + ": " + inspected.Issue
+                        );
+                    return inspected;
                 }
                 if (work.Status == "Blocked")
                     return Admin.Execute(

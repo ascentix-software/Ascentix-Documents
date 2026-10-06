@@ -619,7 +619,19 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   };
   await timers.shift()();
   assert.match(nodes['ad-provision-progress'].textContent, /no longer exists on the site/);
+  assert(
+    !find(nodes['ad-provision-progress'], (n) => n.textContent === 'Retry after repair'),
+    'A blocked re-point is not retried in place',
+  );
+  const again = find(nodes['ad-provision-progress'], (n) => n.textContent === 'Re-point again');
+  assert(again, 'A blocked re-point offers to re-point again');
+  const beforeAgain = requests.filter((r) => r.Command === 'RepointSite').length;
   delete inspectByKey['catalogprobe:test'];
+  await again.onclick();
+  const repointedAgain = requests.filter((r) => r.Command === 'RepointSite');
+  assert.equal(repointedAgain.length, beforeAgain + 1);
+  assert.equal(repointedAgain.at(-1).CatalogId, id(1));
+  assert(!requests.some((r) => r.Command === 'Retry' && r.Key === 'catalogprobe:test'));
   // Remove asks in the page; a refusal lists the templates that use the library.
   const removes = () => requests.filter((r) => r.Command === 'RemoveLibrary');
   nodes['ad-remove-library'].onclick();

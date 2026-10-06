@@ -281,6 +281,16 @@
             state.completed.delete(key);
           });
         card.append(add);
+      } else if (p.status === 'Blocked' && o.kind === 'Repoint' && o.command) {
+        // Re-point only reads SharePoint; once the cause is fixed it simply reads again.
+        const again = node('button', 'Re-point again');
+        again.onclick = () =>
+          action(async () => {
+            state.operations.delete(key);
+            state.completed.delete(key);
+            await runConfirmed({ kind: o.command, id: o.id, name: o.name });
+          });
+        card.append(again);
       } else if (p.status === 'Blocked') {
         const retry = node('button', 'Retry after repair');
         retry.onclick = () =>
@@ -528,7 +538,12 @@
     });
     state.progressSignature = null;
     state.completed.delete(result.Key);
-    state.operations.set(result.Key, { name: c.name, kind: 'Repoint' });
+    state.operations.set(result.Key, {
+      name: c.name,
+      kind: 'Repoint',
+      command: c.kind,
+      id: c.id,
+    });
     issue('Re-pointing ' + c.name + '…');
   }
   async function loadSites(append = false) {

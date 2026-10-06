@@ -1026,6 +1026,16 @@ public sealed class WorkerCoordinator
         operation.Value.RetryCount = 0;
         operation.Value.ProbeId = Guid.Empty;
         operation.Value.ErrorCode = null;
+        // Work stopped by a re-pointed destination follows it now, so the retry does not stop
+        // on the old path again.
+        if (
+            operation.Value.Folders.Length > 0
+            && !catalog.Removed(operation.Value.Folder.LibraryId)
+        )
+            Follow(
+                operation.Value,
+                catalog.Read(operation.Value.Folder.LibraryId, requireApproved: false)
+            );
         store.Save(operation);
         return new WorkerResult { Status = "Pending", Key = request.Key };
     }
@@ -1369,7 +1379,7 @@ public sealed class WorkerCoordinator
     internal static bool Follow(OperationDocument operation, WorkerLibrary library)
     {
         string current = library.Target.EntryPath;
-        string? old = operation.EntryPath;
+        string? old = operation.EntryPath ?? StoredEntry(operation);
         operation.EntryPath = current;
         if (old == null || old == current)
             return false;
@@ -1386,6 +1396,23 @@ public sealed class WorkerCoordinator
         operation.LibraryRootPath = null;
         operation.LibraryRootId = Guid.Empty;
         return true;
+    }
+
+    /// <summary>
+    /// The entry path a job stored before EntryPath existed wrote its paths against, read from its
+    /// top-level folder: the pinned parent while that folder is the current step, otherwise the
+    /// parent of the folder's recorded path. Null when no path was stored yet.
+    /// </summary>
+    private static string? StoredEntry(OperationDocument operation)
+    {
+        int root = Array.FindIndex(operation.Folders, f => f.ParentBinding == null);
+        if (root < 0)
+            return null;
+        if (operation.Cursor == root && operation.ParentPath != null)
+            return operation.ParentPath;
+        string? path = operation.Folders[root].PhysicalPath;
+        int slash = path?.LastIndexOf('/') ?? -1;
+        return slash > 0 ? path!.Substring(0, slash) : null;
     }
 
     /// <summary>

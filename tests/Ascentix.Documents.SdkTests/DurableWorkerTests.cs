@@ -1132,6 +1132,75 @@ public sealed class DurableWorkerTests
         );
     }
 
+    /// <summary>A two-folder job whose top folder exists, as stored before EntryPath existed.</summary>
+    private static Guid StoredBeforeEntryPath(Fixture f, bool claimChild)
+    {
+        var child = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        child.Key += "-child";
+        child.Node = "invoices";
+        child.ParentBinding = "root";
+        child.OriginalName = child.Candidate = "Invoices";
+        f.Operation.Folders = new[] { f.Binding, child };
+        f.Store.Create("asx_operation", f.Operation);
+        var root = Guid.NewGuid();
+        var work = f.ObserveAndFinalize(f.Preflight(f.Claim()), f.Item(root, null));
+        Assert.Equal("Pending", f.Call("Complete", work).Status);
+        if (claimChild)
+        {
+            work = f.Observe(f.Claim("child-run"), f.LibraryBody());
+            Assert.Equal("Parent", work.ProbeKind);
+            // The run stops; its claim expires.
+            f.Now = f.Now.AddMinutes(6);
+        }
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key);
+        stored.Value.EntryPath = null;
+        f.Store.Save(stored);
+        return root;
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void JobStoredBeforeEntryPathFollowsARepointWithoutBlocking(bool pinned)
+    {
+        var f = new Fixture(false);
+        var root = StoredBeforeEntryPath(f, pinned);
+        Repointed(f, Moved);
+        var work = f.Claim("after-rename");
+        Assert.Equal("Library", work.ProbeKind);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.Equal(Moved, stored.EntryPath);
+        Assert.Equal(Moved + "/Example", stored.Folders[0].PhysicalPath);
+        Assert.Equal(Moved + "/Example", stored.ParentPath);
+        work = f.Observe(work, Library(f, Moved));
+        Assert.Contains(Uri.EscapeDataString(Moved + "/Example"), work.Http!.RelativeUri);
+        work = f.Observe(work, Folder(root, Moved + "/Example"));
+        Assert.Equal("Folder", work.ProbeKind);
+        work = f.Observe(work, Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+    }
+
+    [Fact]
+    public void RetryOfAJobStoredBeforeEntryPathFollowsTheRepoint()
+    {
+        var f = new Fixture(false);
+        StoredBeforeEntryPath(f, claimChild: true);
+        Repointed(f, Moved);
+        var stopped = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key);
+        stopped.Value.Status = "Blocked";
+        stopped.Value.ErrorCode = "ObservationMismatch";
+        f.Store.Save(stopped);
+        Assert.Equal(
+            "Pending",
+            f.Execute(new WorkerRequest { Command = "Retry", Key = f.Operation.Key }).Status
+        );
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.Equal(Moved, stored.EntryPath);
+        Assert.Equal(Moved + "/Example", stored.Folders[0].PhysicalPath);
+        Assert.Equal(Moved + "/Example", stored.ParentPath);
+        Assert.Equal("Library", f.Claim("after-retry").ProbeKind);
+    }
+
     [Fact]
     public void SubmittedCreateDuringARepointIsReadBackUnderTheNewPathAndNotRepeated()
     {

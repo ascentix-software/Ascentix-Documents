@@ -64,6 +64,12 @@ public sealed class SecurityWorker
         var op = store.Require<SecurityOperation>("asx_operation", request.Key);
         if (request.Command == "FailUnclaimed")
             return store.FailUnclaimed<SecurityOperation>(request.Key, request, clock());
+        if (request.Command != "Retry" && request.Command != "Cancel")
+        {
+            var stopped = StopRemoved(request, op);
+            if (stopped != null)
+                return stopped;
+        }
         if (request.Command == "Claim")
             return Claim(request, op);
         if (request.Command == "Retry" || request.Command == "Cancel")
@@ -187,6 +193,55 @@ public sealed class SecurityWorker
             default:
                 throw new EvaluationBlockedException("Unsupported security worker command.");
         }
+    }
+
+    /// <summary>
+    /// Cancels an access run whose library was removed from Documents, at its next step, so
+    /// Remove never waits for a running flow. Nothing in SharePoint is undone or deleted.
+    /// </summary>
+    private WorkerResult? StopRemoved(WorkerRequest request, StoredRow<SecurityOperation> op)
+    {
+        if (
+            op.Value.Status == "Applied"
+            || op.Value.Status == "Cancelled"
+            || !new WorkerCatalog(service).Removed(op.Value.LibraryId)
+        )
+            return null;
+        var claim = store.Find<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(service, request.Key)
+        );
+        if (claim?.Value.OperationKey == request.Key && claim.Value.RunId != null)
+        {
+            if (request.Command != "Claim")
+                claim = Assert(request);
+            else if (claim.Value.LeaseUntilUtc > clock() && !claim.Value.RecoveryPermitted)
+                return new WorkerResult { Status = "Quarantined", Key = request.Key };
+            claim!.Value.HttpOutstanding = false;
+            Release(claim);
+        }
+        op = store.Require<SecurityOperation>("asx_operation", request.Key);
+        op.Value.Status = "Cancelled";
+        op.Value.ErrorCode = "DestinationRemoved";
+        op.Value.NextAttemptUtc = null;
+        store.Save(op);
+        var policy = store.Find<PolicyDocument>("asx_policy", op.Value.PolicyKey);
+        if (policy?.Value.OperationKey == op.Value.Key)
+        {
+            policy.Value.OperationKey = null;
+            policy.Value.Queued = Array.Empty<PolicyEntry>();
+            store.Save(policy);
+        }
+        Audit(op.Value.Key, request.RunId ?? "worker", "Cancel");
+        return new WorkerResult
+        {
+            Status = "Cancelled",
+            Key = request.Key,
+            Notices = new[]
+            {
+                "The library was removed from Documents, so this access run stopped. Nothing in SharePoint was undone or deleted.",
+            },
+        };
     }
 
     private WorkerResult Manage(WorkerRequest request, StoredRow<SecurityOperation> op)

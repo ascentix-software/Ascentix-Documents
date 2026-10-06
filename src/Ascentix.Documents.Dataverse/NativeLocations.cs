@@ -196,8 +196,12 @@ public sealed class NativeLocations
     /// Otherwise the library's own row is placed directly under the site with the full path.
     /// Record locations are relative to this row, so they follow it.
     /// </summary>
-    /// <returns>True when a row changed.</returns>
-    public bool Follow(Guid locationId, Guid nativeSiteId, string webUrl, string entryPath)
+    /// <returns>The row updates to write, none when the chain already resolves to the entry.</returns>
+    /// <remarks>
+    /// Only reads and validates; Write applies the result, so a re-point validates every row
+    /// before it writes any.
+    /// </remarks>
+    public Entity[] Follow(Guid locationId, Guid nativeSiteId, string webUrl, string entryPath)
     {
         string webPath = Uri.UnescapeDataString(new Uri(webUrl).AbsolutePath).TrimEnd('/');
         if (!entryPath.StartsWith(webPath + "/", StringComparison.Ordinal))
@@ -210,7 +214,7 @@ public sealed class NativeLocations
                 StringComparison.OrdinalIgnoreCase
             )
         )
-            return false;
+            return Array.Empty<Entity>();
         var parts = entryPath.Substring(webPath.Length + 1).Split('/');
         var chain = new List<Entity>();
         EntityReference current = new EntityReference("sharepointdocumentlocation", locationId);
@@ -233,6 +237,7 @@ public sealed class NativeLocations
         int[] counts = chain
             .Select(r => (r.GetAttributeValue<string>("relativeurl") ?? "").Split('/').Length)
             .ToArray();
+        var updates = new List<Entity>();
         if (counts.Sum() == parts.Length)
         {
             int next = 0;
@@ -241,19 +246,34 @@ public sealed class NativeLocations
                 string relative = string.Join("/", parts.Skip(next).Take(counts[i]));
                 next += counts[i];
                 if (relative != chain[i].GetAttributeValue<string>("relativeurl"))
-                    Update(chain[i], relative, null);
+                    updates.Add(Update(chain[i], relative, null));
             }
         }
         else
-            Update(
-                chain[chain.Count - 1],
-                string.Join("/", parts),
-                new EntityReference("sharepointsite", nativeSiteId)
+            updates.Add(
+                Update(
+                    chain[chain.Count - 1],
+                    string.Join("/", parts),
+                    new EntityReference("sharepointsite", nativeSiteId)
+                )
             );
-        return true;
+        return updates.ToArray();
     }
 
-    private void Update(Entity row, string relative, EntityReference? parent)
+    /// <summary>Writes row updates prepared by Follow, each against the version it read.</summary>
+    public void Write(IEnumerable<Entity> updates)
+    {
+        foreach (var target in updates)
+            service.Execute(
+                new UpdateRequest
+                {
+                    Target = target,
+                    ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+                }
+            );
+    }
+
+    private static Entity Update(Entity row, string relative, EntityReference? parent)
     {
         foreach (var segment in relative.Split('/'))
             Domain.FolderNames.Validate(segment);
@@ -264,13 +284,7 @@ public sealed class NativeLocations
         };
         if (parent != null)
             target["parentsiteorlocation"] = parent;
-        service.Execute(
-            new UpdateRequest
-            {
-                Target = target,
-                ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
-            }
-        );
+        return target;
     }
 
     public void ValidateParent(Guid locationId, string expectedEntryUrl, Guid approvedNativeSiteId)

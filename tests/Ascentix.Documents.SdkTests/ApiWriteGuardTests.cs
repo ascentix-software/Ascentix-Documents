@@ -180,6 +180,70 @@ public sealed class ApiWriteGuardTests
                 new Provider(Setup("direct", "Delete", "asx_CatalogAdmin", table))
             )
         );
+        // Only the row the request names.
+        Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(
+                new Provider(
+                    Setup("remove:" + command + "-other", "Delete", "asx_CatalogAdmin", table)
+                )
+            )
+        );
+        Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(
+                new Provider(
+                    Setup(
+                        "remove:" + (command == "RemoveSite" ? "RemoveLibrary" : "RemoveSite"),
+                        "Delete",
+                        "asx_CatalogAdmin",
+                        table
+                    )
+                )
+            )
+        );
+    }
+
+    [Fact]
+    public void RemoveTransportDeletesOnlyTheRowItNames()
+    {
+        var library = Guid.NewGuid();
+        var api = Context(
+            new Dictionary<string, object>
+            {
+                ["Stage"] = 30,
+                ["Mode"] = 0,
+                ["IsInTransaction"] = true,
+                ["UserId"] = Guid.NewGuid(),
+                ["CorrelationId"] = Guid.NewGuid(),
+                ["MessageName"] = "asx_CatalogAdmin",
+                ["InputParameters"] = new ParameterCollection
+                {
+                    ["Request"] =
+                        "{\"Command\":\"RemoveLibrary\",\"CatalogId\":\"" + library + "\"}",
+                },
+                ["SharedVariables"] = new ParameterCollection
+                {
+                    [DocumentWorkerApi.InternalWrite] = true,
+                },
+            }
+        );
+        var inner = new Capture();
+        var service = new ApiWriteService(inner, api);
+        DeleteRequest Delete(string table, Guid id) =>
+            new DeleteRequest { Target = new EntityReference(table, id) };
+        foreach (
+            var refused in new[]
+            {
+                Delete("asx_library", Guid.NewGuid()),
+                Delete("asx_site", library),
+                Delete("asx_operation", library),
+                Delete("asx_policy", Guid.NewGuid()),
+            }
+        )
+            Assert.Throws<InvalidPluginExecutionException>(() => service.Execute(refused));
+        Assert.Null(inner.Last);
+        var allowed = Delete("asx_library", library);
+        service.Execute(allowed);
+        Assert.Same(allowed, inner.Last);
     }
 
     private static IPluginExecutionContext Setup(
@@ -211,7 +275,16 @@ public sealed class ApiWriteGuardTests
         if (variant.StartsWith("repoint:", StringComparison.Ordinal))
             input["Request"] = "{\"Command\":\"Complete\",\"Key\":\"catalogprobe:repoint:abc\"}";
         if (variant.StartsWith("remove:", StringComparison.Ordinal))
-            input["Request"] = "{\"Command\":\"" + variant.Substring(7) + "\"}";
+            input["Request"] =
+                "{\"Command\":\""
+                + variant.Substring(7).Replace("-other", "")
+                + "\",\"CatalogId\":\""
+                + (
+                    variant.EndsWith("-other", StringComparison.Ordinal)
+                        ? Guid.NewGuid()
+                        : target.Id
+                )
+                + "\"}";
         if (variant.StartsWith("probe:", StringComparison.Ordinal))
             input["Request"] = "{\"Command\":\"Complete\",\"Key\":\"catalogprobe:abc\"}";
         var apiValues = new Dictionary<string, object>

@@ -193,15 +193,33 @@ public sealed class ApiWriteService : IOrganizationService
         );
 
     /// <summary>A site or library deleted by the catalog API's Remove command.</summary>
-    public static bool AuthorizesCatalogRemoval(IPluginExecutionContext context) =>
-        AuthorizesCatalogCommand(context, "asx_CatalogAdmin", RemovalRequest);
-
-    private static bool RemovalRequest(string request)
+    public static bool AuthorizesCatalogRemoval(IPluginExecutionContext context)
     {
-        var command = Ascentix
-            .Documents.Dataverse.JsonWire.Read<Ascentix.Documents.Dataverse.CatalogRequest>(request)
-            .Command;
-        return command == "RemoveLibrary" || command == "RemoveSite";
+        var target = SingleTarget(context);
+        return target != null
+            && AuthorizesCatalogCommand(
+                context,
+                "asx_CatalogAdmin",
+                request => RemovalRequest(request, target.LogicalName, target.Id)
+            );
+    }
+
+    /// <summary>
+    /// A Remove request deletes only the one row it names: RemoveLibrary its asx_library row,
+    /// RemoveSite its asx_site row.
+    /// </summary>
+    private static bool RemovalRequest(string request, string table, Guid id)
+    {
+        var removal =
+            Ascentix.Documents.Dataverse.JsonWire.Read<Ascentix.Documents.Dataverse.CatalogRequest>(
+                request
+            );
+        return id != Guid.Empty
+            && id == removal.CatalogId
+            && (
+                removal.Command == "RemoveLibrary" && table == "asx_library"
+                || removal.Command == "RemoveSite" && table == "asx_site"
+            );
     }
 
     /// <summary>Whether the nearest product API frame is the named API with a matching request.</summary>
@@ -279,9 +297,12 @@ public sealed class ApiWriteService : IOrganizationService
             Mark(request, "Update", update.Target);
         else if (request is DeleteRequest delete)
         {
-            if (!RetentionRequest(owner) && !CatalogRemovalRequest(owner))
+            if (
+                !RetentionRequest(owner)
+                && !CatalogRemovalRequest(owner, delete.Target.LogicalName, delete.Target.Id)
+            )
                 throw new InvalidPluginExecutionException(
-                    "Only history retention and catalog removal may delete through this transport."
+                    "Only history retention, and Remove of the one site or library it names, may delete through this transport."
                 );
             Mark(request, "Delete", new Entity(delete.Target.LogicalName, delete.Target.Id));
         }
@@ -294,7 +315,11 @@ public sealed class ApiWriteService : IOrganizationService
         return inner.Execute(request);
     }
 
-    private static bool CatalogRemovalRequest(IPluginExecutionContext context)
+    private static bool CatalogRemovalRequest(
+        IPluginExecutionContext context,
+        string table,
+        Guid id
+    )
     {
         if (
             context.MessageName != "asx_CatalogAdmin"
@@ -303,7 +328,7 @@ public sealed class ApiWriteService : IOrganizationService
             return false;
         try
         {
-            return RemovalRequest((string)context.InputParameters["Request"]);
+            return RemovalRequest((string)context.InputParameters["Request"], table, id);
         }
         catch
         {
