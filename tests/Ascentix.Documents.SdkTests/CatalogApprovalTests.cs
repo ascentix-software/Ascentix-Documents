@@ -1844,6 +1844,11 @@ public sealed class CatalogApprovalTests
                             StringComparison.Ordinal
                         );
                         AncestorReads++;
+                        // The entry's path is a query-string alias, never in the URL path.
+                        Assert.StartsWith(
+                            "_api/web/GetFolderByServerRelativePath(decodedUrl=@p)?@p='",
+                            work.Http.RelativeUri
+                        );
                         body = Envelope(
                             new FolderObservation
                             {

@@ -637,6 +637,9 @@ public sealed class WorkerCoordinator
                 request.HttpStatus,
                 null
             );
+        // Neither a mismatch nor a lost permission: the connector never sent the read.
+        if (SharePointObservations.UrlTooLong(request))
+            return Block(operation, dispatcher, "RequestUrlTooLong");
         try
         {
             switch (operation.Value.ProbeKind)
@@ -935,6 +938,9 @@ public sealed class WorkerCoordinator
             operation.Value.NameConflict = true;
             return Probe(operation, dispatcher.Value, library, "Folder");
         }
+        // The connector refused the create before sending it, so SharePoint has nothing.
+        if (SharePointObservations.UrlTooLong(request))
+            return Block(operation, dispatcher, "RequestUrlTooLong");
         try
         {
             SharePointObservations.CreateSucceeded(request);
@@ -1630,34 +1636,32 @@ public sealed class WorkerCoordinator
             case "FinalAncestor":
                 http = new HttpIntent
                 {
-                    RelativeUri =
-                        "_api/web/GetFolderByServerRelativePath(decodedUrl='"
-                        + Uri.EscapeDataString(operation.Value.AncestorPath!.Replace("'", "''"))
-                        + "')?$select=UniqueId,ServerRelativeUrl",
+                    RelativeUri = SharePointRequests.ByPath(
+                        "GetFolderByServerRelativePath",
+                        operation.Value.AncestorPath!,
+                        "$select=UniqueId,ServerRelativeUrl"
+                    ),
                 };
                 break;
             case "FinalParent":
             case "Parent":
                 http = new HttpIntent
                 {
-                    RelativeUri =
-                        "_api/web/GetFolderByServerRelativePath(decodedUrl='"
-                        + Uri.EscapeDataString(operation.Value.ParentPath!.Replace("'", "''"))
-                        + "')?$select=UniqueId,ServerRelativeUrl",
+                    RelativeUri = SharePointRequests.ByPath(
+                        "GetFolderByServerRelativePath",
+                        operation.Value.ParentPath!,
+                        "$select=UniqueId,ServerRelativeUrl"
+                    ),
                 };
                 break;
             case "ConflictFile":
                 http = new HttpIntent
                 {
-                    RelativeUri =
-                        "_api/web/GetFileByServerRelativePath(decodedUrl='"
-                        + Uri.EscapeDataString(
-                            (operation.Value.ParentPath + "/" + binding.Candidate).Replace(
-                                "'",
-                                "''"
-                            )
-                        )
-                        + "')?$select=UniqueId,ServerRelativeUrl",
+                    RelativeUri = SharePointRequests.ByPath(
+                        "GetFileByServerRelativePath",
+                        operation.Value.ParentPath + "/" + binding.Candidate,
+                        "$select=UniqueId,ServerRelativeUrl"
+                    ),
                 };
                 break;
             case "Folder":

@@ -688,14 +688,17 @@ public sealed class LibraryProvisioning
                         op,
                         lease.Value,
                         "Library",
+                        // The title goes in the query string as a parameter alias, like folder
+                        // paths (SharePointRequests.ByPath), so a long title never lengthens the
+                        // URL path the connector limits.
                         (
                             op.Value.ListId == Guid.Empty
-                                ? "_api/web/lists/GetByTitle('"
+                                ? "_api/web/lists/GetByTitle(@p)?@p='"
                                     + Uri.EscapeDataString(op.Value.Name.Replace("'", "''"))
-                                    + "')"
-                                : List(op.Value)
+                                    + "'&"
+                                : List(op.Value) + "?"
                         )
-                            + "?$select=Id,HasUniqueRoleAssignments,RootFolder/UniqueId,RootFolder/ServerRelativeUrl&$expand=RootFolder"
+                            + "$select=Id,HasUniqueRoleAssignments,RootFolder/UniqueId,RootFolder/ServerRelativeUrl&$expand=RootFolder"
                     );
                 case "Library":
                     if (request.HttpStatus == 404 && op.Value.ListId == Guid.Empty)

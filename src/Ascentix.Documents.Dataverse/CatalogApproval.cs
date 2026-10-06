@@ -1921,10 +1921,11 @@ public sealed class CatalogWorker
             || kind == "CatalogAncestor"
             || kind == "CatalogAncestorFinal"
         )
-            endpoint =
-                "_api/web/GetFolderByServerRelativePath(decodedUrl='"
-                + Uri.EscapeDataString(op.Value.AncestorPath!.Replace("'", "''"))
-                + "')?$select=UniqueId,ServerRelativeUrl";
+            endpoint = SharePointRequests.ByPath(
+                "GetFolderByServerRelativePath",
+                op.Value.AncestorPath!,
+                "$select=UniqueId,ServerRelativeUrl"
+            );
         if (kind == "RepointEntry")
             endpoint =
                 "_api/web/GetFolderById('"

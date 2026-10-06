@@ -167,9 +167,33 @@ public sealed class FieldValidation
 
 public static class SharePointObservations
 {
+    /// <summary>The notice for a request the HTTP connector refused for the length of its URL.</summary>
+    public const string UrlTooLongNotice =
+        "The HTTP connector refused the request because its URL is too long (maxUrlLength). SharePoint did not receive it.";
+
+    /// <summary>
+    /// Whether the HTTP connector itself refused the request for the length of its URL. It
+    /// answers 401 with "The length of the URL for this request exceeds the configured
+    /// maxUrlLength value." (or the query-string equivalent): a refusal of the request's shape,
+    /// not of its sign-in or of what SharePoint holds, so it is never read as either.
+    /// </summary>
+    public static bool UrlTooLong(WorkerRequest request) =>
+        request.HttpStatus >= 400
+        && request.HttpStatus < 500
+        && request.ResponseBody != null
+        && (
+            request.ResponseBody.IndexOf("maxUrlLength", StringComparison.OrdinalIgnoreCase) >= 0
+            || request.ResponseBody.IndexOf(
+                "maxQueryStringLength",
+                StringComparison.OrdinalIgnoreCase
+            ) >= 0
+        );
+
     public static T Body<T>(WorkerRequest request)
         where T : class
     {
+        if (UrlTooLong(request))
+            throw new EvaluationBlockedException(UrlTooLongNotice);
         if (request.HttpStatus != 200 || request.ResponseBody == null)
             throw new EvaluationBlockedException(
                 "Independent read requires a complete HTTP 200 response."

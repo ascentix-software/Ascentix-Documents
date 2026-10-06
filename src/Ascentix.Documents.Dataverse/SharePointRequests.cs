@@ -89,17 +89,43 @@ public static class SharePointRequests
     private static string List(SharePointTarget target) =>
         "_api/web/lists(guid'" + target.ListId.ToString("D") + "')";
 
+    /// <summary>
+    /// A read of the folder or file at a server-relative path, with the path passed as an OData
+    /// parameter alias in the query string and never in the URL path. The HTTP with Microsoft
+    /// Entra ID connector refuses a request whose URL path exceeds its maxUrlLength (401 "The
+    /// length of the URL for this request exceeds the configured maxUrlLength value."). That is
+    /// the ASP.NET httpRuntime setting, which applies to the URL path only (default 260
+    /// characters; the connector's configured value is not published):
+    /// https://learn.microsoft.com/dotnet/api/system.web.configuration.httpruntimesection.maxurllength
+    /// SharePoint documents parameter aliases for method parameters ("Using parameter aliases in
+    /// REST service calls"):
+    /// https://learn.microsoft.com/sharepoint/dev/sp-add-ins/determine-sharepoint-rest-service-endpoint-uris
+    /// The URL path is then the same short text for every folder, and a 400-character path,
+    /// escaped, stays far inside the 16,384-character request URL limit of Power Automate:
+    /// https://learn.microsoft.com/power-automate/limits-and-config
+    /// </summary>
+    /// <param name="function">GetFolderByServerRelativePath or GetFileByServerRelativePath.</param>
+    /// <param name="path">The decoded server-relative path.</param>
+    /// <param name="query">The rest of the query string, such as "$select=...".</param>
+    public static string ByPath(string function, string path, string query) =>
+        "_api/web/"
+        + function
+        + "(decodedUrl=@p)?@p='"
+        + Uri.EscapeDataString(path.Replace("'", "''"))
+        + "'&"
+        + query;
+
     public static HttpIntent FindFolder(SharePointTarget target, string parent, string name)
     {
         target.ValidateParent(parent);
         FolderNames.Validate(name, parent == target.EntryPath);
-        string path = parent + "/" + name;
         return new HttpIntent
         {
-            RelativeUri =
-                "_api/web/GetFolderByServerRelativePath(decodedUrl='"
-                + Uri.EscapeDataString(path.Replace("'", "''"))
-                + "')?$select=Exists,UniqueId,ServerRelativeUrl,ListItemAllFields/Id,ListItemAllFields/UniqueId,ListItemAllFields/FileLeafRef,ListItemAllFields/FileRef,ListItemAllFields/FSObjType&$expand=ListItemAllFields",
+            RelativeUri = ByPath(
+                "GetFolderByServerRelativePath",
+                parent + "/" + name,
+                "$select=Exists,UniqueId,ServerRelativeUrl,ListItemAllFields/Id,ListItemAllFields/UniqueId,ListItemAllFields/FileLeafRef,ListItemAllFields/FileRef,ListItemAllFields/FSObjType&$expand=ListItemAllFields"
+            ),
         };
     }
 

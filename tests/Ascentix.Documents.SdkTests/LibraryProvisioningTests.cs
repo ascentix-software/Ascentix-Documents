@@ -769,6 +769,13 @@ public sealed class LibraryProvisioningTests
                         );
                         break;
                     case "Library":
+                        // Before the create, the library is read by title as a query-string
+                        // alias, so a long title never lengthens the URL path.
+                        if (work.Http!.RelativeUri.Contains("GetByTitle"))
+                            Assert.StartsWith(
+                                "_api/web/lists/GetByTitle(@p)?@p='",
+                                work.Http.RelativeUri
+                            );
                         code = Exists ? 200 : 404;
                         response = Body(
                             new CatalogLibraryObservation

@@ -40,8 +40,13 @@ public sealed class TransportTests
         var target = Target();
         var request = SharePointRequests.FindFolder(target, target.EntryPath, "O'Brien # 100%");
         Assert.DoesNotContain("/items?", request.RelativeUri);
+        // The path is a parameter alias in the query string, so it never lengthens the URL path.
+        Assert.StartsWith(
+            "_api/web/GetFolderByServerRelativePath(decodedUrl=@p)?@p='",
+            request.RelativeUri
+        );
         Assert.Contains(
-            "GetFolderByServerRelativePath(decodedUrl='/sites/proto/General/O''Brien # 100%')?$select=Exists,UniqueId,ServerRelativeUrl",
+            "@p='/sites/proto/General/O''Brien # 100%'&$select=Exists,UniqueId,ServerRelativeUrl",
             Uri.UnescapeDataString(request.RelativeUri)
         );
     }
