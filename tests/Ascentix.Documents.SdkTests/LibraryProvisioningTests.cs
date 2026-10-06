@@ -9,6 +9,36 @@ namespace Ascentix.Documents.SdkTests;
 
 public sealed class LibraryProvisioningTests
 {
+    [Theory]
+    [InlineData(2, 0, null)]
+    [InlineData(3, 2, null)]
+    [InlineData(3, 3, "only the guests")]
+    [InlineData(1, 0, "Access teams")]
+    public void NewLibraryAcceptsGroupTeamsAndRefusesTeamsSharePointCannotIdentify(
+        int type,
+        int membership,
+        string? reason
+    )
+    {
+        var f = new Fixture();
+        var team = f.Service.Rows[f.Team];
+        team["name"] = "Operations";
+        team["teamtype"] = new Microsoft.Xrm.Sdk.OptionSetValue(type);
+        team["membershiptype"] = new Microsoft.Xrm.Sdk.OptionSetValue(membership);
+        team["azureactivedirectoryobjectid"] = Guid.NewGuid();
+        if (reason == null)
+        {
+            Assert.Equal("Pending", f.Queue().Status);
+            return;
+        }
+        Assert.Contains(
+            reason,
+            Assert
+                .Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() => f.Queue())
+                .Message
+        );
+    }
+
     [Fact]
     public void CreatesLibraryBoundaryAndOwnerGrantThenQueuesInitialTeamSync()
     {

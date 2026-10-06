@@ -146,17 +146,31 @@ public static class SharePointRequests
     public static HttpIntent AddMember(int ownedGroupId, string approvedLogin)
     {
         Positive(ownedGroupId);
-        if (
-            string.IsNullOrWhiteSpace(approvedLogin)
-            || approvedLogin.Length > 500
-            || approvedLogin.IndexOfAny(new[] { '\r', '\n' }) >= 0
-        )
-            throw new EvaluationBlockedException("Approved normalized login required.");
+        Login(approvedLogin);
         return new HttpIntent
         {
             Method = "POST",
             RelativeUri = "_api/web/sitegroups(" + ownedGroupId + ")/users",
             Body = JsonWire.Write(new AddMemberBody { Login = approvedLogin }),
+        };
+    }
+
+    /// <summary>
+    /// Resolves a group claim to a site principal with SPWeb.EnsureUser so it can be added to the
+    /// Documents group. POST _api/web/ensureuser with { "logonName": ... } is documented in the
+    /// Webs REST API reference:
+    /// https://learn.microsoft.com/previous-versions/office/developer/sharepoint-rest-reference/dn499819(v=office.15)
+    /// EnsureUser returns the principal already on the site when there is one, so repeating it
+    /// is harmless.
+    /// </summary>
+    public static HttpIntent EnsurePrincipal(string approvedLogin)
+    {
+        Login(approvedLogin);
+        return new HttpIntent
+        {
+            Method = "POST",
+            RelativeUri = "_api/web/ensureuser",
+            Body = JsonWire.Write(new EnsureUserBody { Login = approvedLogin }),
         };
     }
 
@@ -198,6 +212,16 @@ public static class SharePointRequests
                 + resolvedRoleId
                 + ")",
         };
+    }
+
+    private static void Login(string approvedLogin)
+    {
+        if (
+            string.IsNullOrWhiteSpace(approvedLogin)
+            || approvedLogin.Length > 500
+            || approvedLogin.IndexOfAny(new[] { '\r', '\n' }) >= 0
+        )
+            throw new EvaluationBlockedException("Approved normalized login required.");
     }
 
     private static void Positive(int id)
@@ -258,6 +282,13 @@ public sealed class AddMemberBody
 
     [DataMember(Name = "__metadata")]
     public MemberMetadata Metadata { get; set; } = new MemberMetadata();
+}
+
+[DataContract]
+public sealed class EnsureUserBody
+{
+    [DataMember(Name = "logonName")]
+    public string Login { get; set; } = "";
 }
 
 [DataContract]

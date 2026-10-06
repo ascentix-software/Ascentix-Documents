@@ -1797,6 +1797,273 @@ public sealed class SecurityWorkerTests
         );
     }
 
+    [Fact]
+    public void SecurityGroupTeamGrantsItsGroupThroughTheDocumentsGroupWithoutReadingMembers()
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(2);
+        // A Dataverse member the policy run must never read: the group itself is granted.
+        f.AddUser();
+        f.Queue("Read");
+        f.Drive();
+        string claim = "c:0t.c|tenant|" + f.GroupObject.ToString("D");
+        Assert.Equal(new[] { "GroupCreate", "PrincipalEnsure", "MemberAdd", "GrantAdd" }, f.Writes);
+        var ensure = f.Posts.Single(p => p.RelativeUri == "_api/web/ensureuser");
+        Assert.Equal("POST", ensure.Method);
+        Assert.Equal("{\"logonName\":\"" + claim + "\"}", ensure.Body);
+        Assert.Equal(claim, f.Members.Single().Login);
+        Assert.Equal(new[] { f.Read.Id }, f.Roles(42));
+        Assert.Equal(0, f.SystemUserReads);
+        Assert.Empty(f.Policy().Notices);
+        // The next run finds the group in place and writes nothing.
+        f.Writes.Clear();
+        f.Queue("Read");
+        f.Drive();
+        Assert.Empty(f.Writes);
+        Assert.Equal(0, f.SystemUserReads);
+    }
+
+    [Theory]
+    [InlineData(0, "")]
+    [InlineData(1, "")]
+    [InlineData(2, "_o")]
+    public void Microsoft365GroupTeamUsesTheMembersOrOwnersClaim(int membership, string suffix)
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(3, membership);
+        f.Queue("Contribute");
+        f.Drive();
+        Assert.Equal(
+            "c:0o.c|federateddirectoryclaimprovider|" + f.GroupObject.ToString("D") + suffix,
+            f.Members.Single().Login
+        );
+        Assert.Equal(new[] { f.Contribute.Id }, f.Roles(42));
+        Assert.Equal(0, f.SystemUserReads);
+    }
+
+    [Theory]
+    [InlineData(3, 3, true, "only the guests")]
+    [InlineData(2, 3, true, "only the guests")]
+    [InlineData(2, 2, true, "only the owners")]
+    [InlineData(2, 0, false, "object ID")]
+    [InlineData(3, 1, false, "object ID")]
+    public void GroupTeamsSharePointCannotIdentifyAreRefusedWithTheReason(
+        int type,
+        int membership,
+        bool objectId,
+        string reason
+    )
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(type, membership, objectId);
+        var applied = Assert.Throws<EvaluationBlockedException>(() => f.Queue("Read"));
+        Assert.Contains(reason, applied.Message);
+        Assert.Contains("Operations", applied.Message);
+        if (objectId)
+            Assert.Contains("SharePoint has no sign-in claim", applied.Message);
+        var registered = Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() =>
+                f.Admin.Execute(
+                    new SecurityRequest
+                    {
+                        Command = "RegisterTeam",
+                        TeamId = f.Team,
+                        Enabled = true,
+                    },
+                    true
+                )
+            )
+        );
+        Assert.Equal(applied.Message, registered.Message);
+    }
+
+    [Fact]
+    public void AccessAndDefaultTeamsAreStillRefused()
+    {
+        var f = new Fixture();
+        f.Service.Rows[f.Team]["teamtype"] = new OptionSetValue(1);
+        Assert.Contains(
+            "Access teams",
+            Assert.Throws<EvaluationBlockedException>(() => f.Queue("Read")).Message
+        );
+        f.Service.Rows[f.Team]["teamtype"] = new OptionSetValue(2);
+        f.Service.Rows[f.Team]["azureactivedirectoryobjectid"] = f.GroupObject;
+        f.Service.Rows[f.Team]["isdefault"] = true;
+        Assert.Contains(
+            "default team",
+            Assert.Throws<EvaluationBlockedException>(() => f.Queue("Read")).Message
+        );
+    }
+
+    [Fact]
+    public void HandEditsToAGroupTeamsDocumentsGroupKeepOtherPrincipalsAndRestoreTheGroup()
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(2);
+        f.Queue("Read");
+        f.Drive();
+        string claim = f.Members.Single().Login;
+        // An admin removes the team's group and adds another Entra group by hand.
+        f.Members.Clear();
+        var other = new SitePerson
+        {
+            Id = 900,
+            Login = "c:0t.c|tenant|5f0c3a2e-0000-0000-0000-000000000001",
+            Type = 4,
+        };
+        f.Members.Add(other);
+        f.Writes.Clear();
+        f.Queue("Read");
+        f.Drive();
+        Assert.Equal(new[] { "PrincipalEnsure", "MemberAdd" }, f.Writes);
+        Assert.Contains(other, f.Members);
+        Assert.Contains(f.Members, m => m.Login == claim);
+        var notice = f.Policy().Notices.Single();
+        Assert.Contains("5f0c3a2e-0000-0000-0000-000000000001", notice);
+        Assert.Contains("left in place", notice);
+        Assert.Equal(0, f.SystemUserReads);
+    }
+
+    [Fact]
+    public void RemovingAGroupTeamFromTheLibraryRemovesItsGrant()
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(3, 1);
+        f.Queue("Read");
+        f.Drive();
+        f.Writes.Clear();
+        f.Queue("None");
+        f.Drive();
+        Assert.Empty(f.Roles(42));
+        Assert.Equal(new[] { "GrantRemove" }, f.Writes);
+        Assert.Equal(0, f.SystemUserReads);
+    }
+
+    [Fact]
+    public void TeamMembershipEventOnAGroupTeamReadsNoMembersAndQueuesNothing()
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(2);
+        f.Queue("Read");
+        f.Drive();
+        // A person signs in and Dataverse adds them to the group team.
+        f.AddUser();
+        f.Store.Create(
+            "asx_outbox",
+            new OutboxDocument
+            {
+                Key = "team-change",
+                SecurityTeamId = f.Team,
+                SecurityPage = 1,
+            }
+        );
+        var planned = f.Service.Transaction(() =>
+            new WorkerCoordinator(f.Service).Execute(
+                new WorkerRequest { Command = "Plan", Key = "team-change" },
+                true
+            )
+        );
+        Assert.Equal("Planned", planned.Status);
+        Assert.Empty(planned.Keys);
+        Assert.Equal(0, f.SystemUserReads);
+        Assert.Null(f.Policy().OperationKey);
+    }
+
+    [Fact]
+    public void ChangedGroupClaimReplacesThePrincipalOnTheNextRefresh()
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(3, 1);
+        f.Queue("Read");
+        f.Drive();
+        f.Service.Rows[f.Team]["membershiptype"] = new OptionSetValue(2);
+        f.Writes.Clear();
+        var refreshed = f.Service.Transaction(() =>
+            new SecurityRefresh(f.Service, () => DateTime.UtcNow.AddDays(2)).Scan()
+        );
+        f.Key = refreshed.Keys.Single();
+        f.Drive();
+        Assert.Equal(new[] { "MemberRemove", "PrincipalEnsure", "MemberAdd" }, f.Writes);
+        Assert.Equal(
+            "c:0o.c|federateddirectoryclaimprovider|" + f.GroupObject.ToString("D") + "_o",
+            f.Members.Single().Login
+        );
+        Assert.Empty(f.Policy().Notices);
+        Assert.Equal(0, f.SystemUserReads);
+    }
+
+    [Fact]
+    public void GroupTeamThatCanNoLongerBeIdentifiedLosesItsPrincipalWithANotice()
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(3, 0);
+        f.Queue("Read");
+        f.Drive();
+        f.Service.Rows[f.Team]["membershiptype"] = new OptionSetValue(3);
+        f.Writes.Clear();
+        var refreshed = f.Service.Transaction(() =>
+            new SecurityRefresh(f.Service, () => DateTime.UtcNow.AddDays(2)).Scan()
+        );
+        f.Key = refreshed.Keys.Single();
+        f.Drive();
+        Assert.Equal(new[] { "MemberRemove" }, f.Writes);
+        Assert.Empty(f.Members);
+        Assert.Contains("only the guests", f.Policy().Notices.Single());
+    }
+
+    [Fact]
+    public void GroupSharePointCannotResolveIsSkippedWithItsMessage()
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(2);
+        f.Queue("Read");
+        f.Reject = op => op.MutationKind == "PrincipalEnsure" ? 404 : (int?)null;
+        var result = f.Drive();
+        Assert.Empty(f.Members);
+        Assert.Equal(new[] { f.Read.Id }, f.Roles(42));
+        var notice = f.Policy().Notices.Single();
+        Assert.Contains("c:0t.c|tenant|" + f.GroupObject.ToString("D"), notice);
+        Assert.Contains("The user does not exist or is not unique.", notice);
+        Assert.Contains(notice, result.Notices);
+    }
+
+    [Fact]
+    public void UnknownGroupResolveOutcomeWaitsAndResolvesAgain()
+    {
+        var f = new Fixture();
+        f.MakeGroupTeam(2);
+        f.Queue("Read");
+        var work = f.Start();
+        for (int i = 0; ; i++)
+        {
+            Assert.True(i < 200, "PrincipalEnsure never prepared.");
+            if (work.Status == "Read")
+                work = f.Observe(work);
+            else if (
+                work.Status == "ReadyToCreate"
+                && f.Operation().MutationKind == "PrincipalEnsure"
+            )
+                break;
+            else if (work.Status == "ReadyToCreate")
+                work = f.Call("PrepareCreate", work);
+            else if (work.Status == "Create")
+            {
+                f.Apply();
+                work = f.Call("CreateResponse", work, status: 200);
+            }
+            else
+                throw new Exception(work.Status);
+        }
+        work = f.Call("PrepareCreate", work);
+        // Resolving the group is repeatable, so a lost response waits and resolves again.
+        Assert.Equal("RetryWait", f.Call("CreateResponse", work, status: 504).Status);
+        Due(f);
+        f.Writes.Clear();
+        f.Drive();
+        Assert.Equal(new[] { "PrincipalEnsure", "MemberAdd", "GrantAdd" }, f.Writes);
+        Assert.Single(f.Members);
+    }
+
     private sealed class Fixture
     {
         public DurableWorkerTests.MemoryService Service { get; } =
@@ -1895,6 +2162,28 @@ public sealed class SecurityWorkerTests
             if (application != null)
                 row["applicationid"] = application.Value;
             Service.Seed(row);
+        }
+
+        public Guid GroupObject = Guid.Parse("7d1e0c55-2f4b-4a77-9c1d-0b6a5e2f9a31");
+        public List<HttpIntent> Posts = new List<HttpIntent>();
+
+        /// <summary>Dataverse team-member reads (systemuser queries) since MakeGroupTeam.</summary>
+        public int SystemUserReads;
+
+        /// <summary>Turns the fixture team into an Entra (2) or Microsoft 365 (3) group team.</summary>
+        public void MakeGroupTeam(int type, int membership = 0, bool objectId = true)
+        {
+            var team = Service.Rows[Team];
+            team["teamtype"] = new OptionSetValue(type);
+            team["membershiptype"] = new OptionSetValue(membership);
+            if (objectId)
+                team["azureactivedirectoryobjectid"] = GroupObject;
+            Service.QueryHook = query =>
+            {
+                if (query.EntityName == "systemuser")
+                    SystemUserReads++;
+                return null;
+            };
         }
 
         public void AddUser() =>
@@ -2129,13 +2418,22 @@ public sealed class SecurityWorkerTests
                         Type = 8,
                     };
                     break;
+                case "PrincipalEnsure":
+                    // ensureuser adds the principal to the site, not to any group.
+                    break;
                 case "MemberAdd":
                     Members.Add(
                         new SitePerson
                         {
                             Id = Members.Count == 0 ? 7 : Members.Max(m => m.Id) + 1,
                             Login = operation.MutationLogin,
-                            Type = 1,
+                            // SharePoint lists an Entra or Microsoft 365 group as a security group.
+                            Type = operation.MutationLogin.StartsWith(
+                                "c:0",
+                                StringComparison.Ordinal
+                            )
+                                ? 4
+                                : 1,
                         }
                     );
                     break;
@@ -2174,6 +2472,7 @@ public sealed class SecurityWorkerTests
                         break;
                     case "Create":
                         var op = Operation();
+                        Posts.Add(work.Http!);
                         var rejected = Reject?.Invoke(op);
                         if (rejected != null)
                         {

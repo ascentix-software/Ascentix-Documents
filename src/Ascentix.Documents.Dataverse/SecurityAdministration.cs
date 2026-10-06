@@ -106,20 +106,9 @@ public sealed class SecurityAdministration
         {
             if (request.TeamId == Guid.Empty)
                 throw new EvaluationBlockedException("Team ID required.");
-            var team = service.Retrieve(
-                "team",
-                request.TeamId,
-                new ColumnSet("teamtype", "isdefault")
-            );
-            if (
-                request.Enabled
-                && (
-                    team.GetAttributeValue<OptionSetValue>("teamtype")?.Value != 0
-                    || team.GetAttributeValue<bool>("isdefault")
-                )
-            )
-                throw new EvaluationBlockedException(
-                    "Only non-default manual owner teams can opt in."
+            if (request.Enabled)
+                TeamPrincipal.Validate(
+                    service.Retrieve("team", request.TeamId, TeamPrincipal.Columns())
                 );
             string key = "team:" + request.TeamId.ToString("N");
             var old = store.Find<TeamRegistration>("asx_teamregistration", key);
@@ -175,16 +164,9 @@ public sealed class SecurityAdministration
             foreach (var entry in request.Entries.Where(e => e.Access != "None"))
             {
                 // Saving a draft validates eligibility; only applying explicitly onboards syncing.
-                var team = service.Retrieve(
-                    "team",
-                    entry.TeamId,
-                    new ColumnSet("teamtype", "isdefault")
+                TeamPrincipal.Validate(
+                    service.Retrieve("team", entry.TeamId, TeamPrincipal.Columns())
                 );
-                if (
-                    team.GetAttributeValue<OptionSetValue>("teamtype")?.Value != 0
-                    || team.GetAttributeValue<bool>("isdefault")
-                )
-                    throw new EvaluationBlockedException("Select a non-default manual owner team.");
                 if (request.Command == "ApplyPolicy")
                 {
                     string teamKey = "team:" + entry.TeamId.ToString("N");

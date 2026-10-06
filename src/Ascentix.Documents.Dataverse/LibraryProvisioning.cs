@@ -127,20 +127,7 @@ public sealed class LibraryProvisioning
                 "Select distinct teams with Read or Contribute access."
             );
         foreach (var entry in request.Entries)
-        {
-            var team = service.Retrieve(
-                "team",
-                entry.TeamId,
-                new ColumnSet("teamtype", "isdefault")
-            );
-            if (
-                team.GetAttributeValue<OptionSetValue>("teamtype")?.Value != 0
-                || team.GetAttributeValue<bool>("isdefault")
-            )
-                throw new EvaluationBlockedException(
-                    "Only non-default manual owner teams are supported."
-                );
-        }
+            TeamPrincipal.Validate(service.Retrieve("team", entry.TeamId, TeamPrincipal.Columns()));
         var site = service.Retrieve(
             "asx_site",
             request.SiteId,

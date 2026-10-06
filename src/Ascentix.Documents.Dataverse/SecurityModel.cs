@@ -24,6 +24,13 @@ public sealed class TeamPerson
 
     [DataMember]
     public string Login { get; set; } = "";
+
+    /// <summary>
+    /// True for the group claim of an Entra or Microsoft 365 group team, which SharePoint resolves
+    /// with ensureuser before it is added. Missing in documents written before group teams.
+    /// </summary>
+    [DataMember]
+    public bool Group { get; set; }
 }
 
 public sealed class TeamSnapshot
@@ -136,6 +143,14 @@ public sealed class ManagedGroup : StoredDocument
 
     [DataMember]
     public string Title { get; set; } = "";
+
+    /// <summary>
+    /// Group claims Documents put in this group for a group team. A claim no longer wanted is
+    /// removed; any other non-person member was added by hand and is left in place. Null in
+    /// documents written before group teams.
+    /// </summary>
+    [DataMember]
+    public string[]? Principals { get; set; }
     public string Marker =>
         "Ascentix Documents v1; group=" + Nonce.ToString("D") + "; team=" + TeamId.ToString("D");
 }
@@ -312,6 +327,10 @@ public sealed class SecurityOperation : OperationDocument
     /// <summary>Consecutive read-backs that did not yet show a confirmed grant write.</summary>
     [DataMember]
     public int ReadbackMisses { get; set; }
+
+    /// <summary>The group claim SharePoint resolved in this run, so it is added next.</summary>
+    [DataMember]
+    public string? EnsuredLogin { get; set; }
 }
 
 [DataContract]

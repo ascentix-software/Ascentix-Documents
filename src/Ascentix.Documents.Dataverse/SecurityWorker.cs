@@ -108,7 +108,16 @@ public sealed class SecurityWorker
                     || request.HttpStatus == 408
                     || request.HttpStatus >= 500
                 )
+                {
+                    // Resolving a group claim changes no access and can be repeated, so a lost
+                    // response waits and resolves again.
+                    if (op.Value.MutationKind == "PrincipalEnsure")
+                    {
+                        ClearMutation(op.Value);
+                        return Wait(op, claim, request.RetryAfter, request.HttpStatus, null);
+                    }
                     return Block(op, claim, "AmbiguousSecurityWrite");
+                }
                 if (request.HttpStatus < 200 || request.HttpStatus >= 300)
                 {
                     op.Value.ExternalResponseKnown = true;
@@ -118,6 +127,7 @@ public sealed class SecurityWorker
                         (
                             op.Value.MutationKind != "MemberAdd"
                             && op.Value.MutationKind != "MemberRemove"
+                            && op.Value.MutationKind != "PrincipalEnsure"
                         )
                         || request.HttpStatus == 401
                         || request.HttpStatus == 403
@@ -460,17 +470,33 @@ public sealed class SecurityWorker
                     var members = SharePointObservations.Body<ODataRows<SitePerson>>(request);
                     if (members.Rows == null)
                         throw new EvaluationBlockedException("Membership page missing.");
-                    string groupTitle = store
+                    var owner = store
                         .Require<ManagedGroup>("asx_managedgroup", op.Value.GroupKey)
-                        .Value.Title;
+                        .Value;
+                    string groupTitle = owner.Title;
+                    // The group claims of a group team, wanted now or put there by Documents
+                    // before, are Documents' to manage like people.
+                    var principals = store
+                        .Require<MembershipDocument>("asx_membership", op.Value.MembershipKey)
+                        .Value.Desired.Where(p => p.Group)
+                        .Select(p => p.Login)
+                        .Concat(owner.Principals ?? Array.Empty<string>())
+                        .ToArray();
                     foreach (var member in members.Rows.Where(m => m != null))
                     {
                         // People are synced from the team. Anything else an admin put in the
                         // Documents group, such as an Entra group, is left in place.
+                        bool principal =
+                            member.Id > 0
+                            && !string.IsNullOrWhiteSpace(member.Login)
+                            && principals.Contains(member.Login, StringComparer.OrdinalIgnoreCase);
                         if (
-                            member.Type != 1
-                            || member.Id <= 0
-                            || string.IsNullOrWhiteSpace(member.Login)
+                            !principal
+                            && (
+                                member.Type != 1
+                                || member.Id <= 0
+                                || string.IsNullOrWhiteSpace(member.Login)
+                            )
                         )
                         {
                             Notice(
@@ -603,7 +629,16 @@ public sealed class SecurityWorker
     {
         var snapshot = store.Require<MembershipDocument>("asx_membership", op.Value.MembershipKey);
         VerifyTeam(op.Value);
-        if (op.Value.MutationKind == "MemberAdd" || op.Value.MutationKind == "MemberRemove")
+        if (op.Value.MutationKind == "PrincipalEnsure")
+        {
+            // SharePoint resolved the group claim; it is added next. After a takeover the
+            // outcome is unknown, and resolving again is harmless.
+            if (!op.Value.Reprobe)
+                op.Value.EnsuredLogin = op.Value.MutationLogin;
+            op.Value.Reprobe = false;
+            ClearMutation(op.Value);
+        }
+        else if (op.Value.MutationKind == "MemberAdd" || op.Value.MutationKind == "MemberRemove")
         {
             bool adding = op.Value.MutationKind == "MemberAdd";
             bool present = adding
@@ -666,6 +701,31 @@ public sealed class SecurityWorker
         if (add != null)
         {
             op.Value.MutationLogin = add;
+            if (
+                snapshot
+                    .Value.Desired.First(p =>
+                        string.Equals(p.Login, add, StringComparison.OrdinalIgnoreCase)
+                    )
+                    .Group
+            )
+            {
+                // From here the claim is Documents' own in this group, even if the add's outcome
+                // is never known, so a later change of the team's group removes it.
+                var owned = group.Value.Principals ?? Array.Empty<string>();
+                if (!owned.Contains(add, StringComparer.OrdinalIgnoreCase))
+                {
+                    group.Value.Principals = owned.Concat(new[] { add }).ToArray();
+                    store.Save(group);
+                }
+                if (!string.Equals(op.Value.EnsuredLogin, add, StringComparison.OrdinalIgnoreCase))
+                    return Prepare(
+                        op,
+                        claim,
+                        catalog,
+                        "PrincipalEnsure",
+                        SharePointRequests.EnsurePrincipal(add)
+                    );
+            }
             return Prepare(
                 op,
                 claim,
@@ -685,6 +745,15 @@ public sealed class SecurityWorker
         )
             ? RetryHashPrefix + applied
             : applied;
+        // A claim Documents removed is no longer its own; one SharePoint kept stays managed.
+        group.Value.Principals = (group.Value.Principals ?? Array.Empty<string>())
+            .Where(p =>
+                desired.Contains(p, StringComparer.OrdinalIgnoreCase)
+                || op.Value.Members.Any(m =>
+                    string.Equals(m.Login, p, StringComparison.OrdinalIgnoreCase)
+                )
+            )
+            .ToArray();
         group.Value.Status = "Applied";
         store.Save(group);
         return Probe(op, claim, catalog, "SecurityAcl");
@@ -1205,7 +1274,8 @@ public sealed class SecurityWorker
     /// <summary>Records a member add or remove SharePoint rejected, with SharePoint's message.</summary>
     private void SkipMember(SecurityOperation op, WorkerRequest request)
     {
-        bool adding = op.MutationKind == "MemberAdd";
+        // A group claim SharePoint cannot resolve is skipped like a person it will not add.
+        bool adding = op.MutationKind != "MemberRemove";
         string login = adding
             ? op.MutationLogin
             : op.Members.FirstOrDefault(m => m.Id == op.MutationMemberId)?.Login
@@ -1263,7 +1333,12 @@ public sealed class SecurityWorker
         );
     }
 
-    private static string Upn(string login) => login.Substring(login.LastIndexOf('|') + 1);
+    // A person is shown by sign-in name; a group claim (c:0...) is shown whole, since its last
+    // part is only an object ID.
+    private static string Upn(string login) =>
+        login.StartsWith("c:", StringComparison.Ordinal)
+            ? login
+            : login.Substring(login.LastIndexOf('|') + 1);
 
     // asx_operation.asx_payload holds at most 500,000 characters (MaxLength in
     // asx_operation/Entity.xml, also enforced by JsonWire.Read). Skip details stop where the

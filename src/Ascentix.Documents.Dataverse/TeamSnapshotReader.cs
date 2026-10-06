@@ -8,6 +8,125 @@ using Microsoft.Xrm.Sdk.Query;
 
 namespace Ascentix.Documents.Dataverse;
 
+/// <summary>
+/// Decides how a Dataverse team gets library access. An owner team's members are synced into
+/// the Documents group one by one. An Entra security group team or a Microsoft 365 group team is
+/// represented by its group: the Documents group holds the group's SharePoint claim as its only
+/// managed member, so membership is always exact and Dataverse team members are never read.
+/// Dataverse fills a group team's member list only when each person first signs in, so it could
+/// not be copied reliably.
+/// </summary>
+public static class TeamPrincipal
+{
+    // team.teamtype and team.membershiptype choices:
+    // https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/team
+    // (TeamType 0 Owner, 1 Access, 2 Security Group, 3 Office Group; MembershipType 0 Members
+    // and guests, 1 Members, 2 Owners, 3 Guests). How each membership type maps to the Entra
+    // group: https://learn.microsoft.com/power-platform/admin/manage-group-teams
+    private const int OwnerTeam = 0,
+        SecurityGroupTeam = 2,
+        Microsoft365GroupTeam = 3;
+    private const int OwnersOnly = 2,
+        GuestsOnly = 3;
+
+    public static ColumnSet Columns() =>
+        new ColumnSet(
+            "name",
+            "teamtype",
+            "isdefault",
+            "azureactivedirectoryobjectid",
+            "membershiptype"
+        );
+
+    public static bool IsGroup(Entity team)
+    {
+        int? type = team.GetAttributeValue<OptionSetValue>("teamtype")?.Value;
+        return type == SecurityGroupTeam || type == Microsoft365GroupTeam;
+    }
+
+    /// <summary>Refuses a team that cannot get library access, with the reason.</summary>
+    /// <param name="team">The team row, read with <see cref="Columns"/>.</param>
+    public static void Validate(Entity team)
+    {
+        if (!Eligible(team, out var reason))
+            throw new EvaluationBlockedException(reason!);
+    }
+
+    /// <summary>
+    /// Whether the team can get library access; when it cannot, the reason an admin can act on.
+    /// </summary>
+    public static bool Eligible(Entity team, out string? reason)
+    {
+        int? type = team.GetAttributeValue<OptionSetValue>("teamtype")?.Value;
+        string name = Name(team);
+        reason = null;
+        if (team.GetAttributeValue<bool>("isdefault"))
+            reason =
+                "Team '"
+                + name
+                + "' is a business unit's default team, which cannot get library access. Choose another team.";
+        else if (type != OwnerTeam && type != SecurityGroupTeam && type != Microsoft365GroupTeam)
+            reason =
+                "Access teams cannot get library access. Choose an owner team, a Microsoft Entra security group team or a Microsoft 365 group team.";
+        else if (type == OwnerTeam)
+            return true;
+        else if (team.GetAttributeValue<Guid>("azureactivedirectoryobjectid") == Guid.Empty)
+            reason =
+                "Team '"
+                + name
+                + "' has no Microsoft Entra group object ID, so SharePoint cannot identify its group. Create the group team in Dataverse with its group selected.";
+        else if (Membership(team) == GuestsOnly)
+            reason =
+                "Team '"
+                + name
+                + "' includes only the guests of its group. SharePoint has no sign-in claim for only the guests of a group, so this team cannot get library access. Use a team whose membership type is Members, or Members and guests.";
+        else if (type == SecurityGroupTeam && Membership(team) == OwnersOnly)
+            reason =
+                "Team '"
+                + name
+                + "' includes only the owners of its Microsoft Entra security group. SharePoint has no sign-in claim for only the owners of a security group, so this team cannot get library access. Use a team whose membership type is Members, or Members and guests.";
+        else
+            return true;
+        return false;
+    }
+
+    /// <summary>
+    /// The SharePoint claim that stands for an eligible group team's group. SharePoint resolves it
+    /// with _api/web/ensureuser before it is added to the Documents group.
+    /// </summary>
+    /// <remarks>
+    /// Claim strings follow SharePoint's identity claim encoding
+    /// (&lt;IdentityClaim&gt;:0&lt;ClaimType&gt;&lt;ClaimValueType&gt;&lt;AuthMode&gt;|&lt;OriginalIssuer&gt;|&lt;ClaimValue&gt;,
+    /// https://learn.microsoft.com/previous-versions/office/developer/sharepoint-2010/gg481769(v=office.14)#appendix-a-identity-claim-encoding-characters-map).
+    /// SharePoint Online's group claims are not in a reference page; they are given by Microsoft
+    /// staff on Microsoft Q&amp;A:
+    /// - Entra security group: c:0t.c|tenant|&lt;object ID&gt;
+    ///   (https://learn.microsoft.com/answers/questions/412753, "This is the claim type for the group").
+    /// - Microsoft 365 group members: c:0o.c|federateddirectoryclaimprovider|&lt;group ID&gt;
+    ///   (https://learn.microsoft.com/answers/questions/349797 and /873831).
+    /// - Microsoft 365 group owners: the same claim with the suffix _o. No Microsoft page states
+    ///   it; community documentation of group-connected sites does, so it is verified live.
+    /// Membership type Members and Members and guests share one claim: SharePoint has no claim
+    /// for only the members of a group without its guests.
+    /// </remarks>
+    public static string Claim(Entity team)
+    {
+        Validate(team);
+        string id = team.GetAttributeValue<Guid>("azureactivedirectoryobjectid").ToString("D");
+        if (team.GetAttributeValue<OptionSetValue>("teamtype").Value == SecurityGroupTeam)
+            return "c:0t.c|tenant|" + id;
+        return "c:0o.c|federateddirectoryclaimprovider|"
+            + id
+            + (Membership(team) == OwnersOnly ? "_o" : "");
+    }
+
+    private static int Membership(Entity team) =>
+        team.GetAttributeValue<OptionSetValue>("membershiptype")?.Value ?? 0;
+
+    internal static string Name(Entity team) =>
+        TeamSnapshotReader.Clean(team.GetAttributeValue<string>("name"), team.Id.ToString("D"));
+}
+
 public sealed class TeamSnapshotReader
 {
     private readonly IOrganizationService service;
@@ -22,7 +141,7 @@ public sealed class TeamSnapshotReader
     /// <summary>
     /// Reads the team's members that SharePoint can take, and lists the ones it skipped and why.
     /// </summary>
-    /// <param name="teamId">The opted-in Dataverse owner team.</param>
+    /// <param name="teamId">The opted-in Dataverse team.</param>
     /// <returns>The members to sync and one notice for each member that was skipped.</returns>
     public TeamSnapshot Snapshot(Guid teamId)
     {
@@ -33,15 +152,11 @@ public sealed class TeamSnapshotReader
             throw new EvaluationBlockedException("Team registration identity mismatch.");
         if (!registration.Enabled)
             return new TeamSnapshot(); // Explicit opt-out tombstone; a failed native read never means an empty team.
-        var team = service.Retrieve("team", teamId, new ColumnSet("name", "teamtype", "isdefault"));
-        if (
-            team.GetAttributeValue<OptionSetValue>("teamtype")?.Value != 0
-            || team.GetAttributeValue<bool>("isdefault")
-        )
-            throw new EvaluationBlockedException(
-                "Only opted-in, non-default manual owner teams are supported."
-            );
-        string teamName = Clean(team.GetAttributeValue<string>("name"), teamId.ToString("D"));
+        var team = service.Retrieve("team", teamId, TeamPrincipal.Columns());
+        if (TeamPrincipal.IsGroup(team))
+            return GroupSnapshot(team);
+        TeamPrincipal.Validate(team);
+        string teamName = TeamPrincipal.Name(team);
         var query = new QueryExpression("systemuser")
         {
             ColumnSet = new ColumnSet(
@@ -158,11 +273,34 @@ public sealed class TeamSnapshotReader
         };
     }
 
+    /// <summary>
+    /// A group team's only managed member is its group. Dataverse team members are never read.
+    /// A group team that changed after registration so SharePoint can no longer identify its
+    /// group gets no member, with the reason as a notice, rather than stopping the run.
+    /// </summary>
+    private static TeamSnapshot GroupSnapshot(Entity team)
+    {
+        if (!TeamPrincipal.Eligible(team, out var reason))
+            return new TeamSnapshot { Skipped = new[] { reason! } };
+        return new TeamSnapshot
+        {
+            People = new[]
+            {
+                new TeamPerson
+                {
+                    EntraId = team.GetAttributeValue<Guid>("azureactivedirectoryobjectid"),
+                    Login = TeamPrincipal.Claim(team),
+                    Group = true,
+                },
+            },
+        };
+    }
+
     // An email-shaped UPN. It also matches B2B guests (name_domain#EXT#@tenant). '|' is left out
     // because it separates the parts of a SharePoint claims login.
     private const string Upn = @"\A[a-zA-Z0-9.!#$%&'*+/=?^_`{}~-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\z";
 
-    private static string Clean(string? value, string fallback)
+    internal static string Clean(string? value, string fallback)
     {
         string text = new string((value ?? "").Where(c => !char.IsControl(c)).ToArray()).Trim();
         if (text.Length == 0)
