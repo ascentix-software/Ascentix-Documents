@@ -248,7 +248,9 @@
       ],
       ['Turn automation on', null, !!runtime?.Enabled],
     ];
-    const open = !!runtime && steps.some((s) => !s[2]);
+    // A paused automation is a normal state, shown by the header pill: only the first three
+    // steps hold the problem lists back.
+    const open = !!runtime && steps.slice(0, 3).some((s) => !s[2]);
     monitor.setupOpen = open;
     $('setup-checklist').hidden = !open;
     for (const id of ['monitor-filters', 'monitor-errors', 'problem-table-card'])

@@ -511,6 +511,9 @@ async function boot({
       'Account Name',
       'Tokens read as field labels',
     );
+    // The reason belongs to Publish, so it shows only on the step that has Publish.
+    assert.equal(t.$('publish-reason')?.textContent ?? '', '', 'No publish reason beside Next');
+    await t.step(3);
     assert.equal(t.$('publish').getAttribute('aria-disabled'), 'true');
     assert.equal(t.$('publish-reason').textContent, 'Already published');
   }
@@ -1237,6 +1240,7 @@ async function boot({
       loaded: { RevisionId: 'rev-2', RowVersion: '4', Status: 'Draft', Version: 2, Draft: draft() },
     });
     await role.open();
+    await role.step(3);
     assert.equal(role.$('publish-reason').textContent, 'Needs the Documents Publisher role.');
   }
   {

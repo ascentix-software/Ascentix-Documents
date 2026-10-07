@@ -1274,6 +1274,18 @@ async function boot({
     assert.equal(m.$('problem-table-card').hidden, true);
   }
   {
+    // A paused automation with setup otherwise done is a normal state: the problems stay in view
+    // and the header pill says it is paused.
+    const m = await boot({
+      runtime: { Enabled: false },
+      summary: { BlockedJobs: 1 },
+      lists: { BlockedJobs: [row({ Actions: ['Retry', 'Cancel'] })] },
+    });
+    assert.equal(m.$('setup-checklist').hidden, true);
+    assert.equal(m.$('problem-table-card').hidden, false);
+    assert.equal(m.$('monitor-automation').textContent, 'Automation paused');
+  }
+  {
     // Check a record: disabled until table, template and record are set; the result is readable.
     const m = await boot();
     const check = m.$('check-run');

@@ -268,7 +268,7 @@
     publish.hidden = state.readOnly || state.step !== 3 || (!state.saved && !state.sections.length);
     if (!publish.dataset.busy)
       publish.textContent = 'Publish v' + draftVersion() + (rerunChecked() ? ' and re-run' : '');
-    const reason = publishReason();
+    const reason = publish.hidden ? null : publishReason();
     ui.disable(publish, 'publish-reason', reason);
     publish.classList.toggle('primary', !reason);
     publish.classList.toggle('secondary', !!reason);
