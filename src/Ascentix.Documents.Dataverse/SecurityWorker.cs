@@ -227,7 +227,7 @@ public sealed class SecurityWorker
         {
             if (request.Command != "Claim")
                 claim = Assert(request);
-            else if (claim.Value.LeaseUntilUtc > clock() && !claim.Value.RecoveryPermitted)
+            else if (claim.Value.LeaseUntilUtc > clock())
                 return new WorkerResult { Status = "Quarantined", Key = request.Key };
             claim!.Value.HttpOutstanding = false;
             Release(claim);
@@ -285,7 +285,7 @@ public sealed class SecurityWorker
         {
             if (request.Command != "Claim")
                 claim = Assert(request);
-            else if (claim.Value.LeaseUntilUtc > clock() && !claim.Value.RecoveryPermitted)
+            else if (claim.Value.LeaseUntilUtc > clock())
                 return new WorkerResult { Status = "Quarantined", Key = request.Key };
             claim!.Value.HttpOutstanding = false;
             Release(claim);
@@ -439,7 +439,7 @@ public sealed class SecurityWorker
                 && claim.Value.Token == request.Token
                 && claim.Value.LeaseUntilUtc > clock();
             // Once the lease expires the next claim takes over and reads back any unknown write.
-            if (!same && !claim.Value.RecoveryPermitted && claim.Value.LeaseUntilUtc > clock())
+            if (!same && claim.Value.LeaseUntilUtc > clock())
                 return new WorkerResult { Status = "Quarantined", Key = request.Key };
             if (!same)
             {
@@ -454,7 +454,6 @@ public sealed class SecurityWorker
         claim.Value.RunId = request.RunId;
         claim.Value.Token = Guid.NewGuid();
         claim.Value.LeaseUntilUtc = clock().AddMinutes(5);
-        claim.Value.RecoveryPermitted = false;
         claim.Value.Status = "Claimed";
         store.Save(claim);
         // Recovery reads the outstanding target before any new write; never repeats an ambiguous POST.
@@ -1591,7 +1590,6 @@ public sealed class SecurityWorker
             || claim.Value.RunId != request.RunId
             || claim.Value.OperationKey != request.Key
             || claim.Value.LeaseUntilUtc <= clock()
-            || claim.Value.RecoveryPermitted
         )
             throw new EvaluationBlockedException("Stale security claim.");
         return claim;
@@ -1777,7 +1775,6 @@ public sealed class SecurityWorker
         claim.Value.RunId = null;
         claim.Value.OperationKey = null;
         claim.Value.Token = Guid.Empty;
-        claim.Value.RecoveryPermitted = false;
         claim.Value.Status = "Idle";
         store.Save(claim);
     }

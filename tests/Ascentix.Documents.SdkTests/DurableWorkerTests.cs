@@ -75,27 +75,48 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
-    public void OperatorRecoveryPermitStillWorksOnAnExpiredClaim()
+    public void AnExpiredClaimIsTakenOverWithoutAnyOperatorStep()
     {
         var fixture = new Fixture();
         var claim = fixture.Claim();
         fixture.Now = fixture.Now.AddMinutes(6);
         Assert.Throws<EvaluationBlockedException>(() => fixture.Call("Renew", claim));
-        var request = new WorkerRequest
-        {
-            Key = fixture.Operation.Key,
-            RunId = "run-1",
-            Token = claim.Token,
-            Evidence =
-                "Operator verified prior run terminated and outstanding calls resolved: test receipt",
-        };
-        var permitted = fixture.Service.Transaction(() =>
-            fixture.Coordinator.PermitRecovery(request, true)
-        );
-        Assert.Equal("RecoveryPermitted", permitted.Status);
         var recovered = fixture.Claim("run-2");
         Assert.Equal("Read", recovered.Status);
         Assert.NotEqual(claim.Token, recovered.Token);
+        Assert.Contains(
+            fixture.Service.Rows.Values,
+            r =>
+                r.LogicalName == "asx_attempt"
+                && r.GetAttributeValue<string>("asx_payload").Contains("RecoveryClaim")
+        );
+    }
+
+    [Fact]
+    public void AClaimA0103PermitLeftIsAnOrdinaryExpiredClaim()
+    {
+        var fixture = new Fixture();
+        var claim = fixture.Claim();
+        var row = fixture.Service.Rows[
+            DocumentStore.StableId(
+                "asx_claim:" + WorkCoordination.Operation(fixture.Service, fixture.Operation.Key)
+            )
+        ];
+        // 0.1.0.3 evidence recovery stored these two members on the claim.
+        // The two members are removed first so the payload carries each exactly once, whether or
+        // not the current model still writes them.
+        var payload = System.Text.RegularExpressions.Regex.Replace(
+            row.GetAttributeValue<string>("asx_payload"),
+            "\"(RecoveryPermitted|TerminationEvidence)\":[^,}]*,?",
+            ""
+        );
+        row["asx_payload"] = payload.Replace(
+            "\"HttpOutstanding\"",
+            "\"RecoveryPermitted\":true,\"TerminationEvidence\":\"Run ended.\",\"HttpOutstanding\""
+        );
+        Assert.Equal("Quarantined", fixture.Claim("run-2").Status);
+        fixture.Now = fixture.Now.AddMinutes(6);
+        Assert.Equal("Read", fixture.Claim("run-3").Status);
     }
 
     [Fact]

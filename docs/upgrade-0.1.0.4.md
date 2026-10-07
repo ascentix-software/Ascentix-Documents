@@ -45,10 +45,11 @@ These change what Documents does with existing data. Review them before you upgr
 - **A team deleted in Dataverse loses its library access without blocking the library.** The library shows it as "Deleted team" with its last known name. The next access run removes Documents' grant for the team's Documents group: an admin's **Apply access**, also one that changes only other teams, or the scheduled refresh. Once no library refers to the team, its registration is finished, with a notice. The Documents group stays in SharePoint; Documents does not delete SharePoint groups.
 - **The daily access review covers every library.** It reviews every due library on each run, within half of the 2-minute custom API limit, and continues with the rest on the next run.
 - **SharePoint hosts in every Microsoft cloud.** Hosts may be on `sharepoint.com`, `sharepoint.us` (GCC High), `sharepoint-mil.us` or `dps.mil` (DoD), or `sharepoint.cn` (21Vianet), and there is no host-count limit.
-- **Pre-upgrade work carries on.** Folder jobs, access runs and library setups saved by 0.1.0.3 continue after the upgrade. A setup whose create may have reached SharePoint goes to `RecoveryRequired` (see the [operations guide](operations.md#recovery-and-retries)).
+- **Pre-upgrade work carries on.** Folder jobs, access runs and library setups saved by 0.1.0.3 continue after the upgrade. A setup whose create may have reached SharePoint is looked up in SharePoint when Monitor first lists it (see the [operations guide](operations.md#blocked-or-ambiguous-operation)).
 
 ## What changes
 
+- **Breaking change:** the `asx_RecoverWorker` custom API is removed. Library creations whose outcome was lost are now resolved by a SharePoint check; the evidence form is gone. Remove any script that calls it.
 - **Breaking change:** the `asx_PublishTemplate` result is now JSON, `{Status, Notices}`, instead of the text "Published". Update any caller that compares the result to "Published".
 - The Documents Security Administrator role no longer has write access to the runtime settings row. Runtime changes stay System Administrator only.
 - The runtime-row guard plug-in is removed. The solution has 57 guard steps.

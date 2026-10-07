@@ -597,6 +597,24 @@ public sealed class LibraryProvisioningTests
     }
 
     [Fact]
+    public void ASetupWhose0103RecoveryAlreadySetItsListResumesWithoutCreating()
+    {
+        var (f, key, prepared) = PreparedCreate();
+        Assert.Equal("Permit", f.Permit(prepared).Status);
+        // 0.1.0.3 evidence recovery (held claim): the list ID from the original response, the
+        // answer still marked unknown, the setup Pending, and the claim expired.
+        var setup = f.Store.Require<LibrarySetup>("asx_operation", key);
+        setup.Value.ListId = f.List;
+        setup.Value.Status = "Pending";
+        f.Store.Save(setup);
+        f.Expire(key);
+        f.Exists = true;
+        Assert.Equal("AccessPending", f.Run(key).Status);
+        Assert.DoesNotContain(f.Posts, p => p == "_api/web/lists");
+        Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
+    }
+
+    [Fact]
     public void SetupLeftHoldingTheSiteByAnEarlierVersionReleasesItAtTheNextClaim()
     {
         var (f, key, prepared) = PreparedCreate();
@@ -605,7 +623,6 @@ public sealed class LibraryProvisioningTests
         var setup = f.Store.Require<LibrarySetup>("asx_operation", key);
         setup.Value.Status = "RecoveryRequired";
         f.Store.Save(setup);
-        LegacyPayload.Strip(f.Service, "asx_operation", "RecoveryRunId", "RecoveryToken");
         Assert.Equal(key, f.Claim(key).OperationKey);
         Assert.Equal("Read", f.Call("Claim", new WorkerResult { Key = Other(f) }).Status);
         Assert.Equal("Reconciling", f.Status(key));

@@ -446,7 +446,6 @@ public sealed class SecurityAdministration
             claim?.Value.OperationKey == queued.Value.Key
             && claim.Value.RunId != null
             && claim.Value.LeaseUntilUtc > DateTime.UtcNow
-            && !claim.Value.RecoveryPermitted
         )
             return policy;
         Version(policy.Row, request.RowVersion);

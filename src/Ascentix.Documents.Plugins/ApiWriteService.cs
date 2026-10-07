@@ -15,7 +15,6 @@ public sealed class ApiWriteService : IOrganizationService
     private static readonly string[] Apis =
     {
         "asx_DocumentWorker",
-        "asx_RecoverWorker",
         "asx_SecurityAdmin",
         "asx_RuntimeAdmin",
         "asx_ManageWork",
@@ -84,9 +83,8 @@ public sealed class ApiWriteService : IOrganizationService
     /// Verifies the write tag against the transactional product API ancestry and target.
     /// </summary>
     /// <param name="context">The pre-operation row guard's execution context.</param>
-    /// <param name="catalog">Whether to exclude recovery API authorization for a catalog write.</param>
     /// <returns>Whether the target and write tag match an authorized product API ancestor.</returns>
-    public static bool Authorizes(IPluginExecutionContext context, bool catalog = false)
+    public static bool Authorizes(IPluginExecutionContext context)
     {
         if (
             context.Stage != 20
@@ -123,8 +121,6 @@ public sealed class ApiWriteService : IOrganizationService
                 return false;
             if (Apis.Contains(frame.MessageName))
             {
-                if (catalog && frame.MessageName == "asx_RecoverWorker")
-                    return false;
                 try
                 {
                     return tag != null && tag == Tag(frame, message, target);
@@ -147,7 +143,7 @@ public sealed class ApiWriteService : IOrganizationService
 
     public static bool AuthorizesCatalogIdentityUpgrade(IPluginExecutionContext context)
     {
-        if (!Authorizes(context, true))
+        if (!Authorizes(context))
             return false;
         var frame = context.ParentContext;
         for (int depth = 0; frame != null && depth < 3; depth++, frame = frame.ParentContext)
@@ -229,7 +225,7 @@ public sealed class ApiWriteService : IOrganizationService
         Func<string, bool> matches
     )
     {
-        if (!Authorizes(context, true))
+        if (!Authorizes(context))
             return false;
         var frame = context.ParentContext;
         for (int depth = 0; frame != null && depth < 3; depth++, frame = frame.ParentContext)

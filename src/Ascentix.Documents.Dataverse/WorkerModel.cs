@@ -336,12 +336,6 @@ public sealed class DispatcherDocument : StoredDocument
 
     [DataMember]
     public DateTime LeaseUntilUtc { get; set; }
-
-    [DataMember]
-    public bool RecoveryPermitted { get; set; }
-
-    [DataMember]
-    public string? TerminationEvidence { get; set; }
 }
 
 [DataContract]
@@ -404,9 +398,6 @@ public sealed class WorkerRequest
 
     [DataMember]
     public int HttpStatus { get; set; }
-
-    [DataMember]
-    public string? Evidence { get; set; }
 
     // The failed flow action's HTTP status, error code and message, sent by the flow's failure
     // branches to FailOutbox, FailUnclaimed and Fail. A flow that sends none of them keeps

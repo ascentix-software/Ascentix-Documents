@@ -1118,7 +1118,7 @@ public sealed class CatalogAdministration
                 if (
                     claim?.Value.OperationKey == queued.Value.Key
                     && claim.Value.RunId != null
-                    && (claim.Value.LeaseUntilUtc > clock() || claim.Value.RecoveryPermitted)
+                    && claim.Value.LeaseUntilUtc > clock()
                 )
                     notices.Add(
                         "The access run working on this library stops at its next step. Nothing it already changed in SharePoint is undone."
@@ -1496,8 +1496,7 @@ public sealed class CatalogWorker
                     return new WorkerResult { Status = "Busy", Key = request.Key };
                 // Probes only read: once the lease expires the next claim takes over.
                 if (
-                    !claim.Value.RecoveryPermitted
-                    && claim.Value.LeaseUntilUtc > clock()
+                    claim.Value.LeaseUntilUtc > clock()
                     && (claim.Value.Token != request.Token || claim.Value.RunId != request.RunId)
                 )
                     return new WorkerResult { Status = "Quarantined", Key = request.Key };
@@ -1506,7 +1505,6 @@ public sealed class CatalogWorker
             claim.Value.OperationKey = request.Key;
             claim.Value.RunId = request.RunId;
             claim.Value.Token = Guid.NewGuid();
-            claim.Value.RecoveryPermitted = false;
             claim.Value.LeaseUntilUtc = clock().AddMinutes(5);
             claim.Value.Status = "Claimed";
             store.Save(claim);
@@ -1519,7 +1517,6 @@ public sealed class CatalogWorker
             || claim.Value.RunId != request.RunId
             || claim.Value.Token != request.Token
             || claim.Value.LeaseUntilUtc <= clock()
-            || claim.Value.RecoveryPermitted
         )
             throw new EvaluationBlockedException("Stale catalog probe claim.");
         if (request.Command == "Renew")
@@ -2034,7 +2031,6 @@ public sealed class CatalogWorker
         claim.Value.RunId = null;
         claim.Value.OperationKey = null;
         claim.Value.Token = Guid.Empty;
-        claim.Value.RecoveryPermitted = false;
         claim.Value.Status = "Idle";
         store.Save(claim);
     }

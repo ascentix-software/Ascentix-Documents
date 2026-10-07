@@ -75,26 +75,16 @@ public sealed class DocumentWorkerApi : IPlugin
     }
 }
 
+/// <summary>
+/// Kept so a managed upgrade can delete the asx_RecoverWorker custom API before the type goes.
+/// Nothing calls it; remove in 0.1.0.5.
+/// </summary>
 public sealed class RecoverWorkerApi : IPlugin
 {
-    public void Execute(IServiceProvider provider)
-    {
-        var context = (IPluginExecutionContext)provider.GetService(typeof(IPluginExecutionContext));
-        if (!context.IsInTransaction)
-            throw new InvalidPluginExecutionException("Recovery requires an ambient transaction.");
-        var service = new ApiWriteService(
-            (
-                (IOrganizationServiceFactory)
-                    provider.GetService(typeof(IOrganizationServiceFactory))
-            ).CreateOrganizationService(context.UserId),
-            context
+    public void Execute(IServiceProvider provider) =>
+        throw new InvalidPluginExecutionException(
+            "Evidence-based recovery was removed in 0.1.0.4. Open Monitor: Documents checks SharePoint for you."
         );
-        context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
-        var request = JsonWire.Read<WorkerRequest>((string)context.InputParameters["Request"]);
-        context.OutputParameters["Result"] = JsonWire.Write(
-            new WorkerCoordinator(service).PermitRecovery(request, context.IsInTransaction)
-        );
-    }
 }
 
 public sealed class StateGuard : IPlugin
@@ -147,7 +137,6 @@ public sealed class StateGuard : IPlugin
             && flag;
         bool api =
             parent?.MessageName == "asx_DocumentWorker"
-            || parent?.MessageName == "asx_RecoverWorker"
             || parent?.MessageName == "asx_SecurityAdmin"
             || parent?.MessageName == "asx_RuntimeAdmin"
             || parent?.MessageName == "asx_ManageWork"

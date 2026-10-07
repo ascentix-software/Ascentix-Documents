@@ -18,6 +18,18 @@ for (const match of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
   )
     throw new Error('Nonlocal or missing admin resource: ' + match[1]);
 }
+for (const removed of [
+  'recoveryPanel',
+  'recoveryRun',
+  'recoveryToken',
+  'recoveryEvidence',
+  'recoveryResponse',
+  'recoverOperation',
+  'asx_RecoverWorker',
+  'Open recovery',
+])
+  if (html.includes(removed) || js.includes(removed))
+    throw new Error('Evidence recovery is removed: ' + removed);
 console.log(
   'PASS admin static contract: ' +
     ids.length +

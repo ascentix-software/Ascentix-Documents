@@ -105,8 +105,6 @@ public static class WorkCoordination
         moved.Value.Token = old.Value.Token;
         moved.Value.LeaseUntilUtc = old.Value.LeaseUntilUtc;
         moved.Value.HttpOutstanding = old.Value.HttpOutstanding;
-        moved.Value.RecoveryPermitted = old.Value.RecoveryPermitted;
-        moved.Value.TerminationEvidence = old.Value.TerminationEvidence;
         moved.Value.Status = old.Value.Status;
         store.Save(moved);
         old = store.Require<DispatcherDocument>("asx_claim", from);
@@ -114,13 +112,12 @@ public static class WorkCoordination
         old.Value.RunId = null;
         old.Value.OperationKey = null;
         old.Value.Token = Guid.Empty;
-        old.Value.RecoveryPermitted = false;
         old.Value.Status = "Idle";
         store.Save(old);
     }
 
     /// <summary>
-    /// Frees a site's writer that a library setup awaiting recovery still holds, as an earlier
+    /// Frees a site's writer that a library setup awaiting a lookup or the admin's choice still holds, as an earlier
     /// 0.1.0.4 build left it (see LibraryProvisioning.AwaitRecovery), so it never stops the
     /// site's other work. Returns the claim as it now stands.
     /// </summary>
@@ -132,7 +129,6 @@ public static class WorkCoordination
         string? key = claim.Value.OperationKey;
         if (
             claim.Value.RunId == null
-            || claim.Value.RecoveryPermitted
             || key == null
             || !key.StartsWith("librarycreate:", StringComparison.Ordinal)
         )
@@ -395,7 +391,6 @@ public static class WorkCoordination
         claim.Value.RunId = null;
         claim.Value.OperationKey = null;
         claim.Value.Token = Guid.Empty;
-        claim.Value.RecoveryPermitted = false;
         claim.Value.Status = "Idle";
         store.Save(claim);
         store.Create(
@@ -487,7 +482,6 @@ public static class WorkCoordination
             || claim.OperationKey != request.Key
             || claim.RunId != request.RunId
             || claim.LeaseUntilUtc <= now
-            || claim.RecoveryPermitted
         )
             throw new EvaluationBlockedException(
                 "HTTP admission requires the current site writer."

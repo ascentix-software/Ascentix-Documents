@@ -32,7 +32,6 @@ public sealed class ApiWriteGuardTests
     [InlineData("Update", "asx_DocumentWorker")]
     [InlineData("Update", "asx_RuntimeAdmin")]
     [InlineData("Create", "asx_SecurityAdmin")]
-    [InlineData("Update", "asx_RecoverWorker")]
     public void ExactApiTransportAllowsSingleTargetWrites(string message, string api)
     {
         new StateGuard().Execute(new Provider(Setup("valid", message, api)));
@@ -89,13 +88,16 @@ public sealed class ApiWriteGuardTests
         );
     }
 
-    [Fact]
-    public void RecoveryCannotWriteCatalog()
+    [Theory]
+    [InlineData("asx_RecoverWorker", "asx_operation")]
+    [InlineData("asx_RecoverWorker", "asx_library")]
+    public void TheRemovedRecoveryApiAuthorizesNothing(string api, string table)
     {
         Assert.Throws<InvalidPluginExecutionException>(() =>
-            new CatalogGuard().Execute(
-                new Provider(Setup("valid", "Update", "asx_RecoverWorker", "asx_library"))
-            )
+            new StateGuard().Execute(new Provider(Setup("valid", "Update", api, table)))
+        );
+        Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(new Provider(Setup("valid", "Update", api, table)))
         );
     }
 

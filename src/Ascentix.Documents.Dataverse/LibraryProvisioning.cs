@@ -71,16 +71,6 @@ public sealed class LibrarySetup : OperationDocument
     public bool? WritePermitted { get; set; }
 
     /// <summary>
-    /// The run and claim token that sent a write whose answer was lost. A setup awaiting
-    /// recovery releases its site's writer; evidence-based recovery still names this exact run.
-    /// </summary>
-    [DataMember]
-    public string? RecoveryRunId { get; set; }
-
-    [DataMember]
-    public Guid RecoveryToken { get; set; }
-
-    /// <summary>
     /// True while Documents looks SharePoint up for a create whose answer was lost: the run only
     /// reads (ReconcileTitle, ReconcileUrl) and never prepares a write (spec 6.8).
     /// </summary>
@@ -348,7 +338,7 @@ public sealed class LibraryProvisioning
     /// True when the setup's prepared write was never permitted, so SharePoint never received
     /// it: a pause, a lost Prepare response or a run that ended before its permit. A setup
     /// stored before the permit was recorded (null) counts as possibly sent: nothing stored by
-    /// an earlier release tells the two apart, so it keeps evidence-based recovery, and Cancel.
+    /// an earlier release tells the two apart, so it is looked up in SharePoint, and Cancel.
     /// </summary>
     /// <param name="op">The library setup.</param>
     internal static bool NeverSent(LibrarySetup op) =>
@@ -371,8 +361,6 @@ public sealed class LibraryProvisioning
         if (HeldBy(op, claim) is { } held)
         {
             leaseEnd = held.Value.LeaseUntilUtc;
-            op.Value.RecoveryRunId = held.Value.RunId;
-            op.Value.RecoveryToken = held.Value.Token;
             ReleaseHeld(store, held);
         }
         if (LostCreate(op.Value))
@@ -409,7 +397,6 @@ public sealed class LibraryProvisioning
         claim.Value.OperationKey = null;
         claim.Value.RunId = null;
         claim.Value.Token = Guid.Empty;
-        claim.Value.RecoveryPermitted = false;
         claim.Value.Status = "Idle";
         store.Save(claim);
     }
@@ -449,7 +436,7 @@ public sealed class LibraryProvisioning
     /// Holds a setup while its site is suspended: it waits in RetryWait with a notice, its next
     /// check backs off (at most 15 minutes apart), so it takes no dispatch slot meanwhile, and it
     /// resumes by itself once the site is approved again. A create that may have reached
-    /// SharePoint is left to evidence-based recovery. Null when the site is not suspended.
+    /// SharePoint is looked up instead. Null when the site is not suspended.
     /// </summary>
     private WorkerResult? Suspended(WorkerRequest request, StoredRow<LibrarySetup> op)
     {
@@ -462,7 +449,7 @@ public sealed class LibraryProvisioning
         // Another run holding the site's writer is no reason to stay listed: this setup is not
         // claimed, so it waits with the same backoff and takes no dispatch slot meanwhile.
         bool held = claim?.Value.RunId != null && claim.Value.OperationKey == request.Key;
-        if (held && claim!.Value.LeaseUntilUtc > clock() && !claim.Value.RecoveryPermitted)
+        if (held && claim!.Value.LeaseUntilUtc > clock())
             return new WorkerResult { Status = "Quarantined", Key = request.Key };
         if (NeverSent(op.Value))
             Unsend(op.Value);
@@ -627,6 +614,16 @@ public sealed class LibraryProvisioning
             var held = Suspended(request, op);
             if (held != null)
                 return held;
+            // Legacy shim: 0.1.0.3 evidence recovery set the list ID from the original create
+            // response and left the answer marked unknown. The list ID settles it; the run reads
+            // that library by ID. Remove after 0.1.0.5.
+            if (
+                op.Value.ExternalSubmitted
+                && !op.Value.ExternalResponseKnown
+                && op.Value.Mutation == "CreateLibrary"
+                && op.Value.ListId != Guid.Empty
+            )
+                op.Value.ExternalResponseKnown = true;
             var site = service.Retrieve(
                 "asx_site",
                 op.Value.SiteId,
@@ -665,7 +662,7 @@ public sealed class LibraryProvisioning
             {
                 if (claim.Value.OperationKey != request.Key)
                     return new WorkerResult { Status = "Busy", Key = request.Key };
-                bool live = claim.Value.LeaseUntilUtc > clock() && !claim.Value.RecoveryPermitted;
+                bool live = claim.Value.LeaseUntilUtc > clock();
                 if (op.Value.Reconcile)
                 {
                     // A lookup only reads: once the lease of the run that held it ends, the next run takes it over.
@@ -676,7 +673,7 @@ public sealed class LibraryProvisioning
                 else
                 {
                     // An expired lease is taken over only when no library write is outstanding; an
-                    // unknown write keeps operator recovery, since a second create could duplicate it.
+                    // unknown write is looked up in SharePoint, since a second create could duplicate it.
                     bool unknownWrite =
                         op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
                     // A prepared write the connection never permitted was never sent: the run that
@@ -686,10 +683,7 @@ public sealed class LibraryProvisioning
                         Unsend(op.Value);
                         unknownWrite = false;
                     }
-                    if (
-                        !claim.Value.RecoveryPermitted
-                        && (claim.Value.LeaseUntilUtc > clock() || unknownWrite)
-                    )
+                    if (claim.Value.LeaseUntilUtc > clock() || unknownWrite)
                     {
                         if (unknownWrite && claim.Value.LeaseUntilUtc <= clock())
                         {
@@ -701,14 +695,6 @@ public sealed class LibraryProvisioning
                         return new WorkerResult { Status = "Quarantined", Key = request.Key };
                     }
                     claim.Value.HttpOutstanding = false;
-                    if (
-                        unknownWrite
-                        && op.Value.Mutation == "CreateLibrary"
-                        && op.Value.ListId == Guid.Empty
-                    )
-                        throw new EvaluationBlockedException(
-                            "Unknown library creation needs physical identity reconciliation; a same-name library must not be adopted automatically."
-                        );
                     op.Value.ExternalResponseKnown = true;
                 }
             }
@@ -716,7 +702,6 @@ public sealed class LibraryProvisioning
             claim.Value.RunId = request.RunId;
             claim.Value.Token = Guid.NewGuid();
             claim.Value.LeaseUntilUtc = clock().AddMinutes(5);
-            claim.Value.RecoveryPermitted = false;
             claim.Value.Status = "Claimed";
             store.Save(claim);
             if (op.Value.Reconcile)
@@ -743,7 +728,6 @@ public sealed class LibraryProvisioning
             || request.Token == Guid.Empty
             || lease.Value.Token != request.Token
             || lease.Value.LeaseUntilUtc <= clock()
-            || lease.Value.RecoveryPermitted
         )
             throw new EvaluationBlockedException("Stale library setup claim.");
         if (request.Command == "Renew")
@@ -1245,7 +1229,6 @@ public sealed class LibraryProvisioning
         claim.Value.OperationKey = null;
         claim.Value.RunId = null;
         claim.Value.Token = Guid.Empty;
-        claim.Value.RecoveryPermitted = false;
         claim.Value.Status = "Idle";
         store.Save(claim);
     }
@@ -1402,8 +1385,6 @@ public sealed class LibraryProvisioning
             // Register, which adopts this site's catalog entry for it (A10). No create is prepared.
             op.Value.ListId = candidate.ListId;
             op.Value.ExternalResponseKnown = true;
-            op.Value.RecoveryRunId = null;
-            op.Value.RecoveryToken = Guid.Empty;
             op.Value.Status = "Pending";
             receipt = "RecoveryUseLibrary:" + candidate.ListId.ToString("D");
         }

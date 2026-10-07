@@ -162,7 +162,7 @@ flowchart TD
     Prepare --> Post[Execute SharePoint create request]
     Post -->|Known response| Verify
     Post -->|Outcome uncertain| Unknown[ExternalUnknown: retain unresolved writer]
-    Unknown --> Recovery[Establish old run is stopped; authorize recovery]
+    Unknown --> Recovery[Look SharePoint up; admin chooses from the finding]
     Recovery --> Inspect
     Verify --> Complete[Complete native navigation and durable result]
 ```

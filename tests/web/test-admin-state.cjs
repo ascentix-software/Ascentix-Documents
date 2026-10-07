@@ -324,8 +324,6 @@ async function change(n, value) {
   const before = requests.length;
   await nodes.loadRuntime.onclick();
   assert.match(nodes.status.textContent, /No runtime profile is installed/);
-  await nodes.recoverOperation.onclick();
-  assert.match(nodes.status.textContent, /Select the expired operation/);
   assert.equal(requests.length, before, 'Prerequisite errors must not submit product APIs');
   await change(nodes.table, '');
   assert.equal(nodes.record.disabled, true);
@@ -952,11 +950,13 @@ async function change(n, value) {
       nodes.status.textContent,
       'Job cancelled. Nothing in SharePoint was undone or deleted.',
     );
-    // A library setup that needs recovery opens the recovery panel, filled in for it.
+    // A library setup whose create is unknown shows its status; its choices come from Monitor's lookup.
     const lost = nodes.blockedJobs.children[2];
     assert.match(lost.textContent, /librarycreate:lost · Library setup · Needs recovery/);
-    const open = lost.children.find((n) => n.textContent === 'Open recovery');
-    assert(open, 'RecoveryRequired offers the recovery panel');
+    assert.equal(
+      lost.children.find((n) => n.textContent === 'Open recovery'),
+      undefined,
+    );
     const inspected = [];
     xrm.WebApi.online.execute = async (req) => {
       assert.equal(req.getMetadata().operationName, 'asx_ManageWork');
@@ -967,23 +967,14 @@ async function change(n, value) {
           Result: JSON.stringify({
             Status: 'RecoveryRequired',
             Notices: ['Library request outcome is unknown.'],
-            RunId: 'flow/run-7',
-            Token: '11111111-2222-3333-4444-555555555555',
-            LeaseUntilUtc: '2026-10-05T17:05:00Z',
           }),
         }),
       };
     };
-    nodes.operations.open = false;
-    nodes.recoveryPanel.open = false;
-    await open.onclick();
+    nodes.operationKey.value = 'librarycreate:lost';
+    await nodes.inspectOperationKey.onclick();
     assert.deepEqual(inspected, [{ Command: 'Inspect', Key: 'librarycreate:lost' }]);
-    assert.equal(nodes.operations.open, true);
-    assert.equal(nodes.recoveryPanel.open, true);
     assert.equal(nodes.operation.value, 'librarycreate:lost');
-    assert.equal(nodes.operationKey.value, 'librarycreate:lost');
-    assert.equal(nodes.recoveryRun.value, 'flow/run-7');
-    assert.equal(nodes.recoveryToken.value, '11111111-2222-3333-4444-555555555555');
     assert.match(nodes.operationStatus.textContent, /RecoveryRequired/);
     // Any operation can be inspected by its pasted key, beyond the latest 50.
     nodes.operationKey.value = '  folderjob:old  ';
@@ -1012,17 +1003,6 @@ async function change(n, value) {
     assert.equal(nodes.operation.value, 'folderjob:old');
     assert.match(nodes.status.textContent, /Operation not found/);
     xrm.WebApi.online.execute = working;
-    const recorded = [];
-    xrm.WebApi.online.execute = async (req) => {
-      recorded.push([req.getMetadata().operationName, JSON.parse(req.Request)]);
-      return { ok: true, json: async () => ({ Result: JSON.stringify({ Status: 'Pending' }) }) };
-    };
-    nodes.recoveryEvidence.value = 'Run flow/run-7 was cancelled; no call outstanding.';
-    nodes.operation.value = 'librarycreate:lost';
-    await nodes.recoverOperation.onclick();
-    assert.equal(recorded[0][0], 'asx_RecoverWorker');
-    assert.equal(recorded[0][1].Key, 'librarycreate:lost');
-    assert.equal(recorded[0][1].RunId, 'flow/run-7');
     nodes.operationKey.value = '';
     await nodes.inspectOperationKey.onclick();
     assert.match(nodes.status.textContent, /Paste an operation key/);

@@ -446,8 +446,7 @@ Select up to five records for a published-revision impact review.</pre>
           <h4>Blocked jobs</h4>
           <p class="hint">
             Folder, access and library jobs that stopped on an error that is not temporary, and
-            library setups that need recovery. Fix the cause, then retry, or open the recovery
-            panel.
+            library setups that need recovery. Fix the cause, then retry.
           </p>
           <button id="loadBlockedJobs" class="secondary">Load blocked jobs</button>
           <ul id="blockedJobs"></ul>
@@ -461,7 +460,7 @@ Select up to five records for a published-revision impact review.</pre>
           <button id="moreWaitingJobs" class="secondary" hidden>Load more</button>
         </details>
         <details id="operations" class="card">
-          <summary>Operations and recovery</summary>
+          <summary>Operations</summary>
           <button id="loadOperations" class="secondary">Load latest 50 operations</button
           ><label
             >Operation<select id="operation">
@@ -475,23 +474,6 @@ Select up to five records for a published-revision impact review.</pre>
             <button id="retryOperation" class="secondary">Retry after repair</button
             ><button id="cancelOperation" class="secondary">Cancel unstarted work</button>
           </div>
-          <details id="recoveryPanel">
-            <summary>Expired writer recovery</summary>
-            <p>
-              Verify the prior flow run has terminated and outstanding calls have resolved before
-              permitting recovery. Expiry alone is insufficient.
-            </p>
-            <label>Exact prior run identity<input id="recoveryRun" /></label
-            ><label>Exact prior claim token<input id="recoveryToken" /></label
-            ><label>Termination and outstanding-call evidence<input id="recoveryEvidence" /></label
-            ><label
-              >Original successful library-create response (only for an unknown new-library
-              result)<textarea
-                id="recoveryResponse"
-                placeholder="Copy the successful HTTP response body from the exact prior run. Do not substitute a library found by name."
-              ></textarea></label
-            ><button id="recoverOperation">Record recovery permit</button>
-          </details>
         </details>
 
         <footer class="footer">

@@ -1873,8 +1873,7 @@
     const prefix = Object.keys(jobKinds).find((p) => (key || '').startsWith(p));
     return prefix ? jobKinds[prefix] : 'Folder job';
   }
-  // One listed job: its key, kind, notice and time, with Retry and Cancel. A job in
-  // RecoveryRequired also opens the recovery panel, filled in for it.
+  // One listed job: its key, kind, notice and time, with Retry and Cancel.
   function renderJob(list, row, when) {
     const job = blockedWork(row);
     const item = document.createElement('li');
@@ -1909,22 +1908,6 @@
         );
       });
     item.append(retry);
-    if (job.Status === 'RecoveryRequired' && job.Key)
-      item.append(
-        button('Open recovery', () =>
-          task(async () => {
-            $('operations').open = true;
-            $('recoveryPanel').open = true;
-            $('operationKey').value = job.Key;
-            await inspectOperation(job.Key);
-            message(
-              'Recovery panel filled in for ' +
-                job.Key +
-                '. Add the termination evidence and, for a new library, the original create response.',
-            );
-          }),
-        ),
-      );
     item.append(...cancelJob(job, [retry]));
     list.append(item);
   }
@@ -2045,8 +2028,7 @@
       message('Latest operations loaded. This is a bounded activity view.');
     });
   const operationKeyPrefixes = ['folderjob:', 'librarycreate:', 'catalogprobe:', 'policywork:'];
-  // Inspects one operation for the recovery panel: one picked from the latest operations, a
-  // pasted key, or a job opened from Blocked jobs.
+  // Inspects one operation: one picked from the latest operations or a pasted key.
   async function inspectOperation(key) {
     const result = JSON.parse(
       await api('asx_ManageWork', {
@@ -2062,9 +2044,6 @@
       '\n' +
       (result.Notices || []).join('\n') +
       (result.LeaseUntilUtc ? '\nClaim expiry: ' + result.LeaseUntilUtc : '');
-    $('recoveryResponse').value = '';
-    $('recoveryRun').value = result.RunId || '';
-    $('recoveryToken').value = result.RunId ? result.Token : '';
   }
   $('operation').onchange = () =>
     task(async () => {
@@ -2096,32 +2075,6 @@
   }
   $('retryOperation').onclick = () => task(() => manage('Retry'));
   $('cancelOperation').onclick = () => task(() => manage('Cancel'));
-  $('recoverOperation').onclick = () =>
-    task(async () => {
-      if (!$('operation').value)
-        throw new Error('Select the expired operation before recording recovery evidence.');
-      if (
-        !$('recoveryRun').value ||
-        !validGuid($('recoveryToken').value) ||
-        !$('recoveryEvidence').value.trim()
-      )
-        throw new Error(
-          'Provide the exact prior run, a valid claim token and verified termination evidence. Recovery is unavailable without all three.',
-        );
-      if (!$('operation').value) throw new Error('Select an operation.');
-      const result = JSON.parse(
-        await api('asx_RecoverWorker', {
-          Request: JSON.stringify({
-            Key: $('operation').value,
-            RunId: $('recoveryRun').value,
-            Token: $('recoveryToken').value,
-            Evidence: $('recoveryEvidence').value,
-            ResponseBody: $('recoveryResponse').value || null,
-          }),
-        }),
-      );
-      message('Recovery audit recorded: ' + result.Status);
-    });
   $('replanRecord').onclick = () =>
     task(async () => {
       if (!state.root || !$('record').value) throw new Error('Select a table and record first.');
@@ -2146,8 +2099,6 @@
           '. Editor changes are not published by this action.',
       );
     });
-  const validGuid = (value) =>
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value || '');
   async function runtimeRows() {
     const rows = await xrm.WebApi.retrieveMultipleRecords(
       'asx_runtime',

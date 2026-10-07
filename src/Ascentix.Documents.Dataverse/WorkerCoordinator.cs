@@ -535,11 +535,7 @@ public sealed class WorkerCoordinator
                 && dispatcher.Value.LeaseUntilUtc > clock();
             // A live claim of another run is left alone. Once its lease expires (5 minutes, at
             // least twice the connector timeout) the next claim takes over and re-reads.
-            if (
-                !sameLiveRun
-                && !dispatcher.Value.RecoveryPermitted
-                && dispatcher.Value.LeaseUntilUtc > clock()
-            )
+            if (!sameLiveRun && dispatcher.Value.LeaseUntilUtc > clock())
                 return new WorkerResult { Status = "Quarantined", Key = request.Key };
             recovery = !sameLiveRun;
         }
@@ -580,7 +576,6 @@ public sealed class WorkerCoordinator
         dispatcher.Value.RunId = request.RunId;
         dispatcher.Value.Token = Guid.NewGuid();
         dispatcher.Value.LeaseUntilUtc = clock().AddMinutes(5);
-        dispatcher.Value.RecoveryPermitted = false;
         dispatcher.Value.Status = "Claimed";
         store.Save(dispatcher);
         Audit(request.Key, request.RunId, recovery ? "RecoveryClaim" : "Claim");
@@ -1237,101 +1232,6 @@ public sealed class WorkerCoordinator
         return Block(operation, dispatcher, "WorkerFailed");
     }
 
-    public WorkerResult PermitRecovery(WorkerRequest request, bool inTransaction)
-    {
-        if (!inTransaction)
-            throw new EvaluationBlockedException("Recovery requires a transaction.");
-        var dispatcher = store.Require<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(service, request.Key)
-        );
-        bool held = dispatcher.Value.RunId != null && dispatcher.Value.OperationKey == request.Key;
-        // A library setup awaiting recovery released its site's writer and kept the identity of
-        // the run that sent the lost write (LibraryProvisioning.AwaitRecovery).
-        var awaiting = request.Key.StartsWith("librarycreate:", StringComparison.Ordinal)
-            ? store.Require<LibrarySetup>("asx_operation", request.Key)
-            : null;
-        bool released =
-            !held
-            && awaiting?.Value.Status == "RecoveryRequired"
-            && awaiting.Value.RecoveryRunId != null;
-        if (
-            (
-                held
-                    ? dispatcher.Value.RunId != request.RunId
-                        || dispatcher.Value.Token != request.Token
-                        || dispatcher.Value.LeaseUntilUtc > clock()
-                    : !released
-                        || awaiting!.Value.RecoveryRunId != request.RunId
-                        || awaiting.Value.RecoveryToken != request.Token
-            )
-            || request.Token == Guid.Empty
-            // Evidence is the operator's own words, of any length; the request carrying it is
-            // bounded by the 500,000-character payload limit (JsonWire).
-            || string.IsNullOrWhiteSpace(request.Evidence)
-        )
-            throw new EvaluationBlockedException(
-                "Expired exact writer identity and operator-confirmed termination/outstanding-call evidence required."
-            );
-        if (awaiting != null)
-        {
-            var setup = awaiting;
-            if (setup.Value.Mutation == "CreateLibrary" && setup.Value.ListId == Guid.Empty)
-            {
-                // The evidence is judged by what it says, not by its size: a real create
-                // response is several kilobytes of verbose OData around the Id and Title.
-                if (string.IsNullOrWhiteSpace(request.ResponseBody))
-                    throw new EvaluationBlockedException(
-                        "Recover the successful original create response from the terminated flow run. A same-name lookup is insufficient."
-                    );
-                var created = JsonWire
-                    .Read<ODataEnvelope<CreatedLibrary>>(request.ResponseBody!)
-                    .Data;
-                if (
-                    created == null
-                    || created.Id == Guid.Empty
-                    || created.Title != setup.Value.Name
-                )
-                    throw new EvaluationBlockedException(
-                        "Original creation response must identify the requested library by ID and title."
-                    );
-                setup.Value.ListId = created.Id;
-                store.Save(setup);
-                Audit(
-                    request.Key,
-                    request.RunId,
-                    "RecoveredCreateResponse:" + DocumentStore.ContentHash(request.ResponseBody!)
-                );
-                setup = store.Require<LibrarySetup>("asx_operation", request.Key);
-            }
-            // List the permitted setup again so the dispatcher resumes it.
-            if (setup.Value.Status == "RecoveryRequired")
-            {
-                setup.Value.Status = "Pending";
-                if (released)
-                {
-                    // The evidence settles the lost answer, as a takeover of a permitted claim
-                    // does: the next run claims the writer like any job and reads first.
-                    setup.Value.ExternalResponseKnown = true;
-                    setup.Value.RecoveryRunId = null;
-                    setup.Value.RecoveryToken = Guid.Empty;
-                }
-                store.Save(setup);
-            }
-        }
-        if (released)
-        {
-            Audit(request.Key, request.RunId, "OperatorRecoveryPermit:" + request.Evidence);
-            return new WorkerResult { Status = "RecoveryPermitted", Key = request.Key };
-        }
-        dispatcher.Value.HttpOutstanding = false;
-        dispatcher.Value.RecoveryPermitted = true;
-        dispatcher.Value.TerminationEvidence = request.Evidence;
-        store.Save(dispatcher);
-        Audit(request.Key, request.RunId, "OperatorRecoveryPermit");
-        return new WorkerResult { Status = "RecoveryPermitted", Key = request.Key };
-    }
-
     /// <summary>
     /// Whether the job has no write in SharePoint whose result is still to come, and is not
     /// finished: an admin stop may end or hold it at its next step.
@@ -1360,7 +1260,7 @@ public sealed class WorkerCoordinator
             return null;
         if (request.Command != "Claim")
             claim = Assert(request);
-        else if (!claim.Value.RecoveryPermitted && claim.Value.LeaseUntilUtc > clock())
+        else if (claim.Value.LeaseUntilUtc > clock())
             return new WorkerResult { Status = "Busy", Key = request.Key };
         claim.Value.HttpOutstanding = false;
         Release(claim);
@@ -1533,7 +1433,6 @@ public sealed class WorkerCoordinator
             || row.Value.RunId != request.RunId
             || row.Value.OperationKey != request.Key
             || row.Value.LeaseUntilUtc <= clock()
-            || row.Value.RecoveryPermitted
         )
             throw new EvaluationBlockedException("Stale or mismatched worker claim.");
         return row;
@@ -1800,7 +1699,6 @@ public sealed class WorkerCoordinator
         dispatcher.Value.RunId = null;
         dispatcher.Value.OperationKey = null;
         dispatcher.Value.Token = Guid.Empty;
-        dispatcher.Value.RecoveryPermitted = false;
         dispatcher.Value.Status = "Idle";
         store.Save(dispatcher);
     }

@@ -6,8 +6,8 @@ namespace Ascentix.Documents.Dataverse;
 /// <summary>
 /// What a paused runtime refuses. Pause stops new work; it never refuses to record the outcome
 /// of work already under way, above all the answer to a SharePoint write the product already
-/// permitted. A refused answer is lost, and a library create whose answer is lost needs manual
-/// recovery.
+/// permitted. A refused answer is lost, and a library create whose answer is lost has to be
+/// looked up in SharePoint.
 /// </summary>
 public static class WorkerPause
 {

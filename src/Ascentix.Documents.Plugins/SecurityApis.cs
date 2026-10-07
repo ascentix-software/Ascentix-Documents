@@ -92,12 +92,6 @@ public sealed class ManageWorkApi : IPlugin
                 )
                 ?.Value;
             bool owns = claim?.OperationKey == request.Key;
-            // A library setup awaiting recovery released its site's writer; it keeps the run
-            // that sent the lost write, which recovery names.
-            var awaiting =
-                !owns && request.Key.StartsWith("librarycreate:", StringComparison.Ordinal)
-                    ? store.Require<LibrarySetup>("asx_operation", request.Key).Value
-                    : null;
             context.OutputParameters["Result"] = JsonWire.Write(
                 new WorkerResult
                 {
@@ -107,11 +101,8 @@ public sealed class ManageWorkApi : IPlugin
                         operation.ErrorCode == null
                             ? Array.Empty<string>()
                             : new[] { operation.ErrorCode },
-                    RunId = owns ? claim!.RunId : awaiting?.RecoveryRunId,
-                    Token =
-                        owns ? claim!.Token
-                        : awaiting?.RecoveryRunId != null ? awaiting.RecoveryToken
-                        : Guid.Empty,
+                    RunId = owns ? claim!.RunId : null,
+                    Token = owns ? claim!.Token : Guid.Empty,
                     LeaseUntilUtc = owns ? claim!.LeaseUntilUtc : (DateTime?)null,
                     Recovery = recovery,
                 }
@@ -163,7 +154,7 @@ public sealed class CatalogGuard : IPlugin
     public void Execute(IServiceProvider provider)
     {
         var context = (IPluginExecutionContext)provider.GetService(typeof(IPluginExecutionContext));
-        bool transported = ApiWriteService.Authorizes(context, true);
+        bool transported = ApiWriteService.Authorizes(context);
         string message = context.MessageName;
         // A site or library is deleted only by the catalog API's Remove command, once nothing
         // refers to it any more.

@@ -64,7 +64,7 @@ public sealed class WorkCoordinationTests
     }
 
     [Fact]
-    public void UnknownRequestKeepsSlotAndRequiresExactRecoveryBeforeAnotherRequest()
+    public void UnknownRequestKeepsSlotUntilTheNextClaimTakesItOver()
     {
         var f = new Fixture();
         var a = f.Claim("a");
@@ -81,15 +81,15 @@ public sealed class WorkCoordinationTests
         Assert.Throws<EvaluationBlockedException>(() => f.Store.Save(claim));
         f.Now = f.Now.AddMinutes(6);
         Assert.Throws<EvaluationBlockedException>(() => f.Begin(a));
-        a.Evidence = "Original flow terminated; outstanding HTTP completion verified.";
-        new WorkerCoordinator(f.Service, () => f.Now).PermitRecovery(a, true);
-        Assert.False(
+        // Without evidence recovery the writer stays reserved until the job's next claim takes it
+        // over and reads back first (DurableWorkerTests.AnExpiredClaimIsTakenOverWithoutAnyOperatorStep).
+        Assert.True(
             f.Store.Require<DispatcherDocument>(
                 "asx_claim",
                 WorkCoordination.Operation(f.Service, a.Key)
             ).Value.HttpOutstanding
         );
-        Assert.True(WorkCoordination.Busy(f.Service)); // Recovery permits takeover; it does not itself release the writer.
+        Assert.True(WorkCoordination.Busy(f.Service));
     }
 
     [Fact]

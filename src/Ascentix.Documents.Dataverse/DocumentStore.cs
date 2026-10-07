@@ -281,8 +281,8 @@ public sealed class DocumentStore
         var claim = Find<DispatcherDocument>("asx_claim", WorkCoordination.Operation(service, key));
         bool held = claim?.Value.OperationKey == key && claim.Value.RunId != null;
         bool unknown = op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
-        // A live claim belongs to a running flow (or an operator recovery): leave it alone.
-        if (held && (claim!.Value.LeaseUntilUtc > now || claim.Value.RecoveryPermitted))
+        // A live claim belongs to a running flow: leave it alone.
+        if (held && claim!.Value.LeaseUntilUtc > now)
             return new WorkerResult { Status = "Quarantined", Key = key };
         if (op.Value is LibrarySetup lookup && lookup.Reconcile)
             return LibraryProvisioning.LookupClaimFailed(
@@ -378,7 +378,6 @@ public sealed class DocumentStore
         dispatcher.Value.RunId = null;
         dispatcher.Value.OperationKey = null;
         dispatcher.Value.Token = Guid.Empty;
-        dispatcher.Value.RecoveryPermitted = false;
         dispatcher.Value.Status = "Idle";
         Save(dispatcher);
         Create(
