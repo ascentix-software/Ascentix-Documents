@@ -1,7 +1,9 @@
 name: documents-plugins-$(Date:yyyyMMdd)-$(Rev:r)
+# Pushes to main build here; other branches build through their pull request, so a commit
+# on a branch with an open PR runs once.
 trigger:
   branches:
-    include: ['*']
+    include: ['main']
   paths:
     include: ['src/*', 'tests/*', 'Directory.Build.props', 'NuGet.Config', 'Ascentix.Documents.sln', 'scripts/build-plugins.ps1', 'scripts/verify-source-boundary.ps1', 'pipelines/plugins-ci.yml']
 pr:
