@@ -13,7 +13,7 @@ const source = fs.readFileSync(
 );
 const ID = '0a1b2c3d-0000-4000-8000-00000000abcd';
 const PENDING =
-  "Folders are being created in SharePoint. Documents appears here when they're ready.";
+  'Folders are being created in SharePoint. The Documents tab will be visible when complete.';
 const LATE =
   "Folders aren't ready yet. Reopen this record later, or ask an administrator to check Monitor in Ascentix Documents.";
 const QUERY =

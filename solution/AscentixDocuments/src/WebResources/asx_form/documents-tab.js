@@ -12,7 +12,7 @@
   const NAV = 'navSPDocuments';
   const NOTICE = 'asx-documents-pending';
   const PENDING =
-    "Folders are being created in SharePoint. Documents appears here when they're ready.";
+    'Folders are being created in SharePoint. The Documents tab will be visible when complete.';
   const LATE =
     "Folders aren't ready yet. Reopen this record later, or ask an administrator to check Monitor in Ascentix Documents.";
   // Re-check every 5 seconds for up to 2 minutes.

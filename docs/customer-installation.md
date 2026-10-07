@@ -31,7 +31,7 @@ The solution includes a form script that hides Documents until the record has a 
 3. Optional: if the form shows documents elsewhere, such as a tab with a Documents subgrid, list those tabs or sections in the handler's parameters, quoted and comma-separated: `"tab_documents", "tab_summary.section_files"` (a section is `tab.section`). The Related › Documents item is always handled. A name the form does not have is ignored.
 4. Save and publish the form.
 
-A new record keeps Documents hidden until it is saved. An existing record without a location keeps it hidden and shows "Folders are being created in SharePoint. Documents appears here when they're ready." The form checks every 5 seconds and shows Documents as soon as the location exists. After 2 minutes it stops checking and says "Folders aren't ready yet. Reopen this record later, or ask an administrator to check Monitor in Ascentix Documents." If a user cannot read document locations, Documents is shown as usual. Users do not need a Documents role for the script.
+A new record keeps Documents hidden until it is saved. An existing record without a location keeps it hidden and shows "Folders are being created in SharePoint. The Documents tab will be visible when complete." The form checks every 5 seconds and shows Documents as soon as the location exists. After 2 minutes it stops checking and says "Folders aren't ready yet. Reopen this record later, or ask an administrator to check Monitor in Ascentix Documents." If a user cannot read document locations, Documents is shown as usual. Users do not need a Documents role for the script.
 
 ## Recovery and upgrade record
 
