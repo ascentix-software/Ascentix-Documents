@@ -629,6 +629,26 @@ public sealed class TemplateRunTests
     }
 
     [Fact]
+    public void CountRefusesATableThatIsNotEnabledAsStartDoes()
+    {
+        var f = Setup(5);
+        var runs = new TemplateRun(f.Service, Array.Empty<string>(), () => f.Now);
+        var counted = Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() => runs.Count(f.TemplateId))
+        );
+        var started = Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() =>
+                runs.Start(
+                    new WorkerRequest { TemplateId = f.TemplateId, RequestId = Guid.NewGuid() },
+                    Admin
+                )
+            )
+        );
+        Assert.Equal(WorkerCoordinator.TableNotEnabled("account"), counted.Message);
+        Assert.Equal(started.Message, counted.Message);
+    }
+
+    [Fact]
     public void AnOperatorWhoCannotReadTheTableOrUsersStartsARunThroughTheWorker()
     {
         var f = Setup(3);

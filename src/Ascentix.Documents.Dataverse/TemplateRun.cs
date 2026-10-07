@@ -220,7 +220,9 @@ public sealed class TemplateRun
 
     /// <summary>
     /// About how many records a re-run of the template covers: the platform's daily row-count
-    /// snapshot of its table, read as the worker. Writes nothing and runs no aggregate.
+    /// snapshot of its table, read as the worker. Writes nothing and runs no aggregate. A table
+    /// that is not enabled is refused as Start refuses it, so the worker's read never reveals the
+    /// size of a table outside Documents.
     /// </summary>
     public WorkerResult Count(Guid templateId)
     {
@@ -228,6 +230,8 @@ public sealed class TemplateRun
             TemplateLifecycle.Find(service, templateId)
             ?? throw new EvaluationBlockedException("The template was deleted.");
         string table = TemplateStore.Text(template, "asx_table");
+        if (!allowed.Contains(table))
+            throw new EvaluationBlockedException(WorkerCoordinator.TableNotEnabled(table));
         if (TableInfo.Find(service, table) == null)
             throw new EvaluationBlockedException(TableGone);
         return new WorkerResult
