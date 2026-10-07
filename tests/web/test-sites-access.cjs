@@ -1902,6 +1902,135 @@ const stage = (team, access) => {
     );
   }
   {
+    // A site Dynamics has not validated yet holds Add existing library and Create library until
+    // Check again finds it Valid (validationstatus 4); its libraries stay as they are. A Valid
+    // site looks as it always has.
+    const heldSite = {
+        asx_siteid: id(80),
+        asx_name: 'Awaiting',
+        asx_approved: true,
+        asx_url: 'https://example.sharepoint.com/sites/awaiting',
+        _asx_nativeid_value: id(81),
+      },
+      validSite = {
+        asx_siteid: id(82),
+        asx_name: 'Validated',
+        asx_approved: true,
+        asx_url: 'https://example.sharepoint.com/sites/validated',
+        _asx_nativeid_value: id(83),
+      },
+      status = new Map([
+        [id(81), 2],
+        [id(83), 4],
+      ]),
+      labels = { 2: 'In Progress', 4: 'Valid' },
+      native = (key) => ({
+        sharepointsiteid: key,
+        validationstatus: status.get(key),
+        'validationstatus@OData.Community.Display.V1.FormattedValue': labels[status.get(key)],
+      }),
+      sent = [],
+      nativeReads = [];
+    const heldXrm = {
+      Utility: xrm.Utility,
+      Navigation: xrm.Navigation,
+      WebApi: {
+        retrieveMultipleRecords: async (table, options) => {
+          if (table === 'sharepointsite') {
+            nativeReads.push(options);
+            return { entities: [...status.keys()].filter((k) => options.includes(k)).map(native) };
+          }
+          return { entities: table === 'asx_site' ? [heldSite, validSite] : [] };
+        },
+        retrieveRecord: async (table, key) => {
+          if (table === 'sharepointsite') {
+            nativeReads.push(key);
+            return native(key);
+          }
+          return { name: 'Team' };
+        },
+        online: {
+          execute: async (req) => {
+            sent.push(JSON.parse(req.Request).Command);
+            return {
+              ok: true,
+              json: async () => ({
+                Result: JSON.stringify({ Status: 'Summary', Summary: {} }),
+              }),
+            };
+          },
+        },
+      },
+    };
+    const held = boot(heldXrm, { timers: [], uuid: id(84) });
+    await held.document.fire('DOMContentLoaded');
+    const n = held.nodes,
+      siteRow = (s) => held.document.querySelector('[data-focus-key="site:' + s.asx_siteid + '"]'),
+      reason =
+        "Dynamics hasn't validated this SharePoint site yet. Validate it in Settings › Document Management Settings, then choose Check again.",
+      actions = ['ad-existing', 'ad-create', 'ad-empty-existing', 'ad-empty-create'];
+    assert.equal(n['ad-site-title'].textContent, 'Awaiting');
+    // Every listed site's status is read in one query, by its native site ID.
+    assert.match(nativeReads[0], /validationstatus/);
+    assert.match(nativeReads[0], new RegExp(id(81)));
+    assert.match(nativeReads[0], new RegExp(id(83)));
+    // The rail marks the held site as other site problems are marked.
+    assert.equal(siteRow(heldSite).querySelector('.sub').textContent, 'Needs attention');
+    assert.equal(siteRow(heldSite).querySelector('.dot').getAttribute('data-tone'), 'attention');
+    assert.equal(siteRow(validSite).querySelector('.dot'), null);
+    assert.notEqual(siteRow(validSite).querySelector('.sub').textContent, 'Needs attention');
+    // The header: one muted status line, with the status as Dynamics names it, and Check again.
+    assert.equal(n['ad-site-validation'].hidden, false);
+    assert(n['ad-site-validation'].classList.contains('muted'));
+    assert.equal(
+      n['ad-site-validation-text'].textContent,
+      'Waiting for Dynamics to validate this site (In Progress)',
+    );
+    assert.equal(n['ad-check-validation'].textContent, 'Check again');
+    assert(n['ad-check-validation'].classList.contains('link'));
+    assert.match(n['ad-site-meta'].textContent, /Needs attention$/);
+    for (const action of actions) {
+      assert.equal(n[action].getAttribute('aria-disabled'), 'true', action + ' is held');
+      assert.match(n[action].getAttribute('aria-describedby'), /ad-validation-reason/);
+    }
+    assert.equal(n['ad-validation-reason'].textContent, reason);
+    assert.equal(held.document.querySelectorAll('#ad-validation-reason').length, 1);
+    // A held action does nothing.
+    await held.press(n['ad-existing']);
+    await held.press(n['ad-empty-existing']);
+    assert(!sent.includes('DiscoverLibraries'));
+    await held.press(n['ad-create']);
+    await held.press(n['ad-empty-create']);
+    assert.equal(n['ad-library-form'].hidden, true);
+    // Check again reads the status again; still In Progress, the page stays held.
+    n['ad-check-validation'].focus();
+    await held.press(n['ad-check-validation']);
+    assert.equal(nativeReads.at(-1), id(81));
+    assert.equal(n['ad-site-validation'].hidden, false);
+    assert.equal(n['ad-existing'].getAttribute('aria-disabled'), 'true');
+    // Dynamics validates the site: Check again releases the actions and the rail.
+    status.set(id(81), 4);
+    await held.press(n['ad-check-validation']);
+    assert.equal(n['ad-site-validation'].hidden, true);
+    for (const action of actions) {
+      assert.equal(n[action].getAttribute('aria-disabled'), null, action + ' is released');
+      assert.equal(n[action].getAttribute('aria-describedby'), null);
+    }
+    assert.equal(n['ad-validation-reason'], null);
+    assert.equal(siteRow(heldSite).querySelector('.dot'), null);
+    assert.notEqual(siteRow(heldSite).querySelector('.sub').textContent, 'Needs attention');
+    assert.match(n['ad-site-meta'].textContent, /Ready$/);
+    assert.equal(held.document.activeElement, n['ad-existing'], 'Focus leaves the hidden line');
+    await held.press(n['ad-existing']);
+    assert(sent.includes('DiscoverLibraries'));
+    // A Valid site shows no status line and holds nothing.
+    await held.press(siteRow(validSite));
+    assert.equal(n['ad-site-title'].textContent, 'Validated');
+    assert.equal(n['ad-site-validation'].hidden, true);
+    for (const action of actions) assert.equal(n[action].getAttribute('aria-disabled'), null);
+    assert.equal(n['ad-validation-reason'], null);
+  }
+  {
     // Add site opens as a side panel; Cancel closes it and returns focus to "＋ Add".
     await pressFocused(nodes['ad-add-site']);
     assert.equal(nodes['ad-site-form'].hidden, false);
@@ -1916,7 +2045,7 @@ const stage = (team, access) => {
     assert.equal(navigations.at(-1).data, 'monitor-' + BUILD);
   }
   console.log(
-    'PASS Sites & access on the shell: the sites rail with library counts, the libraries table (Used by from the in-use rule, teams, access with a dot, the four-segment bar of a setup), the access drawer as a dialog (changed rows, the change count, Discard, Escape and focus back to the redrawn row), the Monitor problem count in the header, staging versus apply, removals with Undo and their confirmation, consent in the page, server refusals at the form that failed, the Add site combobox, site and library menus with focus keys, library setups with Documents’ SharePoint check and Open in Monitor, stuck access runs (also the inheritance stop), the access label from the policy and its run, discovery matched by list ID, re-point found again after a reload, removed destinations hidden at once and after a reload, deleted Dataverse teams, and where focus goes after actions that close what was focused; fix round 1: card actions in the drawer report in its footer, library counts read 5,000 a page, opening a site reads access four at a time with no team reads or catalog refresh, a stopped run of a closed library is not polled, focus after a setup that became a library row, and a link to a library on another site. Mocked APIs; connected acceptance pending.',
+    'PASS Sites & access on the shell: the sites rail with library counts, the libraries table (Used by from the in-use rule, teams, access with a dot, the four-segment bar of a setup), the access drawer as a dialog (changed rows, the change count, Discard, Escape and focus back to the redrawn row), the Monitor problem count in the header, staging versus apply, removals with Undo and their confirmation, consent in the page, server refusals at the form that failed, the Add site combobox, site and library menus with focus keys, library setups with Documents’ SharePoint check and Open in Monitor, stuck access runs (also the inheritance stop), the access label from the policy and its run, discovery matched by list ID, re-point found again after a reload, removed destinations hidden at once and after a reload, deleted Dataverse teams, and where focus goes after actions that close what was focused; fix round 1: card actions in the drawer report in its footer, library counts read 5,000 a page, opening a site reads access four at a time with no team reads or catalog refresh, a stopped run of a closed library is not polled, focus after a setup that became a library row, and a link to a library on another site; a site Dynamics has not validated holds Add existing library and Create library, with its status line and the rail marked, until Check again finds it Valid. Mocked APIs; connected acceptance pending.',
   );
 })().catch((e) => {
   console.error(e);

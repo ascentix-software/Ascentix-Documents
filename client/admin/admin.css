@@ -1087,6 +1087,17 @@ main a {
 .page-header:has(> .confirm) {
   flex-wrap: wrap;
 }
+/* A site Dynamics has not validated: its status line takes a row of its own under the header,
+   after the meta line where that wraps. */
+.page-header:has(> #ad-site-validation:not([hidden])) {
+  flex-wrap: wrap;
+}
+#ad-site-validation {
+  order: 2;
+  flex-basis: 100%;
+  white-space: normal;
+  font-size: 12px;
+}
 .page-header > .confirm {
   flex-basis: 100%;
   white-space: normal;

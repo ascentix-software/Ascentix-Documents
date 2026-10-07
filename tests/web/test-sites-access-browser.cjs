@@ -261,8 +261,46 @@ async function open(context, tab, extra = '') {
     await page.getByText('Delivery is ready.', { exact: true }).waitFor({ timeout: 12000 });
     assert.equal(await siteProgress.getAttribute('value'), '3');
     assert.deepEqual(page.errors, []);
+    // A site Dynamics has not validated: the status line wraps under the header, the library
+    // actions are held with their reason, and Check again releases them once it is Valid.
+    const held = await open(context, 'access', '(() => (window.__mock.validationStatus = 2))()');
+    const line = held.locator('#ad-site-validation');
+    await line.getByText('Waiting for Dynamics to validate this site (In Progress)').waitFor();
+    await line
+      .getByText("Dynamics hasn't validated this SharePoint site yet.", { exact: false })
+      .waitFor();
+    assert.equal(await held.locator('#ad-existing').getAttribute('aria-disabled'), 'true');
+    assert.equal(await held.locator('#ad-create').getAttribute('aria-disabled'), 'true');
+    await held.locator('#ad-sites .ad-site .sub', { hasText: 'Needs attention' }).waitFor();
+    for (const width of [1440, 1000, 800, 400])
+      for (const scheme of ['light', 'dark']) {
+        await held.setViewportSize({ width, height: 1000 });
+        await held.emulateMedia({ colorScheme: scheme });
+        assert.equal(
+          await held.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+          false,
+          'Overflow with a site awaiting validation ' + width + ' ' + scheme,
+        );
+        const header = await held.locator('#ad-site-header').boundingBox(),
+          box = await line.boundingBox();
+        assert(
+          box.y >= (await held.locator('#ad-site-title').boundingBox()).y &&
+            box.y + box.height <= header.y + header.height,
+          'The status line is inside the header ' + width,
+        );
+        await held.screenshot({
+          path: path.join(evidence, `awaiting-validation-${width}-${scheme}.png`),
+        });
+      }
+    await held.setViewportSize({ width: 1440, height: 1000 });
+    await held.evaluate(() => (window.__mock.validationStatus = 4));
+    await held.locator('#ad-check-validation').click();
+    await line.waitFor({ state: 'hidden' });
+    assert.equal(await held.locator('#ad-existing').getAttribute('aria-disabled'), null);
+    assert.equal(await held.evaluate(() => document.activeElement.id), 'ad-existing');
+    assert.deepEqual(held.errors, []);
     console.log(
-      'PASS Sites & access in headless Edge on the real page: the libraries table and its access drawer, a setup row opening its stage card, Escape answering a drawer confirmation and then closing the drawer with focus back on the row, a deleted Dataverse team shown and removed by Apply, team staging/apply/poll, existing-library discovery/add, library creation, the Remove library confirmation under its ⋯ button with focus and Escape, Add site by keyboard; 1440/1000/800/400 light and dark; no page errors or horizontal overflow. Mocked Dataverse (mock-xrm.js).',
+      'PASS Sites & access in headless Edge on the real page: the libraries table and its access drawer, a setup row opening its stage card, Escape answering a drawer confirmation and then closing the drawer with focus back on the row, a deleted Dataverse team shown and removed by Apply, team staging/apply/poll, existing-library discovery/add, library creation, the Remove library confirmation under its ⋯ button with focus and Escape, Add site by keyboard, a site awaiting validation held until Check again finds it Valid; 1440/1000/800/400 light and dark; no page errors or horizontal overflow. Mocked Dataverse (mock-xrm.js).',
     );
   } finally {
     await browser.close();

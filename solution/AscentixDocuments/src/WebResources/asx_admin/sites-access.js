@@ -59,6 +59,9 @@
     pollFailures: 0,
     // What the last re-point changed, such as "old URL → new URL".
     changes: [],
+    // Dynamics' validation status of each site's SharePoint site, by native site ID in lower
+    // case: { value, label }, or null when it was read but not answered.
+    validation: new Map(),
     // Sites and libraries removed in this page. They leave the lists at once, whatever a list
     // read returns, until they are added again.
     removed: new Set(),
@@ -213,6 +216,52 @@
     const date = new Date(ms ? Number(ms[1]) : value);
     return isNaN(date) ? String(value) : date.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
   };
+  // Dynamics validates a SharePoint site (sharepointsite.validationstatus 4, Valid) before the
+  // document locations made under it get their site collection, which the record's Documents
+  // tab needs. Until then the site holds Add existing library and Create library. A status not
+  // read holds nothing: the server repairs any location made early.
+  const VALID = 4,
+    validationReason =
+      "Dynamics hasn't validated this SharePoint site yet. Validate it in Settings › Document Management Settings, then choose Check again.";
+  const nativeKey = (s) => String(s?._asx_nativeid_value || '').toLowerCase();
+  const awaitingValidation = (s) => {
+    const v = state.validation.get(nativeKey(s));
+    return !!v && v.value !== VALID ? v : null;
+  };
+  function noteValidation(key, row) {
+    state.validation.set(
+      key,
+      row?.validationstatus === undefined
+        ? null
+        : {
+            value: row.validationstatus,
+            label: row['validationstatus@OData.Community.Display.V1.FormattedValue'] || '',
+          },
+    );
+  }
+  // One query per 25 sites; a site the answer leaves out is noted as not answered.
+  async function readValidation(list) {
+    const keys = [...new Set(list.map(nativeKey).filter(guid))];
+    for (const group of groups(keys)) {
+      const rows = await readAll(
+        'sharepointsite',
+        '?$select=sharepointsiteid,validationstatus&$filter=' + anyOf('sharepointsiteid', group),
+      );
+      for (const key of group)
+        noteValidation(
+          key,
+          rows.find((r) => String(r.sharepointsiteid).toLowerCase() === key),
+        );
+    }
+  }
+  async function checkValidation(s) {
+    const key = nativeKey(s);
+    if (guid(key))
+      noteValidation(
+        key,
+        await xrm.WebApi.retrieveRecord('sharepointsite', key, '?$select=validationstatus'),
+      );
+  }
   // A refusal reads as the server's sentence, never as a raw response body.
   const api = (name, request) => ui.api(name, request);
   const catalog = (request) => api('asx_CatalogAdmin', request),
@@ -842,7 +891,7 @@
         sub = node('span', null, 'sub');
       if (s.asx_siteid === state.site?.asx_siteid) b.setAttribute('aria-current', 'true');
       title.append(node('strong', s.asx_name));
-      if (!s.asx_approved) {
+      if (!s.asx_approved || awaitingValidation(s)) {
         title.append(ui.dot('attention'));
         sub.textContent = 'Needs attention';
         sub.classList.add('attention');
@@ -885,7 +934,7 @@
     $('ad-site-meta').textContent = state.site
       ? [
           (state.site.asx_url || '').replace(/^https:\/\//, ''),
-          state.site.asx_approved ? 'Ready' : 'Needs attention',
+          state.site.asx_approved && !awaitingValidation(state.site) ? 'Ready' : 'Needs attention',
         ]
           .filter(Boolean)
           .join(' · ')
@@ -893,8 +942,26 @@
     $('ad-site-actions').hidden = !state.site;
     $('ad-site-error').hidden = !state.site || state.site.asx_approved;
     const ready = !state.busy && !!state.site?.asx_approved;
-    for (const id of ['ad-create', 'ad-existing', 'ad-empty-create', 'ad-empty-existing'])
+    // A site Dynamics has not validated: its status line, and the library actions held with
+    // one reason, kept in that line (ui.disable removes it once they are released).
+    const waiting = state.site && awaitingValidation(state.site),
+      waitingText = waiting
+        ? 'Waiting for Dynamics to validate this site' +
+          (waiting.label ? ' (' + waiting.label + ')' : '')
+        : '',
+      reasonId = 'ad-validation-reason';
+    $('ad-site-validation').hidden = !waiting;
+    if ($('ad-site-validation-text').textContent !== waitingText)
+      $('ad-site-validation-text').textContent = waitingText;
+    if (waiting && !$(reasonId)) {
+      const note = node('p', null, 'reason');
+      note.id = reasonId;
+      $('ad-site-validation').append(note);
+    }
+    for (const id of ['ad-create', 'ad-existing', 'ad-empty-create', 'ad-empty-existing']) {
       $(id).disabled = !ready;
+      ui.disable($(id), reasonId, waiting ? validationReason : null);
+    }
     ui.disable(
       $('ad-remove-site'),
       'ad-remove-site-reason',
@@ -1164,6 +1231,7 @@
     state.sites = (append ? state.sites.concat(result.entities) : result.entities).filter(
       (s) => !state.removed.has(s.asx_siteid),
     );
+    await readValidation(result.entities).catch(() => {});
     state.nextSites = result.nextLink || null;
     state.sitesLoaded = true;
     render();
@@ -1292,6 +1360,8 @@
     state.site = s;
     state.library = null;
     state.librariesLoaded = false;
+    // A site not in the list read (a link to one of its libraries) has its status read here.
+    if (!state.validation.has(nativeKey(s))) await checkValidation(s).catch(() => {});
     ['ad-library-form', 'ad-team-form', 'ad-existing-form'].forEach((id) => ($(id).hidden = true));
     ['access-library', 'access'].forEach((area) => ui.clearFeedback(area));
     await libraries(false, true);
@@ -1850,6 +1920,13 @@
         url: state.site.asx_url,
       });
     }, 'access');
+  // Check again reads the site's validation status again. Once Valid, the line goes and focus
+  // moves to the released Add existing library.
+  $('ad-check-validation').onclick = () =>
+    action(async () => {
+      await checkValidation(state.site);
+      state.focusAfter = ['ad-existing', 'ad-site-title'];
+    }, 'access');
   // Adds an existing library; breakInheritance carries the admin's consent for an inheriting one.
   async function addLibrary(siteId, listId, name, url, breakInheritance) {
     const result = await catalog({
@@ -1908,6 +1985,7 @@
     $('ad-existing-more').hidden = !d.Observation.NextLibraries;
   }
   $('ad-existing').onclick = () =>
+    !ui.blocked($('ad-existing')) &&
     action(async () => {
       const result = await catalog({
         Command: 'DiscoverLibraries',
@@ -1942,6 +2020,7 @@
     $('ad-existing').focus();
   };
   $('ad-create').onclick = () => {
+    if (ui.blocked($('ad-create'))) return;
     $('ad-library-form').hidden = false;
     $('ad-library-name').value = '';
     ui.clearFeedback('access');

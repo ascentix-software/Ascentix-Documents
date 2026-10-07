@@ -344,6 +344,7 @@
             sharepointsiteid: IDS.native,
             name: 'Delivery',
             absoluteurl: 'https://contoso.sharepoint.com/sites/delivery',
+            ...validation(),
           },
         ];
       case 'connectionreference':
@@ -358,8 +359,17 @@
         return [];
     }
   }
+  // Dynamics' validation status of the SharePoint site: Valid unless a test sets another.
+  const statuses = { 1: 'Not Started', 2: 'In Progress', 3: 'Invalid', 4: 'Valid' };
+  const validation = () => ({
+    validationstatus: mock.validationStatus ?? 4,
+    'validationstatus@OData.Community.Display.V1.FormattedValue':
+      statuses[mock.validationStatus ?? 4],
+  });
   function record(table, key) {
     switch (table) {
+      case 'sharepointsite':
+        return { sharepointsiteid: key, ...validation() };
       case 'asx_template':
         return template;
       case 'asx_revision':
