@@ -111,7 +111,11 @@ public static class LibraryReconcile
         "The Documents catalog already has a different entry for this library.";
 
     // Characters SharePoint leaves out of the folder name it derives from a list title when the
-    // create body has only a Title (NewLibraryBody). Confirmed in TEST (Task 2, Step 1).
+    // create body has only a Title (NewLibraryBody). This normalisation rule is UNCONFIRMED: it
+    // is the plan's hypothesis, to be verified by the TEST check (Task 2, Step 1), and this set
+    // and the ExpectedUrlFollowsSharePoint rows are corrected to whatever TEST shows. If it is
+    // wrong, the library Documents made shows as Ambiguous ("a different address"), never as
+    // NotFound, so Create it again stays refused.
     private const string Stripped = "~\"#%&*:<>?/\\{|}";
 
     /// <summary>The server-relative address SharePoint gives a library created with only this title.</summary>

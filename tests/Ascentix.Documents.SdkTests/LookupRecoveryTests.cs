@@ -382,4 +382,79 @@ public sealed class LookupRecoveryTests
         f.Run(key);
         Assert.Equal("Found", f.Finding(key).State);
     }
+
+    [Fact]
+    public void CreateAgainOnAFindingThatCouldNotReadSharePointIsRefused()
+    {
+        var f = New();
+        var key = f.Lost();
+        f.LookupStatus = 403;
+        f.Run(key);
+        // The read failed, so nothing says the library is absent: only Check again and Cancel are offered.
+        Assert.Equal(new[] { "CheckAgain", "Cancel" }, f.Finding(key).Choices);
+        var error = Assert.Throws<EvaluationBlockedException>(() => f.Choose(key, "CreateAgain"));
+        Assert.Equal(LibraryProvisioning.ChoiceNotOffered, error.Message);
+        Assert.Equal("RecoveryRequired", f.Status(key));
+        Assert.Single(f.Posts, p => p == "_api/web/lists");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CancelOfACheckLeavesNoCheckingNotice(bool settled)
+    {
+        var f = New();
+        var key = f.Lost();
+        if (settled)
+            f.Run(key);
+        Assert.NotNull(f.Store.Require<LibrarySetup>("asx_operation", key).Value.ErrorCode);
+        Assert.Equal("Cancelled", f.Manage("Cancel", key).Status);
+        Assert.Null(f.Store.Require<LibrarySetup>("asx_operation", key).Value.ErrorCode);
+        var inspected = f.Worker.Inspect(key);
+        Assert.Equal("Cancelled", inspected.Status);
+        Assert.Null(inspected.Issue);
+        Assert.Null(inspected.Recovery);
+    }
+
+    [Fact]
+    public void ANameTooLongForTheLookupReadsIsRefusedWhenQueued()
+    {
+        var f = New();
+        const string select =
+            "$select=Id,HasUniqueRoleAssignments,RootFolder/UniqueId,RootFolder/ServerRelativeUrl&$expand=RootFolder";
+        // The shortest name whose read by address is too long for the connector; the read by
+        // title before the create, the only read checked before, still fits.
+        string name = Enumerable
+            .Range(1, 255)
+            .Select(n => new string('文', n))
+            .First(n =>
+                Domain
+                    .SharePointAddress.Alias(
+                        LibraryReconcile.ExpectedUrl("https://example.sharepoint.com/sites/test", n)
+                    )
+                    .Length
+                    + 1
+                    + LibraryReconcile.Select.Length
+                > Domain.SharePointAddress.MaxQueryString
+            );
+        Assert.True(
+            Domain.SharePointAddress.Alias(name).Length + 1 + select.Length
+                <= Domain.SharePointAddress.MaxQueryString
+        );
+        var error = Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() =>
+                f.Worker.Queue(
+                    new CatalogRequest
+                    {
+                        SiteId = f.Site,
+                        Name = name,
+                        RequestId = Guid.NewGuid(),
+                        Entries = Array.Empty<PolicyEntry>(),
+                    }
+                )
+            )
+        );
+        Assert.Contains("HTTP connector accepts 2,048", error.Message);
+        Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_operation");
+    }
 }

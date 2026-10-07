@@ -155,6 +155,10 @@ public sealed class LibraryProvisioning
     private const string LibrarySelect =
         "$select=Id,HasUniqueRoleAssignments,RootFolder/UniqueId,RootFolder/ServerRelativeUrl&$expand=RootFolder";
 
+    /// <summary>The refusal of a recovery choice the lookup's finding does not offer.</summary>
+    public const string ChoiceNotOffered =
+        "Documents doesn't offer that choice for what it found. Choose one of the choices shown on the setup, check again, or cancel the setup.";
+
     /// <summary>Why a library the catalog gives to another site, or removed, is not used.</summary>
     internal const string CatalogConflictNotice =
         "The library was created in SharePoint, but the Documents catalog already has a different entry for it (another site, or removed). Nothing was changed. Remove that entry if it is wrong, add the library as an existing library, then cancel this setup.";
@@ -163,24 +167,29 @@ public sealed class LibraryProvisioning
     private static string ByTitle(string name) =>
         Domain.SharePointAddress.Alias(name) + "&" + LibrarySelect;
 
+    /// <summary>The query string of the lookup's read by title (spec 6.8).</summary>
+    private static string LookupByTitle(string name) =>
+        Domain.SharePointAddress.Alias(name) + "&" + LibraryReconcile.Select;
+
+    /// <summary>The query string of the lookup's read by the address SharePoint derives from the title.</summary>
+    private static string LookupByAddress(string webUrl, string name) =>
+        Domain.SharePointAddress.Alias(LibraryReconcile.ExpectedUrl(webUrl, name))
+        + "&"
+        + LibraryReconcile.Select;
+
+    /// <summary>
+    /// The length of the longest query string a setup of this name on this site can send: the
+    /// read by title before the create, and the two reads of a lookup after a lost create.
+    /// </summary>
+    private static int LongestRead(string webUrl, string name) =>
+        Math.Max(
+            ByTitle(name).Length,
+            Math.Max(LookupByTitle(name).Length, LookupByAddress(webUrl, name).Length)
+        );
+
     public CatalogResult Queue(CatalogRequest request)
     {
         Domain.FolderNames.Validate(request.Name);
-        // The setup reads the library by its title before creating it. A title that is too
-        // long once escaped into that address is refused now, with its reason, rather than
-        // failing later (Domain.SharePointAddress).
-        int address = ByTitle(request.Name).Length;
-        if (address > Domain.SharePointAddress.MaxQueryString)
-            throw new EvaluationBlockedException(
-                "This library name is too long for the HTTP connector: written into a SharePoint address it would be "
-                    + address.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)
-                    + " characters, and the HTTP connector accepts "
-                    + Domain.SharePointAddress.MaxQueryString.ToString(
-                        "N0",
-                        System.Globalization.CultureInfo.InvariantCulture
-                    )
-                    + ". Use a shorter name."
-            );
         if (request.SiteId == Guid.Empty || request.RequestId == Guid.Empty)
             throw new EvaluationBlockedException("Select a site and provide a request identity.");
         if (
@@ -210,6 +219,22 @@ public sealed class LibraryProvisioning
         if (!site.GetAttributeValue<bool>("asx_approved"))
             throw new EvaluationBlockedException(
                 "Site validation must complete before creating a library."
+            );
+        // The setup reads the library by its title before creating it, and after a lost create
+        // its lookup reads it by title and by address. A name too long for any of those reads,
+        // once escaped into the address, is refused now with its reason rather than failing
+        // later (Domain.SharePointAddress).
+        int address = LongestRead(TemplateStore.Text(site, "asx_url"), request.Name);
+        if (address > Domain.SharePointAddress.MaxQueryString)
+            throw new EvaluationBlockedException(
+                "This library name is too long for the HTTP connector: written into a SharePoint address it would be "
+                    + address.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)
+                    + " characters, and the HTTP connector accepts "
+                    + Domain.SharePointAddress.MaxQueryString.ToString(
+                        "N0",
+                        System.Globalization.CultureInfo.InvariantCulture
+                    )
+                    + ". Use a shorter name."
             );
         string key =
             "librarycreate:"
@@ -530,7 +555,10 @@ public sealed class LibraryProvisioning
         else
         {
             op.Value.Status = "Cancelled";
-            // A lookup in progress stops with the setup; nothing it found is kept or changed.
+            // A lookup in progress stops with the setup; nothing it found is kept or changed, and
+            // its "checking" text or finding sentence is no longer the setup's issue.
+            if (op.Value.Reconcile || op.Value.Recovery != null)
+                op.Value.ErrorCode = null;
             op.Value.Reconcile = false;
             op.Value.TitleHit = null;
             op.Value.Recovery = null;
@@ -696,10 +724,7 @@ public sealed class LibraryProvisioning
                     op,
                     claim.Value,
                     "ReconcileTitle",
-                    "_api/web/lists/GetByTitle(@p)?"
-                        + Domain.SharePointAddress.Alias(op.Value.Name)
-                        + "&"
-                        + LibraryReconcile.Select
+                    "_api/web/lists/GetByTitle(@p)?" + LookupByTitle(op.Value.Name)
                 );
             return Read(
                 op,
@@ -1251,10 +1276,7 @@ public sealed class LibraryProvisioning
                 op,
                 lease.Value,
                 "ReconcileUrl",
-                "_api/web/GetList(@p)?"
-                    + Domain.SharePointAddress.Alias(expected)
-                    + "&"
-                    + LibraryReconcile.Select
+                "_api/web/GetList(@p)?" + LookupByAddress(op.Value.WebUrl, op.Value.Name)
             );
         }
         var finding = LibraryReconcile.Decide(
@@ -1374,6 +1396,8 @@ public sealed class LibraryProvisioning
                 throw new EvaluationBlockedException("Only a document library can be used.");
             if (candidate.CatalogEntry == "Conflict")
                 throw new EvaluationBlockedException(CatalogConflictNotice);
+            if (!Offered(finding, "UseLibrary") && !Offered(finding, "UseCandidate"))
+                throw new EvaluationBlockedException(ChoiceNotOffered);
             // The list is known now: the next run reads it by ID, then boundary, owner access and
             // Register, which adopts this site's catalog entry for it (A10). No create is prepared.
             op.Value.ListId = candidate.ListId;
@@ -1389,6 +1413,9 @@ public sealed class LibraryProvisioning
                 throw new EvaluationBlockedException(
                     "SharePoint has a library with this name, so Documents won't create another. Use it, or cancel the setup."
                 );
+            // Only a finding that offers it: a read that failed shows nothing about the library.
+            if (!Offered(finding, "CreateAgain"))
+                throw new EvaluationBlockedException(ChoiceNotOffered);
             // The next run reads the title before preparing the create; a library that appeared
             // since the lookup stops it with the name-collision rule.
             Unsend(op.Value);
@@ -1441,6 +1468,10 @@ public sealed class LibraryProvisioning
         store.Save(op);
         return store.Require<LibrarySetup>("asx_operation", op.Value.Key);
     }
+
+    // Whether the stored finding offers this choice (LibraryReconcile.Choices).
+    private static bool Offered(LibraryRecovery finding, string choice) =>
+        Array.IndexOf(finding.Choices ?? Array.Empty<string>(), choice) >= 0;
 
     private static string SetupKey(string key) =>
         key.StartsWith("librarycreate:", StringComparison.Ordinal)
