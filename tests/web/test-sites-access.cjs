@@ -818,6 +818,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
       'Needs attention: SharePoint refused the write (HTTP 403). The access run stopped: Retry or Cancel it, then your change applies.',
     );
     assert.equal(nodes['ad-change-status'].className, 'ad-issue');
+    assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
     assert.equal(nodes['ad-run-actions'].hidden, false);
     // Applied access with team membership left unsynced is not shown as confirmed.
     policy = {

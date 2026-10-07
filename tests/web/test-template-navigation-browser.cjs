@@ -48,7 +48,9 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
                       ]
                     : t === 'asx_site'
                       ? [{ asx_siteid: 'site-1', asx_name: 'Delivery' }]
-                      : [],
+                      : t === 'asx_runtimetable'
+                        ? [{ asx_logicalname: 'account' }]
+                        : [],
           }),
           online: {
             execute: async () => ({

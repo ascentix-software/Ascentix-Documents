@@ -1567,6 +1567,51 @@ public sealed class CatalogApprovalTests
     }
 
     [Fact]
+    public void LibraryDeletedByRemoveIsAddedAgainAndReusesItsDocumentLocation()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var siteId = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_siteid")
+            .Id;
+        var location = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_nativeparentid")
+            .Id;
+        Assert.Equal("Deleted", Remove(f, "RemoveLibrary", library.CatalogId).Status);
+        Assert.False(f.Service.Rows.ContainsKey(library.CatalogId));
+        int locations = f.Service.Rows.Values.Count(r =>
+            r.LogicalName == "sharepointdocumentlocation"
+        );
+        // Adding it again creates the catalog row again, on the same document location.
+        var again = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = siteId,
+                    ListId = f.List,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Equal("Approved", again.Status);
+        var row = f.Service.Rows[again.CatalogId];
+        // A new row: active (the test service leaves statecode unset on create).
+        Assert.NotEqual(1, row.GetAttributeValue<OptionSetValue>("statecode")?.Value);
+        Assert.True(row.GetAttributeValue<bool>("asx_approved"));
+        Assert.Equal(f.List.ToString("D"), row.GetAttributeValue<string>("asx_listid"));
+        Assert.Equal(location, row.GetAttributeValue<EntityReference>("asx_nativeparentid").Id);
+        Assert.Equal(
+            locations,
+            f.Service.Rows.Values.Count(r => r.LogicalName == "sharepointdocumentlocation")
+        );
+    }
+
+    [Fact]
     public void UnreferencedLibraryAndThenItsSiteAreDeleted()
     {
         var f = new Fixture();
