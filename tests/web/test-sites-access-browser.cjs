@@ -1,7 +1,8 @@
 'use strict';
 // Sites & access in headless Edge on the real page (index.html, CSS and every script) with the
-// mocked Dataverse of mock-xrm.js: a deleted team, staging and Apply, existing libraries,
-// library creation, Add site, the Remove library confirmation, at 1440/800/400 in light and dark.
+// mocked Dataverse of mock-xrm.js: the libraries table and its access drawer, a deleted team,
+// staging and Apply, existing libraries, library creation and its setup row, Add site, the Remove
+// library confirmation and Escape in the drawer, at 1440/800/400 in light and dark.
 const fs = require('fs'),
   path = require('path'),
   assert = require('assert/strict');
@@ -66,9 +67,21 @@ async function open(context, tab, extra = '') {
     );
     const requests = (command) =>
       page.evaluate((c) => window.__mock.requests.filter((r) => r.Command === c), command);
-    await page.getByRole('heading', { name: 'General', exact: true }).waitFor();
+    // The site's libraries are a table: who uses each one, its teams and its access.
+    const generalButton = page
+      .locator('#ad-libraries')
+      .getByRole('button', { name: 'General', exact: true });
+    await generalButton.waitFor();
+    const generalRow = page.locator('#ad-libraries tr').first();
+    await generalRow.locator('.used-by', { hasText: '1 template' }).waitFor();
+    await page.locator('#ad-sites .ad-site .sub', { hasText: '1 library' }).waitFor();
+    // Its row opens the access drawer, a dialog with focus on its heading.
+    await generalButton.click();
+    await page.getByRole('dialog', { name: 'General' }).waitFor();
+    await settle(page);
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'ad-library-title');
     // The deleted team is shown as one, with what happens next, and Apply is enabled for it.
-    const deletedRow = page.locator('#ad-teams tr').first();
+    const deletedRow = page.locator('#ad-team-rows .team-row').first();
     await deletedRow.getByText('Deleted team: AcceptC Team 1').waitFor();
     await deletedRow
       .getByText('Documents removes its access the next time access is applied.', { exact: true })
@@ -113,6 +126,9 @@ async function open(context, tab, extra = '') {
     await page
       .getByText('Access and team membership confirmed.', { exact: true })
       .waitFor({ timeout: 12000 });
+    // The drawer covers the header's actions; it closes first.
+    await page.locator('#ad-drawer-close').click();
+    assert.equal(await page.locator('#ad-drawer').isHidden(), true);
     await page.locator('#ad-existing').click();
     await page
       .getByRole('button', { name: 'Add Archive', exact: true })
@@ -126,7 +142,20 @@ async function open(context, tab, extra = '') {
     await page.locator('#ad-provision').click();
     await page.getByText('Creating Projects.', { exact: true }).waitFor();
     assert.equal((await requests('CreateLibrary'))[0].Entries.length, 1);
-    await page.getByText('Waiting for confirmation', { exact: true }).waitFor({ timeout: 12000 });
+    // The setup has a row of its own with a four-segment bar; the row opens its stage card.
+    const projects = page
+      .locator('#ad-libraries')
+      .getByRole('button', { name: 'Projects', exact: true });
+    await projects.waitFor();
+    assert.equal(await page.locator('#ad-libraries .mini-progress span').count(), 4);
+    await projects.click();
+    await page
+      .locator('#ad-drawer-progress')
+      .getByText('Waiting for confirmation', { exact: true })
+      .waitFor({ timeout: 12000 });
+    await page
+      .locator('#ad-libraries .access', { hasText: 'Waiting for confirmation · step 2 of 4' })
+      .waitFor();
     assert.equal(await page.getByText('Open Administration', { exact: false }).count(), 0);
     assert.equal(
       await page.getByRole('progressbar', { name: 'Projects setup progress' }).count(),
@@ -183,12 +212,15 @@ async function open(context, tab, extra = '') {
         .evaluate((el) => getComputedStyle(el).animationName),
       'none',
     );
-    // Remove library: the confirmation renders below the library's ⋯ button, takes focus, and
-    // Escape returns focus to the ⋯ button.
+    // Remove library: the confirmation renders below the drawer's ⋯ button and takes focus.
+    // Escape answers it and returns focus to the ⋯ button with the drawer still open; Escape
+    // again closes the drawer and returns focus to the library's row button.
+    await generalButton.click();
+    await page.getByRole('dialog', { name: 'General' }).waitFor();
     const libraryMenu = page.locator('#ad-library-menu');
     await libraryMenu.click();
     await page.getByRole('menuitem', { name: 'Remove library' }).click();
-    const box = await page.locator('#ad-library-detail .confirm').boundingBox();
+    const box = await page.locator('#ad-drawer .confirm').boundingBox();
     const button = await libraryMenu.boundingBox();
     assert(box.y > button.y + button.height, 'The confirmation is below the ⋯ button');
     assert.match(
@@ -200,8 +232,15 @@ async function open(context, tab, extra = '') {
     await page.screenshot({ path: path.join(evidence, 'remove-library-confirm.png') });
     await page.keyboard.press('Escape');
     assert.equal(await page.evaluate(() => document.activeElement.id), 'ad-library-menu');
-    assert.equal(await page.locator('#ad-library-detail .confirm').count(), 0);
+    assert.equal(await page.locator('#ad-drawer .confirm').count(), 0);
+    assert.equal(await page.locator('#ad-drawer').isVisible(), true, 'Escape kept the drawer');
     assert.equal((await requests('RemoveLibrary')).length, 0);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#ad-drawer').isHidden(), true);
+    assert.equal(
+      await page.evaluate(() => document.activeElement.dataset.focusKey),
+      'library:' + (await page.evaluate(() => window.__mock.ids.library)),
+    );
     // Add site: type in the combobox, pick with the keyboard, then add and check the site.
     await page.locator('#ad-add-site').click();
     const combo = page.getByRole('combobox', { name: 'SharePoint site' });
@@ -223,7 +262,7 @@ async function open(context, tab, extra = '') {
     assert.equal(await siteProgress.getAttribute('value'), '3');
     assert.deepEqual(page.errors, []);
     console.log(
-      'PASS Sites & access in headless Edge on the real page: a deleted Dataverse team shown and removed by Apply, team staging/apply/poll, existing-library discovery/add, library creation, the Remove library confirmation under its ⋯ button with focus and Escape, Add site by keyboard; 1440/800/400 light and dark; no page errors or horizontal overflow. Mocked Dataverse (mock-xrm.js).',
+      'PASS Sites & access in headless Edge on the real page: the libraries table and its access drawer, a setup row opening its stage card, Escape answering a drawer confirmation and then closing the drawer with focus back on the row, a deleted Dataverse team shown and removed by Apply, team staging/apply/poll, existing-library discovery/add, library creation, the Remove library confirmation under its ⋯ button with focus and Escape, Add site by keyboard; 1440/800/400 light and dark; no page errors or horizontal overflow. Mocked Dataverse (mock-xrm.js).',
     );
   } finally {
     await browser.close();

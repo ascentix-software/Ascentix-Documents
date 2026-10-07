@@ -210,12 +210,36 @@
       </section>
       <section id="access" class="page" aria-labelledby="ad-site-title" tabindex="-1" hidden>
         <div class="ad-layout">
-          <aside id="ad-sites-pane" aria-labelledby="ad-sites-heading" data-focus-scope>
-            <div id="ad-sites-header" class="row between">
-              <h3 id="ad-sites-heading" tabindex="-1" data-focus-heading>Sites</h3>
-              <button class="secondary" id="ad-add-site" type="button" data-focus-key="add-site">
-                ＋ Add site
+          <header id="ad-site-header" class="page-header">
+            <h1 id="ad-site-title" tabindex="-1">Select or add a site</h1>
+            <span id="ad-site-problems" class="problem-host"></span>
+            <p id="ad-site-meta" class="page-meta"></p>
+            <div id="ad-site-actions" class="page-actions row" data-actions hidden>
+              <button class="secondary" id="ad-existing" type="button">Add existing library</button>
+              <button id="ad-create" class="primary" type="button">＋ Create library</button>
+              <button
+                class="secondary"
+                id="ad-site-menu"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="ad-site-menu-list"
+                aria-label="More actions for this site"
+              >
+                ⋯
               </button>
+              <!-- prettier-ignore -->
+              <ul id="ad-site-menu-list" class="menu" role="menu" hidden>
+                  <li role="none"><button id="ad-repoint-site" role="menuitem" type="button" tabindex="-1">Re-point site</button></li>
+                  <li role="none"><button id="ad-remove-site" role="menuitem" type="button" tabindex="-1" class="danger">Remove site</button></li>
+                </ul>
+            </div>
+          </header>
+          <aside id="ad-sites-pane" aria-labelledby="ad-sites-heading" data-focus-scope>
+            <div id="ad-sites-header" class="rail-head">
+              <h2 id="ad-sites-heading" tabindex="-1" data-focus-heading>Sites</h2>
+              <!-- prettier-ignore -->
+              <button id="ad-add-site" class="link" type="button" data-focus-key="add-site">＋ Add</button>
             </div>
             <label id="ad-filter"
               ><span class="sr-only">Find a site</span
@@ -228,53 +252,6 @@
             <button class="secondary" id="ad-more-sites" type="button" hidden>More sites</button>
           </aside>
           <div class="ad-main">
-            <section id="ad-site-form" class="panel" hidden aria-labelledby="ad-site-form-title">
-              <div class="row between">
-                <h3 id="ad-site-form-title">Add site</h3>
-                <button class="secondary" id="ad-cancel-site" type="button">Cancel</button>
-              </div>
-              <label for="ad-native-search">SharePoint site</label>
-              <input
-                id="ad-native-search"
-                type="text"
-                role="combobox"
-                aria-autocomplete="list"
-                aria-expanded="false"
-                aria-controls="ad-native-list"
-                autocomplete="off"
-              />
-              <ul id="ad-native-list" role="listbox" aria-label="SharePoint sites" hidden></ul>
-              <div class="row" data-actions>
-                <button id="ad-validate" class="primary" type="button">Add and check site</button>
-              </div>
-              <p class="feedback" id="fb-access-add"></p>
-            </section>
-            <header id="ad-site-header" class="page-header">
-              <h1 id="ad-site-title" tabindex="-1">Select or add a site</h1>
-              <span id="ad-site-health" class="muted"></span>
-              <div id="ad-site-actions" class="page-actions row" data-actions hidden>
-                <button class="secondary" id="ad-existing" type="button">
-                  Add existing library
-                </button>
-                <button id="ad-create" class="primary" type="button">＋ Create library</button>
-                <button
-                  class="secondary"
-                  id="ad-site-menu"
-                  type="button"
-                  aria-haspopup="menu"
-                  aria-expanded="false"
-                  aria-controls="ad-site-menu-list"
-                  aria-label="More actions for this site"
-                >
-                  ⋯
-                </button>
-                <!-- prettier-ignore -->
-                <ul id="ad-site-menu-list" class="menu" role="menu" hidden>
-                    <li role="none"><button id="ad-repoint-site" role="menuitem" type="button" tabindex="-1">Re-point site</button></li>
-                    <li role="none"><button id="ad-remove-site" role="menuitem" type="button" tabindex="-1" class="danger">Remove site</button></li>
-                  </ul>
-              </div>
-            </header>
             <p class="feedback" id="fb-access"></p>
             <ul id="ad-changes" class="ad-access-notices" aria-label="What changed" hidden></ul>
             <section id="ad-site-error" class="panel" hidden aria-labelledby="ad-site-error-title">
@@ -287,6 +264,21 @@
                 <button class="secondary" id="ad-recheck" type="button">Check again</button>
               </div>
             </section>
+            <p id="ad-poll-status" class="muted" role="status" hidden></p>
+            <section
+              id="ad-site-cards"
+              aria-labelledby="ad-site-cards-heading"
+              data-focus-scope
+              hidden
+            >
+              <h2 id="ad-site-cards-heading" class="sr-only" tabindex="-1" data-focus-heading>
+                Setup activity
+              </h2>
+              <div id="ad-provision-progress" aria-live="polite"></div>
+            </section>
+            <button class="secondary" id="ad-more-activity" type="button" hidden>
+              More setup activity
+            </button>
             <section id="ad-existing-form" class="panel" hidden aria-labelledby="ad-existing-title">
               <div class="row between">
                 <h3 id="ad-existing-title">Existing libraries</h3>
@@ -330,114 +322,31 @@
                 <button id="ad-provision" class="primary" type="button">Create library</button>
               </div>
             </section>
-            <button class="secondary" id="ad-more-activity" type="button" hidden>
-              More setup activity
-            </button>
-            <p id="ad-poll-status" class="muted" role="status" hidden></p>
-            <section id="ad-activity" aria-labelledby="ad-activity-heading" data-focus-scope hidden>
-              <h3 id="ad-activity-heading" class="sr-only" tabindex="-1" data-focus-heading>
-                Setup activity
-              </h3>
-              <div id="ad-provision-progress" aria-live="polite"></div>
-            </section>
             <section
-              id="ad-libraries-pane"
+              id="ad-libraries-card"
+              class="section-card"
               aria-labelledby="ad-libraries-heading"
               data-focus-scope
               hidden
             >
-              <h3 id="ad-libraries-heading" tabindex="-1" data-focus-heading>Libraries</h3>
-              <div id="ad-libraries" class="ad-libraries"></div>
-              <button class="secondary" id="ad-more-libraries" type="button" hidden>
-                More libraries
-              </button>
-            </section>
-            <section id="ad-library-detail" aria-labelledby="ad-library-title" hidden>
-              <div class="row between">
-                <div>
-                  <h3 id="ad-library-title">Library access</h3>
-                  <span class="row">
-                    <span id="ad-library-status" class="muted"></span>
-                    <span id="ad-library-access" class="muted"></span>
-                  </span>
-                </div>
-                <div class="row" data-actions>
-                  <button
-                    class="secondary"
-                    id="ad-library-menu"
-                    type="button"
-                    aria-haspopup="menu"
-                    aria-expanded="false"
-                    aria-controls="ad-library-menu-list"
-                    aria-label="More actions for this library"
-                  >
-                    ⋯
-                  </button>
-                  <!-- prettier-ignore -->
-                  <ul id="ad-library-menu-list" class="menu" role="menu" hidden>
-                      <li role="none"><button id="ad-repoint-library" role="menuitem" type="button" tabindex="-1">Re-point library</button></li>
-                      <li role="none"><button id="ad-remove-library" role="menuitem" type="button" tabindex="-1" class="danger">Remove library</button></li>
-                    </ul>
-                </div>
-              </div>
-              <div id="ad-access">
-                <table id="ad-team-table" data-focus-scope>
-                  <caption id="ad-team-caption" tabindex="-1" data-focus-heading>
-                    Team access (applies to every folder in this library)
-                  </caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">Team</th>
-                      <th scope="col">Access</th>
-                      <th scope="col">In SharePoint</th>
-                      <th scope="col"><span class="sr-only">Action</span></th>
-                    </tr>
-                  </thead>
-                  <tbody id="ad-teams"></tbody>
-                </table>
-                <div class="row" data-actions>
-                  <button class="secondary" id="ad-add-team" type="button">＋ Add team</button>
-                </div>
-                <div id="ad-team-form" class="panel" hidden>
-                  <div class="row">
-                    <label
-                      >Team<select id="ad-team-choice">
-                        <option value="">Select a team</option>
-                      </select></label
-                    >
-                    <label
-                      >Access<select id="ad-team-access">
-                        <option>Read</option>
-                        <option>Contribute</option>
-                      </select></label
-                    >
-                    <button class="secondary" id="ad-stage-team" type="button">Add</button>
-                    <button class="secondary" id="ad-cancel-team" type="button">Cancel</button>
-                  </div>
-                </div>
-                <div class="row between ad-access-footer">
-                  <p id="ad-change-status" class="muted"></p>
-                  <div id="ad-run-actions" class="row" data-actions hidden>
-                    <button class="secondary" id="ad-run-retry" type="button">
-                      Retry access run
-                    </button>
-                    <button class="secondary" id="ad-run-cancel" type="button">
-                      Cancel access run
-                    </button>
-                  </div>
-                </div>
-                <ul
-                  id="ad-access-notices"
-                  class="ad-access-notices"
-                  aria-label="Access sync notices"
-                  hidden
-                ></ul>
-                <div class="row ad-apply-row" data-actions>
-                  <button id="ad-apply" class="primary" disabled type="button">
-                    Apply access changes
-                  </button>
-                </div>
-                <p class="feedback" id="fb-access-library"></p>
+              <h2 id="ad-libraries-heading" class="sr-only" tabindex="-1" data-focus-heading>
+                Libraries
+              </h2>
+              <table id="ad-libraries-table">
+                <thead>
+                  <tr>
+                    <th scope="col" class="col-library">Library</th>
+                    <th scope="col" class="col-used-by">Used by</th>
+                    <th scope="col" class="col-teams">Teams</th>
+                    <th scope="col" class="col-access">Access</th>
+                  </tr>
+                </thead>
+                <tbody id="ad-libraries"></tbody>
+              </table>
+              <div class="card-row" data-actions>
+                <button class="link" id="ad-more-libraries" type="button" hidden>
+                  More libraries
+                </button>
               </div>
             </section>
             <div id="ad-libraries-empty" hidden>
@@ -451,6 +360,118 @@
             </div>
           </div>
         </div>
+        <aside id="ad-site-form" class="side-panel small" hidden>
+          <div class="panel-head">
+            <h2 id="ad-site-form-title">Add site</h2>
+            <button class="link" id="ad-cancel-site" type="button">Cancel</button>
+          </div>
+          <div class="panel-body">
+            <label for="ad-native-search">SharePoint site</label>
+            <input
+              id="ad-native-search"
+              type="text"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded="false"
+              aria-controls="ad-native-list"
+              autocomplete="off"
+            />
+            <ul id="ad-native-list" role="listbox" aria-label="SharePoint sites" hidden></ul>
+            <div class="row" data-actions>
+              <button id="ad-validate" class="primary" type="button">Add and check site</button>
+            </div>
+            <p class="feedback" id="fb-access-add"></p>
+          </div>
+        </aside>
+        <aside id="ad-drawer" class="drawer" hidden data-focus-scope>
+          <header class="drawer-head">
+            <div class="drawer-title">
+              <h2 id="ad-library-title" tabindex="-1" data-focus-heading></h2>
+              <p class="drawer-sub muted">Team access applies to every folder in this library</p>
+              <p id="ad-library-status" class="status-text warning" hidden></p>
+            </div>
+            <div class="row" data-actions>
+              <div class="menu-anchor">
+                <button
+                  class="secondary menu-button"
+                  id="ad-library-menu"
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded="false"
+                  aria-controls="ad-library-menu-list"
+                  aria-label="More actions for this library"
+                >
+                  ⋯
+                </button>
+                <!-- prettier-ignore -->
+                <ul id="ad-library-menu-list" class="menu" role="menu" hidden>
+                    <li role="none"><button id="ad-repoint-library" role="menuitem" type="button" tabindex="-1">Re-point library</button></li>
+                    <li role="none"><button id="ad-remove-library" role="menuitem" type="button" tabindex="-1" class="danger">Remove library</button></li>
+                  </ul>
+              </div>
+              <button
+                id="ad-drawer-close"
+                type="button"
+                class="icon"
+                aria-label="Close team access"
+              >
+                ✕
+              </button>
+            </div>
+          </header>
+          <div class="drawer-body">
+            <div id="ad-drawer-progress" aria-live="polite"></div>
+            <div id="ad-drawer-access">
+              <div class="team-grid col-head" aria-hidden="true">
+                <span>Team</span><span>Access</span><span></span>
+              </div>
+              <div id="ad-team-rows" role="list" aria-label="Team access"></div>
+              <div class="row" data-actions>
+                <button id="ad-add-team" type="button" class="link">＋ Add team</button>
+              </div>
+              <div id="ad-team-form" class="panel" hidden>
+                <div class="row">
+                  <label
+                    >Team<select id="ad-team-choice">
+                      <option value="">Select a team</option>
+                    </select></label
+                  >
+                  <label
+                    >Access<select id="ad-team-access">
+                      <option>Read</option>
+                      <option>Contribute</option>
+                    </select></label
+                  >
+                </div>
+                <div class="row" data-actions>
+                  <button class="secondary" id="ad-stage-team" type="button">Add</button>
+                  <button class="secondary" id="ad-cancel-team" type="button">Cancel</button>
+                </div>
+              </div>
+              <p id="ad-run-status" class="muted"></p>
+              <div id="ad-run-actions" class="row" data-actions hidden>
+                <button class="secondary" id="ad-run-retry" type="button">Retry access run</button>
+                <button class="secondary" id="ad-run-cancel" type="button">
+                  Cancel access run
+                </button>
+              </div>
+              <ul
+                id="ad-access-notices"
+                class="ad-access-notices"
+                aria-label="Access sync notices"
+                hidden
+              ></ul>
+            </div>
+          </div>
+          <div id="ad-drawer-footer" class="footer-bar">
+            <span id="ad-change-status" class="status-text warning"></span>
+            <p class="feedback" id="fb-access-library"></p>
+            <div class="row" data-actions>
+              <button id="ad-discard" type="button" class="link" hidden>Discard</button>
+              <button id="ad-apply" type="button" class="primary" disabled>Apply access</button>
+            </div>
+          </div>
+        </aside>
       </section>
       <section id="monitor" class="page" aria-labelledby="monitor-title" tabindex="-1" hidden>
         <header id="monitor-header" class="page-header">

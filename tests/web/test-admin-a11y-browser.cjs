@@ -120,6 +120,15 @@ async function openTemplate(page) {
         const page = await open(context, tab);
         // The rail's tables are collapsed <details>; open the first, then the template.
         if (tab === 'templates') await openTemplate(page);
+        // Sites & access: the access drawer of the first library is checked with the table.
+        if (tab === 'access') {
+          await page
+            .locator('#ad-libraries')
+            .getByRole('button', { name: 'General', exact: true })
+            .click();
+          await page.getByRole('dialog', { name: 'General' }).waitFor();
+          await settle(page);
+        }
         await page.addScriptTag({ path: axe });
         const result = await page.evaluate(async () =>
           (
@@ -216,7 +225,7 @@ async function openTemplate(page) {
       });
     }
     console.log(
-      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark, computed borders, text and targets, keyboard flows (Monitor chips, a row menu and its confirmation, the Tools panel), screenshots. Mocked Dataverse.',
+      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Sites & access with its access drawer open), computed borders, text and targets, keyboard flows (Monitor chips, a row menu and its confirmation, the Tools panel), screenshots. Mocked Dataverse.',
     );
   } finally {
     await browser.close();

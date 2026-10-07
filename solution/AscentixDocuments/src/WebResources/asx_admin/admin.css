@@ -2086,31 +2086,54 @@ button.problem-pill:hover {
   }
 }
 
-/* Sites & access layout: the sites rail, the site's libraries and setup progress. Its controls,
-   labels, tables and headings are the shared ones. */
+/* Sites & access: the sites rail, the site's header, its libraries table, and the access drawer.
+   Its controls, labels, tables and headings are the shared ones. */
 .ad-layout {
   display: grid;
-  grid-template-columns: 205px minmax(0, 1fr);
-  min-height: 420px;
+  grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    'rail header'
+    'rail main';
+  min-height: 100vh;
+}
+#ad-site-header {
+  grid-area: header;
+}
+/* A long site name shortens before the actions move. */
+#ad-site-title {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 #ad-sites-pane {
+  grid-area: rail;
   padding: 16px 12px;
-  background: var(--canvas);
+  background: var(--surface);
   border-right: 1px solid var(--line);
 }
+.rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.rail-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+}
 #ad-filter {
-  margin-top: 12px;
+  margin: 12px 0 8px;
 }
 .ad-main {
+  grid-area: main;
   min-width: 0;
-  padding: 0 18px 16px;
-  background: var(--surface);
+  padding: 16px 24px 24px;
 }
-.ad-main > .page-header {
-  margin: 0 -18px 12px;
-}
-.ad-main > .panel:first-child {
-  margin-top: 16px;
+.ad-main > .feedback {
+  margin: 0 0 12px;
 }
 .ad-layout .row:not(.page-actions) {
   flex-wrap: wrap;
@@ -2121,42 +2144,45 @@ button.problem-pill:hover {
 .ad-main [data-actions] {
   position: relative;
 }
-.ad-main .menu {
+#ad-site-actions {
+  position: relative;
+}
+#ad-site-actions .menu {
   top: 100%;
   right: 0;
 }
 .ad-site {
   display: block;
   width: 100%;
-  margin: 8px 0;
-  padding: 10px;
-  text-align: left;
+  margin: 2px 0;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
   background: transparent;
+  text-align: left;
 }
-.ad-site small {
-  display: block;
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.ad-site[aria-pressed='true'],
-.ad-library[aria-pressed='true'] {
+.ad-site:hover {
   background: var(--tint);
-  border-color: var(--teal);
 }
-.ad-libraries {
+.ad-site[aria-current='true'] {
+  background: var(--tint);
+  box-shadow: inset 3px 0 0 var(--teal);
+}
+.site-name {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 8px 0 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--line);
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
 }
-.ad-libraries > div {
-  display: contents;
+.site-name strong {
+  font-weight: 700;
 }
-#ad-libraries-heading {
-  margin-top: 16px;
+.ad-site .sub {
+  margin-top: 2px;
+  font-weight: 500;
+}
+.ad-site .sub.attention {
+  color: var(--warning);
 }
 .ad-issue {
   color: var(--warning);
@@ -2165,26 +2191,229 @@ button.problem-pill:hover {
   padding: 12px 0;
   color: var(--muted);
 }
-.ad-access-footer {
-  padding-top: 6px;
-}
 .ad-access-notices {
   margin: 6px 0 0;
   padding-left: 18px;
   color: var(--muted);
   font-size: 12px;
 }
-.ad-apply-row {
-  justify-content: flex-end;
+#ad-site-cards {
+  margin-bottom: 14px;
 }
-#ad-team-caption {
-  caption-side: top;
-  padding-bottom: 6px;
+#ad-libraries-card {
+  overflow: visible;
+}
+#ad-libraries-table {
+  width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+/* Library | Used by | Teams | Access at 1.4 : 1 : 0.7 : 1.2. */
+#ad-libraries-table .col-library {
+  width: 32.6%;
+}
+#ad-libraries-table .col-used-by {
+  width: 23.3%;
+}
+#ad-libraries-table .col-teams {
+  width: 16.3%;
+}
+#ad-libraries-table .col-access {
+  width: 27.8%;
+}
+#ad-libraries-table th {
+  padding: 9px 16px;
+  border-bottom: 0;
+  background: var(--canvas);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: none;
+  letter-spacing: 0;
+}
+#ad-libraries-table th:first-child {
+  border-top-left-radius: 11px;
+}
+#ad-libraries-table th:last-child {
+  border-top-right-radius: 11px;
+}
+#ad-libraries-table td {
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+  vertical-align: middle;
+}
+#ad-libraries-table tbody tr:hover,
+#ad-libraries-table tr.is-selected {
+  background: var(--tint);
+}
+#ad-libraries-table tr.is-selected td:first-child {
+  box-shadow: inset 3px 0 0 var(--teal);
+}
+button.link.library-name {
+  padding: 0;
+  color: var(--ink);
+  font-weight: 700;
   text-align: left;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+button.link.library-name:hover {
+  text-decoration: underline;
+}
+.mini-progress {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+.mini-progress span {
+  width: 28px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+}
+.mini-progress .done {
+  background: var(--teal);
+}
+#ad-libraries-table .status.is-attention {
+  color: var(--warning);
   font-weight: 650;
 }
-#ad-teams .is-removed td:first-child {
+#ad-libraries-card .card-row {
+  padding: 4px 16px;
+}
+/* The access drawer: its head, the stage card of a setup, the team rows, and a footer that
+   stays at the bottom. */
+.drawer:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+}
+.drawer-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.drawer-title {
+  flex: 1;
+  min-width: 0;
+}
+.drawer-head h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.drawer-head .drawer-sub {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+.drawer-head .status-text {
+  margin: 6px 0 0;
+}
+.drawer-head > [data-actions] {
+  flex-wrap: nowrap;
+}
+.drawer-head > .confirm {
+  flex-basis: 100%;
+}
+.drawer-body {
+  flex: 1 0 auto;
+  padding: 0 20px 16px;
+}
+#ad-drawer-progress .ad-progress-card {
+  margin: 16px 0;
+}
+.team-grid,
+.team-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px 28px;
+  gap: 10px;
+  align-items: center;
+}
+.team-grid.col-head {
+  margin: 0 -20px;
+  padding: 8px 20px;
+  border-top: 0;
+}
+.team-row,
+.team-empty {
+  margin: 0 -20px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--line);
+}
+.team-label strong {
+  display: block;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.team-access select {
+  width: 100%;
+}
+.team-row.is-changed {
+  background: var(--warning-bg);
+}
+.team-row.is-changed .sub {
+  color: var(--warning);
+}
+.team-row.is-changed select {
+  border-color: var(--warning);
+}
+.team-row.is-removed strong {
   text-decoration: line-through;
+}
+button.icon {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  line-height: 1;
+}
+button.icon:hover {
+  background: var(--tint);
+  color: var(--ink);
+}
+#ad-drawer-access > [data-actions] {
+  margin: 0 -20px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+}
+#ad-drawer-access > .panel {
+  margin-top: 0;
+}
+#ad-run-status {
+  margin: 12px 0 0;
+}
+#ad-run-status:empty {
+  display: none;
+}
+#ad-run-actions {
+  margin-top: 8px;
+}
+#ad-drawer-footer {
+  flex-wrap: wrap;
+  margin-top: auto;
+  padding: 12px 20px;
+}
+#ad-drawer-footer .feedback {
+  flex-basis: 100%;
+  order: 3;
+  margin: 0;
+}
+#ad-drawer-footer > .confirm {
+  flex-basis: 100%;
+  order: 4;
+  margin-top: 0;
+}
+#ad-change-status:empty {
+  display: none;
 }
 #ad-native-list {
   margin: 6px 0 0;
@@ -2309,13 +2538,29 @@ button.problem-pill:hover {
     animation: ad-progress-shimmer 2.6s linear infinite;
   }
 }
+/* Below 1000px the access drawer takes the full width; at phone widths the rail stacks under the
+   header. */
+@media (max-width: 1000px) {
+  .drawer {
+    width: 100%;
+  }
+}
 @media (max-width: 650px) {
   .ad-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    grid-template-areas:
+      'header'
+      'rail'
+      'main';
+    min-height: 0;
   }
   #ad-sites-pane {
     border-right: 0;
     border-bottom: 1px solid var(--line);
+  }
+  .ad-main {
+    padding: 14px;
   }
 }
 /* At phone widths the header's actions go to their own line rather than off the screen. */

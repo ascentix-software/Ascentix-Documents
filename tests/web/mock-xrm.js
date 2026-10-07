@@ -313,7 +313,17 @@
       case 'asx_template':
         return [template];
       case 'asx_revision':
-        return [{ asx_revisionid: IDS.revision, asx_version: 1, asx_status: 'Published' }];
+        return [
+          {
+            asx_revisionid: IDS.revision,
+            asx_version: 1,
+            asx_status: 'Published',
+            _asx_templateid_value: IDS.template,
+          },
+        ];
+      // The published revision's destination is on General, so one template uses it.
+      case 'asx_destination':
+        return [{ _asx_libraryid_value: IDS.library, _asx_revisionid_value: IDS.revision }];
       case 'asx_library':
         return /asx_listid eq/.test(options) ? [] : [library];
       case 'asx_site':

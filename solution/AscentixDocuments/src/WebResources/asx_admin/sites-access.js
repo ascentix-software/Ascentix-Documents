@@ -1,8 +1,8 @@
 'use strict';
-// Sites & access: sites, their libraries, each library's team access, and the setup
-// activity on them. Results report in the line under the page header, or in the Add site or
-// library access line; every command asks in the page, next to what asked. Text is only ever
-// set with textContent.
+// Sites & access: sites, a table of their libraries, each library's team access in a drawer,
+// and the setup activity on them. Results report in the line under the page header, or in the
+// Add site panel or the drawer's footer; every command asks in the page, next to what asked.
+// Text is only ever set with textContent.
 (() => {
   const root = document.getElementById('access'),
     $ = (id) => document.getElementById(id),
@@ -14,17 +14,30 @@
     sitesLoaded: false,
     libraries: [],
     librariesLoaded: false,
+    // Team ID to its name, and to its kind ("Owner team", "Entra group · all members").
     teams: new Map(),
+    kinds: new Map(),
     // Teams deleted in Dataverse, by lower-case ID, with their last known name or their ID.
     deleted: new Map(),
     // Team ID to the broader-access warning its group carries.
     warnings: new Map(),
     policies: new Map(),
+    // Policy reads in flight, by library ID, and the libraries whose read failed.
+    reading: new Map(),
+    unreadable: new Set(),
+    // Library ID to the number of templates that use it; site ID to its number of libraries.
+    usedBy: new Map(),
+    siteCounts: null,
     site: null,
+    // The library the access drawer shows, or null.
     library: null,
+    // What the drawer shows: a library ID, the operation key of a setup that has no library row
+    // yet, or null when it is closed.
+    drawer: null,
+    pill: false,
     busy: false,
     // The feedback area of the action that runs: access (under the page header), access-add
-    // (Add site) or access-library (the library's access).
+    // (Add site) or access-library (the access drawer).
     area: 'access-library',
     // Where focus goes when the action that runs closes or hides what was focused: element IDs,
     // the first one shown wins.
@@ -97,7 +110,13 @@
   // - teams SharePoint cannot identify are listed disabled with the reason;
   // - teams whose group reaches more people than the team carry a warning the admin confirms.
   const teamLabel = (t) => {
-    if (t.teamtype !== 2 && t.teamtype !== 3) return { text: t.name, reason: null, warning: null };
+    if (t.teamtype !== 2 && t.teamtype !== 3)
+      return {
+        text: t.name,
+        kind: t.teamtype === 0 ? 'Owner team' : null,
+        reason: null,
+        warning: null,
+      };
     const security = t.teamtype === 2,
       kind = security ? 'Entra group' : 'Microsoft 365 group';
     const reason = !t.azureactivedirectoryobjectid
@@ -105,7 +124,8 @@
       : t.membershiptype === 3
         ? 'guests only: SharePoint has no sign-in claim for only the guests of a group'
         : null;
-    if (reason) return { text: t.name + ' (' + kind + ') - ' + reason, reason, warning: null };
+    if (reason)
+      return { text: t.name + ' (' + kind + ') - ' + reason, kind, reason, warning: null };
     const warning =
       t.membershiptype === 1
         ? "The group's guests will also have access to this library."
@@ -120,8 +140,16 @@
             ? ' · all members'
             : ' · owners'
           : '';
-    return { text: t.name + ' (' + kind + scope + ')', reason: null, warning };
+    return { text: t.name + ' (' + kind + scope + ')', kind: kind + scope, reason: null, warning };
   };
+  // Names a team for its row: its name, and its kind for the sub-line.
+  function nameTeam(teamId, t) {
+    const label = teamLabel(t);
+    state.teams.set(teamId, t.name);
+    if (label.kind) state.kinds.set(teamId, label.kind);
+    if (label.warning) state.warnings.set(teamId, label.warning);
+    return label;
+  }
   // The broader-access warnings of the chosen teams, which the admin confirms in the page.
   const warningsFor = (teamIds) => [
     ...new Set(teamIds.map((id) => state.warnings.get(id)).filter(Boolean)),
@@ -219,8 +247,8 @@
       land();
     }
   }
-  // An action that succeeded and closed or hid the focused control (a form, the library
-  // section, the site's actions) moves focus to the next sensible place it named, instead of
+  // An action that succeeded and closed or hid the focused control (a form, the access
+  // drawer, the site's actions) moves focus to the next sensible place it named, instead of
   // leaving it on the page body. Focus the admin moved elsewhere meanwhile stays there.
   const shown = (node) => !!node && node.isConnected && !node.closest('[hidden]') && !node.disabled;
   function land() {
@@ -238,6 +266,13 @@
   }
   function changed(p) {
     return p && JSON.stringify(p.entries) !== p.saved;
+  }
+  // A team's access as last read or applied, or undefined for a team added in this page.
+  const savedAccess = (p, teamId) => JSON.parse(p.saved).find((e) => e.TeamId === teamId)?.Access;
+  // The changes not applied yet: teams whose access changed, and teams removed or added.
+  function changeCount(p) {
+    if (!p) return 0;
+    return p.entries.filter((e) => e.removed || savedAccess(p, e.TeamId) !== e.Access).length;
   }
   function progressStages(kind) {
     switch (kind) {
@@ -469,151 +504,207 @@
     link.setAttribute('aria-label', 'Open ' + o.name + ' in Monitor');
     return link;
   }
-  function drawProgress() {
-    const area = $('ad-provision-progress');
-    // Never under an open confirmation: cardAsk redraws once it closes.
-    state.progressStale = !!area.querySelector('.confirm[role=group]');
-    if (state.progressStale) return;
-    area.replaceChildren();
-    let loading = false;
+  // The cards of this site, finished ones included, with where each one shows: the ID of the
+  // library row it belongs to (a library's setup or re-point), the operation key of a setup that
+  // has no library row yet (it gets a row of its own), or 'site' above the table.
+  function siteCards() {
+    const cards = [];
     for (const [key, o] of new Map([...state.completed, ...state.operations])) {
       if (elsewhere(key, o)) continue;
       // Found again after a reload and not read yet: its status alone does not say which
       // message and action apply, so nothing is offered until its first read.
       if (o.unread) {
-        loading = true;
+        cards.push({ key, o, home: 'site' });
         continue;
       }
-      const p = progressState(o),
-        card = node('section'),
-        heading = node('div', null, 'row between'),
-        badge = node('span', p.label, 'ad-progress-badge'),
-        bar = node('progress'),
-        list = node('ol', null, 'ad-progress-stages'),
-        actions = node('div', null, 'row');
-      card.className =
-        'ad-progress-card' + (p.stopped ? ' ad-progress-attention' : p.done ? '' : ' is-loading');
-      card.setAttribute('style', '--stage-count:' + p.stages.length);
-      card.setAttribute('data-focus-row', '');
-      actions.setAttribute('data-actions', '');
-      heading.append(node('h3', o.name), badge);
-      bar.max = p.stages.length - 1;
-      bar.value = p.step;
-      bar.setAttribute('aria-label', o.name + ' setup progress');
-      bar.setAttribute(
-        'aria-valuetext',
-        p.done ? 'Complete' : p.label + '; stage ' + (p.step + 1) + ' of ' + p.stages.length,
+      const id =
+        o.kind === 'Repoint'
+          ? o.command === 'RepointLibrary'
+            ? o.id
+            : null
+          : o.kind === 'LibrarySetup'
+            ? destination(o)?.id
+            : null;
+      const home =
+        id && state.libraries.some((l) => l.asx_libraryid === id)
+          ? id
+          : o.kind === 'LibrarySetup'
+            ? key
+            : 'site';
+      cards.push({ key, o, home });
+    }
+    return cards;
+  }
+  // Site-level cards show above the table; a library's cards show in the drawer while it shows
+  // that library or setup.
+  function drawProgress(cards) {
+    const site = $('ad-provision-progress'),
+      drawer = $('ad-drawer-progress');
+    // Never under an open confirmation: cardAsk redraws once it closes.
+    state.progressStale = !!(
+      site.querySelector('.confirm[role=group]') || drawer.querySelector('.confirm[role=group]')
+    );
+    if (state.progressStale) return;
+    site.replaceChildren();
+    drawer.replaceChildren();
+    let loading = false;
+    for (const { key, o, home } of cards) {
+      if (o.unread) loading = true;
+      else if (home === 'site') site.append(progressCard(key, o));
+      else if (state.drawer && (home === state.drawer || key === state.drawer))
+        drawer.append(progressCard(key, o));
+    }
+    if (loading) site.append(node('p', 'Loading…', 'muted'));
+    $('ad-site-cards').hidden = site.children.length === 0;
+  }
+  // One operation's stage card: its stages, its message, and what can be done about it.
+  function progressCard(key, o) {
+    const p = progressState(o),
+      card = node('section'),
+      heading = node('div', null, 'row between'),
+      badge = node('span', p.label, 'ad-progress-badge'),
+      bar = node('progress'),
+      list = node('ol', null, 'ad-progress-stages'),
+      actions = node('div', null, 'row');
+    card.className =
+      'ad-progress-card' + (p.stopped ? ' ad-progress-attention' : p.done ? '' : ' is-loading');
+    card.setAttribute('style', '--stage-count:' + p.stages.length);
+    card.setAttribute('data-focus-row', '');
+    actions.setAttribute('data-actions', '');
+    heading.append(node('h3', o.name), badge);
+    bar.max = p.stages.length - 1;
+    bar.value = p.step;
+    bar.setAttribute('aria-label', o.name + ' setup progress');
+    bar.setAttribute(
+      'aria-valuetext',
+      p.done ? 'Complete' : p.label + '; stage ' + (p.step + 1) + ' of ' + p.stages.length,
+    );
+    p.stages.forEach((name, i) => {
+      const item = node(
+          'li',
+          null,
+          i < p.step || p.done ? 'is-complete' : i === p.step ? 'is-current' : '',
+        ),
+        mark = node('span', i < p.step || p.done ? '✓' : String(i + 1), 'ad-step-mark');
+      mark.setAttribute('aria-hidden', 'true');
+      if (i === p.step && !p.done) item.setAttribute('aria-current', 'step');
+      item.append(mark, node('span', name));
+      list.append(item);
+    });
+    const message = node('p', p.message, p.stopped ? 'ad-issue' : 'muted');
+    card.append(heading, bar, list, message);
+    const observed = o.result?.Observation;
+    const recovery = o.kind === 'LibrarySetup' ? o.result?.Recovery : null;
+    if (recovery && (p.stopped || p.status === 'Reconciling')) {
+      message.textContent =
+        p.status === 'Reconciling' ? 'Checking SharePoint…' : ui.recoverySentence(o.name, recovery);
+      recoveryChoices(card, actions, key, o, recovery);
+    } else if (p.status === 'Blocked' && o.kind === 'LibraryValidation' && observed?.Inherits) {
+      // The card shows the server's refusal, which repeats the warning; this is the consent.
+      actions.append(
+        control('Stop inheritance and add', 'card:' + key + ':add', () =>
+          action(async () => {
+            await addLibrary(
+              observed.SiteId,
+              observed.ListId,
+              o.name,
+              observed.WebUrl || o.url,
+              true,
+            );
+            state.operations.delete(key);
+            state.completed.delete(key);
+          }, 'access'),
+        ),
       );
-      p.stages.forEach((name, i) => {
-        const item = node(
-            'li',
-            null,
-            i < p.step || p.done ? 'is-complete' : i === p.step ? 'is-current' : '',
-          ),
-          mark = node('span', i < p.step || p.done ? '✓' : String(i + 1), 'ad-step-mark');
-        mark.setAttribute('aria-hidden', 'true');
-        if (i === p.step && !p.done) item.setAttribute('aria-current', 'step');
-        item.append(mark, node('span', name));
-        list.append(item);
-      });
-      const message = node('p', p.message, p.stopped ? 'ad-issue' : 'muted');
-      card.append(heading, bar, list, message);
-      const observed = o.result?.Observation;
-      const recovery = o.kind === 'LibrarySetup' ? o.result?.Recovery : null;
-      if (recovery && (p.stopped || p.status === 'Reconciling')) {
-        message.textContent =
-          p.status === 'Reconciling'
-            ? 'Checking SharePoint…'
-            : ui.recoverySentence(o.name, recovery);
-        recoveryChoices(card, actions, key, o, recovery);
-      } else if (p.status === 'Blocked' && o.kind === 'LibraryValidation' && observed?.Inherits) {
-        // The card shows the server's refusal, which repeats the warning; this is the consent.
+    } else if (p.status === 'Blocked' && o.kind === 'Repoint') {
+      // Re-point only reads SharePoint; once the cause is fixed it simply reads again. It is
+      // never retried in place.
+      if (o.command)
         actions.append(
-          control('Stop inheritance and add', 'card:' + key + ':add', () =>
+          control('Re-point again', 'card:' + key + ':repoint', () =>
             action(async () => {
-              await addLibrary(
-                observed.SiteId,
-                observed.ListId,
-                o.name,
-                observed.WebUrl || o.url,
-                true,
-              );
               state.operations.delete(key);
               state.completed.delete(key);
+              await runConfirmed({ kind: o.command, id: o.id, name: o.name });
             }, 'access'),
           ),
         );
-      } else if (p.status === 'Blocked' && o.kind === 'Repoint') {
-        // Re-point only reads SharePoint; once the cause is fixed it simply reads again. It is
-        // never retried in place.
-        if (o.command)
-          actions.append(
-            control('Re-point again', 'card:' + key + ':repoint', () =>
-              action(async () => {
-                state.operations.delete(key);
-                state.completed.delete(key);
-                await runConfirmed({ kind: o.command, id: o.id, name: o.name });
-              }, 'access'),
-            ),
-          );
-      } else if (
-        o.kind === 'LibrarySetup' &&
-        ['Blocked', 'RecoveryRequired', 'RetryWait'].includes(p.status)
-      ) {
-        // Through the catalog API, so a Documents Security Administrator needs no Operator
-        // role. The server keeps its rules: Retry of a create that may have reached SharePoint
-        // is refused with the way out, and Cancel deletes nothing in SharePoint.
-        const retry = control('Retry', 'card:' + key + ':retry', () =>
-          action(async () => {
-            settled(o, await catalog({ Command: 'RetrySetup', Key: key }));
-            issue('Setup queued again.');
-          }, 'access'),
-        );
-        retry.setAttribute('aria-label', 'Retry setup of ' + o.name);
-        actions.append(retry, cancelSetupButton(key, o), monitorLink(key, o));
-      } else if (p.status === 'Blocked') {
-        const retry = control('Retry', 'card:' + key + ':retry', () =>
-          action(async () => {
-            await api('asx_ManageWork', { Command: 'Retry', Key: o.result?.RecoveryKey || key });
-            settled(o, { Status: 'Pending' });
-            issue('Retry queued.');
-          }, 'access'),
-        );
-        retry.setAttribute('aria-label', 'Retry ' + o.name);
-        actions.append(retry, monitorLink(key, o));
-      } else if (p.stopped) actions.append(monitorLink(key, o));
-      if (state.completed.has(key) && !state.operations.has(key)) {
-        const dismiss = control('Dismiss', 'card:' + key + ':dismiss', () => {
-          state.completed.delete(key);
-          render();
-        });
-        dismiss.setAttribute('aria-label', 'Dismiss ' + o.name + ' progress');
-        actions.append(dismiss);
-      }
-      if (actions.children.length) card.append(actions);
-      area.append(card);
+    } else if (
+      o.kind === 'LibrarySetup' &&
+      ['Blocked', 'RecoveryRequired', 'RetryWait'].includes(p.status)
+    ) {
+      // Through the catalog API, so a Documents Security Administrator needs no Operator
+      // role. The server keeps its rules: Retry of a create that may have reached SharePoint
+      // is refused with the way out, and Cancel deletes nothing in SharePoint.
+      const retry = control('Retry', 'card:' + key + ':retry', () =>
+        action(async () => {
+          settled(o, await catalog({ Command: 'RetrySetup', Key: key }));
+          issue('Setup queued again.');
+        }, 'access'),
+      );
+      retry.setAttribute('aria-label', 'Retry setup of ' + o.name);
+      actions.append(retry, cancelSetupButton(key, o), monitorLink(key, o));
+    } else if (p.status === 'Blocked') {
+      const retry = control('Retry', 'card:' + key + ':retry', () =>
+        action(async () => {
+          await api('asx_ManageWork', { Command: 'Retry', Key: o.result?.RecoveryKey || key });
+          settled(o, { Status: 'Pending' });
+          issue('Retry queued.');
+        }, 'access'),
+      );
+      retry.setAttribute('aria-label', 'Retry ' + o.name);
+      actions.append(retry, monitorLink(key, o));
+    } else if (p.stopped) actions.append(monitorLink(key, o));
+    if (state.completed.has(key) && !state.operations.has(key)) {
+      const dismiss = control('Dismiss', 'card:' + key + ':dismiss', () => {
+        state.completed.delete(key);
+        // A setup's drawer closes with its card; focus goes back to the libraries.
+        if (state.drawer === key) {
+          closeDrawer(false);
+          state.focusAfter = ['ad-libraries-heading', 'ad-site-title'];
+        }
+        render();
+        land();
+      });
+      dismiss.setAttribute('aria-label', 'Dismiss ' + o.name + ' progress');
+      actions.append(dismiss);
     }
-    if (loading) area.append(node('p', 'Loading…', 'muted'));
-    $('ad-activity').hidden = area.children.length === 0;
+    if (actions.children.length) card.append(actions);
+    return card;
   }
-  // A team row: its access, or Removed · Undo until Apply, and what SharePoint has.
+  // A team row: its name and kind, its access, or Removed · Undo until Apply. A row changed in
+  // this page is tinted and says the access it had.
   function teamRow(p, e, running) {
-    const tr = node('tr'),
+    const row = node('div', null, 'team-row'),
       gone = deletedTeam(e.TeamId),
       name = gone != null ? 'Deleted team: ' + gone : state.teams.get(e.TeamId) || e.TeamId,
       key = 'team:' + e.TeamId,
-      label = node('td', name),
-      access = node('td'),
-      act = node('td');
-    tr.setAttribute('data-focus-row', '');
+      was = savedAccess(p, e.TeamId),
+      label = node('div', null, 'team-label'),
+      access = node('div', null, 'team-access'),
+      act = node('div', null, 'team-act');
+    row.setAttribute('role', 'listitem');
+    row.setAttribute('data-focus-row', '');
+    if (e.removed || was !== e.Access) row.classList.add('is-changed');
+    const sub = [
+      gone == null ? state.kinds.get(e.TeamId) : null,
+      !e.removed && was && was !== e.Access ? 'was ' + was : null,
+      running ? 'applying' : null,
+    ].filter(Boolean);
+    label.append(node('strong', name), node('span', sub.join(' · '), 'sub'));
     if (gone != null) label.append(node('div', deletedNotice, 'ad-issue'));
     if (e.removed) {
-      tr.className = 'is-removed';
-      const undo = control('Undo', key + ':undo', () => {
-        delete e.removed;
-        render();
-        focusKey(key + ':remove');
-      });
+      row.classList.add('is-removed');
+      const undo = control(
+        'Undo',
+        key + ':undo',
+        () => {
+          delete e.removed;
+          render();
+          focusKey(key + ':remove');
+        },
+        'link',
+      );
       undo.setAttribute('aria-label', 'Undo removing ' + name);
       undo.disabled = state.busy;
       access.append('Removed · ', undo);
@@ -633,26 +724,96 @@
       };
       access.append(select);
       if (gone == null) {
-        const remove = control('Remove', key + ':remove', () => {
-          e.removed = true;
-          render();
-          focusKey(key + ':undo');
-        });
+        const remove = control(
+          '✕',
+          key + ':remove',
+          () => {
+            e.removed = true;
+            render();
+            focusKey(key + ':undo');
+          },
+          'icon',
+        );
         remove.setAttribute('aria-label', 'Remove ' + name);
         remove.disabled = state.busy;
         act.append(remove);
       }
     }
-    const current = appliedAccess(p, e.TeamId);
+    row.append(label, access, act);
+    return row;
+  }
+  // A setup's four stages as a small bar; its Access cell says the same in words.
+  function miniProgress(s) {
+    const bar = node('div', null, 'mini-progress');
+    bar.setAttribute('aria-hidden', 'true');
+    s.stages.forEach((_, i) =>
+      bar.append(node('span', null, i < s.step || s.done ? 'done' : null)),
+    );
+    return bar;
+  }
+  const stageText = (o, s) =>
+    o.kind === 'LibrarySetup'
+      ? s.label + ' · step ' + (s.step + 1) + ' of ' + s.stages.length
+      : s.label;
+  const accessTone = (label) =>
+    label === 'Access applied' ? 'ok' : label === 'Needs attention' ? 'blocked' : 'pending';
+  // A library's row: its name (it opens the drawer), the templates that use it, its teams, and
+  // its access: changes not applied, a setup or re-point under way, or the access label.
+  function libraryRow(l, card) {
+    const id = l.asx_libraryid,
+      p = state.policies.get(id),
+      tr = node('tr'),
+      name = node('td', null, 'library'),
+      access = node('td', null, 'access'),
+      used = state.usedBy.get(id),
+      b = control(l.asx_name, 'library:' + id, () => action(() => openDrawer(l, b)), 'link');
+    b.classList.add('library-name');
+    tr.setAttribute('data-focus-row', '');
+    if (state.drawer === id) tr.classList.add('is-selected');
+    name.append(b);
+    const s = card && progressState(card.o),
+      count = changeCount(p);
+    if (s && card.o.kind === 'LibrarySetup' && !s.done) name.append(miniProgress(s));
+    if (count > 0) {
+      const status = ui.status('attention', ui.plural(count, 'change', 'changes') + ' not applied');
+      status.classList.add('is-attention');
+      access.append(status);
+    } else if (s && !s.done)
+      access.append(ui.status(s.stopped ? 'blocked' : 'pending', stageText(card.o, s)));
+    else if (!l.asx_approved) access.append(ui.status('blocked', 'Needs attention'));
+    else if (p || !state.unreadable.has(id))
+      access.append(ui.status(accessTone(accessLabel(p)), accessLabel(p)));
+    const teams = p && p.entries.filter((e) => !e.removed && listed(p, e)).length;
     tr.append(
-      label,
-      access,
+      name,
       node(
         'td',
-        (current === 'None' ? 'No managed access' : current) + (running ? ' · applying' : ''),
+        used == null ? '' : used ? ui.plural(used, 'template', 'templates') : 'Not used',
+        'used-by',
       ),
-      act,
+      node('td', p ? ui.plural(teams, 'team', 'teams') : '', 'teams'),
+      access,
     );
+    return tr;
+  }
+  // A setup with no library row yet: its name, its stage, and its card in the drawer.
+  function setupRow(key, o) {
+    const s = progressState(o),
+      tr = node('tr'),
+      name = node('td', null, 'library'),
+      access = node('td', null, 'access'),
+      b = control(o.name, 'setup:' + key, () => openSetup(key, b), 'link');
+    b.classList.add('library-name');
+    tr.setAttribute('data-focus-row', '');
+    if (state.drawer === key) tr.classList.add('is-selected');
+    name.append(b, miniProgress(s));
+    access.append(
+      ui.status(
+        s.done ? 'ok' : s.stopped ? 'blocked' : 'pending',
+        s.done ? s.label : stageText(o, s),
+      ),
+    );
+    tr.append(name, node('td', 'Not used', 'used-by'), node('td', '', 'teams'), access);
     return tr;
   }
   // Every redraw keeps focus on the same control, by its data-focus-key.
@@ -668,16 +829,22 @@
     };
     state.sites.forEach((s) => {
       const b = control(
-        null,
-        'site:' + s.asx_siteid,
-        () => action(() => selectSite(s), 'access'),
-        'ad-site',
-      );
-      b.setAttribute('aria-pressed', String(s.asx_siteid === state.site?.asx_siteid));
-      b.append(
-        node('span', s.asx_name),
-        node('small', s.asx_approved ? 'Ready' : 'Needs attention'),
-      );
+          null,
+          'site:' + s.asx_siteid,
+          () => action(() => selectSite(s), 'access'),
+          'ad-site',
+        ),
+        title = node('span', null, 'site-name'),
+        count = state.siteCounts && (state.siteCounts.get(s.asx_siteid) || 0),
+        sub = node('span', null, 'sub');
+      if (s.asx_siteid === state.site?.asx_siteid) b.setAttribute('aria-current', 'true');
+      title.append(node('strong', s.asx_name));
+      if (!s.asx_approved) {
+        title.append(ui.dot('attention'));
+        sub.textContent = 'Needs attention';
+        sub.classList.add('attention');
+      } else if (state.siteCounts) sub.textContent = ui.plural(count, 'library', 'libraries');
+      b.append(title, sub);
       item(b);
     });
     let checking = 0;
@@ -690,6 +857,7 @@
           'site:' + key,
           () => {
             state.selectedOperation = key;
+            closeDrawer(false);
             state.site = null;
             state.library = null;
             state.libraries = [];
@@ -700,7 +868,7 @@
         ),
       );
     }
-    // No sites: "No sites yet" holds ＋ Add site; a search that finds none says so.
+    // No sites: "No sites yet" holds ＋ Add; a search that finds none says so.
     const empty = state.sitesLoaded && !state.sites.length && !checking;
     $('ad-sites-empty').hidden = !empty;
     $('ad-sites-empty-text').textContent = term ? 'No sites match' : 'No sites yet';
@@ -709,11 +877,15 @@
     $('ad-more-activity').hidden = !state.nextActivity;
     $('ad-more-sites').hidden = !state.nextSites;
     $('ad-more-libraries').hidden = !state.nextLibraries;
+    $('ad-more-libraries').parentNode.hidden = !state.nextLibraries;
     $('ad-site-title').textContent = state.site?.asx_name || 'Select or add a site';
-    $('ad-site-health').textContent = state.site
-      ? state.site.asx_approved
-        ? 'Ready'
-        : 'Needs attention'
+    $('ad-site-meta').textContent = state.site
+      ? [
+          (state.site.asx_url || '').replace(/^https:\/\//, ''),
+          state.site.asx_approved ? 'Ready' : 'Needs attention',
+        ]
+          .filter(Boolean)
+          .join(' · ')
       : '';
     $('ad-site-actions').hidden = !state.site;
     $('ad-site-error').hidden = !state.site || state.site.asx_approved;
@@ -725,34 +897,29 @@
       'ad-remove-site-reason',
       state.site && state.libraries.length ? 'Remove its libraries first' : null,
     );
-    $('ad-libraries').replaceChildren();
-    state.libraries.forEach((l) => {
-      const p = state.policies.get(l.asx_libraryid),
-        row = node('div'),
-        b = control(
-          l.asx_name + (changed(p) ? ' · Unsaved' : ''),
-          'library:' + l.asx_libraryid,
-          () => action(() => selectLibrary(l)),
-          'ad-library',
-        );
-      b.setAttribute('aria-pressed', String(l.asx_libraryid === state.library?.asx_libraryid));
-      row.setAttribute('data-focus-row', '');
-      row.append(b);
-      $('ad-libraries').append(row);
-    });
-    $('ad-libraries-pane').hidden = !state.site || !state.libraries.length;
+    // The libraries table: a row per library, then a row per setup with no library row yet.
+    const cards = siteCards(),
+      onRow = (id) =>
+        cards.find((c) => c.home === id && !progressState(c.o).done) ||
+        cards.find((c) => c.home === id),
+      setups = state.site ? cards.filter((c) => !c.o.unread && c.home === c.key) : [];
+    $('ad-libraries').replaceChildren(
+      ...state.libraries.map((l) => libraryRow(l, onRow(l.asx_libraryid))),
+      ...setups.map((c) => setupRow(c.key, c.o)),
+    );
+    $('ad-libraries-card').hidden = !state.site || (!state.libraries.length && !setups.length);
     $('ad-libraries-empty').hidden =
-      !state.site || !state.librariesLoaded || state.libraries.length > 0;
-    $('ad-library-detail').hidden = !state.library;
-    const p = policy();
-    if (state.library) {
-      $('ad-library-title').textContent = state.library.asx_name;
-      $('ad-library-status').textContent = state.library.asx_approved
-        ? 'Ready for folder templates'
-        : 'Needs attention';
-      $('ad-library-access').textContent = accessLabel(p);
-    }
-    $('ad-teams').replaceChildren();
+      !state.site || !state.librariesLoaded || state.libraries.length > 0 || setups.length > 0;
+    // The access drawer: a library's team access, or only the stage card of a setup.
+    const p = policy(),
+      setup = !state.library && cards.find((c) => c.key === state.drawer);
+    $('ad-library-title').textContent = state.library?.asx_name || setup?.o.name || '';
+    $('ad-library-status').textContent = 'Needs attention';
+    $('ad-library-status').hidden = !state.library || state.library.asx_approved;
+    $('ad-library-menu').hidden = !state.library;
+    $('ad-drawer-access').hidden = !state.library;
+    $('ad-drawer-footer').hidden = !state.library;
+    $('ad-team-rows').replaceChildren();
     // The queued access run: one that stopped or waits is shown with its notice and can be
     // retried or cancelled here. Teams stay editable while a run is queued or running: Apply
     // access replaces the run, or, while a flow holds it or SharePoint has not answered its
@@ -764,13 +931,11 @@
       incomplete = !!p?.result.Policy?.MembershipIncomplete;
     if (p) {
       const rows = p.entries.filter((e) => listed(p, e));
-      rows.forEach((e) => $('ad-teams').append(teamRow(p, e, running)));
+      rows.forEach((e) => $('ad-team-rows').append(teamRow(p, e, running)));
       if (!rows.length) {
-        const tr = node('tr'),
-          td = node('td', 'No additional teams.');
-        td.colSpan = 4;
-        tr.append(td);
-        $('ad-teams').append(tr);
+        const none = node('div', 'No additional teams.', 'team-empty muted');
+        none.setAttribute('role', 'listitem');
+        $('ad-team-rows').append(none);
       }
     }
     // A cancelled run leaves the policy to review: Apply access starts a new run.
@@ -781,11 +946,18 @@
       ['Missing', 'NeedsReview', 'Removed'].includes(p?.result.Status) ||
       deletedPending(p);
     $('ad-apply').disabled = state.busy || !p || (!changed(p) && !reapply);
-    $('ad-apply').textContent = inherits(p) ? 'Stop inheritance and apply' : 'Apply access changes';
+    $('ad-apply').textContent = inherits(p) ? 'Stop inheritance and apply' : 'Apply access';
     $('ad-add-team').disabled = state.busy || !p;
+    const count = changeCount(p);
+    $('ad-change-status').textContent = count
+      ? ui.plural(count, 'change', 'changes') + ' not applied'
+      : '';
+    $('ad-discard').hidden = !count;
+    $('ad-discard').disabled = state.busy;
     // A stopped run comes first, as its own notice; a change waiting behind it applies once the
-    // run is retried or cancelled. A run that waits to retry carries on by itself.
-    $('ad-change-status').textContent = !p
+    // run is retried or cancelled. A run that waits to retry carries on by itself. Changes not
+    // applied yet are counted in the footer instead.
+    $('ad-run-status').textContent = !p
       ? 'Loading access…'
       : stuck
         ? (p.result.RunNotice ||
@@ -802,7 +974,7 @@
             : inherits(p)
               ? 'Needs attention'
               : changed(p)
-                ? 'Changes not yet applied.'
+                ? ''
                 : ['Missing', 'Removed'].includes(p.result.Status)
                   ? 'Apply to confirm this library’s access.'
                   : p.result.Status === 'NeedsReview'
@@ -812,7 +984,7 @@
                       : p.result.Status === 'Applied'
                         ? 'Access and team membership confirmed.'
                         : p.result.Status;
-    $('ad-change-status').className =
+    $('ad-run-status').className =
       stuck ||
       (inherits(p) && !running) ||
       (incomplete && p?.result.Status === 'Applied' && !running && !changed(p))
@@ -830,7 +1002,7 @@
     ['ad-validate', 'ad-provision', 'ad-stage-team', 'ad-more-sites', 'ad-more-libraries'].forEach(
       (id) => ($(id).disabled = state.busy),
     );
-    drawProgress();
+    drawProgress(cards);
   }
   function confirmText(c) {
     switch (c.kind) {
@@ -926,6 +1098,11 @@
       if (result.Status === 'Cancelled') {
         state.operations.delete(c.id);
         state.completed.delete(c.id);
+        // Its drawer closes with it; focus goes back to the libraries.
+        if (state.drawer === c.id) {
+          closeDrawer(false);
+          state.focusAfter = ['ad-libraries-heading', 'ad-site-title'];
+        }
       } else if (o) settled(o, result);
       issue('The setup of ' + c.name + ' was cancelled.');
       return;
@@ -937,15 +1114,17 @@
       state.removed.add(c.id);
       state.policies.delete(c.id);
       forget(c.id, c.kind === 'RemoveSite' ? state.site?.asx_url : null);
+      closeDrawer(false);
       state.library = null;
       if (c.kind === 'RemoveSite') {
         state.site = null;
         state.libraries = [];
         await loadSites();
       } else await libraries();
+      loadSiteCounts().catch(() => {});
       await window.AsxdAdmin?.refreshCatalog();
-      // The library section is gone with the library, so the site's line reports it, and focus
-      // goes to the Libraries heading, or the site's when none is left; for a site, to Sites.
+      // The drawer is gone with the library, so the site's line reports it, and focus goes to
+      // the Libraries heading, or the site's when none is left; for a site, to Sites.
       issue(c.name + ' was removed from Documents.', false, 'access');
       state.focusAfter =
         c.kind === 'RemoveSite' ? ['ad-sites-heading'] : ['ad-libraries-heading', 'ad-site-title'];
@@ -983,7 +1162,10 @@
     state.sitesLoaded = true;
     render();
   }
-  async function libraries(append = false) {
+  // Reads the site's libraries. A refresh reads the usage and access of every one shown again;
+  // otherwise only the libraries shown for the first time are read.
+  async function libraries(append = false, refresh = false) {
+    const before = new Set(state.libraries.map((l) => l.asx_libraryid));
     const result = await page(
       'asx_library',
       append
@@ -1001,61 +1183,204 @@
         state.libraries.find((l) => l.asx_libraryid === state.library.asx_libraryid) ||
         state.library;
     render();
+    preload(
+      refresh ? state.libraries : state.libraries.filter((l) => !before.has(l.asx_libraryid)),
+    );
+  }
+  // Reads which templates use these libraries and their access, without holding up the page: a
+  // read that fails leaves its cells empty.
+  function preload(list) {
+    if (!list.length) return;
+    loadUsedBy(list).catch(() => {});
+    loadPolicies(list).catch(() => {});
+  }
+  // Every row of a query, page after page.
+  async function readAll(table, options) {
+    const rows = [];
+    while (options) {
+      const result = await page(table, options);
+      rows.push(...result.entities);
+      options = result.nextLink ? nextOptions(result.nextLink) : null;
+    }
+    return rows;
+  }
+  // IDs in groups small enough for one query's filter.
+  const groups = (ids) => {
+    const out = [];
+    for (let i = 0; i < ids.length; i += 25) out.push(ids.slice(i, i + 25));
+    return out;
+  };
+  const anyOf = (column, ids) => ids.map((id) => column + ' eq ' + id).join(' or ');
+  // The templates that use each library, by the server's rule for Remove library: a template
+  // whose Draft revision, or whose published revision, has a destination on the library. A
+  // replaced revision does not count.
+  async function loadUsedBy(list) {
+    const ids = list.map((l) => l.asx_libraryid),
+      destinations = [],
+      revisions = new Map(),
+      published = new Map();
+    for (const group of groups(ids))
+      destinations.push(
+        ...(await readAll(
+          'asx_destination',
+          '?$select=_asx_libraryid_value,_asx_revisionid_value&$filter=' +
+            anyOf('_asx_libraryid_value', group),
+        )),
+      );
+    const revisionIds = [
+      ...new Set(destinations.map((d) => d._asx_revisionid_value).filter(Boolean)),
+    ];
+    for (const group of groups(revisionIds))
+      for (const r of await readAll(
+        'asx_revision',
+        '?$select=asx_revisionid,asx_status,_asx_templateid_value&$filter=' +
+          anyOf('asx_revisionid', group),
+      ))
+        revisions.set(r.asx_revisionid, r);
+    if (revisions.size)
+      for (const t of await readAll(
+        'asx_template',
+        '?$select=asx_templateid,_asx_publishedrevisionid_value',
+      ))
+        published.set(t.asx_templateid, t._asx_publishedrevisionid_value);
+    const users = new Map(ids.map((id) => [id, new Set()]));
+    for (const d of destinations) {
+      const r = revisions.get(d._asx_revisionid_value),
+        template = r?._asx_templateid_value;
+      if (
+        r &&
+        (r.asx_status === 'Draft' || (template && published.get(template) === r.asx_revisionid))
+      )
+        users.get(d._asx_libraryid_value)?.add(template || r.asx_revisionid);
+    }
+    for (const [id, used] of users) state.usedBy.set(id, used.size);
+    render();
+  }
+  // Each site's number of libraries, for the sites list.
+  async function loadSiteCounts() {
+    const counts = new Map();
+    for (const r of await readAll(
+      'asx_library',
+      '?$select=_asx_siteid_value&$filter=statecode eq 0',
+    ))
+      counts.set(r._asx_siteid_value, (counts.get(r._asx_siteid_value) || 0) + 1);
+    state.siteCounts = counts;
+    render();
+  }
+  // Reads the access of the libraries shown, four at a time, so a site with many libraries
+  // does not send them all at once. These reads name no teams and refresh no catalog: the
+  // drawer does that for the library it opens.
+  async function loadPolicies(list) {
+    const queue = [...list];
+    const next = async () => {
+      for (let l = queue.shift(); l; l = queue.shift())
+        await readPolicy(l).catch(() => state.unreadable.add(l.asx_libraryid));
+    };
+    await Promise.all([next(), next(), next(), next()]);
+    render();
   }
   async function selectSite(s) {
     state.selectedOperation = null;
+    closeDrawer(false);
     state.site = s;
     state.library = null;
     state.librariesLoaded = false;
     ['ad-library-form', 'ad-team-form', 'ad-existing-form'].forEach((id) => ($(id).hidden = true));
     ['access-library', 'access'].forEach((area) => ui.clearFeedback(area));
-    await libraries();
-    if (state.libraries.length) await selectLibrary(state.libraries[0]);
+    await libraries(false, true);
   }
+  // The drawer's library: its access read if it is not yet, then its teams named.
   async function selectLibrary(l) {
     state.library = l;
     $('ad-team-form').hidden = true;
-    if (!state.policies.has(l.asx_libraryid)) await loadPolicy(l);
+    const id = l.asx_libraryid;
+    if (!state.policies.has(id) || state.reading.has(id)) await readPolicy(l);
+    await completePolicy(l);
     render();
   }
-  async function loadPolicy(l) {
-    const old = state.policies.get(l.asx_libraryid);
-    if (changed(old)) return;
-    const result = await security({ Command: 'GetPolicy', LibraryId: l.asx_libraryid });
-    if (changed(state.policies.get(l.asx_libraryid))) return;
-    const entries = (result.Policy?.Desired || []).map((e) => ({ ...e }));
-    state.policies.set(l.asx_libraryid, { result, entries, saved: JSON.stringify(entries) });
-    // The policy names its teams, so a team deleted in Dataverse is never read by ID.
-    const named = new Map();
-    for (const t of result.Teams || []) {
-      const key = String(t.TeamId).toLowerCase();
-      if (t.Deleted) state.deleted.set(key, t.Name || t.TeamId);
-      else {
-        state.deleted.delete(key);
-        if (t.Name) named.set(key, t.Name);
+  // Reads a library's access, unless it has changes not applied. The policy names its teams, so
+  // a team deleted in Dataverse is never read by ID. One read per library at a time.
+  function readPolicy(l) {
+    const id = l.asx_libraryid;
+    if (state.reading.has(id)) return state.reading.get(id);
+    const work = (async () => {
+      const old = state.policies.get(id);
+      if (changed(old)) return;
+      const result = await security({ Command: 'GetPolicy', LibraryId: id });
+      if (changed(state.policies.get(id))) return;
+      const entries = (result.Policy?.Desired || []).map((e) => ({ ...e }));
+      state.policies.set(id, { result, entries, saved: JSON.stringify(entries) });
+      state.unreadable.delete(id);
+      const named = new Map();
+      for (const t of result.Teams || []) {
+        const key = String(t.TeamId).toLowerCase();
+        if (t.Deleted) state.deleted.set(key, t.Name || t.TeamId);
+        else {
+          state.deleted.delete(key);
+          if (t.Name) named.set(key, t.Name);
+        }
       }
-    }
-    for (const e of entries)
-      if (!state.teams.has(e.TeamId) && deletedTeam(e.TeamId) == null) {
+      for (const e of entries) {
         const name = named.get(String(e.TeamId).toLowerCase());
         // Its kind and any warning come with the team list (loadTeams).
-        if (name) {
-          state.teams.set(e.TeamId, name);
-          continue;
-        }
-        const team = await xrm.WebApi.retrieveRecord(
-          'team',
-          e.TeamId,
-          '?$select=name,teamtype,membershiptype,azureactivedirectoryobjectid',
-        );
-        const label = teamLabel(team);
-        state.teams.set(e.TeamId, label.text);
-        if (label.warning) state.warnings.set(e.TeamId, label.warning);
+        if (name && !state.teams.has(e.TeamId)) state.teams.set(e.TeamId, name);
       }
-    if (result.Status === 'Applied') {
-      l.asx_policyapplied = true;
-      await window.AsxdAdmin?.refreshCatalog();
-    }
+      if (result.Status === 'Applied') l.asx_policyapplied = true;
+    })().finally(() => {
+      if (state.reading.get(id) === work) state.reading.delete(id);
+    });
+    state.reading.set(id, work);
+    return work;
+  }
+  // Names the teams the policy did not name, then refreshes the catalog once the access is
+  // applied. Once per read.
+  async function completePolicy(l) {
+    const p = state.policies.get(l.asx_libraryid);
+    if (!p || p.complete) return;
+    for (const e of p.entries)
+      if (!state.teams.has(e.TeamId) && deletedTeam(e.TeamId) == null)
+        nameTeam(
+          e.TeamId,
+          await xrm.WebApi.retrieveRecord(
+            'team',
+            e.TeamId,
+            '?$select=name,teamtype,membershiptype,azureactivedirectoryobjectid',
+          ),
+        );
+    p.complete = true;
+    if (p.result.Status === 'Applied') await window.AsxdAdmin?.refreshCatalog();
+  }
+  async function loadPolicy(l) {
+    await readPolicy(l);
+    await completePolicy(l);
+  }
+  // The access drawer, a dialog over the right of the page. It opens on a library's row, on a
+  // setup's row, or from a link; closing it returns focus to what opened it, found again by its
+  // data-focus-key when the table was redrawn meanwhile.
+  let drawerHandle = null;
+  function showDrawer(id, invoker) {
+    drawerHandle = ui.sidePanel($('ad-drawer'), invoker, {
+      onClose: () => {
+        state.drawer = null;
+        state.library = null;
+        $('ad-team-form').hidden = true;
+        render();
+      },
+    });
+    state.drawer = id;
+  }
+  async function openDrawer(l, invoker) {
+    showDrawer(l.asx_libraryid, invoker);
+    state.library = l;
+    render();
+    await selectLibrary(l);
+  }
+  function openSetup(key, invoker) {
+    showDrawer(key, invoker);
+    render();
+  }
+  function closeDrawer(focus = true) {
+    drawerHandle?.close(focus);
   }
   async function loadTeams() {
     const teams = [];
@@ -1074,9 +1399,7 @@
       ),
     );
     teams.forEach((t) => {
-      const label = teamLabel(t);
-      state.teams.set(t.teamid, label.text);
-      if (label.warning) state.warnings.set(t.teamid, label.warning);
+      const label = nameTeam(t.teamid, t);
       ['ad-team-choice', 'ad-initial-team'].forEach((id) => {
         const o = opt(t.teamid, label.text);
         o.disabled = !!label.reason;
@@ -1240,6 +1563,7 @@
         // A removed site or library added again is active again.
         state.removed.delete(result.CatalogId);
         await loadSites();
+        loadSiteCounts().catch(() => {});
         if (o.kind === 'SiteValidation' && result.CatalogId) {
           const added = state.sites.find((s) => s.asx_siteid === result.CatalogId);
           if (added) await selectSite(added);
@@ -1260,7 +1584,13 @@
     if (state.startPromise) return state.startPromise;
     if (!xrm?.WebApi || state.loaded) return;
     state.startPromise = action(async () => {
+      // The header's Monitor problem count, read once per page load.
+      if (!state.pill) {
+        state.pill = true;
+        ui.problemPill($('ad-site-problems'));
+      }
       await loadSites();
+      loadSiteCounts().catch(() => {});
       if (state.sites.length) await selectSite(state.sites[0]);
       await loadTeams();
       await discoverActivity();
@@ -1297,9 +1627,10 @@
         if (!state.sites.some((v) => v.asx_siteid === s.asx_siteid)) state.sites.push(s);
         await selectSite(s);
         if (!state.libraries.some((v) => v.asx_libraryid === id)) state.libraries.push(l);
-        await selectLibrary(l);
+        await openDrawer(l, $('ad-site-title'));
       }, 'access');
     },
+    redraw: render,
     // Tracks a setup or other operation as a card and reads it at once (as a reload finds one).
     trackOperation: async (key, name, kind) => {
       track(key, { name, kind, url: state.site?.asx_url });
@@ -1440,25 +1771,24 @@
       event.preventDefault();
       options[state.nativeActive].onclick();
     } else if (event.key === 'Escape') {
+      // With nothing to clear, Escape closes the Add site panel.
+      if ($('ad-native-list').hidden && !$('ad-native-search').value) return;
       event.preventDefault();
       $('ad-native-search').value = '';
       state.native = null;
       closeNative();
     }
   });
+  // Add site opens as a side panel; Cancel and Escape close it and return focus to ＋ Add.
+  let sitePanel = null;
   $('ad-add-site').onclick = () => {
-    $('ad-site-form').hidden = false;
+    sitePanel = ui.sidePanel($('ad-site-form'), $('ad-add-site'), { onClose: closeNative });
     state.native = null;
     $('ad-native-search').value = '';
     ui.clearFeedback('access-add');
-    $('ad-native-search').focus();
     return searchNative();
   };
-  $('ad-cancel-site').onclick = () => {
-    $('ad-site-form').hidden = true;
-    closeNative();
-    $('ad-add-site').focus();
-  };
+  $('ad-cancel-site').onclick = () => sitePanel?.close();
   $('ad-validate').onclick = () =>
     action(async () => {
       const pick = state.native;
@@ -1472,10 +1802,10 @@
       track(result.Key, { name: pick.name, kind: 'SiteValidation' });
       state.selectedOperation = result.Key;
       state.site = null;
+      closeDrawer(false);
       state.library = null;
       state.libraries = [];
-      $('ad-site-form').hidden = true;
-      closeNative();
+      sitePanel?.close(false);
       issue('Checking ' + pick.name + '.', false, 'access');
       state.focusAfter = ['ad-add-site', 'ad-sites-heading'];
     }, 'access-add');
@@ -1641,6 +1971,19 @@
   $('ad-cancel-team').onclick = () => {
     $('ad-team-form').hidden = true;
     $('ad-add-team').focus();
+  };
+  $('ad-drawer-close').onclick = () => closeDrawer();
+  // Discard puts the teams back as last read or applied.
+  function discardChanges(p) {
+    p.entries = JSON.parse(p.saved);
+    $('ad-team-form').hidden = true;
+    render();
+    // Apply stays enabled when the library needs it anyway; otherwise focus goes to the heading.
+    ($('ad-apply').disabled ? $('ad-library-title') : $('ad-apply')).focus();
+  }
+  $('ad-discard').onclick = () => {
+    const p = policy();
+    if (p && !state.busy) discardChanges(p);
   };
   $('ad-stage-team').onclick = () => {
     const p = policy(),

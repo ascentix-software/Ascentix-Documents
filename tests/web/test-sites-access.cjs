@@ -135,6 +135,13 @@ const lib2 = {
   asx_approved: true,
   asx_policyapplied: true,
 };
+// The libraries the site's library list answers with, the destinations, revisions and templates
+// that say which templates use them, and the Monitor problem summary.
+let destinations = [],
+  revisions = [],
+  templateRows = [],
+  listedLibraries = [lib],
+  problemSummary = { BlockedJobs: 2, TemplateRuns: 1 };
 let discovery = false;
 // Inspect results by operation key, checked before the shared mock answers.
 const inspectByKey = {};
@@ -171,6 +178,17 @@ const xrm = {
       if (table === 'asx_library') libraryQueries.push(options);
       if (table === 'asx_site') siteQueries.push(options);
       if (table === 'sharepointsite') nativeQueries.push(options);
+      if (table === 'asx_library' && options.includes('$select=_asx_siteid_value'))
+        return { entities: [lib, lib2] };
+      if (table === 'asx_library' && options.includes('_asx_siteid_value eq'))
+        return { entities: listedLibraries };
+      if (table === 'asx_destination')
+        return {
+          entities: destinations.filter((d) => options.includes(d._asx_libraryid_value)),
+        };
+      if (table === 'asx_revision')
+        return { entities: revisions.filter((r) => options.includes(r.asx_revisionid)) };
+      if (table === 'asx_template') return { entities: templateRows };
       if (table === 'asx_library' && /asx_listid eq/.test(options))
         return {
           entities: registeredLists
@@ -219,7 +237,8 @@ const xrm = {
         if (command.Command === 'RetrySetup' && retrySetupRefusal)
           return refused(retrySetupRefusal);
         let result;
-        if (command.Command === 'GetPolicy') result = policy;
+        if (command.Command === 'Summary') result = { Status: 'Summary', Summary: problemSummary };
+        else if (command.Command === 'GetPolicy') result = policy;
         else if (command.Command === 'RetryAccessRun')
           result = policy = { ...policy, RunStatus: 'Pending', RunNotice: null };
         else if (command.Command === 'CancelAccessRun')
@@ -299,8 +318,21 @@ const pressFocused = async (node) => {
   node.focus();
   await press(node);
 };
-const teamRows = () => nodes['ad-teams'].querySelectorAll('tr');
+const teamRows = () => nodes['ad-team-rows'].querySelectorAll('.team-row');
 const rowButton = (row, text) => row.querySelectorAll('button').find((b) => b.textContent === text);
+// A team row's ✕, named by its aria-label.
+const removeOf = (row) =>
+  row.querySelectorAll('button').find((b) => /^Remove /.test(b.getAttribute('aria-label') || ''));
+const libraryRows = () => nodes['ad-libraries'].querySelectorAll('tr');
+const libraryButton = (name) =>
+  nodes['ad-libraries'].querySelectorAll('button').find((b) => b.textContent === name);
+const rowNamed = (name) =>
+  libraryRows().find((r) => r.querySelector('.library-name').textContent === name);
+// The Access column of a library's row, as a person reads it.
+const accessOf = (name) => rowNamed(name).querySelector('.access').visibleText;
+// Opens the drawer of a setup that has no library row yet, by its operation key.
+const openSetup = (key) =>
+  pressFocused(nodes['ad-libraries'].querySelector('[data-focus-key="setup:' + key + '"]'));
 const stage = (team, access) => {
   nodes['ad-add-team'].onclick();
   nodes['ad-team-choice'].value = team;
@@ -310,6 +342,12 @@ const stage = (team, access) => {
 (async () => {
   await document.fire('DOMContentLoaded');
   assert.equal(nodes['ad-site-title'].textContent, 'Delivery');
+  await pressFocused(libraryButton('General'));
+  // The site header links to Monitor with the problem count, read once at load.
+  const problemPill = nodes['ad-site-problems'].querySelector('.problem-pill');
+  assert.equal(problemPill.hidden, false);
+  assert.equal(problemPill.textContent, 'Monitor · 2 problems');
+  assert.equal(requests.filter((r) => r.Command === 'Summary').length, 1);
   assert.equal(nodes['ad-library-title'].textContent, 'General');
   const teamQuery = decodeURIComponent(teamQueries[0]);
   assert.match(teamQuery, /teamtype eq 0 or teamtype eq 2 or teamtype eq 3/);
@@ -362,7 +400,7 @@ const stage = (team, access) => {
     '<b>SharePoint did not add ghost@example.com</b>',
   ];
   await timers.shift()();
-  assert.match(nodes['ad-change-status'].textContent, /confirmed/);
+  assert.match(nodes['ad-run-status'].textContent, /confirmed/);
   assert.equal(nodes['ad-access-notices'].hidden, false, 'Access notices are shown');
   assert.equal(nodes['ad-access-notices'].children.length, 2);
   assert.match(nodes['ad-access-notices'].textContent, /Integration App was not added/);
@@ -374,7 +412,7 @@ const stage = (team, access) => {
   delete policy.Policy.Notices;
   assert(refresh > 0);
   // Remove on the row, then Apply: the removal is confirmed in the page and sent as None.
-  await press(rowButton(teamRows()[0], 'Remove'));
+  await press(removeOf(teamRows()[0]));
   policy = {
     Status: 'Applied',
     RowVersion: '4',
@@ -386,7 +424,7 @@ const stage = (team, access) => {
     1,
     'Nothing is applied before the admin confirms the removal',
   );
-  await press(confirmIn(nodes['ad-access'], 'Apply access'));
+  await press(confirmIn(nodes['ad-drawer'], 'Apply access'));
   const removal = requests.filter((r) => r.Command === 'ApplyPolicy').at(-1);
   assert.equal(
     removal.RowVersion,
@@ -401,7 +439,7 @@ const stage = (team, access) => {
   };
   await timers.shift()();
   // A team with no access is not listed; adding it again gives it access.
-  assert.doesNotMatch(nodes['ad-teams'].visibleText, /Operations/);
+  assert.doesNotMatch(nodes['ad-team-rows'].visibleText, /Operations/);
   stage(id(4), 'Read');
   const beforeConflict = requests.filter((r) => r.Command === 'ApplyPolicy').length;
   policy = {
@@ -434,7 +472,7 @@ const stage = (team, access) => {
     'An apply during a run is sent and waits for that run',
   );
   assert.equal(nodes['fb-access-library'].textContent, 'Access submitted.');
-  assert.equal(nodes['ad-change-status'].textContent, 'Saved · applies after the current run');
+  assert.equal(nodes['ad-run-status'].textContent, 'Saved · applies after the current run');
   policy = {
     Status: 'Applied',
     RowVersion: '9',
@@ -446,7 +484,7 @@ const stage = (team, access) => {
   await press(nodes['ad-native-list'].querySelectorAll('[role=option]')[0]);
   assert.equal(nodes['ad-native-search'].value, 'Delivery');
   await pressFocused(nodes['ad-validate']);
-  assert(document.activeElement === nodes['ad-add-site'], 'Add site returns focus to ＋ Add site');
+  assert(document.activeElement === nodes['ad-add-site'], 'Add site returns focus to ＋ Add');
   assert.equal(requests.find((r) => r.Command === 'AddSite').NativeSiteId, id(2));
   assert.equal(requests.find((r) => r.Command === 'AddSite').Name, 'Delivery');
   await timers.shift()();
@@ -540,14 +578,17 @@ const stage = (team, access) => {
   lib.asx_policyapplied = false;
   await window.AsxdSites.selectLibrary(id(3));
   assert.equal(
-    nodes['ad-library-status'].textContent,
-    'Ready for folder templates',
-    'An approved library is ready for templates before its access is applied',
+    nodes['ad-library-status'].hidden,
+    true,
+    'An approved library needs no attention before its access is applied',
   );
+  assert.doesNotMatch(accessOf('General'), /Needs attention/);
   lib.asx_policyapplied = true;
   lib.asx_approved = false;
   await window.AsxdSites.selectLibrary(id(3));
+  assert.equal(nodes['ad-library-status'].hidden, false);
   assert.equal(nodes['ad-library-status'].textContent, 'Needs attention');
+  assert.equal(accessOf('General'), 'Needs attention');
   lib.asx_approved = true;
   // Consent: a team whose group reaches more people is applied only after the admin confirms
   // the warning shown in the page.
@@ -564,13 +605,13 @@ const stage = (team, access) => {
     /All members of the group will have access to this library, not only its owners\./,
   );
   assert.equal(nodes['ad-apply'].textContent.includes('Confirm and apply'), false);
-  await press(confirmIn(nodes['ad-access'], 'Apply access'));
+  await press(confirmIn(nodes['ad-drawer'], 'Apply access'));
   const consented = requests.filter((r) => r.Command === 'ApplyPolicy').at(-1);
   assert.equal(applies(), beforeConsent + 1);
   assert.equal(consented.AcknowledgeBroaderAccess, true);
   assert.equal(consented.Entries[0].TeamId, id(11));
-  assert.equal(nodes['ad-access'].querySelector('.confirm'), null);
-  assert.match(nodes['ad-apply'].textContent, /Apply access changes/);
+  assert.equal(nodes['ad-drawer'].querySelector('.confirm'), null);
+  assert.equal(nodes['ad-apply'].textContent, 'Apply access');
   // The same for a new library's initial team.
   nodes['ad-create'].onclick();
   nodes['ad-library-name'].value = 'Partners';
@@ -656,9 +697,9 @@ const stage = (team, access) => {
   lib2.asx_name = 'Reset';
   lib2.asx_policyapplied = false;
   await window.AsxdSites.selectLibrary(id(13));
-  assert.equal(nodes['ad-change-status'].textContent, inheritsAgain);
-  assert.equal(nodes['ad-change-status'].className, 'ad-issue');
-  assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
+  assert.equal(nodes['ad-run-status'].textContent, inheritsAgain);
+  assert.equal(nodes['ad-run-status'].className, 'ad-issue');
+  assert.equal(accessOf('Reset'), 'Needs attention');
   assert.equal(nodes['ad-run-actions'].hidden, false, 'The stopped run offers Retry and Cancel');
   assert.equal(nodes['ad-run-retry'].disabled, false);
   assert.equal(nodes['ad-run-cancel'].disabled, false);
@@ -672,7 +713,7 @@ const stage = (team, access) => {
     document.activeElement.textContent,
     /When you apply access, Documents stops the inheritance, keeps a copy of the current site permissions/,
   );
-  await press(confirmIn(nodes['ad-access'], 'Apply access'));
+  await press(confirmIn(nodes['ad-drawer'], 'Apply access'));
   const reapplied = requests.filter((r) => r.Command === 'ApplyPolicy').at(-1);
   assert.equal(applies(), beforeReapply + 1);
   assert.equal(reapplied.BreakInheritance, true);
@@ -686,12 +727,12 @@ const stage = (team, access) => {
     document.activeElement.textContent,
     /Re-point Reset: .*Nothing in SharePoint changes/,
   );
-  await press(confirmIn(nodes['ad-library-detail'], 'Keep current address'));
-  assert.equal(nodes['ad-library-detail'].querySelector('.confirm'), null);
+  await press(confirmIn(nodes['ad-drawer'], 'Keep current address'));
+  assert.equal(nodes['ad-drawer'].querySelector('.confirm'), null);
   assert(document.activeElement === nodes['ad-library-menu'], 'Keep returns to the ⋯ button');
   await nodes['ad-library-menu'].onclick();
   await press(menuItem('ad-library-menu-list', 'Re-point library'));
-  await press(confirmIn(nodes['ad-library-detail'], 'Re-point'));
+  await press(confirmIn(nodes['ad-drawer'], 'Re-point'));
   assert.equal(repoints().length, 1);
   assert.equal(repoints()[0].CatalogId, id(19));
   inspectByKey['catalogprobe:test'] = {
@@ -751,7 +792,7 @@ const stage = (team, access) => {
   assert.equal(removes().length, 0, 'Nothing is removed before the admin confirms');
   assert.match(document.activeElement.textContent, /Nothing in SharePoint is deleted or changed/);
   removalRefusal = "Used by template 'Accounts' (published). Change the template first.";
-  await press(confirmIn(nodes['ad-library-detail'], 'Remove library'));
+  await press(confirmIn(nodes['ad-drawer'], 'Remove library'));
   assert.equal(removes().length, 1);
   assert.equal(removes()[0].CatalogId, id(19));
   assert.equal(nodes['fb-access-library'].textContent, removalRefusal);
@@ -759,7 +800,7 @@ const stage = (team, access) => {
   removalRefusal = null;
   await nodes['ad-library-menu'].onclick();
   await press(menuItem('ad-library-menu-list', 'Remove library'));
-  await press(confirmIn(nodes['ad-library-detail'], 'Remove library'));
+  await press(confirmIn(nodes['ad-drawer'], 'Remove library'));
   assert.equal(removes().length, 2);
   assert.match(nodes['fb-access'].textContent, /Reset was removed from Documents/);
   assert(
@@ -788,9 +829,9 @@ const stage = (team, access) => {
     lib2.asx_libraryid = id(20);
     lib2.asx_name = 'Stuck';
     await window.AsxdSites.selectLibrary(id(13));
-    assert.equal(nodes['ad-change-status'].textContent, 'SharePoint refused the write (HTTP 403).');
-    assert.equal(nodes['ad-change-status'].className, 'ad-issue');
-    assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
+    assert.equal(nodes['ad-run-status'].textContent, 'SharePoint refused the write (HTTP 403).');
+    assert.equal(nodes['ad-run-status'].className, 'ad-issue');
+    assert.equal(accessOf('Stuck'), 'Needs attention');
     assert.equal(nodes['ad-run-actions'].hidden, false);
     assert.equal(nodes['ad-add-team'].disabled, false, 'A stopped run does not lock the teams');
     await press(nodes['ad-run-retry']);
@@ -800,8 +841,8 @@ const stage = (team, access) => {
       OperationKey: 'policywork:stuck',
     });
     assert.equal(apis.at(-1), 'asx_SecurityAdmin');
-    assert.equal(nodes['ad-change-status'].textContent, 'Applying access and syncing members…');
-    assert.equal(nodes['ad-library-access'].textContent, 'Applying access…');
+    assert.equal(nodes['ad-run-status'].textContent, 'Applying access and syncing members…');
+    assert.equal(accessOf('Stuck'), 'Applying access…');
     assert.equal(nodes['ad-run-actions'].hidden, true);
     assert.equal(
       nodes['ad-add-team'].disabled,
@@ -816,10 +857,10 @@ const stage = (team, access) => {
     };
     await timers.shift()();
     assert.equal(
-      nodes['ad-change-status'].textContent,
+      nodes['ad-run-status'].textContent,
       'Waiting to retry after a temporary error (HTTP 503); attempt 4. Next check: 2026-10-05 18:30 UTC.',
     );
-    assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
+    assert.equal(accessOf('Stuck'), 'Needs attention');
     const cancels = () => requests.filter((r) => r.Command === 'CancelAccessRun');
     await press(nodes['ad-run-cancel']);
     assert.equal(cancels().length, 0, 'Nothing is cancelled before the admin confirms');
@@ -827,8 +868,8 @@ const stage = (team, access) => {
       document.activeElement.textContent,
       /^Cancel the access run for Stuck\? .*nothing is undone or deleted/,
     );
-    assert(confirmIn(nodes['ad-access'], 'Keep access run'));
-    await press(confirmIn(nodes['ad-access'], 'Cancel access run'));
+    assert(confirmIn(nodes['ad-drawer'], 'Keep access run'));
+    await press(confirmIn(nodes['ad-drawer'], 'Cancel access run'));
     assert.deepEqual(cancels(), [
       { Command: 'CancelAccessRun', LibraryId: id(20), OperationKey: 'policywork:stuck' },
     ]);
@@ -837,10 +878,10 @@ const stage = (team, access) => {
       /Nothing in SharePoint was undone or deleted/,
     );
     assert.equal(
-      nodes['ad-change-status'].textContent,
+      nodes['ad-run-status'].textContent,
       'The access run was cancelled. Apply access to run it again.',
     );
-    assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
+    assert.equal(accessOf('Stuck'), 'Needs attention');
     assert.equal(nodes['ad-apply'].disabled, false, 'Apply access starts a new run');
     // Apply access replaces a stopped run with the admin's newer access.
     policy = stuck;
@@ -856,9 +897,9 @@ const stage = (team, access) => {
     policy = { ...stuck, Policy: { ...stuck.Policy, ApplyPending: true } };
     lib2.asx_libraryid = id(21); // a library not loaded yet, so its access is read
     await window.AsxdSites.selectLibrary(id(13));
-    assert.equal(nodes['ad-change-status'].textContent, 'SharePoint refused the write (HTTP 403).');
-    assert.equal(nodes['ad-change-status'].className, 'ad-issue');
-    assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
+    assert.equal(nodes['ad-run-status'].textContent, 'SharePoint refused the write (HTTP 403).');
+    assert.equal(nodes['ad-run-status'].className, 'ad-issue');
+    assert.equal(accessOf('Stuck'), 'Needs attention');
     assert.equal(nodes['ad-run-actions'].hidden, false);
     // Applied access with team membership left unsynced is not shown as confirmed.
     policy = {
@@ -874,23 +915,23 @@ const stage = (team, access) => {
     lib2.asx_libraryid = id(22);
     await window.AsxdSites.selectLibrary(id(13));
     assert.match(
-      nodes['ad-change-status'].textContent,
+      nodes['ad-run-status'].textContent,
       /^Needs attention: access is applied, but team membership was not synced. People removed from a team keep access, and people added get none/,
     );
-    assert.equal(nodes['ad-change-status'].className, 'ad-issue');
-    assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
-    assert.doesNotMatch(nodes['ad-change-status'].textContent, /confirmed/);
+    assert.equal(nodes['ad-run-status'].className, 'ad-issue');
+    assert.equal(accessOf('Stuck'), 'Needs attention');
+    assert.doesNotMatch(nodes['ad-run-status'].textContent, /confirmed/);
     policy = { ...policy, Policy: { ...policy.Policy, MembershipIncomplete: false, Notices: [] } };
     lib2.asx_libraryid = id(23);
     await window.AsxdSites.selectLibrary(id(13));
-    assert.equal(nodes['ad-change-status'].textContent, 'Access and team membership confirmed.');
+    assert.equal(nodes['ad-run-status'].textContent, 'Access and team membership confirmed.');
     // The header follows the policy and its run, never the flag the library list was read
     // with: here the list still says access is pending while the policy is Applied.
     lib2.asx_policyapplied = false;
     lib2.asx_libraryid = id(24);
     await window.AsxdSites.selectLibrary(id(13));
-    assert.equal(nodes['ad-change-status'].textContent, 'Access and team membership confirmed.');
-    assert.equal(nodes['ad-library-access'].textContent, 'Access applied');
+    assert.equal(nodes['ad-run-status'].textContent, 'Access and team membership confirmed.');
+    assert.equal(accessOf('Stuck'), 'Access applied');
     // A run that is queued or running.
     policy = {
       Status: 'Queued',
@@ -901,7 +942,7 @@ const stage = (team, access) => {
     lib2.asx_policyapplied = true;
     lib2.asx_libraryid = id(25);
     await window.AsxdSites.selectLibrary(id(13));
-    assert.equal(nodes['ad-library-access'].textContent, 'Applying access…');
+    assert.equal(accessOf('Stuck'), 'Applying access…');
     // It applies: the next poll shows it, with no reload.
     policy = {
       Status: 'Applied',
@@ -909,14 +950,14 @@ const stage = (team, access) => {
       Policy: { Desired: stuck.Policy.Desired, Applied: stuck.Policy.Desired },
     };
     await timers.shift()();
-    assert.equal(nodes['ad-change-status'].textContent, 'Access and team membership confirmed.');
-    assert.equal(nodes['ad-library-access'].textContent, 'Access applied');
+    assert.equal(nodes['ad-run-status'].textContent, 'Access and team membership confirmed.');
+    assert.equal(accessOf('Stuck'), 'Access applied');
     // Access never applied.
     policy = { Status: 'Missing', RowVersion: '', Policy: null };
     lib2.asx_policyapplied = false;
     lib2.asx_libraryid = id(26);
     await window.AsxdSites.selectLibrary(id(13));
-    assert.equal(nodes['ad-library-access'].textContent, 'Access setup pending');
+    assert.equal(accessOf('Stuck'), 'Access setup pending');
     lib2.asx_policyapplied = true;
   }
   {
@@ -932,8 +973,13 @@ const stage = (team, access) => {
       Issue: 'The library create may have reached SharePoint and its answer was lost.',
     };
     await timers.shift()();
-    const area = nodes['ad-provision-progress'],
+    // A setup with no library row yet has a row of its own; its stage card opens in the drawer.
+    assert.match(accessOf('Stalled'), /^Needs attention · step \d of 4$/);
+    assert.doesNotMatch(nodes['ad-provision-progress'].textContent, /Stalled/);
+    await openSetup('librarycreate:test');
+    const area = nodes['ad-drawer-progress'],
       named = (text) => find(area, (n) => n.tagName === 'BUTTON' && n.textContent === text);
+    assert.equal(nodes['ad-library-title'].textContent, 'Stalled');
     assert.match(area.textContent, /Stalled.*Needs attention/);
     assert.match(area.textContent, /answer was lost/);
     retrySetupRefusal =
@@ -963,7 +1009,11 @@ const stage = (team, access) => {
     assert.equal(apis.at(-1), 'asx_CatalogAdmin');
     assert.doesNotMatch(area.textContent, /Stalled/, 'A cancelled setup leaves the list');
     assert.match(nodes['ad-changes'].textContent, /Nothing in SharePoint was deleted/);
-    assert(!apis.includes('asx_ManageWork'), 'Sites never needs the Operator role');
+    assert.equal(nodes['ad-drawer'].hidden, true, 'The drawer of a cancelled setup closes');
+    assert(
+      apis.every((a, i) => a !== 'asx_ManageWork' || requests[i].Command === 'Summary'),
+      'Sites calls asx_ManageWork only for the header problem count',
+    );
     delete inspectByKey['librarycreate:test'];
   }
   {
@@ -979,7 +1029,8 @@ const stage = (team, access) => {
       Issue: 'Library created. Its first access run was cancelled; apply access on the library.',
     };
     await timers.shift()();
-    const card = nodes['ad-provision-progress']
+    await pressFocused(libraryButton('Unsynced'));
+    const card = nodes['ad-drawer-progress']
       .querySelectorAll('section')
       .find((c) => /Unsynced/.test(c.textContent));
     assert(card, 'The finished setup stays listed');
@@ -1113,35 +1164,47 @@ const stage = (team, access) => {
     release();
     await reloaded.document.settle();
     assert.match(activity[0], /asx_workkind eq 'Repoint'/);
-    // Read at once after the load, not at the first poll.
-    assert.match(card.textContent, /General.*no longer exists on the site/);
+    // Read at once after the load, not at the first poll. The re-point of General is a library
+    // card: its row needs attention, and its drawer shows the card.
     assert.doesNotMatch(card.textContent, /Loading…/);
+    const generalRow = () =>
+      fresh['ad-libraries']
+        .querySelectorAll('tr')
+        .find((r) => r.querySelector('.library-name').textContent === 'General');
+    assert.equal(generalRow().querySelector('.access').visibleText, 'Needs attention');
+    await reloaded.press(generalRow().querySelector('.library-name'));
+    const drawerCards = fresh['ad-drawer-progress'];
+    assert.match(drawerCards.textContent, /General.*no longer exists on the site/);
     assert(checks.some((c) => c.includes('asx_libraryid eq ' + id(30))));
     assert(checks.some((c) => c.includes('asx_libraryid eq ' + id(32))));
     await later.shift()();
     assert.doesNotMatch(
-      card.textContent,
+      card.textContent + drawerCards.textContent,
       /AcceptC Chrome 1|Deleted later/,
       'Cards of a removed or deleted library are not shown',
     );
-    assert.equal(card.children.length, 1);
-    const again = find(card, (n) => n.tagName === 'BUTTON' && n.textContent === 'Re-point again');
+    assert.equal(drawerCards.children.length, 1);
+    const again = find(
+      drawerCards,
+      (n) => n.tagName === 'BUTTON' && n.textContent === 'Re-point again',
+    );
     assert(again, 'A blocked re-point found after a reload offers to re-point again');
-    assert(!find(card, (n) => n.tagName === 'BUTTON' && n.textContent === 'Retry'));
+    assert(!find(drawerCards, (n) => n.tagName === 'BUTTON' && n.textContent === 'Retry'));
     await reloaded.press(again);
     assert.deepEqual(
       sent.filter((c) => c.Command === 'RepointLibrary').map((c) => c.CatalogId),
       [id(3)],
     );
     await later.shift()();
-    assert.match(card.textContent, /General.*no longer exists on the site/);
+    assert.match(drawerCards.textContent, /General.*no longer exists on the site/);
     // Remove: the library leaves the list and its re-point card goes, with no reload.
-    const listed = () => fresh['ad-libraries'].children.map((c) => c.textContent);
+    const listed = () =>
+      fresh['ad-libraries'].querySelectorAll('.library-name').map((c) => c.textContent);
     assert.deepEqual(listed(), ['General']);
     const before = lists.length;
     await fresh['ad-library-menu'].onclick();
     await reloaded.press(reloaded.menuItem('ad-library-menu-list', 'Remove library'));
-    await reloaded.press(reloaded.confirmIn(fresh['ad-library-detail'], 'Remove library'));
+    await reloaded.press(reloaded.confirmIn(fresh['ad-drawer'], 'Remove library'));
     assert.deepEqual(sent.at(-1), { Command: 'RemoveLibrary', CatalogId: id(3) });
     assert.match(fresh['fb-access'].textContent, /General was removed from Documents/);
     assert(
@@ -1150,9 +1213,13 @@ const stage = (team, access) => {
     );
     assert(lists.length > before, 'The library list is read again after Remove');
     assert.deepEqual(listed(), [], 'The removed library is no longer listed');
-    assert.equal(fresh['ad-library-detail'].hidden, true);
-    assert.doesNotMatch(card.textContent, /General/, 'Its re-point card goes with it');
-    assert.equal(fresh['ad-activity'].hidden, true);
+    assert.equal(fresh['ad-drawer'].hidden, true);
+    assert.doesNotMatch(
+      card.textContent + drawerCards.textContent,
+      /General/,
+      'Its re-point card goes with it',
+    );
+    assert.equal(fresh['ad-site-cards'].hidden, true);
     // A link to it does not bring it back.
     await reloaded.window.AsxdSites.selectLibrary(id(3));
     assert.match(fresh['fb-access'].textContent, /This library was removed from Documents/);
@@ -1253,18 +1320,19 @@ const stage = (team, access) => {
     const deleted = boot(deletedXrm, { timers: later, uuid: id(42) });
     const fresh = deleted.nodes;
     await deleted.document.fire('DOMContentLoaded');
+    await deleted.press(fresh['ad-libraries'].querySelector('.library-name'));
     assert.doesNotMatch(fresh['fb-access-library'].textContent, /not found/);
-    const rows = () =>
-      fresh['ad-teams'].querySelectorAll('tr').map((r) => r.querySelector('td').textContent);
-    assert.deepEqual(rows(), [
-      'Deleted team: AcceptC Team 1' +
-        'Documents removes its access the next time access is applied.',
-      'Operations',
-    ]);
-    assert.doesNotMatch(fresh['ad-teams'].visibleText, /Apply access to clear it/);
+    const teamRowsOf = () => fresh['ad-team-rows'].querySelectorAll('.team-row');
+    const rows = () => teamRowsOf().map((r) => r.querySelector('strong').textContent);
+    assert.deepEqual(rows(), ['Deleted team: AcceptC Team 1', 'Operations']);
+    assert.equal(
+      teamRowsOf()[0].querySelector('.ad-issue').textContent,
+      'Documents removes its access the next time access is applied.',
+    );
+    assert.doesNotMatch(fresh['ad-team-rows'].visibleText, /Apply access to clear it/);
     assert.deepEqual(teamReads, [], 'No team is read by ID once the policy names it');
     // Its access cannot be chosen: the next Apply removes it.
-    assert.equal(fresh['ad-teams'].querySelector('select').disabled, true);
+    assert.equal(fresh['ad-team-rows'].querySelector('select').disabled, true);
     // Polling the queued run keeps working.
     for (let i = 0; i < 4; i++) await later.shift()();
     assert.equal(fresh['ad-poll-status'].hidden, true);
@@ -1278,7 +1346,7 @@ const stage = (team, access) => {
     assert.equal(fresh['fb-access-library'].textContent, 'Access submitted.');
     assert.deepEqual(rows(), ['Operations'], 'The deleted teams leave the list once applied');
     // The next Apply sees the list it shows.
-    const access = fresh['ad-teams'].querySelector('select');
+    const access = fresh['ad-team-rows'].querySelector('select');
     access.value = 'Contribute';
     access.onchange();
     await deleted.press(fresh['ad-apply']);
@@ -1306,8 +1374,8 @@ const stage = (team, access) => {
       .find((b) => b.textContent === 'Remove library')
       .onclick();
     await document.settle();
-    const box = nodes['ad-library-detail'].querySelector('.confirm');
-    assert(box, 'The confirmation renders inside the library section (F-12)');
+    const box = nodes['ad-drawer'].querySelector('.confirm');
+    assert(box, 'The confirmation renders inside the library drawer (F-12)');
     assert.equal(
       document.activeElement.textContent.startsWith('Remove General from Documents?'),
       true,
@@ -1326,7 +1394,7 @@ const stage = (team, access) => {
   }
   {
     // F-21: Remove on a team row strikes it through with Undo; Apply with removals says what changes.
-    const row = nodes['ad-teams'].querySelectorAll('tr')[0];
+    const row = teamRows()[0];
     assert.deepEqual(
       row.querySelector('select').options.map((o) => o.value),
       ['Read', 'Contribute'],
@@ -1336,17 +1404,17 @@ const stage = (team, access) => {
     const accessKey = row.querySelector('select').dataset.focusKey;
     assert.match(accessKey, /^team:[^:]+:access$/);
     const team = accessKey.replace(/:access$/, '');
-    const removeButton = row.querySelectorAll('button').find((b) => b.textContent === 'Remove');
+    const removeButton = removeOf(row);
     assert.equal(removeButton.dataset.focusKey, team + ':remove');
     assert.equal(
-      nodes['ad-teams'].closest('[data-focus-scope]') !== null,
+      nodes['ad-team-rows'].closest('[data-focus-scope]') !== null,
       true,
-      'The team table is a focus scope',
+      'The team rows are a focus scope',
     );
     removeButton.focus();
     removeButton.click();
     await document.settle();
-    const removed = nodes['ad-teams'].querySelectorAll('tr')[0];
+    const removed = teamRows()[0];
     assert.match(removed.visibleText, /Removed · Undo/);
     assert(removed.classList.contains('is-removed'));
     assert.equal(
@@ -1359,17 +1427,13 @@ const stage = (team, access) => {
       .find((b) => b.textContent === 'Undo')
       .click();
     await document.settle();
-    assert.doesNotMatch(nodes['ad-teams'].visibleText, /Removed/);
+    assert.doesNotMatch(nodes['ad-team-rows'].visibleText, /Removed/);
     assert.equal(
       document.activeElement.dataset.focusKey,
       team + ':remove',
       'Undo moves focus back to Remove',
     );
-    nodes['ad-teams']
-      .querySelectorAll('tr')[0]
-      .querySelectorAll('button')
-      .find((b) => b.textContent === 'Remove')
-      .click();
+    removeOf(teamRows()[0]).click();
     await document.settle();
     nodes['ad-apply'].click();
     await document.settle();
@@ -1377,7 +1441,7 @@ const stage = (team, access) => {
       document.activeElement.textContent,
       /Removed teams lose the access Documents gave them\. Access given another way, such as sharing links or site membership, is not changed\./,
     );
-    nodes['ad-access']
+    nodes['ad-drawer']
       .querySelector('.confirm')
       .querySelectorAll('button')
       .find((b) => b.textContent === 'Apply access')
@@ -1460,7 +1524,8 @@ const stage = (team, access) => {
       },
     };
     await trackSetup('librarycreate:lost', 'Projects');
-    const card = nodes['ad-provision-progress']
+    await openSetup('librarycreate:lost');
+    const card = nodes['ad-drawer-progress']
       .querySelectorAll('section')
       .find((c) => /Projects/.test(c.textContent));
     assert.match(
@@ -1500,7 +1565,8 @@ const stage = (team, access) => {
       Issue: 'SharePoint refused the create.',
     };
     await trackSetup('librarycreate:blocked', 'Archive');
-    const blocked = nodes['ad-provision-progress']
+    await openSetup('librarycreate:blocked');
+    const blocked = nodes['ad-drawer-progress']
       .querySelectorAll('section')
       .find((c) => /Archive/.test(c.textContent));
     assert.ok(blocked.querySelectorAll('button').find((b) => b.textContent === 'Retry'));
@@ -1510,10 +1576,11 @@ const stage = (team, access) => {
       .click();
     await document.settle();
     assert.equal(navigations.at(-1).data, 'monitor-' + BUILD);
-    assert.doesNotMatch(nodes['ad-provision-progress'].visibleText, /Open Administration/);
+    assert.doesNotMatch(nodes['ad-drawer-progress'].visibleText, /Open Administration/);
   }
   {
     // A deleted team whose access is already removed is cleared on the next policy read.
+    await window.AsxdSites.selectLibrary(id(13));
     policy = {
       Status: 'Applied',
       RowVersion: '20',
@@ -1521,8 +1588,8 @@ const stage = (team, access) => {
       Teams: [{ TeamId: id(4), Deleted: true, Name: 'Operations' }],
     };
     await timers.shift()();
-    assert.doesNotMatch(nodes['ad-teams'].visibleText, /Operations/);
-    assert.doesNotMatch(nodes['ad-access'].visibleText, /Apply access to clear it/);
+    assert.doesNotMatch(nodes['ad-team-rows'].visibleText, /Operations/);
+    assert.doesNotMatch(nodes['ad-drawer'].visibleText, /Apply access to clear it/);
   }
   {
     // Focus keys (spec 5.2): a redraw gives focus back to the new button with the same key.
@@ -1532,22 +1599,28 @@ const stage = (team, access) => {
     await pressFocused(siteButton);
     assert(keyed(nodes['ad-sites'], siteKey) !== siteButton, 'The site list was redrawn');
     assert(document.activeElement === keyed(nodes['ad-sites'], siteKey), 'focus');
+    // A library's row opens its drawer with focus on the heading; closing it gives focus back to
+    // the row's button, though the table was redrawn meanwhile.
     const libraryKey = 'library:' + id(3);
     const libraryButton = keyed(nodes['ad-libraries'], libraryKey);
     await pressFocused(libraryButton);
     assert(keyed(nodes['ad-libraries'], libraryKey) !== libraryButton, 'focus');
+    assert(document.activeElement === nodes['ad-library-title'], 'focus');
+    await press(nodes['ad-drawer-close']);
+    assert.equal(nodes['ad-drawer'].hidden, true);
     assert(document.activeElement === keyed(nodes['ad-libraries'], libraryKey), 'focus');
+    await openSetup('librarycreate:blocked');
     const cardKey = 'card:librarycreate:blocked:retry';
-    const cardButton = keyed(nodes['ad-provision-progress'], cardKey);
+    const cardButton = keyed(nodes['ad-drawer-progress'], cardKey);
     cardButton.focus();
     inspectByKey['librarycreate:blocked'] = {
       ...inspectByKey['librarycreate:blocked'],
       Issue: 'SharePoint refused the create again.',
     };
     await timers.shift()();
-    assert.match(nodes['ad-provision-progress'].textContent, /refused the create again/);
-    assert(keyed(nodes['ad-provision-progress'], cardKey) !== cardButton, 'focus');
-    assert(document.activeElement === keyed(nodes['ad-provision-progress'], cardKey), 'focus');
+    assert.match(nodes['ad-drawer-progress'].textContent, /refused the create again/);
+    assert(keyed(nodes['ad-drawer-progress'], cardKey) !== cardButton, 'focus');
+    assert(document.activeElement === keyed(nodes['ad-drawer-progress'], cardKey), 'focus');
   }
   {
     // No shared-connection section on this tab; no hint paragraphs.
@@ -1564,8 +1637,131 @@ const stage = (team, access) => {
     assert(labels.includes('Project X (Microsoft 365 group · owners)'));
     assert(labels.includes('Operations'));
   }
+  // The blocks below run on a site with two libraries: General, and Contracts.
+  lib2.asx_libraryid = id(13);
+  lib2.asx_name = 'Contracts';
+  {
+    // Rail: each site with its library count; "＋ Add" opens Add site.
+    const rows = nodes['ad-sites'].querySelectorAll('.ad-site');
+    assert.equal(rows[0].querySelector('strong').textContent, 'Delivery');
+    assert.equal(rows[0].querySelector('.sub').textContent, '2 libraries');
+    assert.equal(rows[0].getAttribute('aria-current'), 'true');
+    assert.equal(nodes['ad-add-site'].textContent, '＋ Add');
+  }
+  {
+    // Libraries table: Used by follows the server's in-use rule (a Draft revision, or the
+    // template's published one); Teams counts the listed teams; Access is a dot and a label.
+    destinations = [
+      { _asx_libraryid_value: lib.asx_libraryid, _asx_revisionid_value: 'rev-pub' },
+      { _asx_libraryid_value: lib.asx_libraryid, _asx_revisionid_value: 'rev-old' },
+      { _asx_libraryid_value: lib.asx_libraryid, _asx_revisionid_value: 'rev-draft' },
+    ];
+    revisions = [
+      { asx_revisionid: 'rev-pub', asx_status: 'Published', _asx_templateid_value: 'tpl-1' },
+      { asx_revisionid: 'rev-old', asx_status: 'Published', _asx_templateid_value: 'tpl-2' },
+      { asx_revisionid: 'rev-draft', asx_status: 'Draft', _asx_templateid_value: 'tpl-3' },
+    ];
+    templateRows = [
+      { asx_templateid: 'tpl-1', _asx_publishedrevisionid_value: 'rev-pub' },
+      { asx_templateid: 'tpl-2', _asx_publishedrevisionid_value: 'rev-newer' },
+      { asx_templateid: 'tpl-3', _asx_publishedrevisionid_value: null },
+    ];
+    policy = {
+      Status: 'Applied',
+      RowVersion: '1',
+      Policy: {
+        Desired: [{ TeamId: id(4), Access: 'Contribute' }],
+        Applied: [{ TeamId: id(4), Access: 'Contribute' }],
+      },
+      // Operations, marked deleted by an earlier block, exists again.
+      Teams: [{ TeamId: id(4), Name: 'Operations', Deleted: false }],
+    };
+    listedLibraries = [lib, lib2];
+    await press(nodes['ad-sites'].querySelector('.ad-site'));
+    const general = rowNamed('General');
+    assert.equal(
+      general.querySelector('.used-by').textContent,
+      '2 templates',
+      'A replaced revision does not count',
+    );
+    assert.equal(general.querySelector('.teams').textContent, '1 team');
+    assert.equal(general.querySelector('.access').visibleText, 'Access applied');
+    assert.equal(general.querySelector('.access .dot').dataset.tone, 'ok');
+    assert.equal(rowNamed('Contracts').querySelector('.used-by').textContent, 'Not used');
+    assert.equal(nodes['ad-drawer'].hidden, true, 'Choosing a site opens no drawer');
+  }
+  {
+    // The drawer: a dialog with focus on its heading. A changed row is tinted and says what it
+    // was; the footer and the table count the change; Discard resets it.
+    await pressFocused(libraryButton('General'));
+    assert.equal(nodes['ad-drawer'].hidden, false);
+    assert.equal(nodes['ad-drawer'].getAttribute('role'), 'dialog');
+    assert.equal(document.activeElement, nodes['ad-library-title']);
+    assert.equal(
+      nodes['ad-drawer'].querySelector('.drawer-sub').textContent,
+      'Team access applies to every folder in this library',
+    );
+    const select = nodes['ad-team-rows'].querySelector('select');
+    select.value = 'Read';
+    select.onchange();
+    await document.settle();
+    const changed = nodes['ad-team-rows'].querySelector('.team-row');
+    assert.ok(changed.classList.contains('is-changed'));
+    assert.match(changed.querySelector('.sub').textContent, / · was Contribute$/);
+    assert.equal(nodes['ad-change-status'].textContent, '1 change not applied');
+    assert.equal(rowNamed('General').querySelector('.access').visibleText, '1 change not applied');
+    await press(nodes['ad-discard']);
+    assert.equal(nodes['ad-team-rows'].querySelector('select').value, 'Contribute');
+    assert.equal(nodes['ad-change-status'].textContent, '');
+    assert.equal(nodes['ad-apply'].textContent, 'Apply access');
+  }
+  {
+    // Escape in a drawer confirmation answers it; Escape on the heading closes the drawer, and
+    // focus returns to the library's row button even after the table was redrawn. (Here the
+    // confirmation removes itself before the event bubbles, so the drawer staying open is not
+    // the guard's proof: the browser flow is.)
+    await press(nodes['ad-library-menu']);
+    await press(menuItem('ad-library-menu-list', 'Remove library'));
+    document.activeElement.key('Escape');
+    await document.settle();
+    assert.equal(nodes['ad-drawer'].hidden, false);
+    assert.equal(nodes['ad-drawer'].querySelector('.confirm'), null);
+    window.AsxdSites.redraw();
+    nodes['ad-library-title'].focus();
+    nodes['ad-library-title'].key('Escape');
+    assert.equal(nodes['ad-drawer'].hidden, true);
+    assert.equal(document.activeElement.dataset.focusKey, 'library:' + lib.asx_libraryid);
+  }
+  {
+    // A library being set up: a four-segment bar under its name, its stage in Access, and its
+    // row opens the stage card in the drawer.
+    inspectByKey['librarycreate:board'] = { Key: 'librarycreate:board', Status: 'AccessPending' };
+    await trackSetup('librarycreate:board', 'Board papers');
+    const setup = rowNamed('Board papers');
+    assert.equal(setup.querySelectorAll('.mini-progress span').length, 4);
+    assert.equal(setup.querySelectorAll('.mini-progress .done').length, 2);
+    assert.match(setup.querySelector('.access').visibleText, / · step \d of 4$/);
+    assert.equal(setup.querySelector('.used-by').textContent, 'Not used');
+    await press(setup.querySelector('button'));
+    assert.ok(nodes['ad-drawer-progress'].querySelector('.ad-progress-card'));
+    assert.equal(nodes['ad-drawer-access'].hidden, true, 'A setup drawer shows only its stage');
+  }
+  {
+    // Add site opens as a side panel; Cancel closes it and returns focus to "＋ Add".
+    await pressFocused(nodes['ad-add-site']);
+    assert.equal(nodes['ad-site-form'].hidden, false);
+    assert.equal(nodes['ad-site-form'].getAttribute('role'), 'dialog');
+    assert.equal(nodes['ad-drawer'].hidden, true, 'One panel at a time');
+    await press(nodes['ad-cancel-site']);
+    assert.equal(nodes['ad-site-form'].hidden, true);
+    assert.equal(document.activeElement, nodes['ad-add-site']);
+  }
+  {
+    await press(nodes['ad-site-problems'].querySelector('.problem-pill'));
+    assert.equal(navigations.at(-1).data, 'monitor-' + BUILD);
+  }
   console.log(
-    'PASS Sites & access on the shell: staging versus apply, removals with Undo and their confirmation, consent in the page, server refusals at the form that failed, the Add site combobox, site and library menus with focus keys, library setups with Documents’ SharePoint check and Open in Monitor, stuck access runs (also the inheritance stop), the access label from the policy and its run, discovery matched by list ID, re-point found again after a reload, removed destinations hidden at once and after a reload, deleted Dataverse teams, and where focus goes after actions that close what was focused. Mocked APIs; connected acceptance pending.',
+    'PASS Sites & access on the shell: the sites rail with library counts, the libraries table (Used by from the in-use rule, teams, access with a dot, the four-segment bar of a setup), the access drawer as a dialog (changed rows, the change count, Discard, Escape and focus back to the redrawn row), the Monitor problem count in the header, staging versus apply, removals with Undo and their confirmation, consent in the page, server refusals at the form that failed, the Add site combobox, site and library menus with focus keys, library setups with Documents’ SharePoint check and Open in Monitor, stuck access runs (also the inheritance stop), the access label from the policy and its run, discovery matched by list ID, re-point found again after a reload, removed destinations hidden at once and after a reload, deleted Dataverse teams, and where focus goes after actions that close what was focused. Mocked APIs; connected acceptance pending.',
   );
 })().catch((e) => {
   console.error(e);
