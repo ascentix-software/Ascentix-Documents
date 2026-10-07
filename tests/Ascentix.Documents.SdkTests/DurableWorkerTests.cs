@@ -2949,6 +2949,21 @@ public sealed class DurableWorkerTests
         public string? FailUpdateTable;
         public Func<QueryExpression, EntityCollection?>? QueryHook;
 
+        /// <summary>Answers FetchXML (aggregate counts and joins the in-memory query cannot run).</summary>
+        public Func<FetchExpression, EntityCollection>? FetchHook;
+
+        /// <summary>Primary name column by table; tables not listed use "name".</summary>
+        public Dictionary<string, string> PrimaryNames { get; } = new Dictionary<string, string>();
+
+        /// <summary>Display name by table; tables not listed show their logical name.</summary>
+        public Dictionary<string, string> DisplayNames { get; } = new Dictionary<string, string>();
+
+        /// <summary>
+        /// The platform's daily row-count snapshot (RetrieveTotalRecordCount) by table; tables
+        /// not listed report their in-memory row count.
+        /// </summary>
+        public Dictionary<string, long> SnapshotCounts { get; } = new Dictionary<string, long>();
+
         /// <summary>Lookup columns by "table.column", with the table each one targets.</summary>
         public Dictionary<string, string> Lookups { get; } = new Dictionary<string, string>();
         private long version = 1;
@@ -3071,8 +3086,37 @@ public sealed class DurableWorkerTests
                 typeof(EntityMetadata)
                     .GetProperty("PrimaryIdAttribute")!
                     .SetValue(metadata, entityRequest.LogicalName + "id", null);
+                typeof(EntityMetadata)
+                    .GetProperty("PrimaryNameAttribute")!
+                    .SetValue(
+                        metadata,
+                        PrimaryNames.TryGetValue(entityRequest.LogicalName, out var primary)
+                            ? primary
+                            : "name",
+                        null
+                    );
+                metadata.DisplayName = new Label(
+                    new LocalizedLabel(
+                        DisplayNames.TryGetValue(entityRequest.LogicalName, out var label)
+                            ? label
+                            : entityRequest.LogicalName,
+                        1033
+                    ),
+                    new LocalizedLabel[0]
+                );
                 var response = new RetrieveEntityResponse();
                 response.Results["EntityMetadata"] = metadata;
+                return response;
+            }
+            if (request is Microsoft.Crm.Sdk.Messages.RetrieveTotalRecordCountRequest totals)
+            {
+                var counts = new EntityRecordCountCollection();
+                foreach (var table in totals.EntityNames)
+                    counts[table] = SnapshotCounts.TryGetValue(table, out var snapshot)
+                        ? snapshot
+                        : Rows.Values.Count(r => r.LogicalName == table);
+                var response = new Microsoft.Crm.Sdk.Messages.RetrieveTotalRecordCountResponse();
+                response.Results["EntityRecordCountCollection"] = counts;
                 return response;
             }
             if (request is RetrieveAttributeRequest attribute)
@@ -3104,6 +3148,9 @@ public sealed class DurableWorkerTests
 
         public EntityCollection RetrieveMultiple(QueryBase raw)
         {
+            if (raw is FetchExpression fetch)
+                return FetchHook?.Invoke(fetch)
+                    ?? throw new NotSupportedException("Set FetchHook to answer FetchXML.");
             var query = (QueryExpression)raw;
             var intercepted = QueryHook?.Invoke(query);
             if (intercepted != null)
@@ -3135,6 +3182,11 @@ public sealed class DurableWorkerTests
                         && text.StartsWith((string)expected, StringComparison.Ordinal);
                 if (condition.Operator == ConditionOperator.LessEqual)
                     return actual is IComparable comparable && comparable.CompareTo(expected) <= 0;
+                // NotEqual excludes rows with no value, as SQL does.
+                if (condition.Operator == ConditionOperator.NotEqual)
+                    return actual != null && !Equals(actual, expected);
+                if (condition.Operator == ConditionOperator.GreaterEqual)
+                    return actual is IComparable later && later.CompareTo(expected) >= 0;
                 throw new NotSupportedException(condition.Operator.ToString());
             }
             bool Matches(Entity row, FilterExpression filter)

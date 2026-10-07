@@ -236,7 +236,13 @@ public sealed class DocumentStore
     private static void Index(OutboxDocument work, Entity target)
     {
         target["asx_recordid"] = work.RecordId == Guid.Empty ? null : work.RecordId.ToString("D");
-        target["asx_table"] = string.IsNullOrEmpty(work.Table) ? null : work.Table;
+        // A template re-run's row carries a marker, so lists of a table's rows never take it
+        // for a record's row; its real table is in the payload.
+        target["asx_table"] =
+            work.Key.StartsWith(TemplateRun.Prefix, StringComparison.Ordinal)
+                ? TemplateRun.IndexMarker
+            : string.IsNullOrEmpty(work.Table) ? null
+            : work.Table;
         target["asx_nextattempt"] = work.NextAttemptUtc;
     }
 

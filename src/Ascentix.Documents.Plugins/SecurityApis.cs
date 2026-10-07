@@ -121,6 +121,30 @@ public sealed class ManageWorkApi : IPlugin
             return;
         }
         if (
+            request.Command == "StartTemplateRun"
+            || request.Command == "PauseTemplateRun"
+            || request.Command == "ResumeTemplateRun"
+            || request.Command == "CancelTemplateRun"
+            || request.Command == "CountRecords"
+        )
+        {
+            // CountRecords only reads; the others write through the guarded transport as the caller.
+            if (request.Command != "CountRecords")
+                context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
+            var runs = new TemplateRun(service, RuntimeProfile.Read(service).Tables);
+            context.OutputParameters["Result"] = JsonWire.Write(
+                request.Command switch
+                {
+                    "StartTemplateRun" => runs.Start(request, context.UserId),
+                    "PauseTemplateRun" => runs.Pause(request.Key),
+                    "ResumeTemplateRun" => runs.Resume(request.Key),
+                    "CancelTemplateRun" => runs.Cancel(request.Key),
+                    _ => runs.Count(request.TemplateId),
+                }
+            );
+            return;
+        }
+        if (
             request.Command != "Retry"
             && request.Command != "Cancel"
             && request.Command != "Replan"

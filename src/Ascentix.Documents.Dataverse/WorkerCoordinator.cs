@@ -175,7 +175,11 @@ public sealed class WorkerCoordinator
         }
     }
 
-    private WorkerResult Queue(WorkerRequest request)
+    /// <param name="priority">
+    /// asx_priority of the folder jobs the queued row's plan creates: 1 for record events and
+    /// replans, TemplateRun.Priority for a template re-run's records.
+    /// </param>
+    internal WorkerResult Queue(WorkerRequest request, int priority = 1)
     {
         if (
             request.RequestId == Guid.Empty
@@ -229,6 +233,7 @@ public sealed class WorkerCoordinator
                 RevisionId = revision.Id,
                 RecordId = request.RecordId,
                 Table = table,
+                Priority = priority,
             }
         );
         return new WorkerResult { Status = "Pending", Key = key };
@@ -237,6 +242,13 @@ public sealed class WorkerCoordinator
     private WorkerResult Plan(string key)
     {
         var job = store.Require<OutboxDocument>("asx_outbox", key);
+        // A template re-run ends its own wait: it saves only when it changes (TemplateRun.Consume).
+        if (key.StartsWith(TemplateRun.Prefix, StringComparison.Ordinal))
+            return new TemplateRun(
+                service,
+                allowedTables ?? RuntimeProfile.Read(service).Tables,
+                clock
+            ).Consume(job);
         // Any save of this row below ends an earlier wait after a temporary failure; a Plan that
         // fails again rolls back and keeps it.
         if (job.Value.NextAttemptUtc != null || job.Value.Attempts != 0)
@@ -439,6 +451,8 @@ public sealed class WorkerCoordinator
                     {
                         Key = operationKey,
                         Folders = folders,
+                        // A row stored before priorities existed reads 0: a normal folder job.
+                        Priority = Math.Max(1, job.Value.Priority),
                         RevisionId = revision.Id,
                         EntryPath = library.Target.EntryPath,
                     }

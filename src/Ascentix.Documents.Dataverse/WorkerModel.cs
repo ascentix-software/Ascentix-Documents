@@ -120,6 +120,48 @@ public sealed class OutboxDocument : StoredDocument
 
     [DataMember]
     public int Attempts { get; set; }
+
+    // Template re-run rows (TemplateRun): the folder-job priority of the records it queues, the
+    // request rows of the page in flight, progress, who started it and when (spec 6.5).
+
+    /// <summary>
+    /// asx_priority of the folder jobs this row's plan creates. A row stored before this member
+    /// existed reads as 0 and makes normal folder jobs (1); see WorkerCoordinator.Plan.
+    /// </summary>
+    [DataMember]
+    public int Priority { get; set; } = 1;
+
+    [DataMember]
+    public string[] PageKeys { get; set; } = Array.Empty<string>();
+
+    [DataMember]
+    public int Planned { get; set; }
+
+    [DataMember]
+    public int Total { get; set; }
+
+    [DataMember]
+    public bool TotalCapped { get; set; }
+
+    [DataMember]
+    public Guid StartedBy { get; set; }
+
+    [DataMember]
+    public DateTime? StartedUtc { get; set; }
+
+    /// <summary>The Start request that began this run; it seeds every record's request ID.</summary>
+    [DataMember]
+    public Guid RunRequestId { get; set; }
+
+    /// <summary>Start or the last Resume, and Planned then: the base of the estimated finish.</summary>
+    [DataMember]
+    public DateTime? ResumedUtc { get; set; }
+
+    [DataMember]
+    public int PlannedAtResume { get; set; }
+
+    [DataMember]
+    public DateTime? EndedUtc { get; set; }
 }
 
 [DataContract]
@@ -469,4 +511,8 @@ public sealed class WorkerResult
     /// <summary>A library setup's lookup finding (spec 6.8); null for everything else.</summary>
     [DataMember]
     public LibraryRecovery? Recovery { get; set; }
+
+    /// <summary>A template re-run's state (spec 6.5); null for everything else.</summary>
+    [DataMember]
+    public TemplateRunState? Run { get; set; }
 }
