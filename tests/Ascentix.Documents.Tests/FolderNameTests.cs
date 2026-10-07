@@ -420,13 +420,13 @@ public class FolderNameTests
             Assert.Contains(
                 "Folder '"
                     + section
-                    + "/root': This folder's path is 350 characters; SharePoint allows 400 including file names, so files inside need short names.",
+                    + "/root': files inside need short names; its path is 350 of 400 characters.",
                 plan.Notices
             );
             Assert.Contains(
                 "Folder '"
                     + section
-                    + "/deep': This folder's path is 364 characters; SharePoint allows 400 including file names, so files inside need short names.",
+                    + "/deep': files inside need short names; its path is 364 of 400 characters.",
                 plan.Notices
             );
         }
@@ -452,12 +452,9 @@ public class FolderNameTests
         var wait = plan.Waits.First(w => w.Section == "general");
         Assert.Equal("root", wait.Node);
         Assert.Equal(FolderWaitReason.PathTooLong, wait.Reason);
-        Assert.StartsWith(
-            "Folder 'general/root' is waiting for a shorter path: written into a SharePoint address it would be ",
-            wait.Notice
-        );
+        Assert.StartsWith("Folder 'general/root' needs a shorter path: ", wait.Notice);
         Assert.EndsWith(
-            " characters, and the HTTP connector accepts "
+            " characters; the limit is "
                 + SharePointAddress.MaxQueryString.ToString(
                     "N0",
                     System.Globalization.CultureInfo.InvariantCulture
@@ -500,7 +497,7 @@ public class FolderNameTests
         Assert.Null(wait.Field);
         Assert.Equal(FolderWaitReason.PathTooLong, wait.Reason);
         Assert.Equal(
-            "Folder 'general/child' is waiting for a shorter path: its path would be 404 characters, and SharePoint allows 400 including file names.",
+            "Folder 'general/child' needs a shorter path: 404 characters; the limit is 400.",
             wait.Notice
         );
         Assert.Contains(wait.Notice, plan.Notices);

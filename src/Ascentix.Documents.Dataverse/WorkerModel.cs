@@ -453,6 +453,22 @@ public sealed class WorkerRequest
 
     [DataMember]
     public string? Error { get; set; }
+
+    /// <summary>ListProblems: TemplateRuns, NotCaptured, BlockedRecords, WaitingRecords, BlockedJobs, RetryingJobs or RecentOperations.</summary>
+    [DataMember]
+    public string List { get; set; } = "";
+
+    /// <summary>ListProblems: the Next of the previous page; null for the first.</summary>
+    [DataMember]
+    public string? Page { get; set; }
+
+    /// <summary>RerunRecord: the record's table.</summary>
+    [DataMember]
+    public string Table { get; set; } = "";
+
+    /// <summary>DismissCaptureJob: the failed system job.</summary>
+    [DataMember]
+    public Guid JobId { get; set; }
 }
 
 [DataContract]
@@ -516,4 +532,16 @@ public sealed class WorkerResult
     /// <summary>A template re-run's state (spec 6.5); null for everything else.</summary>
     [DataMember]
     public TemplateRunState? Run { get; set; }
+
+    /// <summary>Summary: Monitor's counts (spec 6.1); null for everything else.</summary>
+    [DataMember]
+    public ProblemSummary? Summary { get; set; }
+
+    /// <summary>ListProblems: one page of a Monitor list (spec 6.2).</summary>
+    [DataMember]
+    public ProblemRow[] Problems { get; set; } = Array.Empty<ProblemRow>();
+
+    /// <summary>ListProblems: the Page that reads the rest of the list; null on the last page.</summary>
+    [DataMember]
+    public string? Next { get; set; }
 }

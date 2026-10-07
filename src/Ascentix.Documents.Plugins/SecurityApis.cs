@@ -67,6 +67,54 @@ public sealed class ManageWorkApi : IPlugin
             context
         );
         var request = JsonWire.Read<WorkerRequest>((string)context.InputParameters["Request"]);
+        // Monitor (spec 6.1, 6.2, 6.7). Summary only reads.
+        if (request.Command == "Summary")
+        {
+            context.OutputParameters["Result"] = JsonWire.Write(
+                new WorkerResult
+                {
+                    Status = "Summary",
+                    Summary = ProblemList.Summary(service, DateTime.UtcNow),
+                }
+            );
+            return;
+        }
+        if (request.Command == "ListProblems")
+        {
+            // Writes only to start the lookup of a 0.1.0.3-era lost create (decision D6).
+            context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
+            context.OutputParameters["Result"] = JsonWire.Write(
+                ProblemList.List(
+                    service,
+                    request,
+                    DateTime.UtcNow,
+                    RuntimeProfile.Read(service).Tables
+                )
+            );
+            return;
+        }
+        if (request.Command == "RerunRecord")
+        {
+            context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
+            context.OutputParameters["Result"] = JsonWire.Write(
+                MissedChanges.Rerun(
+                    service,
+                    request,
+                    RuntimeProfile.Read(service).Tables,
+                    () => DateTime.UtcNow
+                )
+            );
+            return;
+        }
+        if (request.Command == "DismissCaptureJob")
+        {
+            // Deletes a system job, not a Documents row: the transport passes it through and the
+            // caller's own privilege decides (decision D12). No InternalWrite.
+            context.OutputParameters["Result"] = JsonWire.Write(
+                MissedChanges.Dismiss(service, request.JobId)
+            );
+            return;
+        }
         if (request.Command == "InspectRecord")
         {
             context.OutputParameters["Result"] = JsonWire.Write(

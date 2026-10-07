@@ -621,11 +621,11 @@ public static class FolderPlanner
                                         + section.Key
                                         + "/"
                                         + node.Key
-                                        + "' is waiting for a shorter path: its path would be "
-                                        + length.ToString(CultureInfo.InvariantCulture)
-                                        + " characters, and SharePoint allows "
-                                        + MaxPathLength.ToString(CultureInfo.InvariantCulture)
-                                        + " including file names."
+                                        + "' needs a shorter path: "
+                                        + length.ToString("N0", CultureInfo.InvariantCulture)
+                                        + " characters; the limit is "
+                                        + MaxPathLength.ToString("N0", CultureInfo.InvariantCulture)
+                                        + "."
                                 ),
                                 FolderWaitReason.PathTooLong
                             )
@@ -653,9 +653,9 @@ public static class FolderPlanner
                                         + section.Key
                                         + "/"
                                         + node.Key
-                                        + "' is waiting for a shorter path: written into a SharePoint address it would be "
+                                        + "' needs a shorter path: "
                                         + address.ToString("N0", CultureInfo.InvariantCulture)
-                                        + " characters, and the HTTP connector accepts "
+                                        + " characters; the limit is "
                                         + SharePointAddress.MaxQueryString.ToString(
                                             "N0",
                                             CultureInfo.InvariantCulture
@@ -674,9 +674,11 @@ public static class FolderPlanner
                                 + section.Key
                                 + "/"
                                 + node.Key
-                                + "': This folder's path is "
+                                + "': files inside need short names; its path is "
                                 + length.ToString(CultureInfo.InvariantCulture)
-                                + " characters; SharePoint allows 400 including file names, so files inside need short names."
+                                + " of "
+                                + MaxPathLength.ToString(CultureInfo.InvariantCulture)
+                                + " characters."
                         );
                     result.Add(
                         new FolderIntent(

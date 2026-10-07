@@ -40,6 +40,10 @@ public sealed class RuntimeRequest
 
     [DataMember]
     public RegistrationSummary? Registration { get; set; }
+
+    /// <summary>Get: whether the caller is a System Administrator, who alone can change the settings.</summary>
+    [DataMember]
+    public bool CanChange { get; set; }
 }
 
 public static class RuntimeAdministration
@@ -55,18 +59,57 @@ public static class RuntimeAdministration
             throw new EvaluationBlockedException("Runtime configuration requires a transaction.");
         var old = Profile(service);
         if (request.Command == "Get")
-            return Get(service, old);
+        {
+            var current = Get(service, old);
+            current.CanChange = AdministratorCheck.IsSystemAdministrator(service, caller);
+            return current;
+        }
         if (
             request.Command != "Save"
             && request.Command != "Unregister"
             && request.Command != "AddTable"
             && request.Command != "RemoveTable"
+            && request.Command != "SetEnabled"
+            && request.Command != "Register"
         )
             throw new EvaluationBlockedException("Unsupported runtime command.");
         if (!AdministratorCheck.IsSystemAdministrator(service, caller))
             throw new EvaluationBlockedException(
                 "Registering events requires System Administrator."
             );
+        // Every command below is run by a System Administrator, so every result can change.
+        var changed = Change(service, old, request);
+        changed.CanChange = true;
+        return changed;
+    }
+
+    private static RuntimeRequest Change(
+        IOrganizationService service,
+        Entity old,
+        RuntimeRequest request
+    )
+    {
+        if (request.Command == "SetEnabled")
+        {
+            // Pause and resume from the page (spec 6.6) with the stored record-update setting,
+            // never waiting for active writers. A stale version is refused (D18), so the admin
+            // sees the current settings before the switch flips.
+            if (string.IsNullOrEmpty(request.RowVersion) || old.RowVersion != request.RowVersion)
+                throw new EvaluationBlockedException(
+                    "Automation settings changed. Reopen the page and try again."
+                );
+            return Toggle(
+                service,
+                old,
+                new RuntimeRequest
+                {
+                    Enabled = request.Enabled,
+                    ProcessRecordUpdates = old.GetAttributeValue<bool>("asx_processrecordupdates"),
+                }
+            );
+        }
+        if (request.Command == "Register")
+            return Register(service, Get(service, old), request.Table ?? "");
         if (request.Command == "Unregister")
         {
             EventRegistrations.Unregister(service);
@@ -126,6 +169,61 @@ public static class RuntimeAdministration
                 ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
             }
         );
+        return Get(service, Profile(service));
+    }
+
+    /// <summary>
+    /// Repairs change tracking (spec 6.6) for the stored worker and record-update setting. With a
+    /// table: every Ready table plus that table (the team scope, which every registration keeps,
+    /// adds none). Without: every Ready table plus the first MaxNewTablesPerSave tables that are
+    /// not, as Save registers them. The worker does not change, so, as in AddTable, nothing waits
+    /// for active writers (no RequireIdle).
+    /// </summary>
+    /// <param name="service">The administrator's organization service.</param>
+    /// <param name="stored">The stored profile as Get reads it.</param>
+    /// <param name="table">The table to repair, team, or empty for a batch of every table.</param>
+    /// <returns>The profile with its readiness after the repair.</returns>
+    private static RuntimeRequest Register(
+        IOrganizationService service,
+        RuntimeRequest stored,
+        string table
+    )
+    {
+        var tables = stored.Tables;
+        string[] batch;
+        if (string.IsNullOrEmpty(table))
+            batch = BatchedTables(
+                service,
+                stored.WorkerId,
+                tables,
+                stored.ProcessRecordUpdates,
+                null
+            );
+        else
+        {
+            if (
+                table != EventRegistrationPlan.TeamScope
+                && !tables.Contains(table, StringComparer.Ordinal)
+            )
+                throw new EvaluationBlockedException(
+                    "The table " + table + " is not enabled in Documents."
+                );
+            var ready = (
+                stored.Registration?.Readiness
+                ?? new System.Collections.Generic.List<TableReadiness>()
+            )
+                .Where(r => r.Status == "Ready" && r.Scope != EventRegistrationPlan.TeamScope)
+                .Select(r => r.Scope);
+            batch = ready
+                .Concat(
+                    table == EventRegistrationPlan.TeamScope
+                        ? Array.Empty<string>()
+                        : new[] { table }
+                )
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+        }
+        EventRegistrations.Reconcile(service, stored.WorkerId, batch, stored.ProcessRecordUpdates);
         return Get(service, Profile(service));
     }
 
@@ -366,7 +464,7 @@ public static class RuntimeAdministration
             : Guid.Empty;
         var tables = RuntimeTables.Effective(service, old);
         bool updates = old.GetAttributeValue<bool>("asx_processrecordupdates");
-        return new RuntimeRequest
+        var result = new RuntimeRequest
         {
             Command = "Get",
             RowVersion = old.RowVersion,
@@ -380,6 +478,11 @@ public static class RuntimeAdministration
             Migrated = tables.Migrated,
             Registration = EventRegistrations.Inspect(service, worker, tables.Tables, updates),
         };
+        if (result.Registration != null)
+            result.Registration.Pending = result.Registration.Readiness.Count(r =>
+                r.Status != "Ready" && r.Status != "WorkerCannotRead"
+            );
+        return result;
     }
 
     private static void ValidateWorker(IOrganizationService service, Guid worker)

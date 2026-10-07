@@ -43,20 +43,20 @@ public sealed class WorkerCoordinator
     /// <summary>
     /// What a waiting folder needs, added to its notice. With record updates on, filling in a
     /// field of the record itself plans it on the record's Update event; anything else, and
-    /// every case with record updates off, needs a replan.
+    /// every case with record updates off, needs a re-run of the record.
     /// </summary>
     public static string WaitFollowUp(FolderWait wait, bool updates) =>
         wait.Reason == FolderWaitReason.PathTooLong
             ? updates
-                ? "The folder is created when a change to the record makes its path short enough; after shortening the template's folder names, replan the record."
-                : "Shorten the record's value or the template's folder names, then replan the record."
+                ? "The folder is created when a change to the record makes its path short enough; after shortening the template's folder names, re-run the record."
+                : "Shorten the record's value or the template's folder names, then re-run the record."
             : wait.Field == null
                 ? updates
                     ? "The folder is created when a change to the record gives it a usable name of its own."
-                    : "Change the record so the folder gets a usable name of its own, then replan the record."
+                    : "Change the record so the folder gets a usable name of its own, then re-run the record."
                 : updates && wait.Field.Source == "root"
                     ? "The folder is created when '" + wait.Field + "' has a value."
-                    : "Fill in '" + wait.Field + "', then replan the record.";
+                    : "Fill in '" + wait.Field + "', then re-run the record.";
 
     /// <summary>The plan's notices, each waiting folder's with what it needs; and those alone.</summary>
     private string[] PlanNotices(FolderPlan plan, out string[] waiting)
@@ -1365,7 +1365,7 @@ public sealed class WorkerCoordinator
     public static string TableNotEnabled(string table) =>
         "The table "
         + table
-        + " is no longer enabled in Documents, so this work was cancelled; nothing in SharePoint was deleted. Enable the table and replan the record to plan it again.";
+        + " is no longer enabled in Documents, so this work was cancelled; nothing in SharePoint was deleted. Enable the table and re-run the record to plan it again.";
 
     /// <summary>
     /// Stops unsent work that a newer plan of the record no longer selects, or whose revision

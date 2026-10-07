@@ -25,6 +25,10 @@ public sealed class RegistrationSummary
 
     [DataMember]
     public Guid[] StepIds { get; set; } = Array.Empty<Guid>();
+
+    /// <summary>Scopes Register can fix: every status except Ready and WorkerCannotRead.</summary>
+    [DataMember]
+    public int Pending { get; set; }
 }
 
 /// <summary>Dataverse I/O for application-owned event steps. Ownership is by event handler.</summary>

@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Ascentix.Documents.Conditions;
 using Ascentix.Documents.Dataverse;
+using Ascentix.Documents.Plugins;
 using Microsoft.Xrm.Sdk;
 using Xunit;
 
@@ -629,5 +630,235 @@ public sealed class RuntimeAdministrationTests
         var before = e.Org.S.Memory.Updates.Count;
         e.Change("AddTable", "contact");
         Assert.True(e.Org.S.Memory.Updates.Count > before);
+    }
+
+    [Fact]
+    public void GetSaysWhetherTheCallerCanChangeAndHowManyScopesNeedRepair()
+    {
+        var e = new Env("account", "contact");
+        var asAdmin = e.Get();
+        Assert.True(asAdmin.CanChange);
+        Assert.Equal(
+            "Pending",
+            asAdmin.Registration!.Readiness.Single(r => r.Scope == "contact").Status
+        );
+        Assert.Equal(
+            asAdmin.Registration.Readiness.Count(r => r.Status != "Ready"),
+            asAdmin.Registration.Pending
+        );
+        var other = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest(),
+            true,
+            Guid.NewGuid()
+        );
+        Assert.False(other.CanChange);
+        // A table the worker cannot read is not something Register can fix.
+        e.Org.S.WorkerReadDepth["contact"] = Microsoft.Crm.Sdk.Messages.PrivilegeDepth.Basic;
+        var unreadable = e.Get();
+        Assert.Equal(
+            "WorkerCannotRead",
+            unreadable.Registration!.Readiness.Single(r => r.Scope == "contact").Status
+        );
+        Assert.Equal(asAdmin.Registration.Pending - 1, unreadable.Registration.Pending);
+    }
+
+    [Fact]
+    public void SetEnabledPausesWithoutWaitingAndResumeReportsProblems()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        e.ActiveWriter();
+        var paused = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest
+            {
+                Command = "SetEnabled",
+                Enabled = false,
+                RowVersion = e.Get().RowVersion,
+            },
+            true,
+            e.Admin
+        );
+        Assert.False(paused.Enabled);
+        Assert.True(paused.CanChange);
+        e.Org.S.Memory.Rows[e.Org.Worker]["isdisabled"] = true;
+        var resumed = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest
+            {
+                Command = "SetEnabled",
+                Enabled = true,
+                RowVersion = paused.RowVersion,
+            },
+            true,
+            e.Admin
+        );
+        Assert.True(resumed.Enabled);
+        Assert.Contains("disabled", resumed.Registration!.Error);
+        // The record-update setting is kept as stored.
+        Assert.True(resumed.ProcessRecordUpdates);
+    }
+
+    [Fact]
+    public void SetEnabledIsRefusedForANonAdministratorAndForAStaleVersion()
+    {
+        var e = new Env("account");
+        var got = e.Get();
+        Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeAdministration.Execute(
+                e.Org.S,
+                new RuntimeRequest
+                {
+                    Command = "SetEnabled",
+                    Enabled = true,
+                    RowVersion = got.RowVersion,
+                },
+                true,
+                Guid.NewGuid()
+            )
+        );
+        var stale = Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeAdministration.Execute(
+                e.Org.S,
+                new RuntimeRequest
+                {
+                    Command = "SetEnabled",
+                    Enabled = true,
+                    RowVersion = "stale",
+                },
+                true,
+                e.Admin
+            )
+        );
+        Assert.Equal("Automation settings changed. Reopen the page and try again.", stale.Message);
+        Assert.Empty(e.Org.S.Memory.Updates);
+    }
+
+    [Fact]
+    public void RegisterRepairsOneTableWithoutWaitingForWriters()
+    {
+        var e = new Env("account", "contact");
+        e.ActiveWriter();
+        var repaired = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest
+            {
+                Command = "Register",
+                Table = "contact",
+                RowVersion = e.Get().RowVersion,
+            },
+            true,
+            e.Admin
+        );
+        Assert.True(repaired.CanChange);
+        Assert.Equal(
+            "Ready",
+            repaired.Registration!.Readiness.Single(r => r.Scope == "contact").Status
+        );
+        Assert.Equal(
+            "Pending",
+            repaired.Registration.Readiness.Single(r => r.Scope == "account").Status
+        );
+        Assert.True(e.StepsFor("contact") > 0);
+    }
+
+    [Fact]
+    public void RegisterIsRefusedForATableThatIsNotEnabledAndForANonAdministrator()
+    {
+        var e = new Env("account");
+        var refused = Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeAdministration.Execute(
+                e.Org.S,
+                new RuntimeRequest { Command = "Register", Table = "contact" },
+                true,
+                e.Admin
+            )
+        );
+        Assert.Equal("The table contact is not enabled in Documents.", refused.Message);
+        Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeAdministration.Execute(
+                e.Org.S,
+                new RuntimeRequest { Command = "Register", Table = "account" },
+                true,
+                Guid.NewGuid()
+            )
+        );
+        Assert.Empty(e.Org.Steps);
+    }
+
+    [Fact]
+    public void RegisterWithoutATableWorksInBatchesUntilNothingIsPending()
+    {
+        var added = Enumerable
+            .Range(0, EventRegistrations.MaxNewTablesPerSave + 2)
+            .Select(i => "cr123_t" + i)
+            .ToArray();
+        var e = new Env(new[] { "account" }.Concat(added).ToArray(), added);
+        var first = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest { Command = "Register", RowVersion = e.Get().RowVersion },
+            true,
+            e.Admin
+        );
+        // One batch registers MaxNewTablesPerSave tables; the last tables of the list stay Pending.
+        Assert.Equal(
+            3,
+            first.Registration!.Readiness.Count(r =>
+                r.Scope != EventRegistrationPlan.TeamScope && r.Status == "Pending"
+            )
+        );
+        Assert.Equal(
+            first.Registration.Readiness.Count(r =>
+                r.Status != "Ready" && r.Status != "WorkerCannotRead"
+            ),
+            first.Registration.Pending
+        );
+        var second = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest { Command = "Register", RowVersion = first.RowVersion },
+            true,
+            e.Admin
+        );
+        Assert.Equal(0, second.Registration!.Pending);
+    }
+
+    [Fact]
+    public void SetEnabledAndRegisterPassTheGuardedTransport()
+    {
+        var e = new Env("account", "contact");
+        RuntimeRequest Api(RuntimeRequest request) =>
+            e.Org.S.Memory.Transaction(() =>
+                JsonWire.Read<RuntimeRequest>(
+                    ApiHarness.Invoke(
+                        new RuntimeAdminApi(),
+                        "asx_RuntimeAdmin",
+                        e.Org.S,
+                        request,
+                        e.Admin
+                    )
+                )
+            );
+        var paused = Api(
+            new RuntimeRequest
+            {
+                Command = "SetEnabled",
+                Enabled = false,
+                RowVersion = e.Get().RowVersion,
+            }
+        );
+        Assert.False(paused.Enabled);
+        var repaired = Api(
+            new RuntimeRequest
+            {
+                Command = "Register",
+                Table = "contact",
+                RowVersion = paused.RowVersion,
+            }
+        );
+        Assert.Equal(
+            "Ready",
+            repaired.Registration!.Readiness.Single(r => r.Scope == "contact").Status
+        );
     }
 }

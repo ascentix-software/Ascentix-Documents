@@ -28,6 +28,7 @@ public static class TableInfo
             Properties = new MetadataPropertiesExpression(
                 "LogicalName",
                 "PrimaryIdAttribute",
+                "PrimaryNameAttribute",
                 "DisplayName"
             ),
         };
@@ -41,9 +42,13 @@ public static class TableInfo
     }
 
     /// <summary>The table's display name in the caller's language, else its logical name.</summary>
-    public static string Label(IOrganizationService service, string table)
+    public static string Label(IOrganizationService service, string table) =>
+        Label(Find(service, table), table);
+
+    /// <summary>The display name of metadata Find returned, else the logical name.</summary>
+    public static string Label(EntityMetadata? metadata, string table)
     {
-        var name = Find(service, table)?.DisplayName;
+        var name = metadata?.DisplayName;
         return name?.UserLocalizedLabel?.Label
             ?? name?.LocalizedLabels.FirstOrDefault()?.Label
             ?? table;

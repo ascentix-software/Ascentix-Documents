@@ -1900,9 +1900,9 @@ public sealed class DurableWorkerTests
         Assert.Equal("Planned", waiting.Status);
         Assert.Empty(waiting.Keys);
         // Record updates are off, so filling in the field alone plans nothing: the notice says
-        // to replan.
+        // to re-run the record.
         const string notice =
-            "Folder 'general/root' is waiting for 'root.name' to have a value. Fill in 'root.name', then replan the record.";
+            "Folder 'general/root' is waiting for 'root.name' to have a value. Fill in 'root.name', then re-run the record.";
         Assert.Equal(new[] { notice }, waiting.Notices);
         var marked = Selection(f);
         Assert.Equal(WorkerCoordinator.WaitingStatus, marked.Status);
@@ -1949,8 +1949,8 @@ public sealed class DurableWorkerTests
 
     [Theory]
     [InlineData(true, "The folder is created when 'root.name' has a value.")]
-    [InlineData(false, "Fill in 'root.name', then replan the record.")]
-    [InlineData(null, "Fill in 'root.name', then replan the record.")]
+    [InlineData(false, "Fill in 'root.name', then re-run the record.")]
+    [InlineData(null, "Fill in 'root.name', then re-run the record.")]
     public void WaitingNoticeSaysHowTheFolderIsCreatedForTheRecordUpdateSetting(
         bool? updates,
         string followUp
@@ -1976,7 +1976,7 @@ public sealed class DurableWorkerTests
             ""
         );
         Assert.Equal(
-            "Fill in 'customer.name', then replan the record.",
+            "Fill in 'customer.name', then re-run the record.",
             WorkerCoordinator.WaitFollowUp(wait, true)
         );
         Assert.Equal(
@@ -1987,7 +1987,7 @@ public sealed class DurableWorkerTests
             )
         );
         Assert.Equal(
-            "Change the record so the folder gets a usable name of its own, then replan the record.",
+            "Change the record so the folder gets a usable name of its own, then re-run the record.",
             WorkerCoordinator.WaitFollowUp(
                 new Ascentix.Documents.Domain.FolderWait("general", "b", null, ""),
                 false
@@ -2001,11 +2001,11 @@ public sealed class DurableWorkerTests
             Ascentix.Documents.Domain.FolderWaitReason.PathTooLong
         );
         Assert.Equal(
-            "Shorten the record's value or the template's folder names, then replan the record.",
+            "Shorten the record's value or the template's folder names, then re-run the record.",
             WorkerCoordinator.WaitFollowUp(tooLong, false)
         );
         Assert.Equal(
-            "The folder is created when a change to the record makes its path short enough; after shortening the template's folder names, replan the record.",
+            "The folder is created when a change to the record makes its path short enough; after shortening the template's folder names, re-run the record.",
             WorkerCoordinator.WaitFollowUp(tooLong, true)
         );
     }

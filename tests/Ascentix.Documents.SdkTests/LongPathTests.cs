@@ -146,11 +146,11 @@ public sealed class LongPathTests
             planned.Notices,
             n =>
                 n.StartsWith(
-                    "Folder 'general/deep' is waiting for a shorter path: written into a SharePoint address it would be ",
+                    "Folder 'general/deep' needs a shorter path: ",
                     StringComparison.Ordinal
                 )
                 && n.EndsWith(
-                    "the HTTP connector accepts 2,048. Shorten the record's value or the template's folder names, then replan the record.",
+                    " characters; the limit is 2,048. Shorten the record's value or the template's folder names, then re-run the record.",
                     StringComparison.Ordinal
                 )
         );
