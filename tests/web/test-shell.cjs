@@ -88,7 +88,7 @@ async function boot(options = {}) {
                 error: { message: 'Principal user is missing prvWriteasx_runtime.' },
               }),
             };
-          if (body.Command === 'Save')
+          if (body.Command === 'SetEnabled')
             current = { ...current, Enabled: body.Enabled, RowVersion: '8' };
           return { ok: true, json: async () => ({ Result: JSON.stringify(current) }) };
         },
@@ -367,10 +367,7 @@ const visible = (d) =>
     turnOn.click();
     await paused.d.settle();
     const save = paused.run.calls.filter(([name]) => name === 'asx_RuntimeAdmin').at(-1)[1];
-    assert.equal(save.Command, 'Save');
-    assert.equal(save.Enabled, true);
-    assert.equal(save.RowVersion, '7');
-    assert.equal(save.WorkerId, 'worker-1');
+    assert.deepEqual(save, { Command: 'SetEnabled', Enabled: true, RowVersion: '7' });
     assert.equal(paused.d.getElementById('automationChipText').textContent, 'Automation running');
     // Not a System Administrator: Turn on is reachable but disabled, with the reason linked.
     const viewer = await chip(runtime({ Enabled: false, CanChange: false }));
@@ -380,7 +377,7 @@ const visible = (d) =>
     assert.equal(reason.textContent, 'Only a System Administrator can turn automation on.');
     off.click();
     await viewer.d.settle();
-    assert.equal(viewer.run.calls.filter(([, b]) => b?.Command === 'Save').length, 0);
+    assert.equal(viewer.run.calls.filter(([, b]) => b?.Command === 'SetEnabled').length, 0);
   }
   {
     // Feedback lines replace the banner: success is a status, an error an alert.
@@ -625,6 +622,10 @@ const visible = (d) =>
     const run = await boot({ session: storage({ 'asxd.launched': '1' }) });
     const d = run.document;
     const area = d.getElementById('settings');
+    // Static .confirm markup in the same place, which ask() must leave alone.
+    const fixed = run.ui.el('div', 'Static confirmation', 'confirm');
+    fixed.id = 'staticConfirm';
+    area.append(fixed);
     const row = run.ui.el('div', null, 'row');
     row.setAttribute('data-actions', '');
     const first = run.ui.button('Remove', () => {});
@@ -661,14 +662,14 @@ const visible = (d) =>
     );
     assert.equal(area.querySelectorAll('.confirm[role=group]').length, 1);
     assert.equal(d.activeElement.textContent, 'Remove all?');
-    assert(d.getElementById('unregisterConfirm'), 'A static .confirm element survives');
+    assert(d.getElementById('staticConfirm'), 'A static .confirm element survives');
     const three = run.ui.confirmInline(first, {
       text: 'Remove B?',
       confirm: 'Remove',
       keep: 'Keep',
     });
     assert.equal(await two, 'keep-all');
-    assert(d.getElementById('unregisterConfirm'));
+    assert(d.getElementById('staticConfirm'));
     d.activeElement.key('Escape');
     assert.equal(await three, false);
     assert.equal(area.querySelectorAll('.confirm[role=group]').length, 0);

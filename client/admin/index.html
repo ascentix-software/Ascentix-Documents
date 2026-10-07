@@ -211,6 +211,16 @@
                     </p>
                   </section>
                 </div>
+                <details id="recordTools" class="card">
+                  <summary>Record results and replanning</summary>
+                  <p id="maintenanceContext"></p>
+                  <div class="row wrap">
+                    <button id="previewBatch">Review batch replan</button
+                    ><button id="queueBatch" disabled>Queue reviewed batch</button>
+                  </div>
+                  <pre id="batchReview">
+Select up to five records for a published-revision impact review.</pre>
+                </details>
               </div>
             </div>
           </div>
@@ -411,127 +421,205 @@
           </div>
         </section>
         <section id="monitor" role="tabpanel" aria-labelledby="tab-monitor" tabindex="-1" hidden>
-          <h2>Monitor</h2>
+          <div class="row between">
+            <h2 id="monitor-title" tabindex="-1">Monitor</h2>
+            <div class="row" data-actions>
+              <span id="monitor-checked" class="muted"></span>
+              <button id="monitor-refresh" type="button" class="secondary">Refresh</button>
+            </div>
+          </div>
           <p class="feedback" id="fb-monitor"></p>
-          <details id="recordTools" class="card">
-            <summary>Record results and replanning</summary>
-            <p id="maintenanceContext"></p>
+          <section class="card status-header" aria-labelledby="automation-label-monitor">
+            <div class="row" data-actions>
+              <button
+                id="automation-switch-monitor"
+                type="button"
+                role="switch"
+                class="switch"
+                aria-checked="false"
+                aria-labelledby="automation-label-monitor"
+                aria-describedby="help-automation-monitor"
+              >
+                <span class="switch-track" aria-hidden="true"
+                  ><span class="switch-thumb"></span
+                ></span>
+                <span id="automation-label-monitor">Automation</span>
+                <span id="automation-state-monitor" class="switch-state"></span>
+              </button>
+            </div>
+            <p class="help" id="help-automation-monitor">
+              Off pauses folder and access work. Changes keep queueing and run when you turn it back
+              on.
+            </p>
+            <p class="feedback" id="fb-automation-monitor"></p>
+          </section>
+          <ol id="setup-checklist" class="checklist" hidden></ol>
+          <div id="monitor-tiles" class="tiles"></div>
+          <div id="monitor-lists"></div>
+          <details id="check-record" class="card">
+            <summary><h3>Check a record</h3></summary>
             <div class="row wrap">
-              <button id="inspectRecord">Inspect record results</button
-              ><button id="replanRecord">Replan published template for record</button
-              ><button id="previewBatch">Review batch replan</button
-              ><button id="queueBatch" disabled>Queue reviewed batch</button>
+              <label>Table<select id="check-table"></select></label>
+              <label>Template<select id="check-template"></select></label>
+              <div class="field">
+                <span class="label-text">Record</span>
+                <button id="check-choose" type="button" class="secondary">Choose record…</button>
+                <span id="check-record-name" role="status"></span>
+              </div>
             </div>
-            <pre id="result">No inspection yet.</pre>
-            <pre id="batchReview">
-Select up to five records for a published-revision impact review.</pre>
+            <div class="row" data-actions>
+              <button id="check-run" type="button">Check record</button>
+              <button id="check-rerun" type="button" class="secondary">
+                Re-run published template for this record
+              </button>
+            </div>
+            <p class="feedback" id="fb-check"></p>
+            <div id="check-result"></div>
           </details>
-          <h4>Failed capture jobs</h4>
-          <p class="hint">
-            Record or team events whose background job failed. Fix the cause, then replan the
-            records to queue them again.
-          </p>
-          <button id="loadFailedJobs" class="secondary">Load failed jobs</button>
-          <ul id="failedJobs"></ul>
-          <button id="moreFailedJobs" class="secondary" hidden>Load more</button
-          ><button id="replanFailed">Replan selected records</button>
-
-          <h4>Blocked records</h4>
-          <p class="hint">
-            Records whose folder planning stopped. Check that the site and library are approved,
-            then retry. A record blocked for a reason that still holds blocks again.
-          </p>
-          <button id="loadBlockedRecords" class="secondary">Load blocked records</button>
-          <ul id="blockedRecords"></ul>
-          <button id="moreBlockedRecords" class="secondary" hidden>Load more</button>
-          <h5>Waiting</h5>
-          <p class="hint">
-            Records with folders that wait for a value, or for a name no sibling folder already has.
-            Fill in or change the record, then replan it.
-          </p>
-          <ul id="waitingRecords"></ul>
-          <button id="moreWaitingRecords" class="secondary" hidden>Load more</button>
-
-          <h4>Blocked jobs</h4>
-          <p class="hint">
-            Folder, access and library jobs that stopped on an error that is not temporary, and
-            library setups that need recovery. Fix the cause, then retry.
-          </p>
-          <button id="loadBlockedJobs" class="secondary">Load blocked jobs</button>
-          <ul id="blockedJobs"></ul>
-          <button id="moreBlockedJobs" class="secondary" hidden>Load more</button>
-          <h5>Waiting to retry</h5>
-          <p class="hint">
-            Jobs waiting after a temporary error retry on their own. Those that have waited longest
-            come first, with their notice and next attempt.
-          </p>
-          <ul id="waitingJobs"></ul>
-          <button id="moreWaitingJobs" class="secondary" hidden>Load more</button>
-          <details id="operations" class="card">
-            <summary>Operations</summary>
-            <button id="loadOperations" class="secondary">Load latest 50 operations</button
-            ><label
-              >Operation<select id="operation">
-                <option value="">Load operations first</option>
-              </select></label
-            >
-            <label>Or paste an operation key<input id="operationKey" /></label
-            ><button id="inspectOperationKey" class="secondary">Inspect</button>
-            <pre id="operationStatus">Select an operation.</pre>
-            <div class="row">
-              <button id="retryOperation" class="secondary">Retry after repair</button
-              ><button id="cancelOperation" class="secondary">Cancel unstarted work</button>
+          <details id="advanced" class="card advanced">
+            <summary><h3>Advanced</h3></summary>
+            <h4>Recent operations</h4>
+            <table>
+              <caption class="sr-only">
+                Recent operations
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Title</th>
+                  <th scope="col">Kind</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Since</th>
+                </tr>
+              </thead>
+              <tbody id="recent-rows"></tbody>
+            </table>
+            <button id="recent-more" type="button" class="secondary" hidden>Show 50 more</button>
+            <h4>Look up an operation</h4>
+            <label
+              >Operation ID<input
+                id="operation-id"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+            /></label>
+            <div class="row" data-actions>
+              <button id="operation-lookup" type="button" class="secondary">Look up</button>
             </div>
+            <p class="feedback" id="fb-advanced"></p>
+            <section id="operation-result" hidden aria-labelledby="operation-result-title">
+              <h4 id="operation-result-title">Operation</h4>
+              <dl id="operation-fields"></dl>
+              <div id="operation-actions" class="row" data-actions></div>
+            </section>
           </details>
         </section>
         <section id="settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="-1" hidden>
-          <h2>Settings</h2>
-          <p class="feedback" id="fb-settings"></p>
-          <div id="runtime">
-            <p>
-              Configuration is separate from flow activation and role assignment. Business tables
-              are enabled from the Tables panel on Folder templates. Saving registers the pending
-              event steps for the worker; it requires System Administrator.
+          <section
+            id="automation-settings"
+            class="card"
+            aria-labelledby="automation-settings-title"
+            aria-busy="true"
+          >
+            <h2 id="automation-settings-title">Automation settings</h2>
+            <p id="settings-readonly" hidden>
+              Only a System Administrator can change these settings.
             </p>
-            <button id="loadRuntime" class="secondary">Load runtime profile</button>
-            <p id="runtimePending" class="hint warning" hidden>
-              Tables pending registration: Save to register their event steps.
+            <p id="settings-missing" role="alert" hidden>
+              No automation settings are installed. Import the Documents solution, then reopen this
+              page.
             </p>
-            <div class="row">
-              <label>Worker application user<select id="runtimeWorker"></select></label
-              ><label
-                >SharePoint tenant hosts<input
-                  id="runtimeSites"
-                  placeholder="tenant.sharepoint.com" /></label
-              ><label>Runtime enabled<input id="runtimeEnabled" type="checkbox" /></label
-              ><label
-                >Apply folder templates when record data changes<input
-                  id="runtimeRecordUpdates"
-                  type="checkbox" /></label
-              ><button id="saveRuntime">Save runtime profile</button>
-            </div>
-            <p class="hint">
-              When the runtime is off, events keep queueing and nothing is lost; the worker resumes
-              when it is turned on. Record-update monitoring applies to future updates only.
-            </p>
-            <h4>Event registration</h4>
-            <ul id="runtimeReadiness"></ul>
-            <button id="unregisterRuntime" class="secondary">Remove all event registrations</button>
-            <div id="unregisterConfirm" class="confirm" hidden>
-              <p>
-                This removes every Documents event step. Record and team changes stop being captured
-                until you Save again. Use this before uninstalling.
+            <div class="stack">
+              <label>Run as (application user)<select id="runtimeWorker" disabled></select></label>
+              <fieldset class="hosts">
+                <legend>SharePoint host names</legend>
+                <ul id="hosts-list"></ul>
+                <button id="add-host" type="button" class="secondary">＋ Add host</button>
+              </fieldset>
+              <button
+                id="automation-switch-settings"
+                type="button"
+                role="switch"
+                class="switch"
+                aria-checked="false"
+                aria-labelledby="automation-label-settings"
+                aria-describedby="help-automation-settings"
+              >
+                <span class="switch-track" aria-hidden="true"
+                  ><span class="switch-thumb"></span
+                ></span>
+                <span id="automation-label-settings">Automation</span>
+                <span id="automation-state-settings" class="switch-state"></span>
+              </button>
+              <p class="help" id="help-automation-settings">
+                Off pauses folder and access work. Changes keep queueing and run when you turn it
+                back on.
               </p>
-              <button id="confirmUnregister">Remove registrations</button
-              ><button id="cancelUnregister" class="secondary">Keep registrations</button>
+              <p class="feedback" id="fb-automation-settings"></p>
+              <button
+                id="record-updates"
+                type="button"
+                role="switch"
+                class="switch"
+                aria-checked="false"
+                aria-labelledby="record-updates-label"
+                aria-describedby="help-record-updates"
+              >
+                <span class="switch-track" aria-hidden="true"
+                  ><span class="switch-thumb"></span
+                ></span>
+                <span id="record-updates-label">Update folders when records change</span>
+              </button>
+              <p class="help" id="help-record-updates">
+                Applies to records changed from now on. To apply templates to existing records,
+                re-run them.
+              </p>
             </div>
-            <p id="runtimeStatus" class="hint">No profile loaded.</p>
-          </div>
+            <div class="row" data-actions>
+              <button id="save-settings" type="button">Save settings</button>
+            </div>
+            <p class="feedback" id="fb-settings"></p>
+          </section>
+          <section id="tracking" class="card" aria-labelledby="tracking-title">
+            <h2 id="tracking-title">Change tracking</h2>
+            <p id="tracking-error" class="error" role="alert" hidden></p>
+            <table>
+              <caption class="sr-only">
+                Change tracking per table
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Table</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Action</th>
+                </tr>
+              </thead>
+              <tbody id="tracking-rows"></tbody>
+            </table>
+            <div class="row" data-actions>
+              <button id="repair-all" type="button" class="secondary" hidden>Repair all</button>
+            </div>
+            <p class="feedback" id="fb-tracking"></p>
+          </section>
+          <section class="card" aria-labelledby="connection-title">
+            <h2 id="connection-title">Connection</h2>
+            <ul id="connection-list"></ul>
+            <a id="open-connections" target="_blank" rel="noopener"
+              >Open connections in Power Automate</a
+            >
+          </section>
+          <section id="danger-zone" class="card danger-zone" aria-labelledby="danger-title">
+            <h2 id="danger-title">Before uninstalling</h2>
+            <div class="row" data-actions>
+              <button id="stop-tracking" type="button" class="danger">Stop tracking changes</button>
+            </div>
+            <p class="feedback" id="fb-danger"></p>
+          </section>
         </section>
       </div>
     </main>
     <script src="shell.js?v=ui20261006nav1"></script>
     <script src="admin.js?v=ui20261006nav1"></script>
     <script src="sites-access.js?v=ui20261006nav1"></script>
+    <script src="operations.js?v=ui20261006nav1"></script>
   </body>
 </html>

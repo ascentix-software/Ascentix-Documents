@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<WebResource xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <WebResourceId>{8e2f4b17-5a6c-4d93-b0e8-1f7a3c9d2e42}</WebResourceId>
+  <Name>asx_admin/operations.js</Name>
+  <DisplayName>asx_admin/operations.js</DisplayName>
+  <Description>Owned by standalone Ascentix Documents development setup v1</Description>
+  <WebResourceType>3</WebResourceType>
+  <IntroducedVersion>1.0</IntroducedVersion>
+  <IsEnabledForMobileClient>0</IsEnabledForMobileClient>
+  <IsAvailableForMobileOffline>0</IsAvailableForMobileOffline>
+  <IsCustomizable>1</IsCustomizable>
+  <CanBeDeleted>1</CanBeDeleted>
+  <IsHidden>0</IsHidden>
+  <FileName>/WebResources/asx_adminoperationsjs8E2F4B17-5A6C-4D93-B0E8-1F7A3C9D2E42</FileName>
+</WebResource>

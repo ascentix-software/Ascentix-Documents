@@ -33,7 +33,7 @@ if ($SigningMode -eq 'Development') {
     $text = [IO.File]::ReadAllText($stagedMetadata).Replace($originalIdentity, $identity.FullName)
     [IO.File]::WriteAllText($stagedMetadata, $text, [Text.UTF8Encoding]::new($false))
 }
-$assets = @('index.html','admin.css','shell.js','admin.js','sites-access.js')
+$assets = @('index.html','admin.css','shell.js','admin.js','sites-access.js','operations.js')
 foreach ($name in $assets) {
     Copy-Item -LiteralPath (Join-Path $productRoot "client/admin/$name") -Destination (Join-Path $stage "WebResources/asx_admin/$name") -Force
 }

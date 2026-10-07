@@ -5,7 +5,7 @@ const fs = require('fs'),
   root = path.resolve(__dirname, '../..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 const html = read('client/admin/index.html');
-const scripts = ['shell.js', 'admin.js', 'sites-access.js'];
+const scripts = ['shell.js', 'admin.js', 'sites-access.js', 'operations.js'];
 const js = scripts.map((name) => read('client/admin/' + name)).join('\n');
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
 if (new Set(ids).size !== ids.length) throw new Error('Duplicate admin element ID');

@@ -371,13 +371,11 @@
   async function setAutomation(enabled) {
     const current = state.runtime;
     if (!current) throw new Error('Automation settings are not available to you.');
+    // Pause and resume only (spec 6.6): a stale row version is refused, never a profile save.
     const result = await api('asx_RuntimeAdmin', {
-      Command: 'Save',
-      RowVersion: current.RowVersion,
-      WorkerId: current.WorkerId,
-      SharePointHosts: current.SharePointHosts,
+      Command: 'SetEnabled',
       Enabled: enabled,
-      ProcessRecordUpdates: current.ProcessRecordUpdates,
+      RowVersion: current.RowVersion,
     });
     setRuntime(result);
     return result;
@@ -634,6 +632,9 @@
     can,
     needs,
     runtime: () => state.runtime,
+    // Resolves once the load's runtime Get is back (null when refused), after the chip and the
+    // onRuntime listeners have heard it: for a tab that must tell "not back yet" from "refused".
+    runtimeReady: () => Promise.resolve(state.runtimePromise).then(() => state.runtime),
     onRuntime: (fn) => runtimeListeners.push(fn),
     setRuntime,
     setAutomation,
