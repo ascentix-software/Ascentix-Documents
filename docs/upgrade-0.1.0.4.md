@@ -6,12 +6,12 @@ Requires a System Administrator for step 4.
 
 ## Steps
 
-1. Let the work queue drain with **Automation** on. Then turn the **Automation** switch in Settings off and turn both flows off. A paused Automation does not drain the queue.
+1. Let the work queue drain with **Automation** on. Then turn the switch on the **Automation** card in Settings off and turn both flows off. A paused Automation does not drain the queue.
 2. Import 0.1.0.4 managed with `--stage-and-upgrade`. This removes the old packaged event steps.
 3. Publish all customizations (Power Apps › Solutions › Publish all customizations), then reload the Documents admin page without the browser cache (Ctrl+Shift+R, or Ctrl+F5). Until then the app's left menu can keep the previous names. The import's `--publish-changes` does not always refresh the admin page's scripts: until everything is published, the app can keep serving the previous version.
-4. As a System Administrator, open **Settings**. Check the change-tracking table and click **Repair all** (or **Repair** on the table's row when only one table needs it). Every table should show Ready.
+4. As a System Administrator, open **Settings**. Change tracking is the **Tables** card: click **Repair all** (or **Repair** on the table's row when only one table needs it). Every table should show Ready.
 5. Check the solution layers of both flows (**Dispatch durable work** and **Provision requested record**). If either has an active unmanaged layer, for example because it was edited in the environment, remove that active customization. Otherwise it stays on top of the upgraded flow and hides its retries, failure handling and write guard.
-6. Turn the flows back on, then turn **Automation** back on with **Turn on** in the header chip.
+6. Turn the flows back on, then turn **Automation** back on with the switch on the **Automation** card in Settings.
 7. Records saved between steps 2 and 4 have no event. Re-run them (filter by modified date).
 
 Use stage-and-upgrade. A plain update leaves the removed components behind.
@@ -54,13 +54,13 @@ These change what Documents does with existing data. Review them before you upgr
 - The Documents Security Administrator role no longer has write access to the Automation settings row. Automation changes stay System Administrator only.
 - The runtime-row guard plug-in is removed. The solution has 57 guard steps.
 - The outbox has a new column, `asx_nextattempt`. It holds the time of the next automatic attempt.
-- Tables are enabled in Folder templates › Tables, not in a fixed list. There is no table-count limit.
-- The admin app's left navigation now lists Folder templates, Sites & access, Monitor and Settings. Runtime is now Settings; Operations is now Monitor.
+- Tables are enabled in Settings › Tables (**＋ Add table**), not in a fixed list. There is no table-count limit.
+- The admin app's left navigation now lists Folder templates, Sites & access, Monitor and Settings. Runtime is now Settings; Operations is now Monitor. The admin page has no tab bar of its own: use the app's left menu to move between them.
 - **Remove** hides a site or library from Documents: it leaves the pickers, planning and access sync, and its unfinished work is cancelled. If anything refers to it, Documents keeps its catalog row for history. For a library that means template revisions, access settings (including the inheritance confirmation) or record folders. For a site it means libraries or library setups. Otherwise the row is deleted. Either way nothing in SharePoint changes, and adding it again works: a kept row is reactivated, and a deleted one is created again.
 
 ## After you upgrade
 
-- Open **Settings** and check Change tracking: repair every table that does not show Ready, with **Repair all** (or **Repair** on its row). This registers the event steps.
+- Open **Settings** and check the **Tables** card: repair every table that does not show Ready, with **Repair all** (or **Repair** on its row). This registers the event steps.
 - Records that were Blocked before the upgrade can be retried from Monitor › **Blocked records**.
 - Folder jobs queued before the upgrade carry on by themselves.
 - The flow-details page can show a notice about dispatcher concurrency. This is expected. See the [operations guide](operations.md#automation-and-pausing).

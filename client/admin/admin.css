@@ -177,13 +177,6 @@ h3 {
   font-size: 12px;
   color: var(--muted);
 }
-.pane {
-  padding: 22px;
-  min-width: 0;
-}
-.pane + .pane {
-  border-left: 1px solid var(--line);
-}
 .help {
   margin: 4px 0 0;
   font-size: 12px;
@@ -202,27 +195,9 @@ h3 {
   background: var(--line);
   margin: 22px 0;
 }
-.preview-card {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  padding: 13px;
-  margin-top: 15px;
-}
-.preview-node {
-  padding: 8px 0;
-  font-size: 12px;
-}
 .skip {
   color: var(--muted);
   text-decoration: line-through;
-}
-.preview-note {
-  display: block;
-  font-size: 12px;
-  color: var(--warning);
-  padding-left: 22px;
-  text-decoration: none;
 }
 .security {
   padding: 0 24px 24px;
@@ -345,26 +320,16 @@ dialog p {
   text-align: center;
 }
 @media (max-width: 1100px) {
-  .preview-pane {
-    grid-column: 1/-1;
-    border-left: 0 !important;
-    border-top: 1px solid var(--line);
-  }
   .security-grid {
     grid-template-columns: 1fr;
   }
 }
 @media (max-width: 700px) {
-  .pane + .pane {
-    border-left: 0;
-    border-top: 1px solid var(--line);
-  }
   .row.between,
   .boundary {
     flex-wrap: wrap;
   }
-  .toolbar,
-  .pane {
+  .toolbar {
     padding: 16px;
   }
   .boundary {
@@ -393,12 +358,6 @@ dialog p {
   background: var(--error-bg);
   color: var(--danger);
 }
-.preview-node {
-  overflow-wrap: anywhere;
-}
-.preview-card h3 {
-  overflow-wrap: anywhere;
-}
 button:disabled {
   background: var(--disabled-bg);
   color: var(--muted);
@@ -419,11 +378,6 @@ button:disabled {
   }
 }
 /* Connected editor controls; base type, colors and shell retained from approved concept. */
-.preview-pane {
-  background: var(--canvas);
-}
-.pane label select,
-.pane label input,
 .revision-picker label select {
   display: block;
   margin-top: 7px;
@@ -458,9 +412,6 @@ button:disabled {
   font-size: 12px;
   line-height: 1.65;
   margin-top: 10px;
-}
-.preview-pane details {
-  margin-top: 16px;
 }
 summary {
   cursor: pointer;
@@ -515,21 +466,6 @@ pre {
 }
 .admin-panel .row strong {
   min-width: 150px;
-}
-.preview-node {
-  display: flex;
-  align-items: start;
-  gap: 5px;
-}
-.preview-node .preview-note {
-  padding-left: 0;
-}
-.preview-node span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.preview-card .eyebrow {
-  margin-bottom: 5px;
 }
 @media (max-width: 700px) {
   .admin-panel {
@@ -748,10 +684,6 @@ label {
   font-size: 12px;
   font-weight: 700;
 }
-.preview-pane {
-  background: var(--canvas);
-}
-.preview-card,
 .availability-body {
   border-radius: var(--radius);
 }
@@ -1256,9 +1188,6 @@ button.filter-chip[aria-pressed='true'] {
   vertical-align: top;
 }
 @media (max-width: 700px) {
-  #problem-table-card {
-    overflow-x: auto;
-  }
   .run-card {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1470,17 +1399,8 @@ button.filter-chip[aria-pressed='true'] {
 #history-list .version-row:first-child {
   border-top: 0;
 }
-/* Small screens: the list stacks above the overview, and the header's actions take their own
-   row. */
+/* Phone widths: the overview header's actions take their own row. */
 @media (max-width: 700px) {
-  .templates-layout {
-    grid-template-columns: minmax(0, 1fr);
-    min-height: 0;
-  }
-  #templates-list {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
   #overview-cards {
     padding: 14px;
   }
@@ -2284,41 +2204,6 @@ button.icon:hover {
     animation: ad-progress-shimmer 2.6s linear infinite;
   }
 }
-/* Below 1000px the access drawer takes the full width; at phone widths the rail stacks under the
-   header. */
-@media (max-width: 1000px) {
-  .drawer {
-    width: 100%;
-  }
-}
-@media (max-width: 650px) {
-  .ad-layout {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto;
-    grid-template-areas:
-      'header'
-      'rail'
-      'main';
-    min-height: 0;
-  }
-  #ad-sites-pane {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-  .ad-main {
-    padding: 14px;
-  }
-}
-/* At phone widths the header's actions go to their own line rather than off the screen. */
-@media (max-width: 650px) {
-  .page-header {
-    flex-wrap: wrap;
-  }
-  .page-header .page-actions {
-    flex-wrap: wrap;
-    margin-left: 0;
-  }
-}
 
 /* Settings: one column of cards, and a save bar that shows while there are unsaved changes. */
 #settings > .feedback,
@@ -2751,9 +2636,6 @@ button.danger-outline {
 #step-1 > [data-actions] .reason {
   margin: 0;
 }
-#publish-actions {
-  margin-top: 16px;
-}
 #editor-footer {
   margin-top: auto;
 }
@@ -2768,7 +2650,7 @@ button.danger-outline {
 #step-next {
   margin-left: auto;
 }
-@media (max-width: 1000px) {
+@media (max-width: 999px) {
   .destination-card {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -3237,7 +3119,7 @@ button.danger-outline {
   width: 64px;
   margin: 0 0 0 auto;
 }
-@media (max-width: 1000px) {
+@media (max-width: 999px) {
   .folders-layout {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -3256,5 +3138,349 @@ button.danger-outline {
   }
   .condition-line > :not(button.icon) {
     grid-column: 1;
+  }
+}
+/* Step 3, Review and publish: the changes and a test record's result beside the Publishing
+   card. Publish sits in the footer. */
+#step-3:not([hidden]) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 400px;
+  align-items: start;
+  gap: 20px;
+  padding: 20px 24px;
+  background: var(--canvas);
+}
+#step-3 .section-card {
+  padding: 18px 20px;
+}
+#step-3 h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 700;
+}
+#step-3 #publishing-title {
+  font-size: 17px;
+  font-weight: 800;
+}
+.change-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.change-row:last-child {
+  border-bottom: 1px solid var(--line);
+}
+.change-row .mark {
+  font-weight: 800;
+  line-height: 24px;
+  color: var(--conditional);
+}
+.change-row .mark[data-tone='added'] {
+  color: var(--teal);
+}
+.change-row .mark[data-tone='removed'] {
+  color: var(--danger);
+}
+.change-row .text {
+  min-width: 0;
+  line-height: 24px;
+  overflow-wrap: anywhere;
+}
+.change-row .link {
+  padding: 0 2px;
+}
+#change-list > .error {
+  margin: 0;
+  color: var(--danger);
+}
+.result-for {
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 12px;
+}
+.result-for label {
+  margin: 0;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 700;
+}
+.result-for select {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+.preview-grid > :not(.preview-card) {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.preview-card {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.preview-card .eyebrow {
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+.preview-card > p {
+  margin: 0;
+}
+.preview-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  overflow-wrap: anywhere;
+}
+.preview-node .name {
+  min-width: 0;
+}
+.preview-card > .eyebrow + .preview-node {
+  font-weight: 700;
+}
+.consequences {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+  line-height: 1.5;
+}
+.consequences li {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+.consequences .dot {
+  margin-top: 6px;
+}
+.check-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    'box label'
+    '. desc'
+    '. reason';
+  align-items: center;
+  column-gap: 10px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--canvas);
+}
+.check-panel input {
+  grid-area: box;
+  margin: 0;
+}
+.check-panel label {
+  grid-area: label;
+  margin: 0;
+  font-size: 13px;
+}
+#publish-rerun-desc {
+  grid-area: desc;
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+#publish-rerun-reason {
+  grid-area: reason;
+}
+#publishing > label {
+  display: block;
+  margin: 12px 0 0;
+}
+#publishing > label select,
+#publishing > label input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+}
+#publish-paused {
+  margin: 14px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 13px;
+}
+#publish {
+  margin-left: auto;
+}
+
+/* Below 1000px the page area stacks: the templates list becomes a select above the overview,
+   step 2's panel goes under the tree, step 3's cards stack, the Sites & access rail goes above
+   its libraries, and side panels and the access drawer take the full width. Page headers drop
+   their secondary text first. */
+.narrow-only {
+  display: none;
+}
+@media (max-width: 999px) {
+  .templates-layout {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+  }
+  #templates-list {
+    display: none;
+  }
+  .narrow-only:not([hidden]) {
+    display: block;
+  }
+  .template-picker {
+    margin: 12px 16px 0;
+  }
+  .template-picker select {
+    display: block;
+    width: 100%;
+    margin-top: 6px;
+  }
+  #step-3:not([hidden]) {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 16px;
+  }
+  .ad-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    grid-template-areas:
+      'header'
+      'rail'
+      'main';
+    min-height: 0;
+  }
+  #ad-sites-pane {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .ad-main {
+    padding: 14px;
+  }
+  .side-panel,
+  .drawer {
+    width: 100%;
+  }
+  .page-header .page-meta {
+    display: none;
+  }
+  #problem-table td.problem {
+    white-space: normal;
+  }
+}
+/* Phone widths: two preview cards no longer fit side by side, the header's title gives way
+   before its actions, and the Monitor table packs its cells so it fits without scrolling, which
+   would clip a bottom row's ⋯ menu. */
+@media (max-width: 650px) {
+  .preview-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .page-header h1 {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #problem-table,
+  #problem-table thead,
+  #problem-table tbody {
+    display: block;
+  }
+  #problem-table thead tr {
+    display: flex;
+    justify-content: flex-end;
+    border-radius: 11px 11px 0 0;
+    background: var(--canvas);
+  }
+  #problem-table thead th:not(.col-since) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  #problem-table thead th.col-since {
+    width: auto;
+    border-radius: 11px 11px 0 0;
+  }
+  #problem-table tbody tr {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    column-gap: 10px;
+    row-gap: 4px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--line);
+  }
+  #problem-table tbody td {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+  }
+  #problem-table td.select {
+    grid-column: 1;
+    grid-row: 1 / span 4;
+  }
+  #problem-table td.kind {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  #problem-table td.item {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  #problem-table td.problem {
+    grid-column: 2 / 4;
+    grid-row: 3;
+  }
+  #problem-table td.since {
+    grid-column: 2;
+    grid-row: 4;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  #problem-table td.actions {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+  #problem-table td[colspan] {
+    grid-column: 1 / -1;
+  }
+}
+/* Phone widths: a page header keeps its title, pills and problem count on the first row and
+   gives its actions a row of their own; the steps take less room. */
+@media (max-width: 650px) {
+  .page-header {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .page-header .page-actions {
+    flex-basis: 100%;
+    flex-wrap: wrap;
+    margin-left: 0;
+  }
+  #overview-header {
+    grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+    grid-template-areas:
+      'title pill'
+      'problems problems'
+      'meta meta'
+      'actions actions';
+  }
+  #overview-pill,
+  #overview-problems {
+    justify-self: start;
+  }
+  .stepper [role='tab'] {
+    padding: 8px 8px 9px;
   }
 }

@@ -1,8 +1,9 @@
 'use strict';
 // Folder templates: the templates list, the read-first overview of a template with its Schedule
 // and Versions panels, and the editor (its header and steps; the destinations; the folder tree
-// with the folder panel, the field picker, the condition builder and test records; the preview of
-// the current edits), and re-runs for existing records. Text is only ever set with textContent.
+// with the folder panel, the field picker, the condition builder and test records; Review and
+// publish with the changes, a test record's result, what publishing does and the optional
+// re-run), and re-runs for existing records. Text is only ever set with textContent.
 (() => {
   const $ = (id) => document.getElementById(id);
   const state = {
@@ -58,9 +59,11 @@
     publishing: false,
     // The published revision the draft is compared with ({ version, sources, sections }), and
     // what changed since it (changesSince). snapshotFailed: the template has a published
-    // revision that could not be read, which is not the same as never having published.
+    // revision that could not be read, which is not the same as never having published, and
+    // snapshotError says why.
     publishedSnapshot: null,
     snapshotFailed: false,
+    snapshotError: null,
     changes: null,
     // The destination open in step 1, by key.
     expanded: null,
@@ -77,11 +80,16 @@
     previewByRecord: new Map(),
     recordValues: new Map(),
     previewTimer: null,
+    // Step 3: the test record "Result for" shows, whether the admin wants the re-run (the box
+    // shows it unless something blocks it), the editing session Starts was set up for, and the
+    // template's record count ({ id, read }).
+    resultId: null,
+    rerunWanted: true,
+    startsSession: null,
+    count: null,
     run: null,
     runTotal: null,
     batch: null,
-    previewRecord: null,
-    previewed: false,
     // The data-focus-key that takes focus after the next render.
     focusKey: null,
     // Related tables whose fields could not be read, even after a retry.
@@ -155,6 +163,12 @@
     if (state.saved && state.saved.Status !== 'Draft' && !state.unsaved) return 'Already published';
     return null;
   }
+  // The version the draft becomes: a Draft keeps its number, anything else starts the next one;
+  // a new template starts at v1.
+  function draftVersion() {
+    const base = state.editBase;
+    return !base ? 1 : base.Status === 'Draft' ? base.Version : base.Version + 1;
+  }
   // The header's first row: the table, the name (typed in for a new template), the version the
   // draft becomes, which version stays live, and the save status.
   function renderHeader() {
@@ -180,8 +194,7 @@
         (live ? 'Live' : base.Status === 'Draft' ? 'Draft' : 'Replaced');
       pill.dataset.tone = 'muted';
     } else {
-      pill.textContent =
-        'Draft v' + (!base ? 1 : base.Status === 'Draft' ? base.Version : base.Version + 1);
+      pill.textContent = 'Draft v' + draftVersion();
       pill.dataset.tone = 'warning';
     }
     const live = state.readOnly
@@ -230,21 +243,29 @@
       else tab.removeAttribute('aria-label');
     });
   }
+  // The footer: Back, the step's change count, and Next, or Publish on step 3.
   function renderFooter() {
     $('step-back').hidden = state.step === 1;
     $('step-next').hidden = state.step === 3;
     $('step-next').textContent = state.step === 1 ? 'Next: Folders' : 'Next: Review';
     const n = state.step < 3 ? changeCount(state.step) : 0;
     $('step-count').textContent = n ? plural(n, 'change', 'changes') + ' in this step' : '';
+    renderPublish();
   }
-  // Publish and ＋ Add destination follow the draft, the role, the bound and read-only.
-  function renderActions() {
-    const reason = publishReason();
+  // Publish names the version and the re-run, and follows the draft, the role and read-only.
+  function renderPublish() {
     const publish = $('publish');
-    publish.hidden = state.readOnly || (!state.saved && !state.sections.length);
+    publish.hidden = state.readOnly || state.step !== 3 || (!state.saved && !state.sections.length);
+    if (!publish.dataset.busy)
+      publish.textContent = 'Publish v' + draftVersion() + (rerunChecked() ? ' and re-run' : '');
+    const reason = publishReason();
     ui.disable(publish, 'publish-reason', reason);
     publish.classList.toggle('primary', !reason);
     publish.classList.toggle('secondary', !!reason);
+  }
+  // Publish and ＋ Add destination follow the draft, the role, the bound and read-only.
+  function renderActions() {
+    renderPublish();
     const add = $('add-destination');
     add.hidden = state.readOnly || !state.libraries.length;
     $('destination-limit-note').hidden = add.hidden;
@@ -270,33 +291,35 @@
     renderActions();
   }
   // Shows a step. With focus, its first heading or control takes focus (Back and Next); a tab
-  // keeps the focus it has.
+  // keeps the focus it has. Step 3 is drawn as it shows; the answer is its reads finishing.
   function goStep(n, focus = true) {
     state.step = n;
     for (const i of [1, 2, 3]) $('step-' + i).hidden = i !== n;
     renderStepper();
     renderFooter();
+    const reading = n === 3 ? renderReview() : undefined;
     if (focus) stepStart(n)?.focus();
+    return reading;
   }
   const stepStart = (n) =>
     n === 1
       ? $('destination-list').querySelector('.destination-card input') || $('add-destination')
       : n === 2
         ? $('folders-heading')
-        : $('preview-heading');
-  // An edit: change tracking, the stepper, footer and folder tree follow it, the preview dims
-  // until refreshed, and the autosave and the test-record previews wait for the pause after it.
+        : ['review-title', 'publishing-title', 'result-record', 'result-choose']
+            .map($)
+            .find((node) => !node.hidden && !node.closest('[hidden]'));
+  // An edit: change tracking, the stepper, footer and folder tree follow it, and the autosave
+  // and the test-record previews wait for the pause after it.
   function dirty() {
     state.unsaved = true;
     state.edits++;
     state.changes = changesSince(state.publishedSnapshot, current());
-    $('preview-stale').hidden = !state.previewed;
-    $('previewTrees').classList.toggle('is-stale', state.previewed);
-    $('refreshPreview').hidden = !state.previewRecord;
     renderStepper();
     renderFooter();
     renderActions();
     renderTree();
+    if (state.step === 3) renderReview();
     scheduleSave();
     schedulePreview();
   }
@@ -362,6 +385,8 @@
           renderSaveStatus();
           renderHeader();
           renderActions();
+          // The version a save gave the draft shows on step 3 too.
+          if (state.step === 3) renderReview();
         }
       }
       if (session === state.session && state.saveAgain && state.saveState === 'saved') {
@@ -1272,33 +1297,31 @@
   // The published revision's destination with this key, if it has one.
   const publishedSection = (key) =>
     state.publishedSnapshot?.sections.find((s) => s.Key === key) || null;
+  // A test record's planned folders: one card per destination with its site, each folder
+  // indented by its depth in the path. Adjusted names and folders waiting for a value come first
+  // as notices; text, never markup.
   function renderPreview(plan) {
-    const trees = $('previewTrees');
-    trees.replaceChildren();
-    // Adjusted folder names and folders waiting for a value; text, never markup.
-    for (const notice of plan.Notices || []) trees.append(el('p', notice, 'callout warning'));
+    const label = labelOf(state.sources);
+    const parts = (plan.Notices || []).map((notice) => el('p', notice, 'callout warning'));
     for (const section of state.sections) {
       const rows = (plan.Folders || []).filter((f) => f.Section === section.Key);
-      const card = el('div', null, 'preview-card'),
-        library = libraryFor(section);
+      const card = el('div', null, 'preview-card');
       card.append(
-        el('div', destinationName(section), 'eyebrow'),
-        el('h3', library?.asx_name || 'Unavailable library'),
-        el('p', siteName(library), 'muted'),
+        el('div', destinationName(section) + ' · ' + siteName(libraryFor(section)), 'eyebrow'),
       );
       if (!rows.length)
         card.append(
-          el('p', 'No folders for this record: its conditions exclude this destination.'),
+          el('p', 'No folders for this record: its conditions exclude this destination.', 'muted'),
         );
       for (const row of rows) {
-        const line = el('div', null, 'preview-node'),
-          text = el('span');
-        text.append(el('strong', readable(row.Name)), el('span', row.RelativePath, 'preview-note'));
-        line.append(folderIcon(), text);
+        const line = el('div', null, 'preview-node');
+        line.style.paddingLeft = (String(row.RelativePath || '').split('/').length - 1) * 18 + 'px';
+        line.append(folderIcon(), ui.tokens(row.Name, label));
         card.append(line);
       }
-      trees.append(card);
+      parts.push(card);
     }
+    $('previewTrees').replaceChildren(...parts);
   }
   // Selection: the chosen destination's folder, else the first destination's top folder.
   function normalizeSelection() {
@@ -1863,6 +1886,7 @@
             " records at a time so it finishes within Dataverse's 2-minute limit."
         : null,
     );
+    renderResult();
   }
   const created = (plan, section, folder) =>
     !!folder &&
@@ -1995,8 +2019,10 @@
     record.busy = false;
     renderTestRecords();
   }
-  $('add-test-record').onclick = async () => {
-    if (ui.blocked($('add-test-record')) || !state.root || state.readOnly) return;
+  // ＋ Add in step 2 and Choose record… in step 3: a record of the template's table becomes a
+  // test record and is previewed at once. The answer is the added record, or null.
+  async function addTestRecord(control) {
+    if (ui.blocked(control) || !state.root || state.readOnly) return null;
     const session = state.session,
       table = state.root.LogicalName;
     const picked = await xrm.Utility.lookupObjects({
@@ -2004,18 +2030,514 @@
       defaultEntityType: table,
       allowMultiSelect: false,
     });
-    if (!picked?.length || session !== state.session) return;
+    if (!picked?.length || session !== state.session) return null;
     const id = picked[0].id.replace(/[{}]/g, '').toLowerCase();
     if (
       state.testRecords.some((r) => r.id === id) ||
       state.testRecords.length >= ui.BOUNDS.previewRecords
     )
-      return;
+      return null;
     const record = { id, name: picked[0].name, seq: 0, busy: false };
     state.testRecords.push(record);
     renderTestRecords();
     previewRecord(record);
+    return record;
+  }
+  $('add-test-record').onclick = () => addTestRecord($('add-test-record'));
+
+  // Step 3, Review and publish: what changed since the published version, the result for a test
+  // record, and what publishing does, with the optional re-run and when the version starts.
+  // A change line, in words: names in bold, field tokens as chips. The draft names what it has;
+  // the published version names what the draft no longer has.
+  function changeText(entry) {
+    const text = el('span', null, 'text');
+    const draftLabel = labelOf(state.sources);
+    const publishedLabel = labelOf(state.publishedSnapshot?.sources || []);
+    const named = (name, label) => (name ? ui.tokens(name, label) : el('span', 'Unnamed folder'));
+    const bold = (...parts) => {
+      const strong = el('strong');
+      strong.append(...parts);
+      return strong;
+    };
+    if (!entry.destination) {
+      const where = (libraryId) => {
+        const library = state.libraries.find((l) => same(l.asx_libraryid, libraryId));
+        return library ? siteName(library) + ' › ' + library.asx_name : 'Unavailable library';
+      };
+      const parts = {
+        added: () => ['Destination ', bold(entry.name), ' added'],
+        removed: () => [
+          'Destination ',
+          bold(entry.name),
+          ' removed. Its folders stay in SharePoint.',
+        ],
+        renamed: () => ['Destination ', bold(entry.before), ' renamed to ', bold(entry.after)],
+        library: () => ['Destination ', bold(entry.name), ' now uses ' + where(entry.after)],
+      }[entry.kind];
+      text.append(...(parts ? parts() : [entry.name]));
+      return text;
+    }
+    const section = state.sections.find((s) => s.Key === entry.destination);
+    const destination = section
+      ? destinationName(section)
+      : publishedSection(entry.destination)?.Name || entry.destination;
+    const folder = section?.Folders.find((f) => f.Key === entry.key);
+    const name = folder ? folder.Name : entry.name;
+    switch (entry.kind) {
+      case 'added': {
+        // Its path under the top folder: "Projects › P-[Project Number]".
+        const path = bold();
+        (folder ? folderPath(section, folder) : [{ Name: entry.name }]).forEach((f, i) =>
+          path.append(...(i ? [' › '] : []), named(f.Name, draftLabel)),
+        );
+        text.append('Folder ', path, ' added to ' + destination);
+        break;
+      }
+      case 'removed':
+        text.append(
+          'Folder ',
+          bold(named(entry.name, publishedLabel)),
+          ' removed from ' + destination + '. Existing ',
+          named(entry.name, publishedLabel),
+          ' folders stay in SharePoint.',
+        );
+        break;
+      case 'renamed':
+        text.append(
+          'Folder ',
+          bold(named(entry.before, publishedLabel)),
+          ' renamed to ',
+          bold(named(entry.after, draftLabel)),
+          ' in ' + destination,
+        );
+        break;
+      case 'moved': {
+        const parent = section?.Folders.find((f) => f.Key === entry.after);
+        text.append(
+          'Folder ',
+          bold(named(name, draftLabel)),
+          ' moved under ',
+          bold(parent ? named(parent.Name, draftLabel) : 'Unnamed folder'),
+          ' in ' + destination,
+        );
+        break;
+      }
+      case 'condition': {
+        const sentence = folder?.Condition
+          ? ui.ruleSentence(folder.Condition, (c) => clause(c, state.sources))
+          : '';
+        text.append(
+          bold(named(name, draftLabel)),
+          sentence ? ' now created only ' + lowerFirst(sentence) : ' now always created',
+        );
+        break;
+      }
+      default:
+        text.append(named(name, draftLabel));
+    }
+    return text;
+  }
+  // A folder and the folders above it, without the top folder (the record's own folder).
+  function folderPath(section, folder) {
+    const path = [folder];
+    for (
+      let parent = section.Folders.find((f) => f.Key === folder.Parent), guard = 0;
+      parent?.Parent && guard < section.Folders.length;
+      parent = section.Folders.find((f) => f.Key === parent.Parent), guard++
+    )
+      path.unshift(parent);
+    return path;
+  }
+  // One line of the change list: its mark, its words, and a link to the step that holds it.
+  function changeRow(entry) {
+    const row = el('div', null, 'change-row');
+    const [glyph, tone] =
+      entry.kind === 'added'
+        ? ['＋', 'added']
+        : entry.kind === 'removed'
+          ? ['−', 'removed']
+          : ['◆', 'edited'];
+    const mark = el('span', glyph, 'mark');
+    mark.dataset.tone = tone;
+    mark.setAttribute('aria-hidden', 'true');
+    const step = entry.destination ? 2 : 1;
+    const name = !entry.destination
+      ? entry.name
+      : entry.kind === 'removed'
+        ? nameText(entry.name, state.publishedSnapshot?.sources || [])
+        : nameText(
+            state.sections
+              .find((s) => s.Key === entry.destination)
+              ?.Folders.find((f) => f.Key === entry.key)?.Name ?? entry.name,
+          );
+    const link = button(STEPS[step - 1], () => showChange(entry), 'link');
+    link.setAttribute('aria-label', 'Show ' + name + ' in ' + STEPS[step - 1]);
+    row.append(mark, changeText(entry), link);
+    return row;
+  }
+  // A change line's link: its step, with the destination's card open or the folder selected,
+  // and focus on it (on Undo for a removed folder).
+  function showChange(entry) {
+    const section = state.sections.find((s) => s.Key === (entry.destination || entry.key));
+    if (!entry.destination) {
+      goStep(1, !section);
+      if (!section) return;
+      state.expanded = section.Key;
+      state.focusKey = 'dest:' + section.Key + ':name';
+      render();
+      return;
+    }
+    goStep(2, !section);
+    if (!section) return;
+    const folder = section.Folders.find((f) => f.Key === entry.key);
+    selectedSection = section;
+    selectedFolder = folder || null;
+    state.focusKey = folder ? nodeKey(section, folder) : 'undo:' + section.Key + ':' + entry.key;
+    render();
+  }
+  // The re-run box's words: the folders it adds, else that it applies the changes.
+  function rerunText(changes) {
+    const added = [
+      ...new Set(
+        (changes?.folders || []).filter((e) => e.kind === 'added').map((e) => nameText(e.name)),
+      ),
+    ];
+    const collection = (
+      tableInfo(state.root?.LogicalName)?.DisplayCollectionName?.UserLocalizedLabel?.Label ||
+      'records'
+    ).toLowerCase();
+    return (
+      (added.length
+        ? 'Adds ' + added.join(', ') + ' folders to existing '
+        : 'Applies these changes to existing ') +
+      collection +
+      '. Progress shows in Monitor.'
+    );
+  }
+  const LATER_REASON = 'Re-run after the template starts, from Re-run for existing records.';
+  const rerunChecked = () => $('publish-rerun').checked && !ui.blocked($('publish-rerun'));
+  // The re-run needs the Operator role, and a template that has started: a re-run of a template
+  // that starts later stops at once. Either one unticks the box and says why.
+  function renderRerun() {
+    const box = $('publish-rerun');
+    const reason =
+      ui.needs(OPERATOR) || ($('publish-starts').value === 'later' ? LATER_REASON : null);
+    ui.disable(box, 'publish-rerun-reason', reason);
+    box.checked = !reason && state.rerunWanted;
+    $('publish-rerun-desc').textContent = state.root ? rerunText(state.changes) : '';
+    $('publish-start-label').hidden = $('publish-starts').value !== 'later';
+    renderPublish();
+  }
+  $('publish-rerun').onchange = () => {
+    if (!ui.blocked($('publish-rerun'))) state.rerunWanted = $('publish-rerun').checked;
+    renderRerun();
   };
+  // A blocked box keeps its tick as it is.
+  $('publish-rerun').addEventListener('click', (event) => {
+    if (ui.blocked($('publish-rerun'))) event.preventDefault();
+  });
+  $('publish-starts').onchange = renderRerun;
+  $('publish-start').onchange = renderRerun;
+  // Starts opens on the template's start when it is still ahead, else Now.
+  function initStarts() {
+    if (state.startsSession === state.session) return;
+    state.startsSession = state.session;
+    const stored = state.template?.asx_startsutc;
+    const ahead = !!stored && new Date(stored) > new Date();
+    $('publish-starts').value = ahead ? 'later' : 'now';
+    $('publish-start').value = ahead ? localTime(stored) : '';
+  }
+  // The start to write after publishing: an ISO time, null to clear one still ahead (Now), or
+  // undefined when it stays as it is.
+  function startsValue() {
+    const stored = state.template?.asx_startsutc || null;
+    const ahead = !!stored && new Date(stored) > new Date();
+    if ($('publish-starts').value !== 'later') return ahead ? null : undefined;
+    if (!$('publish-start').value) {
+      $('publish-start').focus();
+      throw new Error('Pick a date');
+    }
+    const start = new Date($('publish-start').value).toISOString();
+    const end = state.template?.asx_endsutc;
+    if (end && new Date(end) <= new Date(start))
+      throw new Error('The end must be after the start.');
+    return stored && new Date(stored).getTime() === new Date(start).getTime() ? undefined : start;
+  }
+  // Step 3 as it shows: the change list (none on a first publish; the reason when the published
+  // version could not be read), Result for, the Publishing card and the re-run box. The answer
+  // is the consequences' reads finishing.
+  function renderReview() {
+    if (!state.root) return undefined;
+    initStarts();
+    const first = !state.publishedSnapshot && !state.snapshotFailed;
+    const listed = !first && !state.readOnly;
+    $('review-title').hidden = $('change-list').hidden = !listed;
+    $('review-changes').setAttribute('aria-labelledby', listed ? 'review-title' : 'result-label');
+    $('review-title').textContent = listed ? 'Changes since v' + liveVersion() : '';
+    const changes = state.changes || { destinations: [], folders: [] };
+    $('change-list').replaceChildren(
+      ...(!listed
+        ? []
+        : state.snapshotFailed
+          ? [el('p', state.snapshotError, 'error')]
+          : [...changes.destinations, ...changes.folders].map(changeRow)),
+    );
+    $('publishing').hidden = state.readOnly;
+    $('publishing-title').textContent = 'Publishing v' + draftVersion();
+    renderRerun();
+    renderResult();
+    return renderConsequences();
+  }
+  // The published version: the one compared with, else the template's live one.
+  const liveVersion = () =>
+    state.publishedSnapshot?.version ??
+    (state.template ? templateState(state.template).live : null) ??
+    draftVersion() - 1;
+  // The template's record count, read once per template: the table's row-count snapshot, so it
+  // is always "about". Null without the Operator role (no call), before the first save, or when
+  // the server refuses it.
+  function recordCount() {
+    const id = state.template?.asx_templateid;
+    if (!id || !ui.can(OPERATOR)) return Promise.resolve(null);
+    if (!same(state.count?.id, id))
+      state.count = {
+        id,
+        read: ui
+          .api('asx_ManageWork', { Command: 'CountRecords', TemplateId: id })
+          .then((counted) => counted?.Run?.Total ?? null)
+          .catch(() => null),
+      };
+    return state.count.read;
+  }
+  // What publishing does, as three bullets: new records, changed records (when automation can
+  // be read), and existing records with the table's count. The paused warning follows
+  // automation.
+  let reviewReads = 0;
+  async function renderConsequences() {
+    const seq = ++reviewReads;
+    const [automation, count] = await Promise.all([ui.automation(), recordCount()]);
+    if (seq !== reviewReads || !state.root) return;
+    const table = tableName(state.root.LogicalName);
+    const first = !state.publishedSnapshot && !state.snapshotFailed;
+    const line = (tone, strong, rest) => {
+      const item = el('li');
+      const text = el('span');
+      text.append(el('strong', strong), rest);
+      item.append(ui.dot(tone), text);
+      return item;
+    };
+    const setting = '“Update folders when records change”';
+    $('consequences').replaceChildren(
+      line('ok', 'New ' + table + ' records', ' get v' + draftVersion() + ' folders from now on.'),
+      ...(automation
+        ? [
+            automation.ProcessRecordUpdates
+              ? line('ok', 'Changed records', ' are updated, because ' + setting + ' is on.')
+              : line('ok', 'Changed records', ' are not updated, because ' + setting + ' is off.'),
+          ]
+        : []),
+      line(
+        'pending',
+        (count == null ? 'Existing ' : 'About ' + count.toLocaleString('en-US') + ' existing ') +
+          table +
+          ' records',
+        first
+          ? ' get folders when they are re-run.'
+          : ' keep their v' +
+              liveVersion() +
+              ' folders until they are re-run. Folders are never removed.',
+      ),
+    );
+    $('publish-paused').hidden = automation?.Enabled !== false;
+    $('publish-paused').textContent = $('publish-paused').hidden
+      ? ''
+      : "Automation is paused, so no folders are created until it's on.";
+  }
+  // Result for: the test records in a select (the first by default), or Choose record… when
+  // there are none, and the chosen one's planned folders.
+  let shownPlan = null;
+  function renderResult() {
+    const records = state.testRecords;
+    const picker = $('result-record');
+    picker.hidden = !records.length;
+    $('result-choose').hidden = !!records.length;
+    if (!records.some((r) => r.id === state.resultId)) state.resultId = records[0]?.id ?? null;
+    const signature = records.map((r) => r.id + '|' + r.name).join('\n');
+    if (picker.dataset.records !== signature) {
+      picker.replaceChildren(...records.map((r) => option(r.id, r.name)));
+      picker.dataset.records = signature;
+    }
+    picker.value = state.resultId ?? '';
+    const record = records.find((r) => r.id === state.resultId);
+    const trees = $('previewTrees');
+    const result = record ? state.previewByRecord.get(record.id) : null;
+    trees.classList.toggle('is-stale', !!result?.stale);
+    if (record?.busy) trees.setAttribute('aria-busy', 'true');
+    else trees.removeAttribute('aria-busy');
+    if (!record) {
+      clearResult();
+      return;
+    }
+    if (result?.error) {
+      shownPlan = null;
+      trees.replaceChildren(el('p', 'Preview failed: ' + result.error, 'error'));
+      return;
+    }
+    if (!result?.plan) {
+      shownPlan = null;
+      trees.replaceChildren(...[0, 1].map(() => el('div', null, 'skeleton')));
+      return;
+    }
+    renderPreview(result.plan);
+    if (shownPlan === result.plan) return;
+    shownPlan = result.plan;
+    const folders = result.plan.Folders || [];
+    $('preview-status').textContent =
+      'Preview updated: ' +
+      plural(new Set(folders.map((f) => f.Section)).size, 'destination', 'destinations') +
+      ', ' +
+      plural(folders.length, 'folder', 'folders') +
+      '.';
+  }
+  function clearResult() {
+    shownPlan = null;
+    $('previewTrees').replaceChildren();
+    $('previewTrees').classList.remove('is-stale');
+    $('preview-status').textContent = '';
+  }
+  $('result-record').dataset.nav = 'true';
+  $('result-record').onchange = () => {
+    state.resultId = $('result-record').value;
+    renderResult();
+  };
+  $('result-choose').onclick = async () => {
+    const record = await addTestRecord($('result-choose'));
+    if (record) {
+      state.resultId = record.id;
+      renderResult();
+      $('result-record').focus();
+    }
+  };
+  // Publish: this step is the confirmation. Edits not saved yet are saved first; once the server
+  // has published, the start date is written and then the re-run starts, so a refused publish
+  // changes nothing and Now clears a later start before the run reads it. Edits made while it
+  // ran are saved as the next version. It ends on the overview with what happened.
+  async function publish() {
+    const control = $('publish');
+    if (ui.blocked(control) || state.publishing) return;
+    const session = state.session;
+    await ui.busy(control, 'Publishing…', 'editor', async () => {
+      const start = startsValue();
+      const rerun = rerunChecked();
+      await flushSave();
+      if (session !== state.session) return;
+      // A new template without a name cannot be saved yet.
+      if (!state.saved) {
+        $('templateName').focus();
+        return;
+      }
+      const next = state.editBase.Version;
+      const id = state.template.asx_templateid;
+      state.publishing = true;
+      let result;
+      try {
+        result = JSON.parse(
+          await api('asx_PublishTemplate', {
+            RevisionId: state.saved.RevisionId,
+            RowVersion: state.saved.RowVersion,
+          }),
+        );
+      } catch (error) {
+        state.publishing = false;
+        if (state.unsaved) scheduleSave();
+        throw error;
+      }
+      let scheduled = null,
+        started = null,
+        refused = null;
+      try {
+        if (start !== undefined)
+          await xrm.WebApi.updateRecord('asx_template', id, { asx_startsutc: start });
+      } catch (error) {
+        scheduled = error.message || String(error);
+      }
+      if (rerun && !scheduled)
+        try {
+          started = await ui.api('asx_ManageWork', {
+            Command: 'StartTemplateRun',
+            TemplateId: id,
+            RequestId: crypto.randomUUID(),
+          });
+        } catch (error) {
+          refused = error.message || String(error);
+        }
+      // Edits made while it ran are saved as the next version, with the row version publishing
+      // gave the revision. If they cannot be saved, the editor stays open with them.
+      let kept = true;
+      if (session === state.session && state.unsaved) {
+        try {
+          const loaded = await reloadBasis(state.saved.RevisionId);
+          state.publishedSnapshot = {
+            version: next,
+            ...toModel(loaded, (table) => metadata.get(table)?.columns || []),
+          };
+          state.changes = changesSince(state.publishedSnapshot, current());
+          state.template = await reloadTemplate(id);
+          state.publishing = false;
+          await flushSave();
+        } catch {
+          kept = false;
+        }
+      }
+      state.publishing = false;
+      const mine = session === state.session;
+      if (mine && kept) resetEditor();
+      let notices = [...(result.Notices || []), ...(started?.Notices || [])];
+      try {
+        await loadTemplates();
+        if (mine && kept) await showOverview(id);
+        else if (state.view === 'overview' && same(state.overview?.template.asx_templateid, id))
+          await showOverview(id);
+      } catch (error) {
+        notices = [...notices, error.message || String(error)];
+      }
+      if (mine && !kept) {
+        state.changes = changesSince(state.publishedSnapshot, current());
+        chrome();
+      }
+      const rerunAction = {
+        label: 'Re-run existing records…',
+        onClick: (event) => openRerun(event?.currentTarget),
+      };
+      if (scheduled)
+        ui.feedback(
+          'templates',
+          ['Published v' + next + '.', scheduled, ...notices].join(' '),
+          'error',
+          rerun ? rerunAction : null,
+        );
+      else if (refused)
+        ui.feedback(
+          'templates',
+          ['Published v' + next + ". The re-run didn't start: " + refused, ...notices].join(' '),
+          'error',
+          rerunAction,
+        );
+      else if (started)
+        ui.feedback(
+          'templates',
+          ['Published v' + next + '. Re-run started.', ...notices].join(' '),
+          'success',
+          {
+            label: 'Follow it in Monitor →',
+            onClick: () => ui.navigate('monitor', { run: started.Key }),
+          },
+        );
+      else ui.feedback('templates', ['Published v' + next + '.', ...notices].join(' '));
+      if (mine && kept) $('overview-title').focus();
+    });
+  }
+  $('publish').onclick = publish;
   // Sites & access, from a link in the editor: edits that can be saved are saved first, so the
   // page asks only about those that cannot.
   async function toAccess(link = null) {
@@ -2233,6 +2755,7 @@
   const editorControls = () => [
     ...$('destination-list').querySelectorAll('input, select, button'),
     ...$('step-2').querySelectorAll('input, select, button'),
+    ...$('step-3').querySelectorAll('input, select, button'),
   ];
   function lockEditor() {
     for (const control of editorControls())
@@ -2922,11 +3445,16 @@
       edits: 0,
       publishedSnapshot: null,
       snapshotFailed: false,
+      snapshotError: null,
       changes: null,
       expanded: null,
       invalid: false,
       step: 1,
+      resultId: null,
+      rerunWanted: true,
+      count: null,
     });
+    for (const i of [1, 2, 3]) $('step-' + i).hidden = i !== 1;
     ui.clearFeedback('editor');
   }
   // Clears the editor, so the next Edit template loads the saved version again.
@@ -2948,7 +3476,7 @@
     selectedSection = null;
     selectedFolder = null;
     $('templateName').value = '';
-    resetPreview();
+    clearResult();
     render();
   }
   async function closeEditor() {
@@ -2999,98 +3527,6 @@
   $('menu-delete').onclick = deleteTemplate;
   for (const close of document.querySelectorAll('.panel-close'))
     close.onclick = () => panel?.close();
-
-  $('publish').onclick = async () => {
-    if (ui.blocked($('publish'))) return;
-    // The editor this publish belongs to: once it is closed or replaced, the answers below leave
-    // the one open now alone.
-    const session = state.session;
-    // What is published is what is saved: edits not saved yet are saved first.
-    try {
-      await flushSave();
-    } catch (error) {
-      ui.feedback('editor', error.message || String(error), 'error');
-      return;
-    }
-    if (session !== state.session) return;
-    // A new template without a name cannot be saved yet.
-    if (!state.saved) {
-      $('templateName').focus();
-      return;
-    }
-    const next = state.editBase.Version;
-    const paused = ui.runtime() && !ui.runtime().Enabled;
-    const ok = await ui.confirmInline($('publish'), {
-      text: 'Publish v' + next + '?',
-      details: ui.help(
-        'help-publish',
-        'Documents uses v' +
-          next +
-          ' for records created from now on, and for changed records when record updates are on. Existing records keep their folders until you re-run them.' +
-          (paused ? " Automation is paused, so no folders are created until it's on." : ''),
-      ),
-      confirm: 'Publish v' + next,
-      keep: 'Not now',
-    });
-    if (!ok || session !== state.session) return;
-    const templateId = state.template.asx_templateid;
-    await ui.busy($('publish'), 'Publishing…', 'templates', async () => {
-      // Edits made while the confirmation was open.
-      await flushSave();
-      if (session !== state.session) return;
-      state.publishing = true;
-      try {
-        const result = JSON.parse(
-          await api('asx_PublishTemplate', {
-            RevisionId: state.saved.RevisionId,
-            RowVersion: state.saved.RowVersion,
-          }),
-        );
-        if (session !== state.session) {
-          // The editor was closed meanwhile: the list, and the template's overview when it is
-          // the one shown, follow the publish.
-          await loadTemplates();
-          if (
-            state.view === 'overview' &&
-            same(state.overview?.template.asx_templateid, templateId)
-          )
-            await showOverview(templateId);
-          return;
-        }
-        // Publishing changes the revision row, so its row version is read back with it; the
-        // next save would be refused with the old one. Edits made during the publish stay.
-        // The published version is what the draft is compared with from now on.
-        if (state.unsaved) {
-          const loaded = await reloadBasis(state.saved.RevisionId);
-          state.publishedSnapshot = {
-            version: next,
-            ...toModel(loaded, (table) => metadata.get(table)?.columns || []),
-          };
-        } else {
-          await reloadVersion(state.saved.RevisionId);
-          state.publishedSnapshot = structuredClone({ version: next, ...current() });
-        }
-        state.changes = changesSince(state.publishedSnapshot, current());
-        state.template = await reloadTemplate(state.template.asx_templateid);
-        // The list's state and the re-run's version follow the new published revision.
-        await loadTemplates();
-        chrome();
-        ui.feedback(
-          'templates',
-          ['Published v' + next + '.', ...(result.Notices || [])].join(' '),
-          'success',
-          {
-            label: 'Re-run existing records…',
-            onClick: (event) => openRerun(event?.currentTarget),
-          },
-        );
-      } finally {
-        state.publishing = false;
-        if (state.unsaved) scheduleSave();
-      }
-    });
-    chrome();
-  };
 
   // Every version of the overview's template, in a side panel.
   function openHistory(invoker) {
@@ -3208,7 +3644,6 @@
     selectedSection = null;
     selectedFolder = null;
     render();
-    if (state.previewRecord) await runPreview();
   }
   // Reads a version's row version and status again and leaves the editor's edits as they are.
   async function reloadBasis(revisionId) {
@@ -3235,7 +3670,8 @@
       loaded = JSON.parse(await read().catch(read));
     } catch (error) {
       state.snapshotFailed = true;
-      ui.feedback('editor', error.message || String(error), 'error');
+      state.snapshotError = error.message || String(error);
+      ui.feedback('editor', state.snapshotError, 'error');
       return null;
     }
     await Promise.all(loaded.Draft.Sources.map((s) => fields(s.Table).catch(() => null)));
@@ -3289,16 +3725,6 @@
     $('template-editor').addEventListener(type, () => {
       if (state.pickersStale) setTimeout(refreshPickers, 0);
     });
-  function resetPreview() {
-    state.previewRecord = null;
-    state.previewed = false;
-    $('preview-record-name').textContent = '';
-    $('preview-stale').hidden = true;
-    $('refreshPreview').hidden = true;
-    $('previewTrees').classList.remove('is-stale');
-    $('previewTrees').replaceChildren(el('p', 'Pick a record to preview', 'empty'));
-    $('preview-status').textContent = '';
-  }
   async function selectTemplate(table, templateId = null) {
     const root = state.tables.find((t) => t.LogicalName === table);
     if (!root) throw new Error(tableName(table) + ' is not available for document management.');
@@ -3323,7 +3749,7 @@
     state.recordValues = new Map();
     panel?.close(false);
     ui.clearFeedback('templates');
-    resetPreview();
+    clearResult();
     const meta = await fields(table);
     state.sources = [{ Alias: 'root', Table: table, Lookup: null, columns: meta.columns }];
     // The label reads the target's display name once its metadata is in.
@@ -3428,6 +3854,7 @@
   // The templates list: one group per table, each template with its state; the search filters
   // by name.
   function renderList() {
+    renderPicker();
     const host = $('template-groups');
     // Never under an open confirmation (as Monitor's lists): railAsk redraws when it closes.
     state.railStale = !!host.querySelector('.confirm[role=group]');
@@ -3455,6 +3882,32 @@
     const others = disabled.map(group).filter(Boolean);
     if (others.length) host.append(el('p', 'Not enabled', 'rail-group'), ...others);
   }
+  // Narrow screens: the list as one select above the overview, in the list's order and with its
+  // names, a group per table.
+  function renderPicker() {
+    const picker = $('template-picker');
+    const { enabled, disabled } = listTables();
+    picker.replaceChildren(
+      ...[...enabled, ...disabled].map((table) => {
+        const group = el('optgroup');
+        group.setAttribute('label', tableName(table));
+        group.append(
+          ...state.templates
+            .filter((t) => t.asx_table === table)
+            .map((t) => option(t.asx_templateid, t.asx_name || tableName(table))),
+        );
+        return group;
+      }),
+    );
+    picker.value = selectedId() || '';
+    picker.closest('label').hidden = !state.templates.length;
+  }
+  $('template-picker').onchange = async () => {
+    const picker = $('template-picker');
+    const t = state.templates.find((x) => same(x.asx_templateid, picker.value));
+    if (t) await pick(picker, t);
+    renderPicker();
+  };
   $('template-search').oninput = () => {
     state.listQuery = $('template-search').value;
     renderList();
@@ -3606,59 +4059,6 @@
         }
       : null,
   );
-
-  $('chooseRecord').onclick = async () => {
-    const picked = await xrm.Utility.lookupObjects({
-      entityTypes: [state.root.LogicalName],
-      defaultEntityType: state.root.LogicalName,
-      allowMultiSelect: false,
-    });
-    if (!picked?.length) return;
-    state.previewRecord = {
-      id: picked[0].id.replace(/[{}]/g, '').toLowerCase(),
-      name: picked[0].name,
-    };
-    $('preview-record-name').textContent = state.previewRecord.name;
-    $('chooseRecord').focus();
-    await runPreview();
-  };
-  $('refreshPreview').onclick = () => runPreview();
-  // Previews the saved revision, or the current edits when there are any.
-  async function runPreview() {
-    if (!state.previewRecord) return;
-    const trees = $('previewTrees');
-    trees.setAttribute('aria-busy', 'true');
-    trees.classList.remove('is-stale');
-    trees.replaceChildren(...[0, 1, 2].map(() => el('div', null, 'skeleton')));
-    try {
-      const request =
-        state.unsaved || !state.saved
-          ? { RevisionId: '', Draft: payload(), RecordId: state.previewRecord.id }
-          : { RevisionId: state.saved.RevisionId, RecordId: state.previewRecord.id };
-      const plan = JSON.parse(
-        await api('asx_PreviewTemplate', { Request: JSON.stringify(request) }),
-      );
-      renderPreview(plan);
-      state.previewed = true;
-      $('preview-stale').hidden = true;
-      $('refreshPreview').hidden = true;
-      const folders = plan.Folders || [];
-      const sections = new Set(folders.map((f) => f.Section)).size;
-      $('preview-status').textContent =
-        'Preview updated: ' +
-        plural(sections, 'destination', 'destinations') +
-        ', ' +
-        plural(folders.length, 'folder', 'folders') +
-        '.';
-    } catch (error) {
-      trees.replaceChildren(
-        el('p', 'Preview failed: ' + (error.message || String(error)), 'error'),
-      );
-      $('refreshPreview').hidden = false;
-    } finally {
-      trees.removeAttribute('aria-busy');
-    }
-  }
 
   // Re-run for existing records, of the template the editor or the overview shows.
   const rerunTemplate = () => (state.view === 'edit' ? state.template : state.overview?.template);
@@ -3846,6 +4246,7 @@
       chrome();
     },
     changesSince,
+    changeText,
     nextKey,
     // The page's state, for tests.
     state: () => state,
@@ -3861,14 +4262,14 @@
   }
   async function start() {
     render();
-    resetPreview();
+    clearResult();
     if (!xrm?.WebApi || !xrm?.Utility) return;
     ui.problemPill($('overview-problems'));
     renderOverview();
     await task(async () => {
       state.tables = (
         await all(
-          'EntityDefinitions?$select=LogicalName,DisplayName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,IsDocumentManagementEnabled&$filter=IsDocumentManagementEnabled eq true',
+          'EntityDefinitions?$select=LogicalName,DisplayName,DisplayCollectionName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,IsDocumentManagementEnabled&$filter=IsDocumentManagementEnabled eq true',
         )
       )
         .filter((t) => t.PrimaryNameAttribute)

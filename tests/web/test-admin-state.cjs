@@ -2,7 +2,7 @@
 // Folder templates with a fake DOM and mocked Dataverse: the templates list and the overview,
 // its ⋯ menu, Schedule and Versions panels, Delete, the editor's header, steps, autosave and
 // change tracking, step 1 Destinations, Publish, step 2 Folders (the tree, the folder panel, ＋ Field,
-// the condition builder and test records), the step 3 preview of unsaved edits, focus, and
+// the condition builder and test records), step 3 Review and publish, focus, and
 // Re-run for existing records.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -331,6 +331,7 @@ async function boot({
                       PrimaryIdAttribute: 'accountid',
                       PrimaryNameAttribute: 'name',
                       DisplayName: { UserLocalizedLabel: { Label: 'Account' } },
+                      DisplayCollectionName: { UserLocalizedLabel: { Label: 'Accounts' } },
                     },
                     {
                       LogicalName: 'contact',
@@ -338,6 +339,7 @@ async function boot({
                       PrimaryIdAttribute: 'contactid',
                       PrimaryNameAttribute: 'fullname',
                       DisplayName: { UserLocalizedLabel: { Label: 'Contact' } },
+                      DisplayCollectionName: { UserLocalizedLabel: { Label: 'Contacts' } },
                     },
                   ];
     return { ok: true, json: async () => ({ value }) };
@@ -1142,12 +1144,11 @@ async function boot({
     assert.equal(t.$('templateName').hidden, false, 'A new template is named in the heading');
   }
   {
-    // An edit dims the preview and enables Publish, which saves it first.
+    // An edit enables Publish, which saves it first.
     const t = await boot();
     await t.open();
     await t.rename('General', 'General documents');
     assert.equal(t.$('editor-pill').textContent, 'Draft v2');
-    assert.equal(t.$('preview-stale').hidden, true, 'Nothing previewed yet');
     assert.equal(t.$('publish').hasAttribute('aria-disabled'), false);
     // Leaving the page with unsaved edits asks first (the shell owns the prompt).
     t.document.track(t.window.AsxdUi.navigate('monitor'));
@@ -1156,24 +1157,18 @@ async function boot({
       t.$('leavePrompt').visibleText,
       /You have unsaved changes to Account onboarding\./,
     );
-    // The autosave, then Publish with its confirmation (kept text #3).
+    // The autosave, then Publish on step 3, without another confirmation.
     await t.press(t.find(t.$('leavePrompt'), 'Stay'));
     await t.flush();
     assert.equal(t.last('asx_CreateDraft').Destinations[0].Folders[1].Name, 'General documents');
     assert.equal(t.$('editor-pill').textContent, 'Draft v2');
     await t.step(3);
     await t.press(t.$('publish'));
-    assert.equal(t.document.activeElement.textContent, 'Publish v2?');
-    assert.equal(
-      t.$('help-publish').textContent,
-      'Documents uses v2 for records created from now on, and for changed records when record updates are on. Existing records keep their folders until you re-run them.',
-    );
-    await t.press(t.find(t.$('step-3').querySelector('.confirm'), 'Publish v2'));
     assert.deepEqual(t.last('asx_PublishTemplate'), { RevisionId: 'rev-2', RowVersion: '4' });
     assert.match(t.$('fb-templates').textContent, /^Published v2\./);
-    assert.ok(t.find(t.$('fb-templates'), 'Re-run existing records…'));
-    // Publishing makes the published version the new basis: no changes left to show.
-    assert.equal(t.$('step-tab-2').querySelector('.step-dot').hidden, true);
+    // Publishing ends the editing session on the overview.
+    assert.equal(t.$('template-overview').hidden, false);
+    assert.equal(t.state().root, null, 'The next Edit template loads the published version');
   }
   {
     // Publish with an edit not saved yet saves it first, then publishes what was saved.
@@ -1183,8 +1178,11 @@ async function boot({
     await t.step(3);
     await t.press(t.$('publish'));
     assert.equal(t.last('asx_CreateDraft').Destinations[0].Folders[1].Name, 'Unsaved');
-    await t.press(t.find(t.$('step-3').querySelector('.confirm'), 'Publish v2'));
     assert.deepEqual(t.last('asx_PublishTemplate'), { RevisionId: 'rev-2', RowVersion: '4' });
+    assert.deepEqual(
+      t.sent.map(([a]) => a).filter((a) => /CreateDraft|PublishTemplate/.test(a)),
+      ['asx_CreateDraft', 'asx_PublishTemplate'],
+    );
   }
   {
     // The links to Sites & access save the edits first and go without asking; they ask only
@@ -1228,16 +1226,16 @@ async function boot({
     assert.equal(d.sent.filter(([k]) => k === 'navigate').at(-1)[1].data, 'settings-' + BUILD);
   }
   {
-    // Paused automation adds a sentence to the Publish confirmation; no Publisher role disables it.
+    // Paused automation shows a warning on step 3; no Publisher role disables Publish.
     const paused = await boot({
       runtime: { Enabled: false },
       loaded: { RevisionId: 'rev-2', RowVersion: '4', Status: 'Draft', Version: 2, Draft: draft() },
     });
     await paused.open();
-    await paused.press(paused.$('publish'));
-    assert.match(
-      paused.$('help-publish').textContent,
-      /Automation is paused, so no folders are created until it's on\.$/,
+    await paused.step(3);
+    assert.equal(
+      paused.$('publish-paused').textContent,
+      "Automation is paused, so no folders are created until it's on.",
     );
     const role = await boot({
       privileges: { prvCreateasx_publication: false },
@@ -1679,22 +1677,54 @@ async function boot({
     );
   }
   {
-    // Preview: picking a record runs it (saved revision); an edit makes it out of date; Refresh previews the edit.
-    const t = await boot();
+    // Result for: an edit previews the draft again after the pause, and the result follows it.
+    const t = await boot({
+      handle: (api, body) =>
+        api === 'asx_PreviewTemplate'
+          ? {
+              Folders: [
+                {
+                  Section: 'general',
+                  Node: 'root',
+                  Name: 'Contoso Ltd',
+                  RelativePath: 'Contoso Ltd',
+                },
+                ...JSON.parse(JSON.stringify(body.Draft.Destinations[0].Folders))
+                  .filter((f) => f.Parent === 'root')
+                  .map((f) => ({
+                    Section: 'general',
+                    Node: f.Key,
+                    Name: f.Name,
+                    RelativePath: 'Contoso Ltd/' + f.Name,
+                  })),
+              ],
+              Notices: ['Name adjusted for SharePoint.'],
+            }
+          : null,
+    });
     await t.open();
     await t.step(3);
-    await t.press(t.$('chooseRecord'));
-    assert.equal(t.$('preview-record-name').textContent, 'Contoso Ltd');
-    assert.deepEqual(t.last('asx_PreviewTemplate'), { RevisionId: 'rev-1', RecordId: RECORD });
-    assert.equal(t.$('preview-status').textContent, 'Preview updated: 1 destination, 2 folders.');
+    await t.press(t.$('result-choose'));
     assert.equal(t.$('previewTrees').hasAttribute('aria-live'), false);
+    assert.equal(
+      t.$('previewTrees').querySelector('.callout').textContent,
+      'Name adjusted for SharePoint.',
+    );
     await t.rename('General', 'Edited');
-    assert.equal(t.$('preview-stale').hidden, false);
-    await t.press(t.$('refreshPreview'));
+    await t.flush();
     const request = t.last('asx_PreviewTemplate');
     assert.equal(request.RevisionId, '');
     assert.equal(request.Draft.Destinations[0].Folders[1].Name, 'Edited');
-    assert.equal(t.$('preview-stale').hidden, true);
+    await t.step(3);
+    assert.match(t.$('previewTrees').visibleText, /Edited/);
+    // A failed preview says so in place of the tree.
+    const f = await boot({
+      handle: (api) => (api === 'asx_PreviewTemplate' ? new Error('Record not found.') : null),
+    });
+    await f.open();
+    await f.step(3);
+    await f.press(f.$('result-choose'));
+    assert.equal(f.$('previewTrees').textContent, 'Preview failed: Record not found.');
   }
   {
     // Re-run for existing records: the count labels the button, the confirmation, a background start.
@@ -1784,7 +1814,7 @@ async function boot({
     );
   }
   {
-    // Fix 1: Publish reloads the revision, so the next Save sends its new row version.
+    // Fix 1: the next editing session after Publish saves with the row version publishing gave.
     let published = false;
     const t = await boot({
       loaded: { RevisionId: 'rev-2', RowVersion: '4', Status: 'Draft', Version: 2, Draft: draft() },
@@ -1805,8 +1835,10 @@ async function boot({
       },
     });
     await t.open();
+    await t.step(3);
     await t.press(t.$('publish'));
-    await t.press(t.find(t.$('step-3').querySelector('.confirm'), 'Publish v2'));
+    assert.equal(t.$('template-overview').hidden, false);
+    await t.press(t.$('overview-edit'));
     assert.equal(t.$('editor-pill').textContent, 'Draft v3');
     assert.equal(t.$('editor-note').textContent, 'v2 stays live until you publish');
     await t.rename('General', 'After publish');
@@ -1948,8 +1980,9 @@ async function boot({
     await t.rename('General', 'From v1');
     await t.flush();
     assert.equal(t.$('editor-pill').textContent, 'Draft v4');
-    await t.press(t.$('publish'));
-    assert.equal(t.document.activeElement.textContent, 'Publish v4?');
+    await t.step(3);
+    assert.equal(t.$('publishing-title').textContent, 'Publishing v4');
+    assert.equal(t.$('publish').textContent, 'Publish v4 and re-run');
   }
   {
     // Fix 4: a save whose follow-up reads fail still records the template, so the next save
@@ -2651,21 +2684,46 @@ async function boot({
       },
     });
     await t.open();
+    await t.step(3);
     await t.press(t.$('publish'));
-    await t.press(t.find(t.$('step-3').querySelector('.confirm'), 'Publish v2'));
     await t.step(2);
     await t.rename('General', 'During');
     await t.flush();
     assert.equal(t.sent.filter(([a]) => a === 'asx_CreateDraft').length, 0, 'Waits for Publish');
     release();
     await t.document.settle();
-    assert.equal(t.$('folder-name').value, 'During', 'Kept');
-    await t.flush();
+    // Saved as the next version before the editor closes, so nothing is lost.
     const saved = t.last('asx_CreateDraft');
     assert.deepEqual([saved.RevisionId, saved.RowVersion], ['rev-2', '5']);
     assert.equal(saved.Destinations[0].Folders[1].Name, 'During');
-    assert.equal(t.$('editor-pill').textContent, 'Draft v3');
-    assert.equal(t.$('step-tab-2').getAttribute('aria-label'), 'Folders, has changes');
+    assert.equal(t.$('template-overview').hidden, false);
+    assert.match(t.$('fb-templates').textContent, /^Published v2\./);
+    // When those edits cannot be saved, the editor stays open with them.
+    let free;
+    const hold = new Promise((resolve) => (free = resolve));
+    let done = false;
+    const k = await boot({
+      loaded: { RevisionId: 'rev-2', RowVersion: '4', Status: 'Draft', Version: 2, Draft: draft() },
+      handle: async (api) => {
+        if (api === 'asx_PublishTemplate') {
+          await hold;
+          done = true;
+          return { Status: 'Published', Notices: [] };
+        }
+        if (api === 'asx_CreateDraft' && done) return new Error('The server is busy.');
+        return null;
+      },
+    });
+    await k.open();
+    await k.step(3);
+    await k.press(k.$('publish'));
+    await k.rename('General', 'Kept');
+    free();
+    await k.document.settle();
+    assert.equal(k.$('template-editor').hidden, false);
+    assert.equal(k.$('folder-name').value, 'Kept');
+    assert.equal(k.$('fb-editor').textContent, 'The server is busy.');
+    assert.match(k.$('fb-templates').textContent, /^Published v2\./);
     // Close while Publish runs: its answer leaves the closed editor alone.
     let let_go;
     const wait = new Promise((resolve) => (let_go = resolve));
@@ -2677,8 +2735,8 @@ async function boot({
           : null,
     });
     await c.open();
+    await c.step(3);
     await c.press(c.$('publish'));
-    await c.press(c.find(c.$('step-3').querySelector('.confirm'), 'Publish v2'));
     await c.press(c.$('editor-close'));
     assert.equal(c.$('template-overview').hidden, false);
     let_go();
@@ -3372,8 +3430,505 @@ async function boot({
     assert.equal(undo('Archive').getAttribute('aria-describedby'), 'folder-reason');
     assert.equal(t.$('add-folder').getAttribute('aria-describedby'), 'folder-reason');
   }
+  {
+    // Review: the change list against the published version, each line linking to its step.
+    const t = await boot();
+    await t.open();
+    await t.step(2);
+    await t.select('General');
+    await t.press(t.$('add-subfolder'));
+    t.$('folder-name').value = 'P-{root.accountnumber}';
+    t.$('folder-name').oninput();
+    await t.flush();
+    await t.step(3);
+    assert.equal(t.$('review-title').textContent, 'Changes since v1');
+    const line = t.$('change-list').querySelector('.change-row');
+    assert.equal(line.querySelector('.mark').textContent, '＋');
+    assert.equal(line.querySelector('.mark').getAttribute('aria-hidden'), 'true');
+    assert.equal(
+      line.querySelector('.text').visibleText,
+      'Folder General › P-Account Number added to Business documents',
+    );
+    assert.equal(line.querySelector('.text strong .token').textContent, 'Account Number');
+    const link = t.find(line, 'Folders');
+    assert.equal(link.getAttribute('aria-label'), 'Show P-Account Number in Folders');
+    await t.press(link);
+    assert.equal(t.$('step-2').hidden, false);
+    assert.equal(t.document.activeElement.dataset.focusKey, 'node:general:folder_1');
+    // A removed folder links to its Undo; a destination change links to its card.
+    const r = await boot();
+    await r.open();
+    await r.step(2);
+    await r.select('General');
+    await r.press(r.find(r.$('folder-menu-list'), 'Remove folder'));
+    await r.change(r.labelled(r.$('step-1'), 'Name'), 'Client files');
+    await r.step(3);
+    const rows = r.$('change-list').querySelectorAll('.change-row');
+    assert.deepEqual(
+      rows.map((row) => row.querySelector('.mark').textContent),
+      ['◆', '−'],
+      'Destinations first, then folders',
+    );
+    assert.equal(
+      rows[1].querySelector('.text').visibleText,
+      'Folder General removed from Client files. Existing General folders stay in SharePoint.',
+    );
+    await r.press(r.find(rows[1], 'Folders'));
+    assert.equal(r.document.activeElement.dataset.focusKey, 'undo:general:general_docs');
+    await r.step(3);
+    await r.press(r.find(r.$('change-list').querySelectorAll('.change-row')[0], 'Destinations'));
+    assert.equal(r.$('step-1').hidden, false);
+    assert.equal(r.document.activeElement.dataset.focusKey, 'dest:general:name');
+  }
+  {
+    // Publishing: the three consequences, the re-run box with generated text, Starts, the
+    // paused warning, and Publish v2 and re-run, which returns to the overview.
+    const t = await boot({ runtime: { Enabled: false, ProcessRecordUpdates: true } });
+    await t.open();
+    await t.step(2);
+    await t.select('General');
+    await t.press(t.$('add-subfolder'));
+    t.$('folder-name').value = 'Projects';
+    t.$('folder-name').oninput();
+    await t.flush();
+    await t.step(3);
+    assert.equal(t.$('publishing-title').textContent, 'Publishing v2');
+    assert.deepEqual(
+      t
+        .$('consequences')
+        .querySelectorAll('li')
+        .map((li) => li.visibleText),
+      [
+        'New Account records get v2 folders from now on.',
+        'Changed records are updated, because “Update folders when records change” is on.',
+        'About 1,240 existing Account records keep their v1 folders until they are re-run. Folders are never removed.',
+      ],
+    );
+    assert.deepEqual(
+      t
+        .$('consequences')
+        .querySelectorAll('li')
+        .map((li) => li.querySelector('.dot').dataset.tone),
+      ['ok', 'ok', 'pending'],
+    );
+    assert.equal(
+      t.$('consequences').querySelectorAll('li')[0].querySelector('strong').textContent,
+      'New Account records',
+    );
+    assert.equal(t.$('publish-rerun').checked, true);
+    assert.equal(
+      t.$('publish-rerun-desc').textContent,
+      'Adds Projects folders to existing accounts. Progress shows in Monitor.',
+    );
+    assert.equal(t.$('publish-paused').hidden, false);
+    assert.equal(
+      t.$('publish-paused').textContent,
+      "Automation is paused, so no folders are created until it's on.",
+    );
+    assert.equal(t.$('publish').hidden, false);
+    assert.equal(t.$('step-next').hidden, true);
+    assert.equal(t.$('publish').textContent, 'Publish v2 and re-run');
+    t.$('publish-rerun').checked = false;
+    t.$('publish-rerun').onchange();
+    assert.equal(t.$('publish').textContent, 'Publish v2');
+    t.$('publish-rerun').checked = true;
+    t.$('publish-rerun').onchange();
+    await t.press(t.$('publish'));
+    assert.equal(
+      t.document.querySelectorAll('.confirm').length,
+      0,
+      'This page is the confirmation',
+    );
+    const order = t.sent
+      .map(([a, b]) => b?.Command || a)
+      .filter((x) => ['asx_PublishTemplate', 'StartTemplateRun'].includes(x));
+    assert.deepEqual(order, ['asx_PublishTemplate', 'StartTemplateRun']);
+    assert.deepEqual(t.last('asx_PublishTemplate'), { RevisionId: 'rev-2', RowVersion: '4' });
+    assert.equal(t.$('template-overview').hidden, false);
+    assert.equal(t.$('template-editor').hidden, true);
+    assert.equal(t.$('fb-templates').visibleText.startsWith('Published v2. Re-run started.'), true);
+    assert.equal(t.document.activeElement, t.$('overview-title'));
+    await t.press(t.find(t.$('fb-templates'), 'Follow it in Monitor →'));
+    assert.equal(t.sent.filter(([k]) => k === 'navigate').at(-1)[1].data, 'monitor-' + BUILD);
+    // Changed records are not updated when record updates are off; the line goes when automation
+    // cannot be read.
+    const off = await boot({ runtime: { ProcessRecordUpdates: false } });
+    await off.open();
+    await off.change(off.labelled(off.$('step-1'), 'Name'), 'Client files');
+    await off.step(3);
+    assert.equal(
+      off.$('consequences').querySelectorAll('li')[1].visibleText,
+      'Changed records are not updated, because “Update folders when records change” is off.',
+    );
+    assert.equal(off.$('publish-paused').hidden, true);
+  }
+  {
+    // Starts Later writes the start date after publishing and turns the re-run off with its reason.
+    const t = await boot();
+    await t.open();
+    await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files');
+    await t.flush();
+    await t.step(3);
+    // No folder added: the re-run text says it applies the changes.
+    assert.equal(
+      t.$('publish-rerun-desc').textContent,
+      'Applies these changes to existing accounts. Progress shows in Monitor.',
+    );
+    assert.equal(t.$('publish-starts').value, 'now');
+    assert.equal(t.$('publish-start-label').hidden, true);
+    await t.change(t.$('publish-starts'), 'later');
+    assert.equal(t.$('publish-start-label').hidden, false);
+    assert.equal(t.$('publish-start').hidden, false);
+    assert.equal(t.$('publish-rerun').checked, false);
+    assert.equal(t.$('publish-rerun').getAttribute('aria-disabled'), 'true');
+    assert.equal(
+      t.document.getElementById(
+        t.$('publish-rerun').getAttribute('aria-describedby').split(' ').at(-1),
+      ).textContent,
+      'Re-run after the template starts, from Re-run for existing records.',
+    );
+    assert.equal(t.$('publish').textContent, 'Publish v2');
+    // A click on the blocked box does not tick it.
+    const click = new FakeEvent('click');
+    t.$('publish-rerun').dispatchEvent(click);
+    assert.equal(click.defaultPrevented, true);
+    t.$('publish-start').value = '2026-12-01T09:00';
+    t.$('publish-start').onchange();
+    assert.match(t.$('publish-start-label').textContent, /^Start/);
+    await t.press(t.$('publish'));
+    const update = t.sent.filter(([k]) => k === 'update').at(-1);
+    assert.equal(update[1], 'asx_template');
+    assert.deepEqual(Object.keys(update[2]), ['asx_startsutc']);
+    assert.equal(update[2].asx_startsutc, new Date('2026-12-01T09:00').toISOString());
+    assert.equal(t.sent.filter(([, b]) => b?.Command === 'StartTemplateRun').length, 0);
+    assert.match(t.$('fb-templates').visibleText, /^Published v2\.$/);
+    // A stored start ahead opens on Later with its time; Now clears it, before the re-run.
+    const later = '2027-01-04T08:30:00.000Z';
+    const s = await boot({
+      templates: [
+        {
+          asx_templateid: TEMPLATE,
+          asx_name: 'Account onboarding',
+          asx_table: 'account',
+          _asx_publishedrevisionid_value: 'rev-1',
+          asx_disabled: false,
+          asx_startsutc: later,
+        },
+      ],
+    });
+    await s.open();
+    await s.change(s.labelled(s.$('step-1'), 'Name'), 'Client files');
+    await s.step(3);
+    assert.equal(s.$('publish-starts').value, 'later');
+    assert.equal(new Date(s.$('publish-start').value).toISOString(), later);
+    assert.equal(s.$('publish-rerun').checked, false);
+    await s.change(s.$('publish-starts'), 'now');
+    assert.equal(s.$('publish-rerun').checked, true, 'The box comes back as it was');
+    assert.equal(s.$('publish-rerun').hasAttribute('aria-disabled'), false);
+    await s.press(s.$('publish'));
+    const steps = s.sent
+      .map(([a, b, c]) => (a === 'update' ? 'update:' + c.asx_startsutc : b?.Command || a))
+      .filter((x) => /^(asx_PublishTemplate|StartTemplateRun|update:)/.test(x));
+    assert.deepEqual(steps, ['asx_PublishTemplate', 'update:null', 'StartTemplateRun']);
+    // Later without a date publishes nothing and says what is missing.
+    const u = await boot();
+    await u.open();
+    await u.change(u.labelled(u.$('step-1'), 'Name'), 'Client files');
+    await u.step(3);
+    await u.change(u.$('publish-starts'), 'later');
+    await u.press(u.$('publish'));
+    assert.equal(u.last('asx_PublishTemplate'), undefined);
+    assert.equal(u.$('fb-editor').textContent, 'Pick a date');
+    assert.equal(u.$('step-3').hidden, false);
+  }
+  {
+    // A refused re-run after a successful publish lands on the overview with the error and the
+    // existing action.
+    const t = await boot({
+      handle: (api, body) =>
+        body?.Command === 'StartTemplateRun'
+          ? new Error('Account is not enabled for Documents.')
+          : null,
+    });
+    await t.open();
+    await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files');
+    await t.flush();
+    await t.step(3);
+    await t.press(t.$('publish'));
+    assert.equal(t.$('template-overview').hidden, false);
+    assert.equal(t.$('fb-templates').getAttribute('role'), 'alert');
+    assert.match(
+      t.$('fb-templates').visibleText,
+      /^Published v2\. The re-run didn't start: Account is not enabled for Documents\./,
+    );
+    assert.ok(t.find(t.$('fb-templates'), 'Re-run existing records…'));
+    assert.equal(t.$('step-3').hidden, true, 'Not left on the publish step to publish again');
+    await t.press(t.find(t.$('fb-templates'), 'Re-run existing records…'));
+    assert.equal(t.$('rerun-panel').hidden, false);
+    // A refused publish stays on the step with the server's reason, and starts nothing.
+    const p = await boot({
+      handle: (api) =>
+        api === 'asx_PublishTemplate'
+          ? new Error('Draft changed; reload before publishing.')
+          : null,
+    });
+    await p.open();
+    await p.change(p.labelled(p.$('step-1'), 'Name'), 'Client files');
+    await p.step(3);
+    await p.press(p.$('publish'));
+    assert.equal(p.$('step-3').hidden, false);
+    assert.equal(p.$('fb-editor').textContent, 'Draft changed; reload before publishing.');
+    assert.equal(p.sent.filter(([, b]) => b?.Command === 'StartTemplateRun').length, 0);
+    assert.equal(p.sent.filter(([k]) => k === 'update').length, 0);
+  }
+  {
+    // Without the Operator role: no count in the third line and the re-run box is disabled.
+    const t = await boot({ privileges: { prvCreateasx_operatorcommand: false } });
+    await t.open();
+    await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files');
+    await t.flush();
+    await t.step(3);
+    assert.equal(
+      t.$('consequences').querySelectorAll('li')[2].visibleText,
+      'Existing Account records keep their v1 folders until they are re-run. Folders are never removed.',
+    );
+    assert.equal(t.$('publish-rerun').checked, false);
+    assert.equal(t.$('publish-rerun').getAttribute('aria-disabled'), 'true');
+    assert.equal(t.$('publish-rerun-reason').textContent, 'Needs the Documents Operator role.');
+    assert.equal(t.$('publish').textContent, 'Publish v2');
+    assert.equal(t.sent.filter(([, b]) => b?.Command === 'CountRecords').length, 0);
+    // A refused count reads as no count.
+    const n = await boot({
+      handle: (api, body) =>
+        body?.Command === 'CountRecords'
+          ? new Error('Account is not enabled for Documents.')
+          : null,
+    });
+    await n.open();
+    await n.change(n.labelled(n.$('step-1'), 'Name'), 'Client files');
+    await n.step(3);
+    assert.match(
+      n.$('consequences').querySelectorAll('li')[2].visibleText,
+      /^Existing Account records keep their v1 folders/,
+    );
+    assert.equal(n.$('publish-rerun').checked, true);
+  }
+  {
+    // Narrow screens: the templates list is also offered as a select above the overview.
+    const t = await boot({
+      templates: [
+        {
+          asx_templateid: TEMPLATE,
+          asx_name: 'Account onboarding',
+          asx_table: 'account',
+          _asx_publishedrevisionid_value: 'rev-1',
+          asx_disabled: false,
+        },
+        {
+          asx_templateid: OTHER,
+          asx_name: 'Contracts',
+          asx_table: 'account',
+          _asx_publishedrevisionid_value: null,
+          asx_disabled: false,
+        },
+      ],
+    });
+    const picker = t.$('template-picker');
+    assert.equal(picker.closest('.narrow-only').children[0].textContent, 'Template');
+    assert.deepEqual(
+      picker.querySelectorAll('option').map((o) => o.textContent),
+      ['Account onboarding', 'Contracts'],
+    );
+    assert.equal(picker.value, TEMPLATE);
+    await t.change(picker, OTHER);
+    assert.equal(t.$('overview-title').textContent, 'Contracts');
+    assert.equal(picker.value, OTHER);
+    await t.change(picker, TEMPLATE);
+    assert.equal(t.$('overview-title').textContent, 'Account onboarding');
+  }
+  {
+    // changeText for every kind the change list shows, read against the open draft
+    // (destination "Business documents", key "general").
+    const t = await boot();
+    await t.open();
+    const { changeText, state } = t.window.AsxdAdmin;
+    const library = state().sections[0].LibraryId;
+    const text = (entry) => changeText(entry).visibleText;
+    const folder = { destination: 'general', key: 'general_docs', name: 'General' };
+    const cases = [
+      [{ ...folder, kind: 'added' }, 'Folder General added to Business documents'],
+      [
+        { ...folder, kind: 'removed' },
+        'Folder General removed from Business documents. Existing General folders stay in SharePoint.',
+      ],
+      [
+        { ...folder, kind: 'renamed', before: 'Docs', after: 'General' },
+        'Folder Docs renamed to General in Business documents',
+      ],
+      [
+        { ...folder, kind: 'moved', before: 'other', after: 'root' },
+        'Folder General moved under Account Name in Business documents',
+      ],
+      [{ ...folder, kind: 'condition' }, 'General now always created'],
+      [
+        { kind: 'added', key: 'general', name: 'Business documents' },
+        'Destination Business documents added',
+      ],
+      [
+        { kind: 'removed', key: 'general', name: 'Business documents' },
+        'Destination Business documents removed. Its folders stay in SharePoint.',
+      ],
+      [
+        {
+          kind: 'renamed',
+          key: 'general',
+          name: 'Business documents',
+          before: 'Client files',
+          after: 'Business documents',
+        },
+        'Destination Client files renamed to Business documents',
+      ],
+      [
+        {
+          kind: 'library',
+          key: 'general',
+          name: 'Business documents',
+          before: 'lib-old',
+          after: library,
+        },
+        'Destination Business documents now uses Delivery › General',
+      ],
+    ];
+    for (const [entry, expected] of cases) assert.equal(text(entry), expected, entry.kind);
+    // With a condition on the draft folder, the condition line reads the rule sentence.
+    state().sections[0].Folders.find((f) => f.Key === 'general_docs').Condition = {
+      All: true,
+      Groups: [],
+      Conditions: [{ field: 'root.statecode', Operator: 'Equal', Literal: '0', right: null }],
+    };
+    assert.equal(
+      text({ ...folder, kind: 'condition' }),
+      'General now created only when Status is Active',
+    );
+    assert.ok(
+      changeText({ ...folder, kind: 'renamed', before: 'Docs', after: 'General' }).querySelectorAll(
+        'strong',
+      ).length >= 2,
+    );
+  }
+  {
+    // First publish (no published revision): no change list, and the third consequence says
+    // existing records get folders when re-run.
+    const t = await boot({
+      templates: [
+        {
+          asx_templateid: TEMPLATE,
+          asx_name: 'Account onboarding',
+          asx_table: 'account',
+          _asx_publishedrevisionid_value: null,
+          asx_disabled: false,
+        },
+      ],
+      loaded: { RevisionId: 'rev-1', RowVersion: '3', Status: 'Draft', Version: 1, Draft: draft() },
+    });
+    await t.open();
+    await t.step(3);
+    assert.equal(t.$('review-title').hidden, true, 'No change list heading');
+    assert.equal(t.$('change-list').hidden, true, 'No change list');
+    assert.equal(t.$('publishing-title').textContent, 'Publishing v1');
+    assert.equal(
+      t.$('consequences').querySelectorAll('li')[2].visibleText,
+      'About 1,240 existing Account records get folders when they are re-run.',
+    );
+    assert.equal(t.$('publish').textContent, 'Publish v1 and re-run');
+  }
+  {
+    // A published version that could not be read is not a first publish: the server's message
+    // takes the change list's place, Publish stays available, and existing records keep v1.
+    let failing = false;
+    const t = await boot({
+      rows: (table) =>
+        table === 'asx_revision'
+          ? [
+              {
+                asx_revisionid: 'rev-2',
+                asx_version: 2,
+                asx_status: 'Draft',
+                _asx_templateid_value: TEMPLATE,
+              },
+              {
+                asx_revisionid: 'rev-1',
+                asx_version: 1,
+                asx_status: 'Published',
+                _asx_templateid_value: TEMPLATE,
+              },
+            ]
+          : null,
+      handle: (api, body) => {
+        if (api !== 'asx_LoadDraft') return null;
+        if (body.RevisionId === 'rev-2')
+          return {
+            RevisionId: 'rev-2',
+            RowVersion: '4',
+            Status: 'Draft',
+            Version: 2,
+            Draft: draft(),
+          };
+        return failing ? new Error('The published version could not be read.') : null;
+      },
+    });
+    await t.overview();
+    failing = true;
+    await t.press(t.$('overview-edit'));
+    await t.step(3);
+    assert.equal(t.$('review-title').hidden, false);
+    assert.equal(t.$('review-title').textContent, 'Changes since v1');
+    assert.equal(t.$('change-list').textContent, 'The published version could not be read.');
+    assert.match(
+      t.$('consequences').querySelectorAll('li')[2].visibleText,
+      /keep their v1 folders until they are re-run/,
+    );
+    assert.equal(t.$('publish').hasAttribute('aria-disabled'), false);
+    assert.equal(t.$('publish').textContent, 'Publish v2 and re-run');
+  }
+  {
+    // Result for: with no test record a Choose record… button adds one; its preview of the
+    // draft shows one card per destination, the rows indented by depth.
+    const t = await boot();
+    await t.open();
+    await t.step(3);
+    assert.equal(t.$('result-record').hidden, true);
+    assert.equal(t.$('result-choose').textContent.trim(), 'Choose record…');
+    await t.press(t.$('result-choose'));
+    assert.equal(t.$('result-record').hidden, false);
+    assert.equal(t.$('result-choose').hidden, true);
+    assert.deepEqual(
+      t
+        .$('result-record')
+        .querySelectorAll('option')
+        .map((o) => o.textContent),
+      ['Contoso Ltd'],
+    );
+    const request = t.last('asx_PreviewTemplate');
+    assert.equal(request.RevisionId, '');
+    assert.equal(request.RecordId, RECORD);
+    assert.equal(t.$('preview-status').textContent, 'Preview updated: 1 destination, 2 folders.');
+    const card = t.$('previewTrees').querySelector('.preview-card');
+    assert.equal(card.querySelector('.eyebrow').textContent, 'Business documents · Delivery');
+    const nodes = card.querySelectorAll('.preview-node');
+    assert.deepEqual(
+      nodes.map((n) => [n.visibleText, n.style.paddingLeft]),
+      [
+        ['Contoso Ltd', '0px'],
+        ['General', '18px'],
+      ],
+    );
+    // The test record is the same one step 2 shows.
+    await t.step(2);
+    assert.equal(t.$('test-record-list').querySelectorAll('.test-record').length, 1);
+  }
   console.log(
-    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step; Task 6 fix round 1: a new template unnamed until named and not saved mid-name, saving before switching or closing, a late save answer kept out of a new template, an edit during Publish kept and saved next, a published read retried and its failure, a failed policy read, trimmed destination names, problems not announced twice, and Save draft refusing a nameless template; Task 7: the folder tree with destination pills, rules, New, edited and Removed with Undo (aliases mapped, a removed parent first), ＋ Folder and ＋ Subfolder with their bound, the folder panel and its ⋯ menu, ＋ Field inserting at the caret, Create this folder, the condition sentence with Another field…, debounced test-record previews with Created or Skipped and the failing value, their bound, Out of date and failures, and links to Sites & access that save first; Task 7 fix round 1: conditions kept across Always and back, Undo at the folder bound counting removed parents, and ＋ Subfolder at the folder depth. Fake DOM; browser QA separate.',
+    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step; Task 6 fix round 1: a new template unnamed until named and not saved mid-name, saving before switching or closing, a late save answer kept out of a new template, an edit during Publish kept and saved next, a published read retried and its failure, a failed policy read, trimmed destination names, problems not announced twice, and Save draft refusing a nameless template; Task 7: the folder tree with destination pills, rules, New, edited and Removed with Undo (aliases mapped, a removed parent first), ＋ Folder and ＋ Subfolder with their bound, the folder panel and its ⋯ menu, ＋ Field inserting at the caret, Create this folder, the condition sentence with Another field…, debounced test-record previews with Created or Skipped and the failing value, their bound, Out of date and failures, and links to Sites & access that save first; Task 7 fix round 1: conditions kept across Always and back, Undo at the folder bound counting removed parents, and ＋ Subfolder at the folder depth; Task 8: Review and publish (the change list with every kind in words and links to its step, Result for with Choose record…, the consequences with the record count, record updates and the first-publish wording, a published version that could not be read, the re-run box and its role and Later reasons, Starts with a stored start, the paused warning, Publish and re-run ending on the overview, a refused publish, a refused re-run after a publish, edits made during Publish saved or kept) and the narrow-screen Template select. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

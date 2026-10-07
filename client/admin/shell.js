@@ -3,7 +3,7 @@
 // address), deep links between pages, the unsaved-changes prompt, and the helpers every page
 // uses through window.AsxdUi. Text is only ever set with textContent.
 (() => {
-  const BUILD = 'ui20261006nav1';
+  const BUILD = 'ui20261007design1';
   const TABS = ['templates', 'access', 'monitor', 'settings'];
   const LEGACY = {
     runtime: 'settings',
@@ -72,7 +72,7 @@
     for (const key of PARAMS) if (params.get(key)) link[key] = params.get(key);
     return link;
   }
-  // '?data=monitor-ui20261006nav1' → 'monitor'.
+  // '?data=monitor-ui20261007design1' → 'monitor'.
   const fromData = (search) =>
     known((new URLSearchParams(String(search || '')).get('data') || '').split('-')[0]);
   function storedLink() {
@@ -349,7 +349,7 @@
     if (!isNaN(date)) node.setAttribute('datetime', date.toISOString().replace(/\.\d{3}Z$/, 'Z'));
     return node;
   }
-  // The only place keys and IDs appear outside Monitor › Advanced. Copy is a
+  // Where a key or ID is shown, it sits in this disclosure with its Copy button. Copy is a
   // symbol-like button, so its aria-label names what it copies.
   function details(value, label = 'Details', object = null) {
     const box = el('details', null, 'details');

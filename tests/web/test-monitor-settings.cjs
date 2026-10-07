@@ -352,6 +352,25 @@ async function boot({
     await m.press(table(m).querySelector('th[aria-sort] button'));
     assert.equal(table(m).querySelector('th[aria-sort]').getAttribute('aria-sort'), 'ascending');
     assert.equal(trs(m)[0].querySelector('.type').textContent, 'Blocked record');
+    // A retrying job without a next attempt time shows only its attempt.
+    const unscheduled = await boot({
+      summary: { RetryingJobs: 1 },
+      lists: {
+        RetryingJobs: [
+          row({
+            Key: 'folderjob:u',
+            Kind: 'FolderJob',
+            Record: null,
+            Title: 'Folder job · Contoso',
+            Attempt: 2,
+            NextAttemptUtc: null,
+            SinceUtc: '2026-10-06T10:31:00Z',
+            Actions: ['Retry', 'Cancel'],
+          }),
+        ],
+      },
+    });
+    assert.equal(trs(unscheduled)[0].querySelector('.sub').textContent, 'Attempt 2');
   }
   {
     // A filter shows one list; Not captured keeps its checkboxes and Re-run selected (n).
@@ -1036,7 +1055,7 @@ async function boot({
       /SharePoint has a library Project documents at \/sites\/x\/Project documents, created .*\. It matches this request\./,
     );
     const use = primaryOf(trs(found)[0]);
-    assert.equal(use.textContent, 'Use the library that was created');
+    assert.equal(use.textContent, 'Use the library');
     assert.equal(use.className, 'primary');
     await found.press(use);
     assert.deepEqual(found.sent.at(-1), [

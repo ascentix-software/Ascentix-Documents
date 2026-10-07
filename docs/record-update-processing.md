@@ -14,9 +14,9 @@ Load the runtime profile, change the setting, and save. Saving uses the runtime 
 
 The administrator saving this setting needs Dataverse privileges to read the relevant plug-in metadata and update plug-in steps. The API uses the caller's service and does not elevate privileges or grant a role. Runtime permission alone does not grant step-management privileges.
 
-The solution includes the runtime Boolean column used by the plug-in and admin resources. Fresh installations leave update monitoring off. **Save settings** in Settings › Automation settings creates, corrects, and verifies the event steps for every enabled table; Settings › Change tracking shows each table Ready when its steps are in place, and **Repair all** (or **Repair** on a row) fixes one that is not. See the [upgrade notes](upgrade-0.1.0.4.md).
+The solution includes the runtime Boolean column used by the plug-in and admin resources. Fresh installations leave update monitoring off. **Save settings** in Settings › Automation settings creates, corrects, and verifies the event steps for every enabled table; the **Tables** card in Settings shows each table Ready when its steps are in place, and **Repair all** (or **Repair** on a row) fixes one that is not. See the [upgrade notes](upgrade-0.1.0.4.md).
 
-Turning updates off does not cancel already queued work. Turning them on does not replay updates missed while monitoring was off. Use a reviewed re-run for catch-up: Folder templates › **Re-run for existing records…**, or **Re-run** in Monitor. Creation processing remains available, subject to its own installed/enabled Create steps and the worker being enabled.
+Turning updates off does not cancel already queued work. Turning them on does not replay updates missed while monitoring was off. Use a reviewed re-run for catch-up: Folder templates › **⋯** › **Re-run for existing records…** (or the re-run offered when you publish), or **Re-run** in Monitor. Creation processing remains available, subject to its own installed/enabled Create steps and the worker being enabled.
 
 Enable monitoring during a quiet interval and verify a disposable write before depending on it. Registration changes can take time to propagate; there is no guaranteed propagation interval.
 

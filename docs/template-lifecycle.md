@@ -2,7 +2,7 @@
 
 Authors can deactivate/reactivate a template, set optional start and end dates, or delete it including published versions. These are ordinary Dataverse Update/Delete operations using the author's table privileges, not another approval API.
 
-The admin page offers Active, Start, End, Save availability and Delete template. Dates are entered in the browser's local time and stored as UTC instants. Start is inclusive; end is exclusive. End must be later than start. Empty dates mean no time restriction. Publication does not override availability.
+The template's overview offers the **Schedule** panel (On or Off, Start and End, **Save schedule**) and **Delete template** in its **⋯** menu. Publishing happens on the editor's step 3, **Review and publish**: it can also re-run existing records once published (with the Documents Operator role) and set when the version starts (**Starts**: Now, or Later… with a start time). A later start turns the re-run off, because a re-run of a template that has not started stops at once; re-run it from **Re-run for existing records…** once it starts. Dates are entered in the browser's local time and stored as UTC instants. Start is inclusive; end is exclusive. End must be later than start. Empty dates mean no time restriction. Publication does not override availability.
 
 Deleting removes the template, its revisions and their owned configuration through Dataverse cascading relationships. It does not remove SharePoint folders, documents, permissions, native document locations or historical worker receipts. The deletion confirmation states this clearly. See Microsoft's [relationship behavior documentation](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/configure-entity-relationship-cascading-behavior).
 

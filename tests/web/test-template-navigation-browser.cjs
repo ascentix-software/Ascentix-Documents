@@ -173,6 +173,8 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
           fullPage: true,
         });
       }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.emulateMedia({ colorScheme: 'light' });
     // Adding a destination saves by itself after a pause; Close then returns to the overview
     // without asking.
     await page.getByRole('button', { name: '＋ Add destination' }).click();

@@ -99,6 +99,7 @@
   const accountInfo = {
     LogicalName: 'account',
     DisplayName: label('Account'),
+    DisplayCollectionName: label('Accounts'),
     EntitySetName: 'accounts',
     PrimaryIdAttribute: 'accountid',
     PrimaryNameAttribute: 'name',
@@ -360,7 +361,8 @@
       case 'asx_template':
         return template;
       case 'asx_revision':
-        return { asx_revisionid: key, asx_version: 1 };
+        // A saved draft is the next version after the published v1.
+        return { asx_revisionid: key, asx_version: key === IDS.revision ? 1 : 2 };
       case 'asx_library':
         return library;
       case 'asx_site':

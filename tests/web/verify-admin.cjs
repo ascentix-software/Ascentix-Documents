@@ -119,7 +119,6 @@ const KEPT = [
   'help-automation-settings',
   'help-record-updates',
   'help-stop-tracking',
-  'help-publish',
   'help-include-root',
   'help-destinations',
 ];

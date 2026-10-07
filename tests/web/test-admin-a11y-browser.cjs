@@ -109,6 +109,15 @@ async function openTemplate(page) {
 }
 // axe-core (WCAG 2.2 AA), page errors and the computed checks for the page as it is shown.
 async function check(page, label) {
+  // A panel that is still sliding in is part transparent; contrast is read once it has landed.
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity)
+        .map((a) => a.finished),
+    ),
+  );
   if (!(await page.evaluate(() => !!window.axe))) await page.addScriptTag({ path: axe });
   const result = await page.evaluate(async () =>
     (
@@ -160,6 +169,19 @@ async function check(page, label) {
           await page.getByRole('dialog', { name: 'General' }).waitFor();
           await settle(page);
         }
+        // Monitor: with the Check a record panel open from Tools.
+        if (tab === 'monitor') {
+          await page.locator('#monitor-tools').click();
+          await page.getByRole('menuitem', { name: 'Check a record' }).click();
+          await page.getByRole('dialog', { name: 'Check a record' }).waitFor();
+          await settle(page);
+        }
+        // Settings: with a change, so the save bar shows.
+        if (tab === 'settings') {
+          await page.locator('#record-updates').click();
+          await page.locator('#settings-footer').waitFor();
+          await settle(page);
+        }
         await check(page, tab + ' ' + scheme);
         // Folder templates step 2: a folder with a condition, a test record and the ＋ Field
         // popover open.
@@ -176,6 +198,17 @@ async function check(page, label) {
           await page.locator('#field-popover').waitFor();
           await settle(page);
           await check(page, 'templates-folders ' + scheme);
+          // Step 3: a new folder in the change list, the test record's result, the Publishing
+          // card with its re-run box.
+          await page.keyboard.press('Escape');
+          await page.locator('#add-subfolder').click();
+          await page.locator('#folder-name').fill('Projects');
+          await page.locator('#step-tab-3').click();
+          await page.locator('#change-list .change-row').first().waitFor();
+          await page.locator('#consequences li').nth(2).waitFor();
+          await page.locator('#previewTrees .preview-card').waitFor();
+          await settle(page);
+          await check(page, 'templates-review ' + scheme);
         }
         await context.close();
       }
@@ -299,6 +332,90 @@ async function check(page, label) {
     await monitor.keyboard.press('Escape');
     assert.equal(await monitor.locator('#check-panel').isHidden(), true);
     assert.equal(await monitor.evaluate(() => document.activeElement.id), 'monitor-tools');
+    // The access drawer: Escape in its confirmation keeps it; Escape again closes it and focus
+    // returns to the library's row.
+    const access = await open(context, 'access');
+    await access
+      .locator('#ad-libraries')
+      .getByRole('button', { name: 'General', exact: true })
+      .click();
+    await access.getByRole('dialog', { name: 'General' }).waitFor();
+    await access.locator('#ad-library-menu').click();
+    await access.getByRole('menuitem', { name: 'Remove library' }).click();
+    await access.keyboard.press('Escape');
+    assert.equal(await access.locator('#ad-drawer').isVisible(), true, 'Escape kept the drawer');
+    await access.keyboard.press('Escape');
+    assert.equal(await access.locator('#ad-drawer').isHidden(), true);
+    assert.match(await access.evaluate(() => document.activeElement.dataset.focusKey), /^library:/);
+    // Below 1000px the page area stacks: the templates list is a select, step 2's panel sits
+    // under the tree, and the access drawer takes the full width.
+    const narrow = await browser.newContext({ viewport: { width: 900, height: 800 } });
+    const small = await open(narrow, 'templates');
+    await small.locator('#overview-title', { hasText: 'Account onboarding' }).waitFor();
+    assert.equal(await small.locator('#template-picker').isVisible(), true);
+    assert.equal(await small.locator('#templates-list').isHidden(), true);
+    await openTemplate(small);
+    await small.locator('#step-tab-2').click();
+    await small
+      .locator('#folder-tree')
+      .getByRole('button', { name: 'General', exact: true })
+      .click();
+    const tree = await small.locator('#folder-tree').boundingBox();
+    const side = await small.locator('#folder-panel').boundingBox();
+    assert(side.y >= tree.y + tree.height, 'The folder panel is under the tree');
+    const sites = await open(narrow, 'access');
+    await sites
+      .locator('#ad-libraries')
+      .getByRole('button', { name: 'General', exact: true })
+      .click();
+    await sites.getByRole('dialog', { name: 'General' }).waitFor();
+    await sites.waitForTimeout(300);
+    assert.equal((await sites.locator('#ad-drawer').boundingBox()).width, 900);
+    await narrow.close();
+    // Every page at 1440, 1000, 800 and 400 in light and dark: nothing scrolls sideways, and
+    // a Monitor row's ⋯ menu opens without being cut off.
+    for (const scheme of ['light', 'dark'])
+      for (const width of [1440, 1000, 800, 400]) {
+        const sized = await browser.newContext({
+          viewport: { width, height: 900 },
+          colorScheme: scheme,
+        });
+        for (const tab of ['templates', 'access', 'monitor', 'settings']) {
+          const page = await open(sized, tab);
+          const wide = () => page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
+          assert.equal(await wide(), false, tab + ' overflow ' + width + ' ' + scheme);
+          if (tab === 'templates') {
+            await openTemplate(page);
+            for (const n of [2, 3]) {
+              await page.locator('#step-tab-' + n).click();
+              await settle(page);
+              assert.equal(await wide(), false, 'step ' + n + ' overflow ' + width + ' ' + scheme);
+            }
+          }
+          if (tab === 'monitor') {
+            await page
+              .getByRole('button', { name: /^More actions for/ })
+              .last()
+              .click();
+            const menu = page.locator('#problem-rows .menu:not([hidden])');
+            const box = await menu.boundingBox();
+            const shown = await menu.evaluate((m) => {
+              const r = m.getBoundingClientRect();
+              const hit = document.elementFromPoint(r.left + r.width / 2, r.bottom - 4);
+              return m.contains(hit);
+            });
+            assert(shown && box.x >= 0 && box.x + box.width <= width, 'Menu shown ' + width);
+            assert.equal(await wide(), false, 'monitor menu overflow ' + width + ' ' + scheme);
+          }
+          await page.screenshot({
+            path: path.join(shots, 'responsive-' + tab + '-' + width + '-' + scheme + '.png'),
+            fullPage: true,
+          });
+          assert.deepEqual(page.errors, [], tab + ' ' + width + ' page errors');
+          await page.close();
+        }
+        await sized.close();
+      }
     for (const state of ['Checking', 'Found', 'NotFound', 'Ambiguous']) {
       const shown = await open(context, 'monitor', 'window.__recovery = ' + JSON.stringify(state));
       await shown.screenshot({
@@ -307,7 +424,7 @@ async function check(page, label) {
       });
     }
     console.log(
-      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel, the editor and step 2 with a condition, a test record and the ＋ Field popover; Sites & access with its access drawer open), computed borders, text and targets, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel), screenshots. Mocked Dataverse.',
+      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel, the editor, step 2 with a condition, a test record and the ＋ Field popover, and step 3 Review and publish; Sites & access with its access drawer open; Monitor with Check a record open; Settings with its save bar), computed borders, text and targets, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the steps, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel, Escape in the access drawer confirmation and then the drawer), below 1000px (the templates select, the folder panel under the tree, the full-width drawer), and every page and step at 1440/1000/800/400 in light and dark without sideways scrolling and with a whole Monitor row menu, screenshots. Mocked Dataverse.',
     );
   } finally {
     await browser.close();

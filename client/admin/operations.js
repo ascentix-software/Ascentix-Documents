@@ -61,7 +61,7 @@
     Pause: 'Pause',
     Resume: 'Resume',
     CancelRun: 'Cancel re-run',
-    UseLibrary: 'Use the library that was created',
+    UseLibrary: 'Use the library',
     CreateAgain: 'Create it again',
     CheckAgain: 'Check again',
     Rerun: 'Re-run',
@@ -641,6 +641,11 @@
       openInNewWindow: true,
     });
 
+  // A cell named for its column, so narrow screens can lay a row out as a card.
+  const classed = (td, name) => {
+    td.className = name;
+    return td;
+  };
   // One table row: type, item, problem, since, then the primary action and the ⋯ menu. Under the
   // Not captured filter a row the server can re-run starts with its checkbox.
   function renderRow(list, row) {
@@ -664,15 +669,15 @@
           updateSelected();
         };
       }
-      tr.append(cell(box));
+      tr.append(classed(cell(box), 'select'));
     }
     const type = el('span', PROBLEMS[list].type, 'type');
     type.dataset.tone = PROBLEMS[list].tone;
     tr.append(
-      cell(type),
+      classed(cell(type), 'kind'),
       itemCell(list, row, nameId),
       problemCell(row, status),
-      cell(ui.time(row.SinceUtc)),
+      classed(cell(ui.time(row.SinceUtc)), 'since'),
       actionsCell(list, row, tr, status),
     );
     return tr;
@@ -689,9 +694,10 @@
       const title = el('strong', row.Title);
       title.id = nameId;
       td = cell(title);
-      if (list === 'RetryingJobs')
-        sub.append('Attempt ' + row.Attempt + ' · next ', ui.time(row.NextAttemptUtc));
-      else sub.textContent = row.Site?.Name || row.KindLabel || '';
+      if (list === 'RetryingJobs') {
+        sub.append('Attempt ' + row.Attempt);
+        if (row.NextAttemptUtc) sub.append(' · next ', ui.time(row.NextAttemptUtc));
+      } else sub.textContent = row.Site?.Name || row.KindLabel || '';
     }
     td.append(sub);
     td.className = 'item';

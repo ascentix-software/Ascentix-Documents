@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Ascentix Documents</title>
-    <link rel="stylesheet" href="admin.css?v=ui20261006nav1" />
+    <link rel="stylesheet" href="admin.css?v=ui20261007design1" />
   </head>
   <body>
     <main class="app">
@@ -30,6 +30,9 @@
           </aside>
           <div class="templates-main">
             <p class="feedback" id="fb-templates"></p>
+            <label class="narrow-only template-picker"
+              >Template<select id="template-picker"></select
+            ></label>
             <div id="template-overview">
               <header id="overview-header" class="page-header">
                 <h1 id="overview-title" tabindex="-1">Folder templates</h1>
@@ -270,26 +273,52 @@
                 class="step-panel"
                 hidden
               >
-                <section class="pane preview-pane" aria-labelledby="preview-heading">
-                  <div class="row between">
-                    <h2 id="preview-heading" tabindex="-1">Preview</h2>
-                    <span id="preview-stale" class="badge warning" hidden>Out of date</span>
-                  </div>
-                  <div class="row wrap" data-actions>
-                    <span class="label-text">Preview record</span>
-                    <button id="chooseRecord" type="button" class="secondary">
+                <section
+                  id="review-changes"
+                  class="section-card review-card"
+                  aria-labelledby="result-label"
+                >
+                  <h2 id="review-title" tabindex="-1"></h2>
+                  <div id="change-list"></div>
+                  <div class="row result-for">
+                    <label id="result-label" for="result-record">Result for</label>
+                    <select id="result-record" hidden></select>
+                    <button id="result-choose" type="button" class="secondary" hidden>
                       Choose record…
                     </button>
-                    <span id="preview-record-name"></span>
-                    <button id="refreshPreview" type="button" class="secondary" hidden>
-                      Refresh preview
-                    </button>
                   </div>
-                  <div id="previewTrees"></div>
+                  <div id="previewTrees" class="preview-grid"></div>
                   <p id="preview-status" class="sr-only" role="status"></p>
-                  <div id="publish-actions" class="row" data-actions>
-                    <button id="publish" type="button" class="primary">Publish</button>
+                </section>
+                <section
+                  id="publishing"
+                  class="section-card publish-card"
+                  aria-labelledby="publishing-title"
+                >
+                  <h2 id="publishing-title" tabindex="-1"></h2>
+                  <ul id="consequences" class="consequences"></ul>
+                  <div class="check-panel">
+                    <input
+                      id="publish-rerun"
+                      type="checkbox"
+                      checked
+                      aria-describedby="publish-rerun-desc"
+                    />
+                    <label for="publish-rerun"
+                      ><strong>Re-run existing records after publishing</strong></label
+                    >
+                    <p id="publish-rerun-desc" class="muted"></p>
                   </div>
+                  <label
+                    >Starts<select id="publish-starts">
+                      <option value="now">Now</option>
+                      <option value="later">Later…</option>
+                    </select></label
+                  >
+                  <label id="publish-start-label" hidden
+                    >Start<input id="publish-start" type="datetime-local"
+                  /></label>
+                  <p id="publish-paused" class="warning" hidden></p>
                 </section>
               </section>
               <div id="editor-footer" class="footer-bar">
@@ -297,6 +326,7 @@
                 <span id="step-count" class="muted"></span>
                 <p class="feedback" id="fb-editor"></p>
                 <button id="step-next" type="button" class="primary"></button>
+                <button id="publish" type="button" class="primary" hidden>Publish</button>
               </div>
             </div>
           </div>
@@ -925,9 +955,9 @@
         </div>
       </section>
     </main>
-    <script src="shell.js?v=ui20261006nav1"></script>
-    <script src="admin.js?v=ui20261006nav1"></script>
-    <script src="sites-access.js?v=ui20261006nav1"></script>
-    <script src="operations.js?v=ui20261006nav1"></script>
+    <script src="shell.js?v=ui20261007design1"></script>
+    <script src="admin.js?v=ui20261007design1"></script>
+    <script src="sites-access.js?v=ui20261007design1"></script>
+    <script src="operations.js?v=ui20261007design1"></script>
   </body>
 </html>

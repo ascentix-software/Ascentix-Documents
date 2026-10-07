@@ -22,7 +22,7 @@ Application users, credentials, and connector connections are environment-specif
 2. In Power Automate, create the Dataverse application connection and SharePoint certificate HTTP connection. Enter credentials directly in the platform and bind the packaged connection references.
 3. Verify the Dataverse connection's authenticated UserId and OrganizationId against the intended worker and environment. Connection ownership or display name alone does not identify its authenticated caller.
 4. Verify the SharePoint application's site grant and a read request to the intended site. Product site approval does not grant the service principal access to SharePoint.
-5. Configure the worker identity (**Run as**) and SharePoint host names in **Settings › Automation settings**, and enable tables in Folder templates › Tables (**＋ Add table**). Keep runtime and flows disabled until setup is complete.
+5. Configure the worker identity (**Run as**) and SharePoint host names in **Settings › Automation settings**, and enable tables in Settings › Tables (**＋ Add table**). Keep runtime and flows disabled until setup is complete.
 
 Use an enabled application user for the configured worker and event-step impersonation. Role assignment remains an administrator task.
 
@@ -30,6 +30,6 @@ Use an enabled application user for the configured worker and event-step imperso
 
 Enable document management for the selected business tables. A template can use lookup columns from tables that are not enabled; the worker reads them with its Read privilege, and changes to them update folders only when that table is enabled too. Each target site requires an active native SharePoint Site registration within the configured hosts. Use Add site to validate the site, then create or register libraries and configure team access.
 
-Publish a small template. Documents registers each enabled table's event steps for the configured worker when you click **Save settings** in Settings › Automation settings or add the table with **＋ Add table** in Folder templates › Tables. Settings › Change tracking shows whether every table is Ready; **Repair all** (or **Repair** on a row) fixes one that is not. The [record-update setting](record-update-processing.md) turns the registered Update steps on or off and defaults to Off.
+Publish a small template. Documents registers each enabled table's event steps for the configured worker when you click **Save settings** in Settings › Automation settings or add the table with **＋ Add table** in Settings › Tables. The **Tables** card shows whether every table is Ready; **Repair all** (or **Repair** on a row) fixes one that is not. The [record-update setting](record-update-processing.md) turns the registered Update steps on or off and defaults to Off.
 
 Enable runtime and worker flows, then provision a disposable record and verify the resulting folders. Confirm replay reuses them and that the worker roles are sufficient. Consult [preview limitations](public-preview.md#preview-limitations) before expanding the workload.
