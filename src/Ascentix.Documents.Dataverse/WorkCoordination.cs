@@ -276,11 +276,12 @@ public static class WorkCoordination
         claim.Value.HttpOutstanding = true;
         store.Save(claim);
         // A library setup records that its prepared write may now be sent. Until then a run
-        // that stops leaves nothing unknown in SharePoint (LibraryProvisioning.NeverSent).
+        // that stops leaves nothing unknown in SharePoint (LibraryProvisioning.NeverSent). A
+        // lookup's read is not that write: the lost create it looks for stays as it is.
         if (request.Key.StartsWith("librarycreate:", StringComparison.Ordinal))
         {
             var setup = store.Require<LibrarySetup>("asx_operation", request.Key);
-            if (Writing(setup.Value))
+            if (Writing(setup.Value) && !setup.Value.Reconcile)
             {
                 setup.Value.WritePermitted = true;
                 store.Save(setup);
@@ -364,7 +365,12 @@ public static class WorkCoordination
         else if (key.StartsWith("librarycreate:", StringComparison.Ordinal))
         {
             var setup = store.Require<LibrarySetup>("asx_operation", key);
-            if (!Writing(setup.Value) || (reason = StopsSite(service, setup.Value.SiteId)) == null)
+            // A lookup only reads; its create stays unknown until the admin chooses (decision D5).
+            if (
+                setup.Value.Reconcile
+                || !Writing(setup.Value)
+                || (reason = StopsSite(service, setup.Value.SiteId)) == null
+            )
                 return null;
             setup.Value.Intent = null;
             setup.Value.Mutation = "";

@@ -474,4 +474,8 @@ public sealed class WorkerResult
 
     [DataMember]
     public Guid LocationId { get; set; }
+
+    /// <summary>A library setup's lookup finding (spec 6.8); null for everything else.</summary>
+    [DataMember]
+    public LibraryRecovery? Recovery { get; set; }
 }

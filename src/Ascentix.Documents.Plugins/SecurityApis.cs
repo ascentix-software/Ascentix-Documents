@@ -76,7 +76,14 @@ public sealed class ManageWorkApi : IPlugin
         }
         if (request.Command == "Inspect")
         {
+            // Writes only to start the lookup of a 0.1.0.3-era lost create (decision D6).
+            context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
             var store = new DocumentStore(service);
+            LibraryRecovery? recovery = null;
+            if (request.Key.StartsWith("librarycreate:", StringComparison.Ordinal))
+                recovery = new LibraryProvisioning(service)
+                    .PickUp(store.Require<LibrarySetup>("asx_operation", request.Key))
+                    .Value.Recovery;
             var operation = store.Require<OperationDocument>("asx_operation", request.Key).Value;
             var claim = store
                 .Find<DispatcherDocument>(
@@ -106,6 +113,7 @@ public sealed class ManageWorkApi : IPlugin
                         : awaiting?.RecoveryRunId != null ? awaiting.RecoveryToken
                         : Guid.Empty,
                     LeaseUntilUtc = owns ? claim!.LeaseUntilUtc : (DateTime?)null,
+                    Recovery = recovery,
                 }
             );
             return;

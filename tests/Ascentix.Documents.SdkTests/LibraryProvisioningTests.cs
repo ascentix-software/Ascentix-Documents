@@ -318,19 +318,18 @@ public sealed class LibraryProvisioningTests
     }
 
     [Fact]
-    public void PermittedCreateWithAnUnknownOutcomeKeepsRecoveryAndCancelDeletesNothing()
+    public void PermittedCreateWithAnUnknownOutcomeIsLookedUpAndCancelDeletesNothing()
     {
         var (f, key, prepared) = PreparedCreate();
         Assert.Equal("Permit", f.Permit(prepared).Status);
         // The POST may have been sent; the run stopped before its answer was recorded.
         f.Expire(key);
         Assert.Equal("Quarantined", f.Call("Claim", new WorkerResult { Key = key }).Status);
-        Assert.Equal("RecoveryRequired", f.Status(key));
+        Assert.Equal("Reconciling", f.Status(key));
         var refused = Assert.Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
             f.Manage("Retry", key)
         );
-        Assert.Contains("original create response", refused.Message);
-        Assert.Contains("Cancel", refused.Message);
+        Assert.Contains("checking SharePoint", refused.Message);
         var cancelled = f.Manage("Cancel", key);
         Assert.Equal("Cancelled", cancelled.Status);
         Assert.Contains(cancelled.Notices, n => n.Contains("Nothing in SharePoint was deleted"));
@@ -350,13 +349,13 @@ public sealed class LibraryProvisioningTests
             Assert.Equal("Permit", f.Permit(prepared).Status);
         // An earlier release did not record the permit, and its answer handling cleared the
         // claim's outstanding flag even for a 5xx, so the claim cannot tell either: a stored
-        // create counts as possibly sent and keeps evidence-based recovery.
+        // create counts as possibly sent and keeps the lookup.
         LegacyPayload.Strip(f.Service, "asx_operation", "WritePermitted");
         f.Expire(key);
         Assert.Equal("Quarantined", f.Call("Claim", new WorkerResult { Key = key }).Status);
-        Assert.Equal("RecoveryRequired", f.Status(key));
+        Assert.Equal("Reconciling", f.Status(key));
         Assert.Contains(
-            "original create response",
+            "checking SharePoint",
             Assert
                 .Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
                     f.Manage("Retry", key)
@@ -454,15 +453,15 @@ public sealed class LibraryProvisioningTests
         Assert.Equal("Pending", Catalog(f, "RetrySetup", key).Status);
         CreatedOnce(f, key);
 
-        // A create that may have reached SharePoint keeps evidence-based recovery; Cancel works
-        // and deletes nothing.
+        // A create that may have reached SharePoint is looked up; Cancel works and deletes
+        // nothing.
         var (g, sent, prepared) = PreparedCreate();
         Assert.Equal("Permit", g.Permit(prepared).Status);
         g.Expire(sent);
         Assert.Equal("Quarantined", g.Call("Claim", new WorkerResult { Key = sent }).Status);
-        Assert.Equal("RecoveryRequired", Catalog(g, "Inspect", sent).Status);
+        Assert.Equal("Reconciling", Catalog(g, "Inspect", sent).Status);
         Assert.Contains(
-            "original create response",
+            "checking SharePoint",
             Assert
                 .Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
                     Catalog(g, "RetrySetup", sent)
@@ -503,76 +502,18 @@ public sealed class LibraryProvisioningTests
         var queued = f.Queue();
         Assert.Equal("Quarantined", f.Run(queued.Key).Status);
         Assert.Single(f.Posts);
-        Assert.Equal("RecoveryRequired", f.Worker.Inspect(queued.Key).Status);
-        // An expired lease does not release an unknown library creation: a second create
-        // could make a duplicate library, so it keeps operator recovery with evidence.
-        var lease = f.Store.Require<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(f.Service, queued.Key)
-        );
-        lease.Value.LeaseUntilUtc = DateTime.UtcNow.AddMinutes(-1);
-        f.Store.Save(lease);
-        Assert.Equal("Quarantined", f.Call("Claim", new WorkerResult { Key = queued.Key }).Status);
-        Assert.DoesNotContain(
+        Assert.Equal("Reconciling", f.Worker.Inspect(queued.Key).Status);
+        // The lookup is not listed before the lease of the run that sent the create ends, and
+        // is listed after it.
+        Assert.DoesNotContain(queued.Key, f.Store.Pending("asx_operation"));
+        Assert.Contains(
             queued.Key,
-            f.Store.Pending("asx_operation", now: DateTime.UtcNow.AddHours(1))
+            f.Store.Pending("asx_operation", now: DateTime.UtcNow.AddMinutes(6))
         );
         Assert.Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
             f.Worker.Execute(new WorkerRequest { Command = "Retry", Key = queued.Key }, true)
         );
         Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
-    }
-
-    [Fact]
-    public void UnknownLibraryRecoveryRequiresOriginalResponseThenResumesWithoutRecreating()
-    {
-        var f = new Fixture { UnknownCreate = true };
-        var queued = f.Queue();
-        f.Run(queued.Key);
-        // The setup released the site's writer and keeps the run that sent the create, which
-        // Inspect shows in the recovery panel.
-        Assert.Null(f.Claim(queued.Key).RunId);
-        var lost = f.Store.Require<LibrarySetup>("asx_operation", queued.Key).Value;
-        var request = new WorkerRequest
-        {
-            Key = queued.Key,
-            RunId = lost.RecoveryRunId!,
-            Token = lost.RecoveryToken,
-            Evidence =
-                "Original run terminated; successful create response recovered from run history.",
-        };
-        var recovery = new WorkerCoordinator(f.Service);
-        Assert.Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
-            f.Service.Transaction(() => recovery.PermitRecovery(request, true))
-        );
-        request.ResponseBody = JsonWire.Write(
-            new ODataEnvelope<CreatedLibrary>
-            {
-                Data = new CreatedLibrary { Id = f.List, Title = "Different" },
-            }
-        );
-        Assert.Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
-            f.Service.Transaction(() => recovery.PermitRecovery(request, true))
-        );
-        request.ResponseBody = JsonWire.Write(
-            new ODataEnvelope<CreatedLibrary>
-            {
-                Data = new CreatedLibrary { Id = f.List, Title = "Documents" },
-            }
-        );
-        Assert.DoesNotContain(
-            queued.Key,
-            f.Store.Pending("asx_operation", now: DateTime.UtcNow.AddHours(1))
-        );
-        Assert.Equal(
-            "RecoveryPermitted",
-            f.Service.Transaction(() => recovery.PermitRecovery(request, true)).Status
-        );
-        // The permitted operation is listed again so the dispatcher resumes it.
-        Assert.Contains(queued.Key, f.Store.Pending("asx_operation"));
-        Assert.Equal("AccessPending", f.Run(queued.Key).Status);
-        Assert.Single(f.Posts, p => p == "_api/web/lists");
-        Assert.DoesNotContain(f.Posts, p => p.Contains("delete"));
     }
 
     [Fact]
@@ -594,137 +535,6 @@ public sealed class LibraryProvisioningTests
         );
         Assert.Contains("HTTP connector accepts 2,048", error.Message);
         Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_operation");
-    }
-
-    /// <summary>
-    /// Leaves a setup awaiting recovery, adds the library it created to the catalog as an
-    /// existing library the way approval does (same site and list ID gives the same row), then
-    /// records the recovery evidence.
-    /// </summary>
-    private static (Fixture F, string Key, Guid Row) AddedDuringRecovery(
-        Guid? site = null,
-        bool policy = false
-    )
-    {
-        var f = new Fixture { UnknownCreate = true };
-        var key = f.Queue().Key;
-        f.Run(key);
-        Assert.Equal("RecoveryRequired", f.Status(key));
-        Guid owner = site ?? f.Site;
-        var row = SiteIdentity.LibraryId(owner, f.List);
-        f.Service.Seed(
-            new Entity("asx_library", row)
-            {
-                ["asx_name"] = "Documents",
-                ["asx_siteid"] = new EntityReference("asx_site", owner),
-                ["asx_listid"] = f.List.ToString("D"),
-                ["asx_entryid"] = f.Root.ToString("D"),
-                ["asx_entryurl"] = "https://example.sharepoint.com/sites/test/Documents",
-                ["asx_approved"] = true,
-                ["statecode"] = new OptionSetValue(0),
-            }
-        );
-        if (policy)
-            f.Store.Create(
-                "asx_policy",
-                new PolicyDocument
-                {
-                    Key = "policy:" + row.ToString("N"),
-                    Status = "Applied",
-                    LibraryId = row,
-                }
-            );
-        var lost = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
-        Assert.Equal(
-            "RecoveryPermitted",
-            f.Service.Transaction(() =>
-                new WorkerCoordinator(f.Service).PermitRecovery(
-                    new WorkerRequest
-                    {
-                        Key = key,
-                        RunId = lost.RecoveryRunId!,
-                        Token = lost.RecoveryToken,
-                        Evidence = "Original run ended; its 201 response was recovered.",
-                        ResponseBody = FullCreateResponse(f.List, "Documents", 6546),
-                    },
-                    true
-                )
-            ).Status
-        );
-        f.UnknownCreate = false;
-        return (f, key, row);
-    }
-
-    [Fact]
-    public void RecoveryKeepsOperatorEvidenceOfAnyLength()
-    {
-        var f = new Fixture { UnknownCreate = true };
-        var key = f.Queue().Key;
-        f.Run(key);
-        var lost = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
-        string evidence = string.Concat(
-            Enumerable.Repeat("Run history checked; the original call ended with 201. ", 100)
-        );
-        Assert.True(evidence.Length > 5000);
-        Assert.Equal(
-            "RecoveryPermitted",
-            f.Service.Transaction(() =>
-                new WorkerCoordinator(f.Service).PermitRecovery(
-                    new WorkerRequest
-                    {
-                        Key = key,
-                        RunId = lost.RecoveryRunId!,
-                        Token = lost.RecoveryToken,
-                        Evidence = evidence,
-                        ResponseBody = FullCreateResponse(f.List, "Documents", 6546),
-                    },
-                    true
-                )
-            ).Status
-        );
-        Assert.Contains(
-            f.Service.Rows.Values,
-            r =>
-                r.LogicalName == "asx_attempt"
-                && r.GetAttributeValue<string>("asx_payload").Contains(evidence)
-        );
-    }
-
-    [Fact]
-    public void LibraryAddedAsExistingDuringRecoveryIsAdoptedAndGetsTheSetupsAccess()
-    {
-        var (f, key, row) = AddedDuringRecovery();
-        Assert.Equal("AccessPending", f.Run(key).Status);
-        Assert.Equal(
-            row,
-            Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library").Id
-        );
-        Assert.Equal(row, f.Store.Require<LibrarySetup>("asx_operation", key).Value.CatalogId);
-        Assert.Single(f.Posts, p => p == "_api/web/lists");
-    }
-
-    [Fact]
-    public void LibraryAddedWithItsOwnAccessDuringRecoveryKeepsThatAccess()
-    {
-        var (f, key, row) = AddedDuringRecovery(policy: true);
-        var done = f.Run(key);
-        Assert.Equal("Applied", done.Status);
-        Assert.Contains(done.Notices, n => n.Contains("access settings there are kept"));
-        Assert.Equal("Ready", f.Worker.Inspect(key).Status);
-        Assert.Null(f.Store.Require<LibrarySetup>("asx_operation", key).Value.PolicyOperation);
-        Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
-    }
-
-    [Fact]
-    public void ACatalogEntryForTheListOnAnotherSiteBlocksWithAClearNotice()
-    {
-        var (f, key, _) = AddedDuringRecovery(site: Guid.NewGuid());
-        Assert.Equal("Blocked", f.Run(key).Status);
-        Assert.Contains(
-            "already has a different entry",
-            f.Store.Require<LibrarySetup>("asx_operation", key).Value.ErrorCode
-        );
-        Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
     }
 
     /// <summary>Queues a second library setup on the fixture's site.</summary>
@@ -757,7 +567,7 @@ public sealed class LibraryProvisioningTests
         var f = new Fixture { UnknownCreate = true };
         var key = f.Queue().Key;
         Assert.Equal("Quarantined", f.Run(key).Status);
-        Assert.Equal("RecoveryRequired", f.Status(key));
+        Assert.Equal("Reconciling", f.Status(key));
         SiteFree(f, key);
         // Other work on the site claims the writer at once.
         Assert.Equal("Read", f.Call("Claim", new WorkerResult { Key = Other(f) }).Status);
@@ -770,7 +580,7 @@ public sealed class LibraryProvisioningTests
         Assert.Equal("Permit", f.Permit(prepared).Status);
         f.Expire(key);
         Assert.Equal("Quarantined", f.Call("Claim", new WorkerResult { Key = key }).Status);
-        Assert.Equal("RecoveryRequired", f.Status(key));
+        Assert.Equal("Reconciling", f.Status(key));
         SiteFree(f, key);
         Assert.Equal("Read", f.Call("Claim", new WorkerResult { Key = Other(f) }).Status);
     }
@@ -781,7 +591,7 @@ public sealed class LibraryProvisioningTests
         var (f, key, prepared) = PreparedCreate();
         Assert.Equal("Permit", f.Permit(prepared).Status);
         f.Expire(key);
-        Assert.Equal("RecoveryRequired", f.Manage("FailUnclaimed", key).Status);
+        Assert.Equal("Reconciling", f.Manage("FailUnclaimed", key).Status);
         SiteFree(f, key);
         Assert.Equal("Read", f.Call("Claim", new WorkerResult { Key = Other(f) }).Status);
     }
@@ -791,7 +601,6 @@ public sealed class LibraryProvisioningTests
     {
         var (f, key, prepared) = PreparedCreate();
         Assert.Equal("Permit", f.Permit(prepared).Status);
-        var writer = f.Claim(key);
         // 0.1.0.4 before this fix: RecoveryRequired with the site's writer still held.
         var setup = f.Store.Require<LibrarySetup>("asx_operation", key);
         setup.Value.Status = "RecoveryRequired";
@@ -799,139 +608,7 @@ public sealed class LibraryProvisioningTests
         LegacyPayload.Strip(f.Service, "asx_operation", "RecoveryRunId", "RecoveryToken");
         Assert.Equal(key, f.Claim(key).OperationKey);
         Assert.Equal("Read", f.Call("Claim", new WorkerResult { Key = Other(f) }).Status);
-        // The original run's identity is kept for evidence-based recovery.
-        var held = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
-        Assert.Equal(writer.RunId, held.RecoveryRunId);
-        Assert.Equal(writer.Token, held.RecoveryToken);
-    }
-
-    [Fact]
-    public void RecoveryOfASetupThatReleasedTheSiteUsesTheOriginalRunAndCreatesNothingAgain()
-    {
-        var f = new Fixture { UnknownCreate = true };
-        var key = f.Queue().Key;
-        f.Run(key);
-        var setup = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
-        // Another setup on the site uses the writer meanwhile, then is cancelled.
-        var other = Other(f);
-        Assert.Equal("Read", f.Call("Claim", new WorkerResult { Key = other }).Status);
-        f.Expire(other);
-        Assert.Equal("Cancelled", f.Manage("Cancel", other).Status);
-        f.UnknownCreate = false;
-        var request = new WorkerRequest
-        {
-            Key = key,
-            RunId = setup.RecoveryRunId!,
-            Token = setup.RecoveryToken,
-            Evidence = "Original run ended; its 201 response was copied from the run history.",
-            ResponseBody = JsonWire.Write(
-                new ODataEnvelope<CreatedLibrary>
-                {
-                    Data = new CreatedLibrary { Id = f.List, Title = "Documents" },
-                }
-            ),
-        };
-        var recovery = new WorkerCoordinator(f.Service);
-        var wrong = JsonWire.Read<WorkerRequest>(JsonWire.Write(request));
-        wrong.Token = Guid.NewGuid();
-        Assert.Throws<Ascentix.Documents.Conditions.EvaluationBlockedException>(() =>
-            f.Service.Transaction(() => recovery.PermitRecovery(wrong, true))
-        );
-        Assert.Equal(
-            "RecoveryPermitted",
-            f.Service.Transaction(() => recovery.PermitRecovery(request, true)).Status
-        );
-        Assert.Contains(key, f.Store.Pending("asx_operation"));
-        Assert.Equal("AccessPending", f.Run(key).Status);
-        // The recovered create is not sent again.
-        Assert.Single(f.Posts, p => p == "_api/web/lists");
-        Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
-    }
-
-    /// <summary>
-    /// A verbose OData create-list response of about the given length, as SharePoint returns
-    /// it: metadata, deferred navigation links and many properties around Id and Title.
-    /// </summary>
-    internal static string FullCreateResponse(Guid id, string title, int length)
-    {
-        var parts = new List<string>
-        {
-            "\"__metadata\":{\"id\":\"https://example.sharepoint.com/sites/test/_api/Web/Lists(guid'"
-                + id
-                + "')\",\"uri\":\"https://example.sharepoint.com/sites/test/_api/Web/Lists(guid'"
-                + id
-                + "')\",\"etag\":\"\\\"1\\\"\",\"type\":\"SP.List\"}",
-        };
-        for (int i = 0; string.Join(",", parts).Length < length - 200; i++)
-            parts.Add(
-                "\"Navigation"
-                    + i
-                    + "\":{\"__deferred\":{\"uri\":\"https://example.sharepoint.com/sites/test/_api/Web/Lists(guid'"
-                    + id
-                    + "')/Navigation"
-                    + i
-                    + "\"}}"
-            );
-        parts.Add("\"Id\":\"" + id + "\"");
-        parts.Add("\"Title\":\"" + title + "\"");
-        parts.Add("\"BaseTemplate\":101");
-        return "{\"d\":{" + string.Join(",", parts) + "}}";
-    }
-
-    [Theory]
-    [InlineData(6546)]
-    [InlineData(100000)]
-    public void RecoveryAcceptsTheFullOriginalCreateResponse(int length)
-    {
-        var f = new Fixture { UnknownCreate = true };
-        var key = f.Queue().Key;
-        f.Run(key);
-        var lost = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
-        string body = FullCreateResponse(f.List, "Documents", length);
-        Assert.InRange(body.Length, length - 300, length + 300);
-        var request = new WorkerRequest
-        {
-            Key = key,
-            RunId = lost.RecoveryRunId!,
-            Token = lost.RecoveryToken,
-            Evidence = "Original run ended; its 201 response was copied from the run history.",
-            ResponseBody = body,
-        };
-        Assert.Equal(
-            "RecoveryPermitted",
-            f.Service.Transaction(() =>
-                new WorkerCoordinator(f.Service).PermitRecovery(request, true)
-            ).Status
-        );
-        Assert.Equal(f.List, f.Store.Require<LibrarySetup>("asx_operation", key).Value.ListId);
-        f.UnknownCreate = false;
-        Assert.Equal("AccessPending", f.Run(key).Status);
-        Assert.Single(f.Posts, p => p == "_api/web/lists");
-    }
-
-    [Theory]
-    [InlineData("not json")]
-    [InlineData("{\"d\":{\"Title\":\"Documents\"}}")]
-    public void RecoveryRefusesEvidenceThatDoesNotParseToTheLibrary(string body)
-    {
-        var f = new Fixture { UnknownCreate = true };
-        var key = f.Queue().Key;
-        f.Run(key);
-        var lost = f.Store.Require<LibrarySetup>("asx_operation", key).Value;
-        var request = new WorkerRequest
-        {
-            Key = key,
-            RunId = lost.RecoveryRunId!,
-            Token = lost.RecoveryToken,
-            Evidence = "Original run ended.",
-            ResponseBody = body,
-        };
-        Assert.ThrowsAny<Exception>(() =>
-            f.Service.Transaction(() =>
-                new WorkerCoordinator(f.Service).PermitRecovery(request, true)
-            )
-        );
-        Assert.Equal("RecoveryRequired", f.Status(key));
+        Assert.Equal("Reconciling", f.Status(key));
     }
 
     internal sealed class Fixture
@@ -960,6 +637,67 @@ public sealed class LibraryProvisioningTests
 
         /// <summary>Answers the first owners-group read as a 0.1.0.3 whole-list read.</summary>
         public bool LegacyAcl;
+
+        /// <summary>The lookup's reads, by request path.</summary>
+        public List<string> LookupReads = new List<string>();
+
+        /// <summary>What the title and address reads find; null finds the library the lost create made, once it landed (Exists).</summary>
+        public ReconcileObservation? TitleHit { get; set; }
+
+        public ReconcileObservation? UrlHit { get; set; }
+
+        /// <summary>Answers the next lookup read with this HTTP status instead, once.</summary>
+        public int? LookupStatus;
+
+        /// <summary>The library the lost create made, as the lookup reads it.</summary>
+        public ReconcileObservation Made() =>
+            new ReconcileObservation
+            {
+                Id = List,
+                Title = "Documents",
+                BaseTemplate = 101,
+                Created = DateTime.UtcNow.ToString("o"),
+                Root = new FolderObservation { Id = Root, Path = "/sites/test/Documents" },
+            };
+
+        /// <summary>Makes a waiting setup due, as time passing would.</summary>
+        public void Due(string key)
+        {
+            var op = Store.Require<LibrarySetup>("asx_operation", key);
+            op.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+            Store.Save(op);
+        }
+
+        /// <summary>A setup whose create reached SharePoint but whose answer was lost, due for its lookup.</summary>
+        public string Lost()
+        {
+            UnknownCreate = true;
+            var key = Queue().Key;
+            Assert.Equal("Quarantined", Run(key).Status);
+            Assert.Equal("Reconciling", Status(key));
+            UnknownCreate = false;
+            Due(key);
+            return key;
+        }
+
+        /// <summary>The admin's choice on the finding, through the catalog API.</summary>
+        public CatalogResult Choose(string key, string choice, Guid list = default) =>
+            Service.Transaction(() =>
+                new CatalogAdministration(Service).Execute(
+                    new CatalogRequest
+                    {
+                        Command = "ResolveSetup",
+                        Key = key,
+                        Choice = choice,
+                        ListId = list,
+                        RowVersion = Worker.Inspect(key).RowVersion,
+                    },
+                    true
+                )
+            );
+
+        public LibraryRecovery Finding(string key) =>
+            Store.Require<LibrarySetup>("asx_operation", key).Value.Recovery!;
 
         public DispatcherDocument Claim(string key) =>
             Store
@@ -1033,7 +771,7 @@ public sealed class LibraryProvisioningTests
                 )
             );
 
-        private static string Body<T>(T data) =>
+        internal static string Body<T>(T data) =>
             JsonWire.Write(new ODataEnvelope<T> { Data = data });
 
         public WorkerResult Run(string key)
@@ -1190,6 +928,19 @@ public sealed class LibraryProvisioningTests
                                 },
                             }
                         );
+                        break;
+                    case "ReconcileTitle":
+                    case "ReconcileUrl":
+                        LookupReads.Add(work.Http!.RelativeUri);
+                        var hit =
+                            (work.ProbeKind == "ReconcileTitle" ? TitleHit : UrlHit)
+                            ?? (Exists ? Made() : null);
+                        code = LookupStatus ?? (hit == null ? 404 : 200);
+                        LookupStatus = null;
+                        response =
+                            code == 200
+                                ? Body(hit!)
+                                : "{\"error\":{\"code\":\"-2130575322\",\"message\":{\"lang\":\"en-US\",\"value\":\"List does not exist.\"}}}";
                         break;
                     default:
                         throw new Exception(work.ProbeKind);

@@ -234,4 +234,26 @@ public sealed class UnknownOutcomeTests
         Assert.Equal("Applied", f.Call("Complete", verified).Status);
         Assert.Single(f.Results, r => r.Status == "Create");
     }
+
+    [Fact]
+    public void AReconcilingSetupIsListedOnlyOnceDue()
+    {
+        var service = new DurableWorkerTests.MemoryService();
+        var store = new DocumentStore(service);
+        var now = new DateTime(2026, 10, 6, 12, 0, 0, DateTimeKind.Utc);
+        store.Create(
+            "asx_operation",
+            new LibrarySetup { Key = "librarycreate:wait", Name = "Wait" }
+        );
+        var setup = store.Require<LibrarySetup>("asx_operation", "librarycreate:wait");
+        setup.Value.Status = "Reconciling";
+        setup.Value.Reconcile = true;
+        setup.Value.NextAttemptUtc = now.AddMinutes(3);
+        store.Save(setup);
+        Assert.Empty(store.Pending("asx_operation", now: now));
+        Assert.Equal(
+            new[] { "librarycreate:wait" },
+            store.Pending("asx_operation", now: now.AddMinutes(4))
+        );
+    }
 }

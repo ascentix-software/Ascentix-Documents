@@ -2179,15 +2179,12 @@ public sealed class DurableWorkerTests
         );
         Assert.Equal("Library", f.Claim().ProbeKind);
         var setup = f.Store.Require<LibrarySetup>("asx_operation", setupKey).Value;
-        Assert.Equal("RecoveryRequired", setup.Status);
-        Assert.Equal("setup-run", setup.RecoveryRunId);
-        Assert.Equal(token, setup.RecoveryToken);
-        // The recovery panel still fills in the run that sent the lost create.
+        Assert.Equal("Reconciling", setup.Status);
+        Assert.True(setup.Reconcile);
         RuntimeSeed.Seed(f.Service, Guid.NewGuid(), "account");
         var inspected = ManageWork(f, _ => f.Service, Guid.NewGuid(), "Inspect", setupKey);
-        Assert.Equal("RecoveryRequired", inspected.Status);
-        Assert.Equal("setup-run", inspected.RunId);
-        Assert.Equal(token, inspected.Token);
+        Assert.Equal("Reconciling", inspected.Status);
+        Assert.Equal("Checking", inspected.Recovery!.State);
     }
 
     [Fact]

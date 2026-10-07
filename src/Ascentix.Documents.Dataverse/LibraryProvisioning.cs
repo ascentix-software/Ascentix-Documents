@@ -79,6 +79,25 @@ public sealed class LibrarySetup : OperationDocument
 
     [DataMember]
     public Guid RecoveryToken { get; set; }
+
+    /// <summary>
+    /// True while Documents looks SharePoint up for a create whose answer was lost: the run only
+    /// reads (ReconcileTitle, ReconcileUrl) and never prepares a write (spec 6.8).
+    /// </summary>
+    [DataMember]
+    public bool Reconcile { get; set; }
+
+    /// <summary>When SharePoint last answered 404 to the read of this title, before the create.</summary>
+    [DataMember]
+    public DateTime? AbsentUtc { get; set; }
+
+    /// <summary>The lookup's finding; null until a lookup starts.</summary>
+    [DataMember]
+    public LibraryRecovery? Recovery { get; set; }
+
+    /// <summary>The list the lookup found by title, kept between its two reads.</summary>
+    [DataMember]
+    public ReconcileObservation? TitleHit { get; set; }
 }
 
 [DataContract]
@@ -135,6 +154,10 @@ public sealed class LibraryProvisioning
     // The fields of the library read; before the create the library is read by its title.
     private const string LibrarySelect =
         "$select=Id,HasUniqueRoleAssignments,RootFolder/UniqueId,RootFolder/ServerRelativeUrl&$expand=RootFolder";
+
+    /// <summary>Why a library the catalog gives to another site, or removed, is not used.</summary>
+    internal const string CatalogConflictNotice =
+        "The library was created in SharePoint, but the Documents catalog already has a different entry for it (another site, or removed). Nothing was changed. Remove that entry if it is wrong, add the library as an existing library, then cancel this setup.";
 
     /// <summary>The query string of the read by title, which carries the title as an alias.</summary>
     private static string ByTitle(string name) =>
@@ -233,7 +256,7 @@ public sealed class LibraryProvisioning
     }
 
     public CatalogResult Inspect(string key) =>
-        Result(store.Require<LibrarySetup>("asx_operation", key));
+        Result(PickUp(store.Require<LibrarySetup>("asx_operation", key)));
 
     /// <summary>
     /// Retry or Cancel of a library setup from its card in Sites, through the catalog API, so a
@@ -290,6 +313,7 @@ public sealed class LibraryProvisioning
             CatalogId = op.Value.CatalogId,
             Issue = issue,
             RecoveryKey = recovery,
+            Recovery = op.Value.Recovery,
         };
     }
 
@@ -306,13 +330,11 @@ public sealed class LibraryProvisioning
         op.ExternalSubmitted && !op.ExternalResponseKnown && op.WritePermitted == false;
 
     /// <summary>
-    /// Puts a setup whose write answer was lost into RecoveryRequired and releases its site's
-    /// writer, keeping the run that sent the write for evidence-based recovery. Nothing on the
-    /// site depends on that write: no request of it is still on its way (the run answered, or
-    /// its 5-minute lease, at least twice the connector timeout, expired), folder work and
-    /// access runs of a new library start only after it is registered, and the setup itself
-    /// reads SharePoint again before any further write once recovery lists it. Holding the
-    /// writer would only stop every other job on the site until an operator acts.
+    /// A create that may have reached SharePoint and whose answer was lost starts the SharePoint
+    /// lookup, due when the lease of the run that sent it ends; any other unknown write goes to
+    /// RecoveryRequired for Retry. Either way the site's writer is released (spec 6.8). Nothing
+    /// on the site depends on that write: folder work and access runs of a new library start
+    /// only after it is registered, and the setup reads SharePoint before any further write.
     /// </summary>
     internal static void AwaitRecovery(
         DocumentStore store,
@@ -320,21 +342,83 @@ public sealed class LibraryProvisioning
         StoredRow<DispatcherDocument>? claim
     )
     {
-        if (claim?.Value.OperationKey == op.Value.Key && claim.Value.RunId != null)
+        DateTime? leaseEnd = null;
+        if (HeldBy(op, claim) is { } held)
         {
-            op.Value.RecoveryRunId = claim.Value.RunId;
-            op.Value.RecoveryToken = claim.Value.Token;
-            claim.Value.HttpOutstanding = false;
-            claim.Value.OperationKey = null;
-            claim.Value.RunId = null;
-            claim.Value.Token = Guid.Empty;
-            claim.Value.RecoveryPermitted = false;
-            claim.Value.Status = "Idle";
-            store.Save(claim);
+            leaseEnd = held.Value.LeaseUntilUtc;
+            op.Value.RecoveryRunId = held.Value.RunId;
+            op.Value.RecoveryToken = held.Value.Token;
+            ReleaseHeld(store, held);
         }
-        op.Value.Status = "RecoveryRequired";
+        if (LostCreate(op.Value))
+            StartLookup(op.Value, leaseEnd);
+        else
+            op.Value.Status = "RecoveryRequired";
         store.Save(op);
     }
+
+    /// <summary>A create that may have reached SharePoint, whose answer was lost, for a library not yet known.</summary>
+    internal static bool LostCreate(LibrarySetup op) =>
+        op.ExternalSubmitted
+        && !op.ExternalResponseKnown
+        && !NeverSent(op)
+        && op.Mutation == "CreateLibrary"
+        && op.ListId == Guid.Empty;
+
+    private static void StartLookup(LibrarySetup op, DateTime? notBefore)
+    {
+        op.Reconcile = true;
+        op.Status = "Reconciling";
+        op.Recovery = LibraryReconcile.Checking();
+        op.TitleHit = null;
+        op.ProbeId = Guid.Empty;
+        op.RetryCount = 0;
+        op.NextAttemptUtc = notBefore;
+        op.ErrorCode =
+            "SharePoint didn't confirm the library creation. Documents is checking SharePoint.";
+    }
+
+    private static void ReleaseHeld(DocumentStore store, StoredRow<DispatcherDocument> claim)
+    {
+        claim.Value.HttpOutstanding = false;
+        claim.Value.OperationKey = null;
+        claim.Value.RunId = null;
+        claim.Value.Token = Guid.Empty;
+        claim.Value.RecoveryPermitted = false;
+        claim.Value.Status = "Idle";
+        store.Save(claim);
+    }
+
+    /// <summary>
+    /// The site's writer claim when this setup's own run still holds it (the claim names the setup
+    /// and has a run); otherwise null. The only place that rule is written: AwaitRecovery,
+    /// Settled and LookupClaimFailed all ask it.
+    /// </summary>
+    private static StoredRow<DispatcherDocument>? HeldBy(
+        StoredRow<LibrarySetup> op,
+        StoredRow<DispatcherDocument>? claim
+    ) =>
+        claim != null && claim.Value.OperationKey == op.Value.Key && claim.Value.RunId != null
+            ? claim
+            : null;
+
+    /// <summary>Releases the site's writer if this setup's own run still holds it.</summary>
+    private static void ReleaseIfHeld(
+        DocumentStore store,
+        StoredRow<LibrarySetup> op,
+        StoredRow<DispatcherDocument>? claim
+    )
+    {
+        if (HeldBy(op, claim) is { } held)
+            ReleaseHeld(store, held);
+    }
+
+    /// <summary>The finding for a lookup read that failed for good: the failure's cause, as of now.</summary>
+    private static LibraryRecovery LookupFailed(WorkerRequest failure, DateTime now) =>
+        LibraryReconcile.ReadFailed(
+            TransientFailure.Cause(failure.StatusCode, failure.ErrorCode, failure.Error),
+            now
+        );
 
     /// <summary>
     /// Holds a setup while its site is suspended: it waits in RetryWait with a notice, its next
@@ -392,8 +476,9 @@ public sealed class LibraryProvisioning
 
     /// <summary>
     /// The operator's Retry or Cancel, once no run holds a live claim. A write that was never
-    /// sent is simply prepared again. A library create that may have been sent keeps
-    /// evidence-based recovery for Retry; Cancel always works and deletes nothing in SharePoint.
+    /// sent is simply prepared again. A library create that may have been sent is looked up in
+    /// SharePoint and resolved by the admin's choice, never by Retry; Cancel always works and
+    /// deletes nothing in SharePoint.
     /// </summary>
     private WorkerResult Manage(WorkerRequest request, StoredRow<LibrarySetup> op)
     {
@@ -419,7 +504,7 @@ public sealed class LibraryProvisioning
             && op.Value.ListId == Guid.Empty;
         if (retry && sentCreate)
             throw new EvaluationBlockedException(
-                "The library create may have reached SharePoint and its answer was lost. Recover it with the original create response from the flow run, or Cancel the setup. Cancel deletes nothing in SharePoint."
+                "Documents is checking SharePoint for this library. Use the choice it offers on the setup, or cancel the setup. Cancel deletes nothing in SharePoint."
             );
         bool released = store.ReleaseExpired(request.Key, clock(), request.Command);
         if (
@@ -445,6 +530,10 @@ public sealed class LibraryProvisioning
         else
         {
             op.Value.Status = "Cancelled";
+            // A lookup in progress stops with the setup; nothing it found is kept or changed.
+            op.Value.Reconcile = false;
+            op.Value.TitleHit = null;
+            op.Value.Recovery = null;
             notices = new[]
             {
                 sentCreate
@@ -495,8 +584,8 @@ public sealed class LibraryProvisioning
                 )
             )
                 return new WorkerResult { Status = op.Value.Status, Key = request.Key };
-            // A lost write waits for the operator's evidence, Retry or Cancel; it never starts
-            // again by itself, so the create is never sent twice.
+            // A lost write waits for the admin's choice on the lookup's finding, Retry or Cancel;
+            // it never starts again by itself, so the create is never sent twice.
             if (op.Value.Status == "RecoveryRequired")
                 return new WorkerResult { Status = "Quarantined", Key = request.Key };
             if (op.Value.NextAttemptUtc > clock())
@@ -515,8 +604,9 @@ public sealed class LibraryProvisioning
                 op.Value.SiteId,
                 new ColumnSet("asx_approved", "asx_webid", "asx_url")
             );
+            // A lookup only reads, so it also runs while the site is suspended (decision D5).
             if (
-                !site.GetAttributeValue<bool>("asx_approved")
+                (!op.Value.Reconcile && !site.GetAttributeValue<bool>("asx_approved"))
                 || TemplateStore.Text(site, "asx_webid") != op.Value.WebId.ToString("D")
             )
                 throw new EvaluationBlockedException("Site identity or readiness changed.");
@@ -547,40 +637,52 @@ public sealed class LibraryProvisioning
             {
                 if (claim.Value.OperationKey != request.Key)
                     return new WorkerResult { Status = "Busy", Key = request.Key };
-                // An expired lease is taken over only when no library write is outstanding; an
-                // unknown write keeps operator recovery, since a second create could duplicate it.
-                bool unknownWrite = op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
-                // A prepared write the connection never permitted was never sent: the run that
-                // held it stopped first. It is read and prepared again, not recovered.
-                if (unknownWrite && claim.Value.LeaseUntilUtc <= clock() && NeverSent(op.Value))
+                bool live = claim.Value.LeaseUntilUtc > clock() && !claim.Value.RecoveryPermitted;
+                if (op.Value.Reconcile)
                 {
-                    Unsend(op.Value);
-                    unknownWrite = false;
+                    // A lookup only reads: once the lease of the run that held it ends, the next run takes it over.
+                    if (live)
+                        return new WorkerResult { Status = "Quarantined", Key = request.Key };
+                    claim.Value.HttpOutstanding = false;
                 }
-                if (
-                    !claim.Value.RecoveryPermitted
-                    && (claim.Value.LeaseUntilUtc > clock() || unknownWrite)
-                )
+                else
                 {
-                    if (unknownWrite && claim.Value.LeaseUntilUtc <= clock())
+                    // An expired lease is taken over only when no library write is outstanding; an
+                    // unknown write keeps operator recovery, since a second create could duplicate it.
+                    bool unknownWrite =
+                        op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
+                    // A prepared write the connection never permitted was never sent: the run that
+                    // held it stopped first. It is read and prepared again, not recovered.
+                    if (unknownWrite && claim.Value.LeaseUntilUtc <= clock() && NeverSent(op.Value))
                     {
-                        op.Value.ErrorCode =
-                            op.Value.ErrorCode
-                            ?? "Library request outcome is unknown. Reconcile the original run before retry.";
-                        AwaitRecovery(store, op, claim);
+                        Unsend(op.Value);
+                        unknownWrite = false;
                     }
-                    return new WorkerResult { Status = "Quarantined", Key = request.Key };
+                    if (
+                        !claim.Value.RecoveryPermitted
+                        && (claim.Value.LeaseUntilUtc > clock() || unknownWrite)
+                    )
+                    {
+                        if (unknownWrite && claim.Value.LeaseUntilUtc <= clock())
+                        {
+                            op.Value.ErrorCode =
+                                op.Value.ErrorCode
+                                ?? "Library request outcome is unknown. Reconcile the original run before retry.";
+                            AwaitRecovery(store, op, claim);
+                        }
+                        return new WorkerResult { Status = "Quarantined", Key = request.Key };
+                    }
+                    claim.Value.HttpOutstanding = false;
+                    if (
+                        unknownWrite
+                        && op.Value.Mutation == "CreateLibrary"
+                        && op.Value.ListId == Guid.Empty
+                    )
+                        throw new EvaluationBlockedException(
+                            "Unknown library creation needs physical identity reconciliation; a same-name library must not be adopted automatically."
+                        );
+                    op.Value.ExternalResponseKnown = true;
                 }
-                claim.Value.HttpOutstanding = false;
-                if (
-                    unknownWrite
-                    && op.Value.Mutation == "CreateLibrary"
-                    && op.Value.ListId == Guid.Empty
-                )
-                    throw new EvaluationBlockedException(
-                        "Unknown library creation needs physical identity reconciliation; a same-name library must not be adopted automatically."
-                    );
-                op.Value.ExternalResponseKnown = true;
             }
             claim.Value.OperationKey = request.Key;
             claim.Value.RunId = request.RunId;
@@ -589,6 +691,16 @@ public sealed class LibraryProvisioning
             claim.Value.RecoveryPermitted = false;
             claim.Value.Status = "Claimed";
             store.Save(claim);
+            if (op.Value.Reconcile)
+                return Read(
+                    op,
+                    claim.Value,
+                    "ReconcileTitle",
+                    "_api/web/lists/GetByTitle(@p)?"
+                        + Domain.SharePointAddress.Alias(op.Value.Name)
+                        + "&"
+                        + LibraryReconcile.Select
+                );
             return Read(
                 op,
                 claim.Value,
@@ -622,6 +734,11 @@ public sealed class LibraryProvisioning
         }
         if (request.Command == "Fail")
         {
+            // A lookup read that failed waits after a temporary failure, else reports why.
+            if (op.Value.Reconcile)
+                return TransientFailure.Is(request)
+                    ? WaitLookup(op, lease, null, request.StatusCode, request.ErrorCode)
+                    : Settled(store, op, lease, LookupFailed(request, clock()));
             // The run failed before its prepared write was permitted, so nothing was sent.
             if (NeverSent(op.Value))
                 Unsend(op.Value);
@@ -711,6 +828,8 @@ public sealed class LibraryProvisioning
             || request.HttpStatus == 408
         )
         {
+            if (op.Value.Reconcile)
+                return WaitLookup(op, lease, request.RetryAfter, request.HttpStatus, null);
             if (op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)
                 return Block(op, lease, "Library write is unresolved.");
             return Wait(op, lease, request.RetryAfter, request.HttpStatus, null);
@@ -768,6 +887,9 @@ public sealed class LibraryProvisioning
                     );
                 case "Library":
                     if (request.HttpStatus == 404 && op.Value.ListId == Guid.Empty)
+                    {
+                        // A library created after this read is one the lookup may find (spec 6.8).
+                        op.Value.AbsentUtc = clock();
                         return Prepare(
                             op,
                             lease.Value,
@@ -779,6 +901,7 @@ public sealed class LibraryProvisioning
                                 Body = JsonWire.Write(new NewLibraryBody { Title = op.Value.Name }),
                             }
                         );
+                    }
                     var library = SharePointObservations.Body<CatalogLibraryObservation>(request);
                     if (op.Value.ListId == Guid.Empty)
                         throw new EvaluationBlockedException(
@@ -849,6 +972,9 @@ public sealed class LibraryProvisioning
                             }
                         );
                     return Register(op, lease);
+                case "ReconcileTitle":
+                case "ReconcileUrl":
+                    return Lookup(op, lease, request);
                 default:
                     throw new EvaluationBlockedException("Unknown library setup phase.");
             }
@@ -887,11 +1013,7 @@ public sealed class LibraryProvisioning
                 || entry.GetAttributeValue<EntityReference>("asx_siteid")?.Id != v.SiteId
                 || entry.GetAttributeValue<OptionSetValue>("statecode")?.Value == 1
             )
-                return Block(
-                    op,
-                    lease,
-                    "The library was created in SharePoint, but the Documents catalog already has a different entry for it (another site, or removed). Nothing was changed. Remove that entry if it is wrong, add the library as an existing library, then cancel this setup."
-                );
+                return Block(op, lease, CatalogConflictNotice);
             return Adopt(op, lease);
         }
         var nativeId = new NativeLocations(service).EnsureLibrary(
@@ -1047,10 +1169,14 @@ public sealed class LibraryProvisioning
         string issue
     )
     {
+        // A lookup that cannot go on reports why; its create stays unknown until the admin chooses.
+        if (op.Value.Reconcile)
+            return Settled(store, op, claim, LibraryReconcile.ReadFailed(issue, clock()));
         op.Value.ErrorCode = issue;
         bool unknown = op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown;
-        // An unknown library write needs operator recovery with evidence: a second create could
-        // make a duplicate library. RecoveryRequired keeps it off the dispatch page meanwhile.
+        // An unknown library write is never simply sent again: a second create could make a
+        // duplicate library. A lost create is looked up in SharePoint (Reconciling, listed once
+        // due); any other unknown write waits in RecoveryRequired, off the dispatch page.
         if (unknown)
             AwaitRecovery(store, op, claim);
         else
@@ -1098,4 +1224,283 @@ public sealed class LibraryProvisioning
         claim.Value.Status = "Idle";
         store.Save(claim);
     }
+
+    /// <summary>One lookup read's answer: the title read leads to the address read, which decides.</summary>
+    private WorkerResult Lookup(
+        StoredRow<LibrarySetup> op,
+        StoredRow<DispatcherDocument> lease,
+        WorkerRequest request
+    )
+    {
+        if (request.HttpStatus != 200 && request.HttpStatus != 404)
+            return Settled(
+                store,
+                op,
+                lease,
+                LibraryReconcile.ReadFailed(SharePointObservations.ErrorMessage(request), clock())
+            );
+        var hit =
+            request.HttpStatus == 404
+                ? null
+                : SharePointObservations.Body<ReconcileObservation>(request);
+        string expected = LibraryReconcile.ExpectedUrl(op.Value.WebUrl, op.Value.Name);
+        if (op.Value.ProbeKind == "ReconcileTitle")
+        {
+            op.Value.TitleHit = hit;
+            return Read(
+                op,
+                lease.Value,
+                "ReconcileUrl",
+                "_api/web/GetList(@p)?"
+                    + Domain.SharePointAddress.Alias(expected)
+                    + "&"
+                    + LibraryReconcile.Select
+            );
+        }
+        var finding = LibraryReconcile.Decide(
+            op.Value.SiteId,
+            op.Value.Name,
+            expected,
+            op.Value.TitleHit,
+            hit,
+            Requested(op),
+            CatalogRows(op.Value, op.Value.TitleHit, hit),
+            clock()
+        );
+        return Settled(store, op, lease, finding);
+    }
+
+    /// <summary>Stores the finding, puts the setup in RecoveryRequired and releases the site's writer.</summary>
+    internal static WorkerResult Settled(
+        DocumentStore store,
+        StoredRow<LibrarySetup> op,
+        StoredRow<DispatcherDocument>? claim,
+        LibraryRecovery finding
+    )
+    {
+        ReleaseIfHeld(store, op, claim);
+        string sentence = LibraryReconcile.Sentence(op.Value.Name, finding);
+        op.Value.Recovery = finding;
+        op.Value.Reconcile = false;
+        op.Value.TitleHit = null;
+        op.Value.Status = "RecoveryRequired";
+        op.Value.ErrorCode = sentence;
+        op.Value.ProbeId = Guid.Empty;
+        op.Value.NextAttemptUtc = null;
+        op.Value.RetryCount = 0;
+        store.Save(op);
+        return new WorkerResult
+        {
+            Key = op.Value.Key,
+            Status = "RecoveryRequired",
+            Notices = new[] { sentence },
+            Recovery = finding,
+        };
+    }
+
+    /// <summary>A temporary failure of a lookup read waits (A6) and stays a lookup.</summary>
+    private WorkerResult WaitLookup(
+        StoredRow<LibrarySetup> op,
+        StoredRow<DispatcherDocument> lease,
+        string? retryAfter,
+        int? statusCode,
+        string? errorCode
+    )
+    {
+        DocumentStore.Wait(op.Value, statusCode, errorCode, retryAfter, clock());
+        op.Value.Status = "Reconciling";
+        store.Save(op);
+        Release(lease);
+        return new WorkerResult
+        {
+            Status = "RetryWait",
+            Key = op.Value.Key,
+            Notices = new[] { op.Value.ErrorCode! },
+        };
+    }
+
+    /// <summary>The claim of a lookup failed before any read: wait after a temporary failure, else report why.</summary>
+    internal static WorkerResult LookupClaimFailed(
+        DocumentStore store,
+        StoredRow<LibrarySetup> op,
+        StoredRow<DispatcherDocument>? claim,
+        WorkerRequest failure,
+        DateTime now
+    )
+    {
+        if (!TransientFailure.Is(failure))
+            return Settled(store, op, claim, LookupFailed(failure, now));
+        ReleaseIfHeld(store, op, claim);
+        DocumentStore.Wait(op.Value, failure.StatusCode, failure.ErrorCode, null, now);
+        op.Value.Status = "Reconciling";
+        store.Save(op);
+        return new WorkerResult
+        {
+            Status = "Reconciling",
+            Key = op.Value.Key,
+            Notices = new[] { op.Value.ErrorCode! },
+        };
+    }
+
+    /// <summary>The admin's choice on a finding (spec 6.8): use a library it found, or create the library again.</summary>
+    /// <param name="request">Key, Choice (UseLibrary with ListId, or CreateAgain) and the RowVersion the admin saw.</param>
+    /// <returns>The setup, Pending, for the next dispatch.</returns>
+    public CatalogResult ResolveSetup(CatalogRequest request)
+    {
+        var op = store.Require<LibrarySetup>("asx_operation", SetupKey(request.Key));
+        var finding = op.Value.Recovery;
+        if (
+            op.Value.Status != "RecoveryRequired"
+            || finding == null
+            || finding.State == "Checking"
+            || !LostCreate(op.Value)
+        )
+            throw new EvaluationBlockedException(
+                "This setup has no SharePoint finding to act on. Check again first."
+            );
+        if (op.Row.RowVersion != request.RowVersion)
+            throw new EvaluationBlockedException(
+                "This setup changed. Look at its latest finding and choose again."
+            );
+        string receipt;
+        if (request.Choice == "UseLibrary")
+        {
+            var candidate =
+                finding.Candidates.FirstOrDefault(c => c.ListId == request.ListId)
+                ?? throw new EvaluationBlockedException(
+                    "Choose one of the libraries Documents found."
+                );
+            if (!candidate.IsLibrary)
+                throw new EvaluationBlockedException("Only a document library can be used.");
+            if (candidate.CatalogEntry == "Conflict")
+                throw new EvaluationBlockedException(CatalogConflictNotice);
+            // The list is known now: the next run reads it by ID, then boundary, owner access and
+            // Register, which adopts this site's catalog entry for it (A10). No create is prepared.
+            op.Value.ListId = candidate.ListId;
+            op.Value.ExternalResponseKnown = true;
+            op.Value.RecoveryRunId = null;
+            op.Value.RecoveryToken = Guid.Empty;
+            op.Value.Status = "Pending";
+            receipt = "RecoveryUseLibrary:" + candidate.ListId.ToString("D");
+        }
+        else if (request.Choice == "CreateAgain")
+        {
+            if (finding.Candidates.Any(c => c.TitleMatches))
+                throw new EvaluationBlockedException(
+                    "SharePoint has a library with this name, so Documents won't create another. Use it, or cancel the setup."
+                );
+            // The next run reads the title before preparing the create; a library that appeared
+            // since the lookup stops it with the name-collision rule.
+            Unsend(op.Value);
+            receipt = "RecoveryCreateAgain";
+        }
+        else
+            throw new EvaluationBlockedException("Choose UseLibrary or CreateAgain.");
+        op.Value.Recovery = null;
+        op.Value.ErrorCode = null;
+        op.Value.RetryCount = 0;
+        op.Value.NextAttemptUtc = null;
+        store.Save(op);
+        Receipt(op.Value.Key, receipt);
+        return Result(store.Require<LibrarySetup>("asx_operation", op.Value.Key));
+    }
+
+    /// <summary>Check again: looks SharePoint up once more for a setup whose create is unknown.</summary>
+    /// <param name="key">The library setup key.</param>
+    /// <returns>The setup, Reconciling, with its finding Checking.</returns>
+    public CatalogResult RecheckSetup(string key)
+    {
+        var op = store.Require<LibrarySetup>("asx_operation", SetupKey(key));
+        if (op.Value.Status == "Reconciling")
+            return Result(op);
+        if (op.Value.Status != "RecoveryRequired" || !LostCreate(op.Value))
+            throw new EvaluationBlockedException(
+                "Only a library setup whose result is unknown can be checked again."
+            );
+        StartLookup(op.Value, null);
+        store.Save(op);
+        Receipt(key, "RecoveryCheckAgain");
+        return Result(store.Require<LibrarySetup>("asx_operation", key));
+    }
+
+    /// <summary>
+    /// Starts the lookup for a setup 0.1.0.3 left in RecoveryRequired before lookups existed, when
+    /// Inspect or ListProblems first shows it (decision D6). Any other row is returned unchanged.
+    /// </summary>
+    /// <param name="op">The library setup as read.</param>
+    /// <returns>The setup as it now stands.</returns>
+    internal StoredRow<LibrarySetup> PickUp(StoredRow<LibrarySetup> op)
+    {
+        if (
+            op.Value.Status != "RecoveryRequired"
+            || op.Value.Recovery != null
+            || !LostCreate(op.Value)
+        )
+            return op;
+        StartLookup(op.Value, null);
+        store.Save(op);
+        return store.Require<LibrarySetup>("asx_operation", op.Value.Key);
+    }
+
+    private static string SetupKey(string key) =>
+        key.StartsWith("librarycreate:", StringComparison.Ordinal)
+            ? key
+            : throw new EvaluationBlockedException("Select a library setup.");
+
+    // When the title was last seen absent; setups stored before AbsentUtc use the row's createdon (D4).
+    private DateTime Requested(StoredRow<LibrarySetup> op) =>
+        op.Value.AbsentUtc
+        ?? service
+            .Retrieve("asx_operation", op.Row.Id, new ColumnSet("createdon"))
+            .GetAttributeValue<DateTime>("createdon");
+
+    // Catalog rows on this site with the requested name, and rows for either list found.
+    private CatalogEntryRow[] CatalogRows(LibrarySetup setup, params ReconcileObservation?[] hits)
+    {
+        var query = new QueryExpression("asx_library")
+        {
+            ColumnSet = new ColumnSet("asx_siteid", "asx_name", "asx_listid", "statecode"),
+        };
+        query.Criteria.FilterOperator = LogicalOperator.Or;
+        var named = new FilterExpression(LogicalOperator.And);
+        named.AddCondition("asx_siteid", ConditionOperator.Equal, setup.SiteId);
+        named.AddCondition("asx_name", ConditionOperator.Equal, setup.Name);
+        query.Criteria.AddFilter(named);
+        // List IDs are stored as text, in either case (sites-access.js reads them case-blind too).
+        var lists = hits.Where(hit => hit != null)
+            .SelectMany(hit =>
+                new object[] { hit!.Id.ToString("D"), hit.Id.ToString("D").ToUpperInvariant() }
+            )
+            .ToArray();
+        if (lists.Length > 0)
+            query.Criteria.AddCondition("asx_listid", ConditionOperator.In, lists);
+        return service
+            .RetrieveMultiple(query)
+            .Entities.Select(row => new CatalogEntryRow
+            {
+                Id = row.Id,
+                SiteId = row.GetAttributeValue<EntityReference>("asx_siteid")?.Id ?? Guid.Empty,
+                Name = row.GetAttributeValue<string>("asx_name") ?? "",
+                ListId = Guid.TryParse(row.GetAttributeValue<string>("asx_listid"), out var list)
+                    ? list
+                    : Guid.Empty,
+                Removed = row.GetAttributeValue<OptionSetValue>("statecode")?.Value == 1,
+            })
+            .ToArray();
+    }
+
+    // An audit row for the admin's recovery choice, beside the run attempts of the setup.
+    private void Receipt(string key, string what) =>
+        store.Create(
+            "asx_attempt",
+            new AttemptDocument
+            {
+                Key = "attempt:" + Guid.NewGuid().ToString("N"),
+                Status = "Recorded",
+                OperationKey = key,
+                RunId = "admin",
+                Event = what,
+                AtUtc = clock(),
+            }
+        );
 }

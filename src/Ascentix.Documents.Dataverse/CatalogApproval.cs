@@ -58,6 +58,10 @@ public sealed class CatalogRequest
     /// </summary>
     [DataMember]
     public bool BreakInheritance { get; set; }
+
+    /// <summary>ResolveSetup: UseLibrary (with ListId) or CreateAgain.</summary>
+    [DataMember]
+    public string? Choice { get; set; }
 }
 
 [DataContract]
@@ -198,6 +202,10 @@ public sealed class CatalogResult
     /// <summary>What a command left in place or changed, for the admin.</summary>
     [DataMember]
     public string[] Notices { get; set; } = Array.Empty<string>();
+
+    /// <summary>A library setup's lookup finding (spec 6.8); null for everything else.</summary>
+    [DataMember]
+    public LibraryRecovery? Recovery { get; set; }
 }
 
 [DataContract]
@@ -267,6 +275,10 @@ public sealed class CatalogAdministration
                 request.Key,
                 request.Command == "RetrySetup"
             );
+        if (request.Command == "ResolveSetup")
+            return new LibraryProvisioning(service, clock).ResolveSetup(request);
+        if (request.Command == "RecheckSetup")
+            return new LibraryProvisioning(service, clock).RecheckSetup(request.Key);
         if (request.Command == "RepointLibrary" || request.Command == "RepointSite")
             return QueueRepoint(request);
         if (request.Command == "RemoveLibrary")

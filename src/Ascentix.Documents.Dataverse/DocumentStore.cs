@@ -284,6 +284,14 @@ public sealed class DocumentStore
         // A live claim belongs to a running flow (or an operator recovery): leave it alone.
         if (held && (claim!.Value.LeaseUntilUtc > now || claim.Value.RecoveryPermitted))
             return new WorkerResult { Status = "Quarantined", Key = key };
+        if (op.Value is LibrarySetup lookup && lookup.Reconcile)
+            return LibraryProvisioning.LookupClaimFailed(
+                this,
+                Require<LibrarySetup>("asx_operation", key),
+                held ? claim : null,
+                failure,
+                now
+            );
         // A library write the connection never permitted was never sent, so nothing about it
         // is unknown: it is prepared again after fresh reads, like any interrupted setup.
         if (unknown && op.Value is LibrarySetup setup && LibraryProvisioning.NeverSent(setup))
@@ -297,13 +305,18 @@ public sealed class DocumentStore
             // row would stay listed, fail the same way on every dispatch and keep its writer slot.
             if (unknown && op.Value is LibrarySetup)
             {
-                // A second library create could make a duplicate library: operator recovery.
+                // A second library create could make a duplicate library: it is looked up in
+                // SharePoint first, and the status says which way AwaitRecovery went.
                 LibraryProvisioning.AwaitRecovery(
                     this,
                     Require<LibrarySetup>("asx_operation", key),
                     held ? claim : null
                 );
-                return new WorkerResult { Status = "RecoveryRequired", Key = key };
+                return new WorkerResult
+                {
+                    Status = Require<LibrarySetup>("asx_operation", key).Value.Status,
+                    Key = key,
+                };
             }
             if (held)
                 ReleaseExpired(key, now, "Dispatch");
@@ -431,10 +444,22 @@ public sealed class DocumentStore
                 now ?? DateTime.UtcNow
             );
             query.Criteria.AddFilter(retry);
+            // A library setup Documents is looking up in SharePoint, once its wait is over (spec 6.8).
+            var lookup = new FilterExpression(LogicalOperator.And);
+            lookup.AddCondition("asx_status", ConditionOperator.Equal, "Reconciling");
+            var lookupDue = new FilterExpression(LogicalOperator.Or);
+            lookupDue.AddCondition("asx_nextattempt", ConditionOperator.Null);
+            lookupDue.AddCondition(
+                "asx_nextattempt",
+                ConditionOperator.LessEqual,
+                now ?? DateTime.UtcNow
+            );
+            lookup.AddFilter(lookupDue);
+            query.Criteria.AddFilter(lookup);
             // Work a run left mid-step (a cancelled or timed-out flow) is listed again; Claim
             // takes it over once its lease expires and re-reads before any write. A library
-            // setup with an unknown write is RecoveryRequired, outside this set, so it never
-            // holds a page slot while it waits for the operator.
+            // setup with an unknown create is Reconciling (listed when due) or RecoveryRequired
+            // (waiting for the admin's choice, never listed).
             query.Criteria.AddCondition("asx_status", ConditionOperator.In, InFlight);
         }
         else
