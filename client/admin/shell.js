@@ -27,6 +27,8 @@
   const links = new Map();
   const runtimeListeners = [];
   const missing = new Set();
+  // Open confirmations made by ask(), each with the function that answers it with its keep value.
+  const confirmations = new Map();
   const state = { tab: null, link: null, runtime: null, dirty: null, confirms: 0 };
 
   // sessionStorage can be missing or throw (blocked site data, sandboxed frames). Every access
@@ -143,7 +145,13 @@
     return new Promise((resolve) => {
       const row = host ? null : invoker.closest('[data-actions]') || invoker.parentNode;
       const place = host || row.parentNode;
-      place.querySelectorAll('.confirm').forEach((open) => open.remove());
+      // A confirmation already open here is answered with its keep value, so the action waiting
+      // on it ends. Only confirmations ask() made are touched; static .confirm markup stays.
+      for (const open of [...place.querySelectorAll('.confirm[role=group]')]) {
+        const answer = confirmations.get(open);
+        if (answer) answer();
+        else open.remove();
+      }
       const box = el('div', null, 'confirm');
       const message = el('p', text, 'confirm-text');
       message.id = 'confirm-' + ++state.confirms;
@@ -154,7 +162,11 @@
       if (details) box.append(details);
       const actions = el('div', null, 'row');
       actions.setAttribute('data-actions', '');
+      let done = false;
       const finish = (value) => {
+        if (done) return;
+        done = true;
+        confirmations.delete(box);
         box.remove();
         const back = invoker.isConnected
           ? invoker
@@ -168,6 +180,7 @@
           button(choice.label, () => finish(choice.value), choice.style || 'secondary'),
         );
       box.append(actions);
+      confirmations.set(box, () => finish(keep));
       box.addEventListener('keydown', (event) => {
         if (event.key !== 'Escape') return;
         event.preventDefault();
@@ -208,7 +221,8 @@
     if (again) return again.focus();
     const area = scopeId && $(scopeId);
     if (!area) return;
-    const row = area.querySelectorAll('[data-focus-row]')[Math.max(0, index)];
+    // Focus that was not in a row (a list action such as Load more) goes to the heading.
+    const row = index < 0 ? null : area.querySelectorAll('[data-focus-row]')[index];
     const action = row && [...row.querySelectorAll('button')].find((b) => !b.disabled);
     (action || area.querySelector('[data-focus-heading]'))?.focus();
   }
@@ -358,6 +372,19 @@
     return result;
   }
 
+  // What a runtime result says still needs work in change tracking, or null when nothing does.
+  function registrationProblem(result) {
+    const registration = result?.Registration;
+    if (registration?.Error)
+      return 'Turned on, but change tracking needs attention: ' + registration.Error;
+    const scopes = (registration?.Readiness || []).filter((r) => r.Status !== 'Ready');
+    if (!scopes.length) return null;
+    return (
+      'Turned on, but change tracking is not ready for ' +
+      scopes.map((r) => r.Scope).join(', ') +
+      '. Repair it in Settings.'
+    );
+  }
   // The automation chip (spec 2.5). Its text is a status region and is set only when it changes.
   function renderChip() {
     const runtime = state.runtime;
@@ -548,14 +575,18 @@
     }
     show(tab, link || hashed);
     wireTabs();
-    await Promise.all([state.runtimePromise, privileges]);
-    renderChip();
+    // The tab starts once the privilege checks are in; the chip is drawn, and onRuntime
+    // listeners hear the result (null when Get is refused), whenever the runtime Get returns.
+    state.runtimePromise.then(setRuntime);
+    await privileges;
     $('automationChipAction').onclick = () => {
       const action = $('automationChipAction');
       if (blocked(action)) return undefined;
       return busy(action, 'Turning on…', 'chip', async () => {
-        await setAutomation(true);
-        feedback('chip', 'Automation running.');
+        // The chip's status text announces the new state; the feedback line only adds what
+        // the resume reported as still needing work.
+        const problem = registrationProblem(await setAutomation(true));
+        if (problem) feedback('chip', problem, 'error');
       });
     };
     if (read(KEYS.focus) === tab) {

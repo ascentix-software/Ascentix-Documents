@@ -53,6 +53,8 @@ async function boot(options = {}) {
     profile = runtime(),
     privileges = {},
     register = () => {},
+    // A promise the runtime Get waits for, to model a slow server.
+    getGate = null,
   } = options;
   const document = createDocument(html);
   const navigations = [];
@@ -78,6 +80,7 @@ async function boot(options = {}) {
           const name = request.getMetadata().operationName;
           const body = JSON.parse(request.Request);
           calls.push([name, body]);
+          if (body.Command === 'Get' && getGate) await getGate;
           if (current === null)
             return {
               ok: false,
@@ -124,7 +127,7 @@ async function boot(options = {}) {
   vm.runInContext(shell, context);
   register(window.AsxdUi, context);
   await document.fire('DOMContentLoaded');
-  return { window, document, navigations, calls, session, ui: window.AsxdUi };
+  return { window, document, navigations, calls, session, xrm, ui: window.AsxdUi };
 }
 const selected = (d) =>
   d.querySelectorAll('[role=tab]').find((t) => t.getAttribute('aria-selected') === 'true')?.id;
@@ -450,8 +453,276 @@ const visible = (d) =>
     const alert = document.querySelector('[role=alert]');
     assert.equal(alert.textContent, 'Open this page from the Ascentix Documents app to connect.');
   }
+  {
+    // Fix round 1, item 1: a slow runtime Get does not hold back the tab's start. The chip is drawn
+    // when Get returns, onRuntime listeners hear it, and the page sends Get once.
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    let started = 0;
+    const heard = [];
+    const run = await boot({
+      session: storage({ 'asxd.launched': '1' }),
+      getGate: gate,
+      register: (ui) => {
+        ui.onTab('templates', () => started++);
+        ui.onRuntime((result) => heard.push(result?.WorkerId ?? null));
+      },
+    });
+    const d = run.document;
+    assert.equal(started, 1, 'The tab starts while Get is still running');
+    assert.equal(d.getElementById('automationChip').hidden, true, 'No chip before Get returns');
+    assert.equal(run.ui.runtime(), null);
+    release();
+    await d.settle();
+    assert.equal(d.getElementById('automationChipText').textContent, 'Automation running');
+    assert.equal(run.ui.runtime().WorkerId, 'worker-1');
+    assert.deepEqual(heard, ['worker-1']);
+    assert.equal(run.calls.filter(([, b]) => b?.Command === 'Get').length, 1, 'One Get per load');
+    // A refused Get still tells listeners, with null, so they stop waiting.
+    const none = [];
+    await boot({
+      profile: null,
+      session: storage({ 'asxd.launched': '1' }),
+      register: (ui) => ui.onRuntime((result) => none.push(result)),
+    });
+    assert.deepEqual(none, [null]);
+  }
+  {
+    // Fix round 1, item 2: withFocus.
+    const run = await boot({ session: storage({ 'asxd.launched': '1' }) });
+    const d = run.document;
+    const { ui } = run;
+    const list = ui.el('section');
+    list.id = 'jobs';
+    list.setAttribute('data-focus-scope', '');
+    const heading = ui.el('h3', 'Blocked jobs');
+    heading.tabIndex = -1;
+    heading.setAttribute('data-focus-heading', '');
+    d.getElementById('monitor').append(list);
+    const draw = (keys) => {
+      const rows = keys.map((key) => {
+        const row = ui.el('div', null, 'job');
+        row.setAttribute('data-focus-row', '');
+        const retry = ui.button('Retry', () => {});
+        retry.setAttribute('data-focus-key', 'retry:' + key);
+        row.append(retry);
+        return row;
+      });
+      const more = ui.button('Load more', () => {});
+      more.setAttribute('data-focus-key', 'more');
+      list.replaceChildren(heading, ...rows, ...(keys.length > 2 ? [more] : []));
+    };
+    draw(['a', 'b', 'c']);
+    // The same key after a redraw keeps focus.
+    list.querySelector('[data-focus-key="retry:b"]').focus();
+    ui.withFocus(() => draw(['a', 'b', 'c']));
+    assert.equal(d.activeElement.getAttribute('data-focus-key'), 'retry:b');
+    assert.equal(d.activeElement.isConnected, true);
+    // Its row gone: the row that took its place.
+    ui.withFocus(() => draw(['a', 'c', 'd']));
+    assert.equal(d.activeElement.getAttribute('data-focus-key'), 'retry:c');
+    // Focus outside any row (Load more) that disappears: the heading, not the first row.
+    list.querySelector('[data-focus-key="more"]').focus();
+    ui.withFocus(() => draw(['a']));
+    // assert(a === b) here: a failing assert.equal would print the whole fake DOM tree.
+    assert(
+      d.activeElement === heading,
+      'Focus moves to the list heading, got ' + d.activeElement.textContent,
+    );
+    // No focus key: focus is left alone.
+    const outside = ui.button('Elsewhere', () => {});
+    d.getElementById('monitor').append(outside);
+    outside.focus();
+    ui.withFocus(() => draw(['a', 'b']));
+    assert(d.activeElement === outside, 'Focus stays where it was');
+
+    // time: /Date(ms)/ and ISO values carry a machine-readable datetime; a missing value is empty.
+    const legacy = ui.time('/Date(1700000000000)/');
+    assert.equal(legacy.tagName, 'TIME');
+    assert.equal(legacy.getAttribute('datetime'), '2023-11-14T22:13:20Z');
+    assert.notEqual(legacy.textContent, '');
+    assert.equal(ui.time('2026-10-06T12:00:00Z').getAttribute('datetime'), '2026-10-06T12:00:00Z');
+    const missing = ui.time(null);
+    assert.equal(missing.textContent, '');
+    assert.equal(missing.hasAttribute('datetime'), false);
+    assert.equal(ui.time('not a date').hasAttribute('datetime'), false);
+
+    // help: the only maker of class="help".
+    const note = ui.help('saveHelp', 'Saving starts the next draft.');
+    assert.equal(note.tagName, 'P');
+    assert.equal(note.className, 'help');
+    assert.equal(note.id, 'saveHelp');
+    assert.equal(note.textContent, 'Saving starts the next draft.');
+
+    // busy: the clicked button shows the -ing label, the row is aria-busy and its other buttons
+    // wait; a second press does nothing; everything comes back after the work.
+    const row = ui.el('div', null, 'row');
+    row.setAttribute('data-actions', '');
+    const save = ui.button('Save', () => {});
+    const other = ui.button('Publish', () => {});
+    row.append(save, other);
+    d.getElementById('templates').append(row);
+    let finish;
+    let calls = 0;
+    const work = ui.busy(save, 'Saving…', 'templates', () => {
+      calls++;
+      return new Promise((resolve) => (finish = resolve));
+    });
+    assert.equal(save.textContent, 'Saving…');
+    assert.equal(save.classList.contains('is-busy'), true);
+    assert.equal(row.getAttribute('aria-busy'), 'true');
+    assert.equal(other.disabled, true);
+    assert.equal(await ui.busy(save, 'Saving…', 'templates', async () => calls++), undefined);
+    assert.equal(calls, 1, 'A second press while busy does nothing');
+    finish('saved');
+    assert.equal(await work, 'saved');
+    assert.equal(save.textContent, 'Save');
+    assert.equal(save.classList.contains('is-busy'), false);
+    assert.equal(row.hasAttribute('aria-busy'), false);
+    assert.equal(other.disabled, false);
+    // An error goes to the area's feedback line as an alert; without an area it is rethrown.
+    assert.equal(
+      await ui.busy(save, 'Saving…', 'templates', async () => {
+        throw new Error('The draft changed.');
+      }),
+      undefined,
+    );
+    assert.equal(d.getElementById('fb-templates').textContent, 'The draft changed.');
+    assert.equal(d.getElementById('fb-templates').getAttribute('role'), 'alert');
+    await assert.rejects(
+      ui.busy(save, 'Saving…', null, async () => {
+        throw new Error('Thrown on');
+      }),
+      /Thrown on/,
+    );
+    assert.equal(other.disabled, false);
+
+    // api: the server's error message, or a plain refusal when the body is not JSON.
+    run.xrm.WebApi.online.execute = async () => ({
+      ok: false,
+      json: async () => ({ error: { message: 'Select a library.' } }),
+    });
+    await assert.rejects(ui.api('asx_SitesAccess', {}), /Select a library\./);
+    run.xrm.WebApi.online.execute = async () => ({
+      ok: false,
+      json: async () => {
+        throw new SyntaxError('Unexpected token <');
+      },
+    });
+    await assert.rejects(ui.api('asx_SitesAccess', {}), /The server refused the request\./);
+    let sent;
+    run.xrm.WebApi.online.execute = async (request) => {
+      sent = request;
+      return { ok: true, json: async () => ({ Result: JSON.stringify({ Status: 'Ready' }) }) };
+    };
+    assert.equal((await ui.api('asx_SitesAccess', { Command: 'Get' })).Status, 'Ready');
+    assert.equal(sent.getMetadata().operationName, 'asx_SitesAccess');
+    assert.equal(sent.Request, '{"Command":"Get"}');
+  }
+  {
+    // Fix round 1, item 3: a new confirmation in the same place answers the open one with its
+    // keep value, so the action waiting on it ends; static .confirm elements stay.
+    const run = await boot({ session: storage({ 'asxd.launched': '1' }) });
+    const d = run.document;
+    const area = d.getElementById('settings');
+    const row = run.ui.el('div', null, 'row');
+    row.setAttribute('data-actions', '');
+    const first = run.ui.button('Remove', () => {});
+    const second = run.ui.button('Remove all', () => {});
+    row.append(first, second);
+    area.append(row);
+    const one = run.ui.confirmInline(first, { text: 'Remove A?', confirm: 'Remove', keep: 'Keep' });
+    const two = run.ui.ask(second, {
+      text: 'Remove all?',
+      keep: 'keep-all',
+      choices: [
+        { value: 'go', label: 'Remove all' },
+        { value: 'keep-all', label: 'Keep all' },
+      ],
+    });
+    // Fails instead of hanging when the replaced confirmation never answers.
+    // The timer is not unref'd, so a promise that never settles fails the test, not exit 0.
+    const within = (promise) => {
+      let timer;
+      return Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('The replaced confirmation never answered')),
+            1000,
+          );
+        }),
+      ]).finally(() => clearTimeout(timer));
+    };
+    assert.equal(
+      await within(one),
+      false,
+      'The replaced confirmation resolves with its keep value',
+    );
+    assert.equal(area.querySelectorAll('.confirm[role=group]').length, 1);
+    assert.equal(d.activeElement.textContent, 'Remove all?');
+    assert(d.getElementById('unregisterConfirm'), 'A static .confirm element survives');
+    const three = run.ui.confirmInline(first, {
+      text: 'Remove B?',
+      confirm: 'Remove',
+      keep: 'Keep',
+    });
+    assert.equal(await two, 'keep-all');
+    assert(d.getElementById('unregisterConfirm'));
+    d.activeElement.key('Escape');
+    assert.equal(await three, false);
+    assert.equal(area.querySelectorAll('.confirm[role=group]').length, 0);
+  }
+  {
+    // Fix round 1, item 4: Turn on reports what the resume returned, and "Automation running" is
+    // announced once, by the chip's status text, not again in its feedback line.
+    const clean = await boot({
+      profile: runtime({ Enabled: false }),
+      session: storage({ 'asxd.launched': '1' }),
+    });
+    clean.document.getElementById('automationChipAction').click();
+    await clean.document.settle();
+    assert.equal(
+      clean.document.getElementById('automationChipText').textContent,
+      'Automation running',
+    );
+    assert.equal(clean.document.getElementById('fb-chip').textContent, '');
+    const failing = await boot({
+      profile: runtime({
+        Enabled: false,
+        Registration: {
+          Readiness: [{ Scope: 'account', Status: 'Ready' }],
+          Error: 'The worker application user cannot read System Jobs.',
+        },
+      }),
+      session: storage({ 'asxd.launched': '1' }),
+    });
+    failing.document.getElementById('automationChipAction').click();
+    await failing.document.settle();
+    const line = failing.document.getElementById('fb-chip');
+    assert.equal(
+      failing.document.getElementById('automationChipText').textContent,
+      'Automation running · needs attention',
+    );
+    assert.doesNotMatch(line.textContent, /Automation running/);
+    assert.match(line.textContent, /cannot read System Jobs/);
+    assert.equal(line.getAttribute('role'), 'alert');
+    const pending = await boot({
+      profile: runtime({
+        Enabled: false,
+        Registration: { Readiness: [{ Scope: 'contact', Status: 'Missing' }], Error: null },
+      }),
+      session: storage({ 'asxd.launched': '1' }),
+    });
+    pending.document.getElementById('automationChipAction').click();
+    await pending.document.settle();
+    const notice = pending.document.getElementById('fb-chip').textContent;
+    assert.doesNotMatch(notice, /Automation running/);
+    assert.match(notice, /contact/);
+    assert.match(notice, /Settings/);
+  }
   console.log(
-    'PASS shell contract: tab order, landing, deep links, menu sync, unsaved prompt, keyboard, chip, feedback, confirmation, offline. Fake DOM; browser QA separate.',
+    'PASS shell contract: tab order, landing, deep links, menu sync, unsaved prompt, keyboard, chip, feedback, confirmation (a replaced one answers keep), offline, a slow Get that does not delay the tab, withFocus, time, help, busy, api errors and Turn on feedback. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

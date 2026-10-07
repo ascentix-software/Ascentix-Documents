@@ -2135,16 +2135,19 @@
       state.sites = sites.entities;
       await loadEnabledTables();
       await loadTemplates();
-      try {
-        setReadiness(await runtimeCommand({ Command: 'Get' }));
-      } catch {
-        state.readiness = null; // Not permitted for this user: show no badge.
-      }
+      // The shell's runtime Get, if it is back; onRuntime below fills in the rest. A caller
+      // who cannot read the runtime gets null and sees no readiness.
+      setReadiness(ui.runtime());
       renderEnablePicker();
       renderTemplateTree();
       render();
     });
   }
+  // Table readiness follows the shell's runtime result: its one Get per load, and Turn on.
+  ui.onRuntime((result) => {
+    setReadiness(result);
+    renderTemplateTree();
+  });
   ui.onTab('templates', start);
   ui.onTab('monitor', start);
   ui.onTab('settings', start);

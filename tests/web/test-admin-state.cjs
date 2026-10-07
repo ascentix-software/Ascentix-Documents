@@ -179,6 +179,7 @@ const fetch = async (url) => ({
 let active = 'templates';
 const feedback = {},
   inits = {},
+  runtimeListeners = [],
   navigations = [];
 const ui = {
   BUILD: 'ui20261006nav1',
@@ -190,6 +191,9 @@ const ui = {
   navigate: async (tab, link) => navigations.push([tab, link && { ...link }]),
   deeplink: () => null,
   can: () => true,
+  // The shell loads the runtime once; it is not back yet when the tab starts.
+  runtime: () => null,
+  onRuntime: (fn) => runtimeListeners.push(fn),
 };
 // What the tab running the action said last, as its feedback line shows it.
 const said = () => feedback[active]?.text ?? '';
@@ -216,6 +220,17 @@ async function change(n, value) {
 }
 (async () => {
   await inits.templates();
+  // The tab reuses the shell's runtime Get instead of sending its own, and shows table readiness
+  // when the shell's Get returns.
+  assert.equal(
+    requests.filter((r) => r.getMetadata().operationName === 'asx_RuntimeAdmin').length,
+    0,
+    'No second runtime Get',
+  );
+  runtimeListeners.forEach((fn) =>
+    fn({ Registration: { Readiness: [{ Scope: 'account', Status: 'Pending' }] } }),
+  );
+  assert.match(nodes.templateTree.textContent, /Pending: not registered/);
   await win.AsxdAdmin.refreshCatalog();
   assert.equal(libraryQueries.length, 2, 'Initial load and refresh both read the library catalog');
   for (const query of libraryQueries) {
@@ -433,6 +448,16 @@ async function change(n, value) {
     assert.equal(asked[0][1].keep, 'Keep template');
     assert.equal(asked[0][1].danger, true);
     assert.deepEqual(deleted, [], 'Keep template deletes nothing');
+    // Delete template deletes the selected template once and says so.
+    ui.confirmInline = async (invoker, options) => {
+      asked.push([invoker, options]);
+      return true;
+    };
+    await nodes.deleteTemplate.onclick();
+    assert.equal(asked.length, 2);
+    assert.deepEqual(deleted, [['asx_template', 'template-2']], 'Delete template deletes it');
+    assert.match(said(), /Template deleted/);
+    assert.equal(nodes.revision.textContent, 'Template deleted');
     delete xrm.WebApi.deleteRecord;
     delete ui.confirmInline;
   }
