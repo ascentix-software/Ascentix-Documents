@@ -224,7 +224,7 @@ async function boot({
   for (const name of ['shell.js', 'operations.js']) vm.runInContext(read(name), context);
   await document.fire('DOMContentLoaded');
   const $ = (id) => document.getElementById(id);
-  const buttons = (node) => node.querySelectorAll('button');
+  const buttons = (node) => [...node.querySelectorAll('button')];
   const press = async (node) => {
     node.click();
     await document.settle();
@@ -249,20 +249,18 @@ async function boot({
 (async () => {
   // Monitor -------------------------------------------------------------------------------------
   const table = (m) => m.$('problem-table');
-  const trs = (m) => m.$('problem-rows').querySelectorAll('tr');
+  const trs = (m) => [...m.$('problem-rows').querySelectorAll('tr')];
   const named = (m, scope, text) => m.buttons(scope).find((b) => b.textContent === text);
   const chip = (m, start) =>
-    m
-      .$('monitor-filters')
-      .querySelectorAll('.filter-chip')
-      .find((c) => c.textContent.startsWith(start));
+    [...m.$('monitor-filters').querySelectorAll('.filter-chip')].find((c) =>
+      c.textContent.startsWith(start),
+    );
   // A row's ⋯ menu items, and its one primary action (fake-dom refuses ">" and ":not(.class)").
-  const menuOf = (tr) => tr.querySelectorAll('[role=menuitem]').map((i) => i.textContent);
+  const menuOf = (tr) => [...tr.querySelectorAll('[role=menuitem]')].map((i) => i.textContent);
   const primaryOf = (tr) =>
-    tr
-      .querySelector('td.actions')
-      .querySelectorAll('button')
-      .find((b) => !b.classList.contains('menu-button') && b.getAttribute('role') !== 'menuitem');
+    [...tr.querySelector('td.actions').querySelectorAll('button')].find(
+      (b) => !b.classList.contains('menu-button') && b.getAttribute('role') !== 'menuitem',
+    );
   const openTool = async (m, index) => {
     await m.press(m.$('monitor-tools'));
     await m.press(m.$('monitor-tools-list').querySelectorAll('[role=menuitem]')[index]);
@@ -278,7 +276,7 @@ async function boot({
         NotCaptured: 0,
       },
     });
-    const chips = m.$('monitor-filters').querySelectorAll('.filter-chip');
+    const chips = [...m.$('monitor-filters').querySelectorAll('.filter-chip')];
     assert.deepEqual(
       chips.map((c) => c.textContent),
       [
@@ -376,13 +374,7 @@ async function boot({
     assert.equal(table(m).querySelector('thead').getAttribute('role'), 'rowgroup');
     assert.equal(table(m).querySelector('thead tr').getAttribute('role'), 'row');
     assert.deepEqual(
-      [
-        ...new Set(
-          table(m)
-            .querySelectorAll('th')
-            .map((th) => th.getAttribute('role')),
-        ),
-      ],
+      [...new Set([...table(m).querySelectorAll('th')].map((th) => th.getAttribute('role')))],
       ['columnheader'],
     );
     assert.equal(m.$('problem-rows').getAttribute('role'), 'rowgroup');
@@ -390,10 +382,7 @@ async function boot({
     assert.deepEqual(
       [
         ...new Set(
-          m
-            .$('problem-rows')
-            .querySelectorAll('td')
-            .map((td) => td.getAttribute('role')),
+          [...m.$('problem-rows').querySelectorAll('td')].map((td) => td.getAttribute('role')),
         ),
       ],
       ['cell'],
@@ -467,7 +456,7 @@ async function boot({
       /^812 of about 1,284 · ends around /,
     );
     assert.deepEqual(
-      card.querySelectorAll('button').map((b) => b.textContent),
+      [...card.querySelectorAll('button')].map((b) => b.textContent),
       ['Pause', 'Cancel re-run'],
     );
     assert.equal(trs(m).length, 1, 'A re-run is not a problem row');
@@ -479,10 +468,7 @@ async function boot({
     const m = await boot();
     assert.equal(m.$('monitor-tools').getAttribute('aria-haspopup'), 'menu');
     assert.deepEqual(
-      m
-        .$('monitor-tools-list')
-        .querySelectorAll('[role=menuitem]')
-        .map((i) => i.textContent),
+      [...m.$('monitor-tools-list').querySelectorAll('[role=menuitem]')].map((i) => i.textContent),
       ['Check a record…', 'Look up an operation…'],
     );
     await openTool(m, 0);
@@ -526,7 +512,7 @@ async function boot({
     assert.equal(item.isConnected, true, 'An open menu survives the tick');
     assert.equal(m.document.activeElement, item);
     await m.press(
-      tr.querySelectorAll('[role=menuitem]').find((i) => i.textContent === 'Cancel job'),
+      [...tr.querySelectorAll('[role=menuitem]')].find((i) => i.textContent === 'Cancel job'),
     );
     const confirm = table(m).querySelector('.confirm');
     assert.ok(confirm);
@@ -723,9 +709,9 @@ async function boot({
     assert.equal(fresh.document.activeElement, ft.querySelector('.menu-button'));
     await fresh.press(named(fresh, ft, 'Cancel job'));
     await fresh.press(
-      table(fresh)
-        .querySelectorAll('.confirm button')
-        .find((b) => b.textContent === 'Cancel job'),
+      [...table(fresh).querySelectorAll('.confirm button')].find(
+        (b) => b.textContent === 'Cancel job',
+      ),
     );
     assert.deepEqual(fresh.sent.at(-1), [
       'asx_ManageWork',
@@ -1178,9 +1164,9 @@ async function boot({
     });
     for (const m of [checking, found, notFound, ambiguous])
       assert.equal(
-        m.document
-          .querySelectorAll('input[type=text], textarea')
-          .filter((n) => /run|token|evidence|response/i.test(n.id)).length,
+        [...m.document.querySelectorAll('input[type=text], textarea')].filter((n) =>
+          /run|token|evidence|response/i.test(n.id),
+        ).length,
         0,
       );
   }
@@ -1239,8 +1225,7 @@ async function boot({
     // Row results report in the one Monitor feedback line; there are no per-list lines.
     const m = await boot({ summary: { BlockedJobs: 1 }, lists: { BlockedJobs: [row()] } });
     assert.deepEqual(
-      m.document
-        .querySelectorAll('.feedback')
+      [...m.document.querySelectorAll('.feedback')]
         .map((n) => n.id)
         .filter((id) => id.startsWith('fb-list-')),
       [],
@@ -1492,11 +1477,11 @@ async function boot({
     assert.deepEqual(save.SharePointHosts, ['contoso.sharepoint.com', 'fabrikam.sharepoint.com']);
     assert.equal(save.Enabled, true);
     assert.equal(s.$('fb-settings').textContent, 'Settings saved.');
-    const rows = s.$('tables-rows').querySelectorAll('[data-table]');
+    const rows = [...s.$('tables-rows').querySelectorAll('[data-table]')];
     assert.match(rows[0].visibleText, /Account.*Some steps missing.*Repair/);
     assert.match(rows[1].visibleText, /Run-as user can't read this table/);
     assert.ok(
-      !rows[1].querySelectorAll('button').some((b) => b.textContent === 'Repair'),
+      ![...rows[1].querySelectorAll('button')].some((b) => b.textContent === 'Repair'),
       'WorkerCannotRead has no Repair',
     );
     await s.press(rows[0].querySelector('button'));
@@ -1728,7 +1713,7 @@ async function boot({
         ],
       },
     });
-    const rows = s.$('tables-rows').querySelectorAll('[data-table]');
+    const rows = [...s.$('tables-rows').querySelectorAll('[data-table]')];
     assert.deepEqual(
       rows.map((r) => r.dataset.table),
       ['account', 'contact', 'lead', 'team'],
@@ -1739,16 +1724,16 @@ async function boot({
     assert.equal(rows[0].querySelector('.dot').dataset.tone, 'ok');
     assert.equal(rows[1].querySelector('.status').visibleText, 'Out of date');
     assert.equal(rows[1].querySelector('.dot').dataset.tone, 'attention');
-    assert.ok(rows[1].querySelectorAll('button').some((b) => b.textContent === 'Repair'));
+    assert.ok([...rows[1].querySelectorAll('button')].some((b) => b.textContent === 'Repair'));
     assert.equal(rows[2].querySelector('a').textContent, 'How to grant access');
     assert.equal(rows[3].querySelector('.table-name').textContent, 'Team access events');
     assert.equal(
       rows[3].querySelector('.sub').textContent,
       'Keeps library access in step with team membership',
     );
-    assert.ok(!rows[3].querySelectorAll('button').some((b) => b.textContent === 'Remove'));
+    assert.ok(![...rows[3].querySelectorAll('button')].some((b) => b.textContent === 'Remove'));
     assert.equal(s.$('repair-all').hidden, true, 'Repair all needs two or more');
-    const remove = rows[0].querySelectorAll('button').find((b) => b.textContent === 'Remove');
+    const remove = [...rows[0].querySelectorAll('button')].find((b) => b.textContent === 'Remove');
     await s.press(remove);
     assert.match(
       s.document.activeElement.textContent,
@@ -1767,7 +1752,7 @@ async function boot({
     await s.press(s.$('add-table'));
     const picker = s.$('enableTable');
     assert.deepEqual(
-      picker.querySelectorAll('option').map((o) => o.value),
+      [...picker.querySelectorAll('option')].map((o) => o.value),
       ['', 'contact', 'lead'],
     );
     picker.value = 'lead';
@@ -1782,7 +1767,7 @@ async function boot({
     // Connections: dot and words; Before uninstalling keeps its confirmation.
     const s = await boot({ tab: 'settings' });
     assert.equal(s.$('open-connections').textContent, 'Open in Power Automate');
-    const items = s.$('connection-list').querySelectorAll('li');
+    const items = [...s.$('connection-list').querySelectorAll('li')];
     assert.ok(items.every((li) => li.querySelector('.dot')));
     assert.equal(
       s.$('help-stop-tracking').textContent,
@@ -1792,10 +1777,9 @@ async function boot({
   {
     // Read-only: values as text, no inputs, switches or actions, never the footer.
     const s = await boot({ tab: 'settings', runtime: { CanChange: false } });
-    const shown = s
-      .$('settings')
-      .querySelectorAll('input, select, [role=switch]')
-      .filter((n) => !n.closest('[hidden]') && !n.hidden);
+    const shown = [...s.$('settings').querySelectorAll('input, select, [role=switch]')].filter(
+      (n) => !n.closest('[hidden]') && !n.hidden,
+    );
     assert.equal(shown.length, 0);
     assert.match(s.$('automation-settings').visibleText, /contoso\.sharepoint\.com/);
     assert.match(s.$('automation-card').visibleText, /Automation is running/);
@@ -1841,10 +1825,9 @@ async function boot({
     assert.equal(s.$('automation-card').hidden, false);
     assert.equal(s.$('automation-state-settings').textContent, 'Automation is running');
     assert.equal(s.$('automation-switch-settings').hidden, true);
-    const shown = s
-      .$('settings')
-      .querySelectorAll('input, select, [role=switch]')
-      .filter((n) => !n.closest('[hidden]') && !n.hidden);
+    const shown = [...s.$('settings').querySelectorAll('input, select, [role=switch]')].filter(
+      (n) => !n.closest('[hidden]') && !n.hidden,
+    );
     assert.equal(shown.length, 0);
     assert.equal(s.$('settings-meta').textContent, 'Only System Administrators can change these');
     assert.equal(s.$('settings-footer').hidden, true);
@@ -1910,10 +1893,9 @@ async function boot({
     // A runtime change while a Remove table confirmation is open keeps the confirmation; the
     // Tables card redraws once it closes.
     const s = await boot({ tab: 'settings' });
-    const remove = s
-      .$('tables-rows')
-      .querySelectorAll('button')
-      .find((b) => b.textContent === 'Remove');
+    const remove = [...s.$('tables-rows').querySelectorAll('button')].find(
+      (b) => b.textContent === 'Remove',
+    );
     await s.press(remove);
     s.window.AsxdUi.setRuntime({
       WorkerId: 'worker-1',
@@ -1934,10 +1916,9 @@ async function boot({
     });
     await s.document.settle();
     const keep = () =>
-      s
-        .$('tables-rows')
-        .querySelectorAll('button')
-        .find((b) => b.textContent === 'Keep table');
+      [...s.$('tables-rows').querySelectorAll('button')].find(
+        (b) => b.textContent === 'Keep table',
+      );
     assert.ok(keep(), 'The open confirmation survives');
     assert.match(s.$('tables-rows').visibleText, /Account.*Ready/);
     await s.press(keep());
@@ -2057,9 +2038,7 @@ async function boot({
     assert.equal(m.document.activeElement, question, 'The open confirmation keeps focus');
     assert.equal(question.isConnected, true, 'The open confirmation survives the tick');
     await m.press(
-      table(m)
-        .querySelectorAll('.confirm button')
-        .find((x) => x.textContent === 'Cancel job'),
+      [...table(m).querySelectorAll('.confirm button')].find((x) => x.textContent === 'Cancel job'),
     );
     assert.deepEqual(m.sent.at(-1)[1], { Command: 'Cancel', Key: 'folderjob:abc' });
     m.document.body.focus();

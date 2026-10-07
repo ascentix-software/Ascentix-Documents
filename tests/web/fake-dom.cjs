@@ -97,12 +97,43 @@ function matchAttribute(node, part) {
   return value === undefined ? actual !== null : actual === value;
 }
 
+// What querySelectorAll, children and a select's options return in a browser: indexed, iterable
+// and array-like, but without Array methods, so a script that calls one on them fails here too.
+class FakeHTMLCollection {
+  constructor(nodes) {
+    nodes.forEach((node, i) => (this[i] = node));
+    Object.defineProperty(this, 'length', { value: nodes.length });
+  }
+  item(index) {
+    return this[index] ?? null;
+  }
+  *[Symbol.iterator]() {
+    for (let i = 0; i < this.length; i++) yield this[i];
+  }
+}
+// A NodeList adds forEach, entries, keys and values to that.
+class FakeNodeList extends FakeHTMLCollection {
+  forEach(fn, thisArg) {
+    for (let i = 0; i < this.length; i++) fn.call(thisArg, this[i], i, this);
+  }
+  *entries() {
+    for (let i = 0; i < this.length; i++) yield [i, this[i]];
+  }
+  *keys() {
+    for (let i = 0; i < this.length; i++) yield i;
+  }
+  *values() {
+    yield* this;
+  }
+}
+
 class FakeElement {
   constructor(document, tag) {
     this.ownerDocument = document;
     this.tagName = tag.toUpperCase();
     this.nodeType = tag === '#text' ? 3 : 1;
-    this.children = [];
+    // Every child, text nodes included; children and childNodes are read-only views of it.
+    this._nodes = [];
     this.parentNode = null;
     this.attributes = new Map();
     this.dataset = {};
@@ -175,7 +206,7 @@ class FakeElement {
     if (name.startsWith('data-')) delete this.dataset[camel(name.slice(5))];
   }
   get textContent() {
-    return this._text + this.children.map((c) => c.textContent).join('');
+    return this._text + this._nodes.map((c) => c.textContent).join('');
   }
   set textContent(value) {
     this.replaceChildren();
@@ -186,15 +217,15 @@ class FakeElement {
     if (this.hidden) return '';
     const kids =
       this.tagName === 'DETAILS' && !this.open
-        ? this.children.filter((c) => c.tagName === 'SUMMARY')
-        : this.children;
+        ? this._nodes.filter((c) => c.tagName === 'SUMMARY')
+        : this._nodes;
     return this._text + kids.map((c) => c.visibleText).join('');
   }
   get isConnected() {
     return this.ownerDocument.documentElement.contains(this);
   }
   append(...nodes) {
-    for (const node of nodes) this.insert(node, this.children.length);
+    for (const node of nodes) this.insert(node, this._nodes.length);
   }
   prepend(...nodes) {
     nodes.forEach((node, i) => this.insert(node, i));
@@ -203,59 +234,67 @@ class FakeElement {
     const child = typeof node === 'string' ? this.ownerDocument.createTextNode(node) : node;
     child.remove();
     child.parentNode = this;
-    this.children.splice(Math.min(index, this.children.length), 0, child);
+    this._nodes.splice(Math.min(index, this._nodes.length), 0, child);
   }
   replaceChildren(...nodes) {
-    for (const child of [...this.children]) child.remove();
+    for (const child of [...this._nodes]) child.remove();
     this._text = '';
     this.append(...nodes);
   }
   remove() {
     if (!this.parentNode) return;
-    const siblings = this.parentNode.children;
+    const siblings = this.parentNode._nodes;
     siblings.splice(siblings.indexOf(this), 1);
     this.parentNode = null;
   }
   after(...nodes) {
     const parent = this.parentNode;
     if (!parent) return;
-    let index = parent.children.indexOf(this) + 1;
+    let index = parent._nodes.indexOf(this) + 1;
     for (const node of nodes) parent.insert(node, index++);
   }
   before(...nodes) {
     const parent = this.parentNode;
     if (!parent) return;
-    let index = parent.children.indexOf(this);
+    let index = parent._nodes.indexOf(this);
     for (const node of nodes) parent.insert(node, index++);
   }
   contains(node) {
     for (let n = node; n; n = n.parentNode) if (n === this) return true;
     return false;
   }
+  get children() {
+    return new FakeHTMLCollection(this._nodes.filter((c) => c.nodeType === 1));
+  }
+  get childNodes() {
+    return new FakeNodeList(this._nodes);
+  }
   get firstElementChild() {
-    return this.children.find((c) => c.nodeType === 1) || null;
+    return this._nodes.find((c) => c.nodeType === 1) || null;
   }
   get lastElementChild() {
-    return [...this.children].reverse().find((c) => c.nodeType === 1) || null;
+    return [...this._nodes].reverse().find((c) => c.nodeType === 1) || null;
   }
   get nextElementSibling() {
-    const siblings = this.parentNode?.children || [];
+    const siblings = this.parentNode?._nodes || [];
     return siblings.slice(siblings.indexOf(this) + 1).find((c) => c.nodeType === 1) || null;
   }
   get options() {
-    return this.descendants().filter((n) => n.tagName === 'OPTION');
+    return new FakeHTMLCollection(this.descendants().filter((n) => n.tagName === 'OPTION'));
   }
   get selectedOptions() {
-    return this.options.filter((o) => o.selected);
+    return new FakeHTMLCollection([...this.options].filter((o) => o.selected));
   }
   descendants() {
-    return this.children.flatMap((c) => [c, ...c.descendants()]);
+    return this._nodes.flatMap((c) => [c, ...c.descendants()]);
   }
   matches(selector) {
     return selector.split(',').some((s) => matchSelector(this, s.trim()));
   }
   querySelectorAll(selector) {
-    return this.descendants().filter((n) => n.nodeType === 1 && n.matches(selector));
+    return new FakeNodeList(
+      this.descendants().filter((n) => n.nodeType === 1 && n.matches(selector)),
+    );
   }
   querySelector(selector) {
     return this.querySelectorAll(selector)[0] || null;

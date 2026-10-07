@@ -393,20 +393,16 @@ async function boot({
   };
   // A button by its text and, when given, its aria-label.
   const find = (root, text, label = null) =>
-    root
-      .querySelectorAll('button')
-      .find(
-        (b) => b.textContent === text && (label === null || b.getAttribute('aria-label') === label),
-      );
+    [...root.querySelectorAll('button')].find(
+      (b) => b.textContent === text && (label === null || b.getAttribute('aria-label') === label),
+    );
   const labelled = (root, name) =>
-    root
-      .querySelectorAll('input, select, textarea')
-      .find(
-        (n) =>
-          n.getAttribute('aria-label') === name ||
-          n.parentNode?._text === name ||
-          n.parentNode?.firstElementChild?.textContent === name,
-      );
+    [...root.querySelectorAll('input, select, textarea')].find(
+      (n) =>
+        n.getAttribute('aria-label') === name ||
+        n.parentNode?._text === name ||
+        n.parentNode?.firstElementChild?.textContent === name,
+    );
   const change = async (node, value) => {
     node.value = value;
     await node.onchange?.();
@@ -415,22 +411,16 @@ async function boot({
   };
   // A templates list row by its name (the row's whole text is its name and its state).
   const row = (name) =>
-    $('template-groups')
-      .querySelectorAll('button')
-      .find(
-        (b) =>
-          b.classList.contains('list-row') && b.querySelector('.row-name')?.textContent === name,
-      );
+    [...$('template-groups').querySelectorAll('button')].find(
+      (b) => b.classList.contains('list-row') && b.querySelector('.row-name')?.textContent === name,
+    );
   const overview = async (name = 'Account onboarding') => press(row(name));
   // A step 2 tree row by its folder's shown name (chips read as their labels), and selecting it.
   const node = (name) =>
-    $('folder-tree')
-      .querySelectorAll('.tree-row')
-      .find(
-        (r) =>
-          !r.classList.contains('is-removed') &&
-          r.querySelector('.node .name')?.visibleText === name,
-      );
+    [...$('folder-tree').querySelectorAll('.tree-row')].find(
+      (r) =>
+        !r.classList.contains('is-removed') && r.querySelector('.node .name')?.visibleText === name,
+    );
   const select = async (name) => press(node(name).querySelector('.node'));
   const open = async (name = 'Account onboarding') => {
     await overview(name);
@@ -575,37 +565,32 @@ async function boot({
             ]
           : null,
     });
-    const groups = t.$('template-groups').querySelectorAll('.list-group');
+    const groups = [...t.$('template-groups').querySelectorAll('.list-group')];
     assert.deepEqual(
       groups.map((g) => g.querySelector('.group-label').textContent),
       ['Account', 'Contact'],
     );
-    const states = t
-      .$('template-groups')
-      .querySelectorAll('.list-row')
-      .map((r) => [
-        r.querySelector('.row-name').textContent,
-        r.querySelector('.row-state').textContent,
-      ]);
+    const states = [...t.$('template-groups').querySelectorAll('.list-row')].map((r) => [
+      r.querySelector('.row-name').textContent,
+      r.querySelector('.row-state').textContent,
+    ]);
     assert.deepEqual(states, [
       ['Account onboarding', 'Live v1'],
       ['Key accounts', 'Draft v1'],
       ['Contact files', 'Off'],
     ]);
     assert.deepEqual(
-      t
-        .$('template-groups')
-        .querySelectorAll('.row-state')
-        .map((s) => s.getAttribute('data-tone')),
+      [...t.$('template-groups').querySelectorAll('.row-state')].map((s) =>
+        s.getAttribute('data-tone'),
+      ),
       ['ok', 'warning', 'muted'],
     );
     t.$('template-search').value = 'key';
     t.$('template-search').oninput();
     assert.deepEqual(
-      t
-        .$('template-groups')
-        .querySelectorAll('.list-row')
-        .map((r) => r.querySelector('.row-name').textContent),
+      [...t.$('template-groups').querySelectorAll('.list-row')].map(
+        (r) => r.querySelector('.row-name').textContent,
+      ),
       ['Key accounts'],
     );
   }
@@ -638,7 +623,7 @@ async function boot({
     assert.match(t.$('overview-meta').textContent, /^Account table · published .+ by Dana Reyes$/);
     assert.doesNotMatch(t.$('overview-meta').textContent, /records/);
     assert.equal(t.row('Account onboarding').getAttribute('aria-current'), 'true');
-    const cards = t.$('overview-cards').querySelectorAll('.section-card');
+    const cards = [...t.$('overview-cards').querySelectorAll('.section-card')];
     assert.deepEqual(
       cards.map((c) => c.querySelector('h2').textContent),
       ['Destinations', 'Folders', 'Schedule and runs', 'Versions'],
@@ -717,7 +702,7 @@ async function boot({
     await t.overview();
     assert.equal(t.$('overview-pill').textContent, 'Live v3 · Draft v4');
     assert.equal(t.$('overview-edit').textContent, 'Continue Draft v4');
-    const versions = t.$('overview-cards').querySelectorAll('.version-row');
+    const versions = [...t.$('overview-cards').querySelectorAll('.version-row')];
     assert.deepEqual(
       versions.map((v) => [
         v.querySelector('.v').textContent,
@@ -743,10 +728,9 @@ async function boot({
     assert.equal(t.$('schedule-panel').hidden, true);
     await t.press(t.$('overview-menu'));
     assert.deepEqual(
-      t
-        .$('overview-menu-list')
-        .querySelectorAll('[role=menuitem]')
-        .map((i) => i.textContent.trim()),
+      [...t.$('overview-menu-list').querySelectorAll('[role=menuitem]')].map((i) =>
+        i.textContent.trim(),
+      ),
       ['Re-run for existing records…', 'Delete template'],
     );
     await t.press(t.$('manage-tables'));
@@ -986,7 +970,7 @@ async function boot({
       loaded: { RevisionId: 'rev-1', RowVersion: '3', Status: 'Published', Version: 1, Draft: d },
     });
     await t.overview();
-    const rows = t.$('overview-cards').querySelectorAll('.folder-row');
+    const rows = [...t.$('overview-cards').querySelectorAll('.folder-row')];
     assert.equal(rows[1].querySelector('.token').textContent, 'Primary Contact › Full Name');
     assert.equal(
       rows[1].querySelector('.rule').textContent,
@@ -1140,7 +1124,7 @@ async function boot({
     const table = t.$('new-template-table');
     assert.equal(table.hidden, false);
     assert.deepEqual(
-      table.querySelectorAll('option').map((o) => o.textContent),
+      [...table.querySelectorAll('option')].map((o) => o.textContent),
       ['Choose a table', 'Account', 'Contact'],
     );
     await t.change(table, 'contact');
@@ -1429,10 +1413,9 @@ async function boot({
     await t.press(t.$('add-subfolder'));
     await t.select('General');
     await t.press(t.$('folder-menu'));
-    const removeFolder = t
-      .$('folder-menu-list')
-      .querySelectorAll('[role=menuitem]')
-      .find((i) => i.textContent === 'Remove folder');
+    const removeFolder = [...t.$('folder-menu-list').querySelectorAll('[role=menuitem]')].find(
+      (i) => i.textContent === 'Remove folder',
+    );
     assert.equal(removeFolder.getAttribute('aria-disabled'), 'true');
     assert.equal(
       t.document.getElementById(removeFolder.getAttribute('aria-describedby')).textContent,
@@ -1444,10 +1427,9 @@ async function boot({
     await t.select('New folder');
     await t.press(t.$('folder-menu'));
     await t.press(
-      t
-        .$('folder-menu-list')
-        .querySelectorAll('[role=menuitem]')
-        .find((i) => i.textContent === 'Remove folder'),
+      [...t.$('folder-menu-list').querySelectorAll('[role=menuitem]')].find(
+        (i) => i.textContent === 'Remove folder',
+      ),
     );
     assert.equal(
       t.document.activeElement.getAttribute('data-focus-key'),
@@ -1467,30 +1449,31 @@ async function boot({
     await t.step(2);
     await t.select('General');
     await t.press(t.$('add-field'));
-    const groups = t.$('field-options').querySelectorAll('[role=group]');
+    const groups = [...t.$('field-options').querySelectorAll('[role=group]')];
     assert.deepEqual(
       groups.map((g) => g.getAttribute('aria-label')),
       ['This record', 'Primary Contact → Contact'],
     );
-    const own = groups[0]
-      .querySelectorAll('[role=option]')
-      .map((o) => o.querySelector('.label').textContent);
+    const own = [...groups[0].querySelectorAll('[role=option]')].map(
+      (o) => o.querySelector('.label').textContent,
+    );
     assert.equal(own[0], 'Account Name');
     assert.equal(own.at(-1), '(Deprecated) Old Code');
     assert.deepEqual(
-      groups[0].querySelectorAll('[role=option]').map((o) => o.querySelector('.kind').textContent),
+      [...groups[0].querySelectorAll('[role=option]')].map(
+        (o) => o.querySelector('.kind').textContent,
+      ),
       ['Text', 'Text', 'Number', 'Date', 'Choice', 'Choice', 'Text'],
       'The name kinds only, with their type',
     );
     await t.press(
-      t
-        .$('field-options')
-        .querySelectorAll('[role=option]')
-        .find((o) => o.dataset.value === 'lookup:primarycontactid:contact:fullname'),
+      [...t.$('field-options').querySelectorAll('[role=option]')].find(
+        (o) => o.dataset.value === 'lookup:primarycontactid:contact:fullname',
+      ),
     );
     assert.match(t.$('folder-name').value, /\{lookup_1\.fullname\}$/);
     assert.equal(
-      t.$('folder-tree').querySelectorAll('.token').at(-1).textContent,
+      [...t.$('folder-tree').querySelectorAll('.token')].at(-1).textContent,
       'Primary Contact › Full Name',
     );
   }
@@ -1501,9 +1484,9 @@ async function boot({
     await t.select('General');
     const editor = t.$('conditions');
     await t.mode(1);
-    const field = editor
-      .querySelectorAll('select')
-      .find((s) => s.getAttribute('aria-label') === 'Field, condition 1');
+    const field = [...editor.querySelectorAll('select')].find(
+      (s) => s.getAttribute('aria-label') === 'Field, condition 1',
+    );
     assert.ok(t.document.activeElement === field, 'A new condition focuses its Field');
     const group = editor.querySelector('.condition-group');
     assert.equal(group.getAttribute('role'), 'group');
@@ -1511,9 +1494,7 @@ async function boot({
     for (const control of editor.querySelectorAll('select, input'))
       assert.ok(control.getAttribute('aria-label'), 'Unnamed control in the condition builder');
     assert.equal(
-      t
-        .labelled(editor, 'Match, Conditions for General')
-        .querySelectorAll('option')
+      [...t.labelled(editor, 'Match, Conditions for General').querySelectorAll('option')]
         .map((o) => o.textContent)
         .join('|'),
       'All|Any',
@@ -1525,18 +1506,18 @@ async function boot({
     };
     for (const [value, [type, mode]] of Object.entries(kinds)) {
       await t.change(field, value);
-      const input = editor
-        .querySelectorAll('input')
-        .find((i) => i.getAttribute('aria-label') === 'Value, condition 1');
+      const input = [...editor.querySelectorAll('input')].find(
+        (i) => i.getAttribute('aria-label') === 'Value, condition 1',
+      );
       assert.equal(input.type, type, value);
       assert.equal(input.getAttribute('inputmode'), mode);
     }
     await t.change(field, 'root.statecode');
-    const choice = editor
-      .querySelectorAll('select')
-      .find((s) => s.getAttribute('aria-label') === 'Value, condition 1');
+    const choice = [...editor.querySelectorAll('select')].find(
+      (s) => s.getAttribute('aria-label') === 'Value, condition 1',
+    );
     assert.deepEqual(
-      choice.querySelectorAll('option').map((o) => o.textContent),
+      [...choice.querySelectorAll('option')].map((o) => o.textContent),
       ['Another field…', 'Choose a value', 'Active', 'Inactive'],
     );
     await t.change(field, 'root.primarycontactid');
@@ -1545,9 +1526,9 @@ async function boot({
     assert.match(editor.visibleText, /Jane Smith/);
     // The chosen record is a removable chip (spec 3.1): ✕ is named, clears the value, and focus
     // returns to Choose record….
-    const clear = editor
-      .querySelectorAll('button')
-      .find((b) => b.getAttribute('aria-label') === 'Remove Jane Smith, condition 1');
+    const clear = [...editor.querySelectorAll('button')].find(
+      (b) => b.getAttribute('aria-label') === 'Remove Jane Smith, condition 1',
+    );
     assert.ok(clear, 'The lookup chip has a named remove button');
     await t.press(clear);
     assert.doesNotMatch(editor.visibleText, /Jane Smith/);
@@ -1556,9 +1537,9 @@ async function boot({
     assert.match(editor.visibleText, /Jane Smith/);
     await t.change(t.labelled(editor, 'Operator, condition 1'), 'IsNull');
     assert.equal(
-      editor
-        .querySelectorAll('input, select')
-        .filter((n) => n.getAttribute('aria-label') === 'Value, condition 1').length,
+      [...editor.querySelectorAll('input, select')].filter(
+        (n) => n.getAttribute('aria-label') === 'Value, condition 1',
+      ).length,
       0,
       'is empty has no value control',
     );
@@ -1566,15 +1547,15 @@ async function boot({
     await t.press(t.find(editor, 'Choose record…'));
     // Removing a condition moves focus to the next condition's Field.
     await t.press(
-      editor
-        .querySelectorAll('button')
-        .find((b) => b.getAttribute('aria-label') === 'Add condition to conditions for General'),
+      [...editor.querySelectorAll('button')].find(
+        (b) => b.getAttribute('aria-label') === 'Add condition to conditions for General',
+      ),
     );
     assert.equal(t.document.activeElement.getAttribute('aria-label'), 'Field, condition 2');
     await t.press(
-      editor
-        .querySelectorAll('button')
-        .find((b) => b.getAttribute('aria-label') === 'Remove condition 2'),
+      [...editor.querySelectorAll('button')].find(
+        (b) => b.getAttribute('aria-label') === 'Remove condition 2',
+      ),
     );
     assert.equal(
       t.document.activeElement.getAttribute('aria-label'),
@@ -1582,9 +1563,9 @@ async function boot({
     );
     // An empty group is refused at Save, at the group, with focus on it.
     await t.press(
-      editor
-        .querySelectorAll('button')
-        .find((b) => b.getAttribute('aria-label') === 'Add group to conditions for General'),
+      [...editor.querySelectorAll('button')].find(
+        (b) => b.getAttribute('aria-label') === 'Add group to conditions for General',
+      ),
     );
     await t.flush();
     assert.equal(t.sent.filter(([k]) => k === 'asx_CreateDraft').length, 0);
@@ -1596,9 +1577,9 @@ async function boot({
       'A new group focuses its All/Any',
     );
     await t.press(
-      editor
-        .querySelectorAll('button')
-        .find((b) => b.getAttribute('aria-label') === 'Remove group 2'),
+      [...editor.querySelectorAll('button')].find(
+        (b) => b.getAttribute('aria-label') === 'Remove group 2',
+      ),
     );
     await t.flush();
     const saved = t.last('asx_CreateDraft').Destinations[0].Folders[1].Condition.Conditions[0];
@@ -1626,9 +1607,9 @@ async function boot({
     assert.equal(editor.querySelectorAll('fieldset').length, 0, 'No fieldset boxes');
     assert.equal(editor.querySelectorAll('.condition-group.nested').length, depth - 1);
     const addGroup = (n) =>
-      editor
-        .querySelectorAll('button')
-        .find((b) => b.getAttribute('aria-label') === 'Add group to group ' + n + ' conditions');
+      [...editor.querySelectorAll('button')].find(
+        (b) => b.getAttribute('aria-label') === 'Add group to group ' + n + ' conditions',
+      );
     const deepest = addGroup(depth);
     assert.equal(deepest.getAttribute('aria-disabled'), 'true');
     assert.equal(
@@ -1882,10 +1863,9 @@ async function boot({
     await t.select('General');
     await t.press(t.$('add-field'));
     const group = () =>
-      t
-        .$('field-options')
-        .querySelectorAll('[role=group]')
-        .find((g) => g.getAttribute('aria-label') === 'Link rel9 → rel9');
+      [...t.$('field-options').querySelectorAll('[role=group]')].find(
+        (g) => g.getAttribute('aria-label') === 'Link rel9 → rel9',
+      );
     assert.equal(group().getAttribute('aria-disabled'), 'true');
     assert.equal(group().querySelectorAll('[role=option]')[0].textContent, 'Loading fields…');
     release();
@@ -1904,10 +1884,9 @@ async function boot({
     await failed.open();
     await failed.select('General');
     await failed.press(failed.$('add-field'));
-    const contact = failed
-      .$('field-options')
-      .querySelectorAll('[role=group]')
-      .find((g) => g.getAttribute('aria-label') === 'Primary Contact → Contact');
+    const contact = [...failed.$('field-options').querySelectorAll('[role=group]')].find(
+      (g) => g.getAttribute('aria-label') === 'Primary Contact → Contact',
+    );
     assert.equal(contact.getAttribute('aria-disabled'), 'true');
     assert.equal(
       contact.querySelectorAll('[role=option]')[0].textContent,
@@ -1936,10 +1915,9 @@ async function boot({
     await t.select('General');
     await t.mode(1);
     const group = () =>
-      t
-        .labelled(t.$('conditions'), 'Field, condition 1')
-        .querySelectorAll('optgroup')
-        .find((g) => g.getAttribute('label') === 'Link rel0 → rel0');
+      [...t.labelled(t.$('conditions'), 'Field, condition 1').querySelectorAll('optgroup')].find(
+        (g) => g.getAttribute('label') === 'Link rel0 → rel0',
+      );
     const name = t.$('folder-name');
     name.focus();
     release();
@@ -2080,7 +2058,7 @@ async function boot({
     assert.equal(t.$('editor-title').textContent, 'Account onboarding');
     assert.equal(t.$('editor-pill').textContent, 'Draft v2');
     assert.equal(t.$('editor-note').textContent, 'v1 stays live until you publish');
-    const tabs = t.$('editor-steps').querySelectorAll('[role=tab]');
+    const tabs = [...t.$('editor-steps').querySelectorAll('[role=tab]')];
     assert.deepEqual(
       tabs.map((b) => b.querySelector('.step-label').textContent),
       ['Destinations', 'Folders', 'Review and publish'],
@@ -2423,10 +2401,9 @@ async function boot({
     await published.select('Invoices');
     await published.press(published.$('folder-menu'));
     await published.press(
-      published
-        .$('folder-menu-list')
-        .querySelectorAll('[role=menuitem]')
-        .find((i) => i.textContent === 'Remove folder'),
+      [...published.$('folder-menu-list').querySelectorAll('[role=menuitem]')].find(
+        (i) => i.textContent === 'Remove folder',
+      ),
     );
     await published.select('Account Name');
     await published.press(published.$('add-subfolder'));
@@ -2459,7 +2436,7 @@ async function boot({
     assert.equal(t.labelled(card, 'Name').value, 'Business documents');
     const library = t.labelled(card, 'Library');
     assert.equal(
-      library.querySelectorAll('option').at(-1).textContent,
+      [...library.querySelectorAll('option')].at(-1).textContent,
       'Set up a library in Sites & access…',
     );
     const who = card.querySelector('.who-can-open');
@@ -2867,10 +2844,7 @@ async function boot({
     await t.open();
     await t.step(2);
     assert.deepEqual(
-      t
-        .$('dest-pills')
-        .querySelectorAll('button')
-        .map((b) => b.textContent),
+      [...t.$('dest-pills').querySelectorAll('button')].map((b) => b.textContent),
       ['Business documents'],
     );
     assert.equal(t.node('Account Name').querySelector('.token').textContent, 'Account Name');
@@ -2878,10 +2852,9 @@ async function boot({
     await t.select('Invoices');
     await t.press(t.$('folder-menu'));
     await t.press(
-      t
-        .$('folder-menu-list')
-        .querySelectorAll('[role=menuitem]')
-        .find((i) => i.textContent === 'Remove folder'),
+      [...t.$('folder-menu-list').querySelectorAll('[role=menuitem]')].find(
+        (i) => i.textContent === 'Remove folder',
+      ),
     );
     const removed = t.$('folder-tree').querySelector('.tree-row.is-removed');
     assert.equal(removed.querySelector('.tag').textContent, 'Removed');
@@ -2953,14 +2926,13 @@ async function boot({
     assert.equal(t.$('field-popover').hidden, false);
     assert.equal(t.$('add-field').getAttribute('aria-expanded'), 'true');
     assert.ok(t.document.activeElement === t.$('field-search'));
-    const groups = t
-      .$('field-options')
-      .querySelectorAll('[role=group]')
-      .map((g) => g.getAttribute('aria-label'));
+    const groups = [...t.$('field-options').querySelectorAll('[role=group]')].map((g) =>
+      g.getAttribute('aria-label'),
+    );
     assert.equal(groups[0], 'This record');
     t.$('field-search').value = 'number';
     t.$('field-search').oninput();
-    const options = t.$('field-options').querySelectorAll('[role=option]');
+    const options = [...t.$('field-options').querySelectorAll('[role=option]')];
     assert.deepEqual(
       options.map((o) => o.querySelector('.label').textContent),
       ['Account Number'],
@@ -3000,7 +2972,7 @@ async function boot({
     await t.open();
     await t.step(2);
     await t.select('General');
-    const modes = t.$('create-mode').querySelectorAll('[role=radio]');
+    const modes = [...t.$('create-mode').querySelectorAll('[role=radio]')];
     assert.deepEqual(
       modes.map((m) => m.textContent),
       ['Always', 'Only when…'],
@@ -3012,7 +2984,7 @@ async function boot({
     assert.equal(conditions.querySelectorAll('fieldset').length, 0, 'No fieldset boxes');
     const operator = t.labelled(conditions, 'Operator, condition 1');
     assert.deepEqual(
-      operator.querySelectorAll('option').map((o) => o.textContent),
+      [...operator.querySelectorAll('option')].map((o) => o.textContent),
       ['is', 'is not', 'is empty', 'has a value', 'contains', "doesn't contain"],
     );
     await t.change(t.labelled(conditions, 'Field, condition 1'), 'root.statecode');
@@ -3044,17 +3016,15 @@ async function boot({
     assert.equal(when.tabIndex, 0);
     assert.ok(t.document.activeElement === when, 'Focus stays in the radio group');
     assert.ok(t.state().sections[0].Folders[1].Condition, 'Only when… seeds a condition');
-    const more = t
-      .$('conditions')
-      .querySelectorAll('button')
-      .find((b) => b.getAttribute('aria-label') === 'Value options, condition 1');
+    const more = [...t.$('conditions').querySelectorAll('button')].find(
+      (b) => b.getAttribute('aria-label') === 'Value options, condition 1',
+    );
     assert.equal(more.getAttribute('aria-haspopup'), 'menu');
     await t.press(more);
     await t.press(
-      t
-        .$('conditions')
-        .querySelectorAll('[role=menuitem]')
-        .find((i) => i.textContent === 'Another field…'),
+      [...t.$('conditions').querySelectorAll('[role=menuitem]')].find(
+        (i) => i.textContent === 'Another field…',
+      ),
     );
     const other = t.labelled(t.$('conditions'), 'Other field, condition 1');
     assert.ok(t.document.activeElement === other);
@@ -3231,7 +3201,7 @@ async function boot({
     await t.open();
     await t.step(2);
     await t.select('General');
-    const rows = () => t.$('test-records').querySelectorAll('.test-record');
+    const rows = () => [...t.$('test-records').querySelectorAll('.test-record')];
     await t.press(t.$('add-test-record'));
     await t.press(t.$('add-test-record'));
     assert.equal(rows().length, 1, 'Listed once');
@@ -3329,7 +3299,7 @@ async function boot({
     });
     await t.open();
     await t.step(2);
-    const removed = t.$('folder-tree').querySelectorAll('.tree-row.is-removed');
+    const removed = [...t.$('folder-tree').querySelectorAll('.tree-row.is-removed')];
     assert.deepEqual(
       removed.map((r) => r.querySelector('.name').textContent),
       ['Primary Contact › Full Name', 'Archive'],
@@ -3415,10 +3385,9 @@ async function boot({
     await t.step(2);
     assert.equal(t.state().sections[0].Folders.length, bound - 1);
     const undo = (name) =>
-      t
-        .$('folder-tree')
-        .querySelectorAll('button')
-        .find((b) => b.getAttribute('aria-label') === 'Undo removing ' + name);
+      [...t.$('folder-tree').querySelectorAll('button')].find(
+        (b) => b.getAttribute('aria-label') === 'Undo removing ' + name,
+      );
     // Archive needs Contacts back too: two folders where one fits.
     assert.equal(undo('Archive').getAttribute('aria-disabled'), 'true');
     assert.equal(
@@ -3469,7 +3438,7 @@ async function boot({
     await r.press(r.find(r.$('folder-menu-list'), 'Remove folder'));
     await r.change(r.labelled(r.$('step-1'), 'Name'), 'Client files');
     await r.step(3);
-    const rows = r.$('change-list').querySelectorAll('.change-row');
+    const rows = [...r.$('change-list').querySelectorAll('.change-row')];
     assert.deepEqual(
       rows.map((row) => row.querySelector('.mark').textContent),
       ['◆', '−'],
@@ -3500,10 +3469,7 @@ async function boot({
     await t.step(3);
     assert.equal(t.$('publishing-title').textContent, 'Publishing v2');
     assert.deepEqual(
-      t
-        .$('consequences')
-        .querySelectorAll('li')
-        .map((li) => li.visibleText),
+      [...t.$('consequences').querySelectorAll('li')].map((li) => li.visibleText),
       [
         'New Account records get v2 folders from now on.',
         'Changed records are updated, because “Update folders when records change” is on.',
@@ -3511,10 +3477,9 @@ async function boot({
       ],
     );
     assert.deepEqual(
-      t
-        .$('consequences')
-        .querySelectorAll('li')
-        .map((li) => li.querySelector('.dot').dataset.tone),
+      [...t.$('consequences').querySelectorAll('li')].map(
+        (li) => li.querySelector('.dot').dataset.tone,
+      ),
       ['ok', 'ok', 'pending'],
     );
     assert.equal(
@@ -3740,9 +3705,9 @@ async function boot({
       ],
     });
     const picker = t.$('template-picker');
-    assert.equal(picker.closest('.narrow-only').children[0].textContent, 'Template');
+    assert.equal(picker.closest('.narrow-only').childNodes[0].textContent, 'Template');
     assert.deepEqual(
-      picker.querySelectorAll('option').map((o) => o.textContent),
+      [...picker.querySelectorAll('option')].map((o) => o.textContent),
       ['Account onboarding', 'Contracts'],
     );
     assert.equal(picker.value, TEMPLATE);
@@ -3909,10 +3874,7 @@ async function boot({
     assert.equal(t.$('result-record').hidden, false);
     assert.equal(t.$('result-choose').hidden, true);
     assert.deepEqual(
-      t
-        .$('result-record')
-        .querySelectorAll('option')
-        .map((o) => o.textContent),
+      [...t.$('result-record').querySelectorAll('option')].map((o) => o.textContent),
       ['Contoso Ltd'],
     );
     const request = t.last('asx_PreviewTemplate');
@@ -3921,7 +3883,7 @@ async function boot({
     assert.equal(t.$('preview-status').textContent, 'Preview updated: 1 destination, 2 folders.');
     const card = t.$('previewTrees').querySelector('.preview-card');
     assert.equal(card.querySelector('.eyebrow').textContent, 'Business documents · Delivery');
-    const nodes = card.querySelectorAll('.preview-node');
+    const nodes = [...card.querySelectorAll('.preview-node')];
     assert.deepEqual(
       nodes.map((n) => [n.visibleText, n.style.paddingLeft]),
       [

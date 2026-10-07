@@ -50,12 +50,11 @@ function boot(xrm, { timers, uuid, refreshCatalog = async () => {}, link = null 
   };
   // The button with this text inside the open confirmation of a container.
   const confirmIn = (container, label) =>
-    container
-      .querySelector('.confirm')
-      .querySelectorAll('button')
-      .find((b) => b.textContent === label);
+    [...container.querySelector('.confirm').querySelectorAll('button')].find(
+      (b) => b.textContent === label,
+    );
   const menuItem = (menu, label) =>
-    nodes[menu].querySelectorAll('button').find((b) => b.textContent === label);
+    [...nodes[menu].querySelectorAll('button')].find((b) => b.textContent === label);
   return { document, window, nodes, press, confirmIn, menuItem };
 }
 // A JSON error as Dataverse sends a refusal.
@@ -338,13 +337,16 @@ const pressFocused = async (node) => {
   await press(node);
 };
 const teamRows = () => nodes['ad-team-rows'].querySelectorAll('.team-row');
-const rowButton = (row, text) => row.querySelectorAll('button').find((b) => b.textContent === text);
+const rowButton = (row, text) =>
+  [...row.querySelectorAll('button')].find((b) => b.textContent === text);
 // A team row's ✕, named by its aria-label.
 const removeOf = (row) =>
-  row.querySelectorAll('button').find((b) => /^Remove /.test(b.getAttribute('aria-label') || ''));
-const libraryRows = () => nodes['ad-libraries'].querySelectorAll('tr');
+  [...row.querySelectorAll('button')].find((b) =>
+    /^Remove /.test(b.getAttribute('aria-label') || ''),
+  );
+const libraryRows = () => [...nodes['ad-libraries'].querySelectorAll('tr')];
 const libraryButton = (name) =>
-  nodes['ad-libraries'].querySelectorAll('button').find((b) => b.textContent === name);
+  [...nodes['ad-libraries'].querySelectorAll('button')].find((b) => b.textContent === name);
 const rowNamed = (name) =>
   libraryRows().find((r) => r.querySelector('.library-name').textContent === name);
 // The Access column of a library's row, as a person reads it.
@@ -373,7 +375,7 @@ const stage = (team, access) => {
   assert.match(teamQuery, /isdefault eq false/);
   assert.doesNotMatch(teamQuery, /teamtype eq 1/, 'Access teams stay out of the picker');
   for (const picker of ['ad-team-choice', 'ad-initial-team']) {
-    const options = nodes[picker].options.slice(1),
+    const options = [...nodes[picker].options].slice(1),
       byId = (n) => options.find((o) => o.value === id(n));
     assert.equal(options.length, teams.length, picker + ' lists every eligible team');
     assert.equal(byId(4).textContent, 'Operations');
@@ -581,7 +583,7 @@ const stage = (team, access) => {
   assert.equal(nodes['ad-existing-form'].hidden, false);
   assert.equal(nodes['ad-existing-more'].hidden, false);
   assert.deepEqual(
-    nodes['ad-existing-choices'].children.map((c) => c.textContent),
+    [...nodes['ad-existing-choices'].children].map((c) => c.textContent),
     ['Add Archive', 'Add Removed earlier'],
   );
   assert.match(libraryQueries.at(-1), /statecode eq 0 and \(asx_listid eq '00000008-.*' or /);
@@ -1055,9 +1057,9 @@ const stage = (team, access) => {
     };
     await timers.shift()();
     await pressFocused(libraryButton('Unsynced'));
-    const card = nodes['ad-drawer-progress']
-      .querySelectorAll('section')
-      .find((c) => /Unsynced/.test(c.textContent));
+    const card = [...nodes['ad-drawer-progress'].querySelectorAll('section')].find((c) =>
+      /Unsynced/.test(c.textContent),
+    );
     assert(card, 'The finished setup stays listed');
     assert.match(card.textContent, /first access run was cancelled; apply access/);
     assert.doesNotMatch(card.textContent, /Setup completed/);
@@ -1193,9 +1195,9 @@ const stage = (team, access) => {
     // card: its row needs attention, and its drawer shows the card.
     assert.doesNotMatch(card.textContent, /Loading…/);
     const generalRow = () =>
-      fresh['ad-libraries']
-        .querySelectorAll('tr')
-        .find((r) => r.querySelector('.library-name').textContent === 'General');
+      [...fresh['ad-libraries'].querySelectorAll('tr')].find(
+        (r) => r.querySelector('.library-name').textContent === 'General',
+      );
     assert.equal(generalRow().querySelector('.access').visibleText, 'Needs attention');
     await reloaded.press(generalRow().querySelector('.library-name'));
     const drawerCards = fresh['ad-drawer-progress'];
@@ -1224,7 +1226,7 @@ const stage = (team, access) => {
     assert.match(drawerCards.textContent, /General.*no longer exists on the site/);
     // Remove: the library leaves the list and its re-point card goes, with no reload.
     const listed = () =>
-      fresh['ad-libraries'].querySelectorAll('.library-name').map((c) => c.textContent);
+      [...fresh['ad-libraries'].querySelectorAll('.library-name')].map((c) => c.textContent);
     assert.deepEqual(listed(), ['General']);
     const before = lists.length;
     await fresh['ad-library-menu'].onclick();
@@ -1257,7 +1259,7 @@ const stage = (team, access) => {
     await reloaded.press(reloaded.confirmIn(fresh['ad-site-header'], 'Remove site'));
     assert.deepEqual(sent.at(-1), { Command: 'RemoveSite', CatalogId: id(1) });
     assert.deepEqual(
-      fresh['ad-sites'].children.map((c) => c.textContent),
+      [...fresh['ad-sites'].children].map((c) => c.textContent),
       [],
       'The removed site is no longer listed',
     );
@@ -1347,7 +1349,7 @@ const stage = (team, access) => {
     await deleted.document.fire('DOMContentLoaded');
     await deleted.press(fresh['ad-libraries'].querySelector('.library-name'));
     assert.doesNotMatch(fresh['fb-access-library'].textContent, /not found/);
-    const teamRowsOf = () => fresh['ad-team-rows'].querySelectorAll('.team-row');
+    const teamRowsOf = () => [...fresh['ad-team-rows'].querySelectorAll('.team-row')];
     const rows = () => teamRowsOf().map((r) => r.querySelector('strong').textContent);
     assert.deepEqual(rows(), ['Deleted team: AcceptC Team 1', 'Operations']);
     assert.equal(
@@ -1394,8 +1396,7 @@ const stage = (team, access) => {
     // F-14: a refusal shows the server's sentence, not a raw body, at the form that failed.
     removalRefusal = 'Remove is refused: templates use this library: Account onboarding.';
     await nodes['ad-library-menu'].onclick();
-    await nodes['ad-library-menu-list']
-      .querySelectorAll('button')
+    await [...nodes['ad-library-menu-list'].querySelectorAll('button')]
       .find((b) => b.textContent === 'Remove library')
       .onclick();
     await document.settle();
@@ -1405,10 +1406,7 @@ const stage = (team, access) => {
       document.activeElement.textContent.startsWith('Remove General from Documents?'),
       true,
     );
-    box
-      .querySelectorAll('button')
-      .find((b) => b.textContent === 'Remove library')
-      .click();
+    [...box.querySelectorAll('button')].find((b) => b.textContent === 'Remove library').click();
     await document.settle();
     assert.equal(
       nodes['fb-access-library'].textContent,
@@ -1421,7 +1419,7 @@ const stage = (team, access) => {
     // F-21: Remove on a team row strikes it through with Undo; Apply with removals says what changes.
     const row = teamRows()[0];
     assert.deepEqual(
-      row.querySelector('select').options.map((o) => o.value),
+      [...row.querySelector('select').options].map((o) => o.value),
       ['Read', 'Contribute'],
     );
     assert.equal(row.querySelector('select').getAttribute('aria-label'), 'Access for Operations');
@@ -1447,10 +1445,7 @@ const stage = (team, access) => {
       team + ':undo',
       'Remove moves focus to Undo',
     );
-    removed
-      .querySelectorAll('button')
-      .find((b) => b.textContent === 'Undo')
-      .click();
+    [...removed.querySelectorAll('button')].find((b) => b.textContent === 'Undo').click();
     await document.settle();
     assert.doesNotMatch(nodes['ad-team-rows'].visibleText, /Removed/);
     assert.equal(
@@ -1466,9 +1461,7 @@ const stage = (team, access) => {
       document.activeElement.textContent,
       /Removed teams lose the access Documents gave them\. Access given another way, such as sharing links or site membership, is not changed\./,
     );
-    nodes['ad-drawer']
-      .querySelector('.confirm')
-      .querySelectorAll('button')
+    [...nodes['ad-drawer'].querySelector('.confirm').querySelectorAll('button')]
       .find((b) => b.textContent === 'Apply access')
       .click();
     await document.settle();
@@ -1486,9 +1479,9 @@ const stage = (team, access) => {
   {
     // Remove site waits for its libraries, with the reason; the site actions live in a menu.
     await nodes['ad-site-menu'].onclick();
-    const remove = nodes['ad-site-menu-list']
-      .querySelectorAll('button')
-      .find((b) => b.textContent === 'Remove site');
+    const remove = [...nodes['ad-site-menu-list'].querySelectorAll('button')].find(
+      (b) => b.textContent === 'Remove site',
+    );
     assert.equal(remove.getAttribute('aria-disabled'), 'true');
     assert.equal(
       document.getElementById(remove.getAttribute('aria-describedby')).textContent,
@@ -1550,15 +1543,14 @@ const stage = (team, access) => {
     };
     await trackSetup('librarycreate:lost', 'Projects');
     await openSetup('librarycreate:lost');
-    const card = nodes['ad-drawer-progress']
-      .querySelectorAll('section')
-      .find((c) => /Projects/.test(c.textContent));
+    const card = [...nodes['ad-drawer-progress'].querySelectorAll('section')].find((c) =>
+      /Projects/.test(c.textContent),
+    );
     assert.match(
       card.visibleText,
       /SharePoint has a library Projects at \/sites\/delivery\/Projects, created .*\. It matches this request\./,
     );
-    card
-      .querySelectorAll('button')
+    [...card.querySelectorAll('button')]
       .find((b) => b.textContent === 'Use the library that was created')
       .click();
     await document.settle();
@@ -1579,10 +1571,7 @@ const stage = (team, access) => {
       nodes['fb-access-library'].textContent,
       'Using the existing library. Setup continues.',
     );
-    card
-      .querySelectorAll('button')
-      .find((b) => b.textContent === 'Check again')
-      .click();
+    [...card.querySelectorAll('button')].find((b) => b.textContent === 'Check again').click();
     await document.settle();
     assert.deepEqual([apis.at(-1), requests.at(-1).Command], ['asx_CatalogAdmin', 'RecheckSetup']);
     assert.equal(nodes['fb-access-library'].textContent, 'Checking SharePoint again.');
@@ -1594,12 +1583,11 @@ const stage = (team, access) => {
     };
     await trackSetup('librarycreate:blocked', 'Archive');
     await openSetup('librarycreate:blocked');
-    const blocked = nodes['ad-drawer-progress']
-      .querySelectorAll('section')
-      .find((c) => /Archive/.test(c.textContent));
-    assert.ok(blocked.querySelectorAll('button').find((b) => b.textContent === 'Retry'));
-    blocked
-      .querySelectorAll('button')
+    const blocked = [...nodes['ad-drawer-progress'].querySelectorAll('section')].find((c) =>
+      /Archive/.test(c.textContent),
+    );
+    assert.ok([...blocked.querySelectorAll('button')].find((b) => b.textContent === 'Retry'));
+    [...blocked.querySelectorAll('button')]
       .find((b) => b.textContent === 'Open in Monitor')
       .click();
     await document.settle();
@@ -1658,7 +1646,7 @@ const stage = (team, access) => {
       /Shared connection|Site owners retain administrative access|Adding a library validates access/,
     );
     // Team labels (kept text #6).
-    const labels = nodes['ad-team-choice'].options.map((o) => o.textContent);
+    const labels = [...nodes['ad-team-choice'].options].map((o) => o.textContent);
     assert(labels.includes('Finance (Entra group)'));
     assert(labels.includes('Project Y (Microsoft 365 group · members + guests)'));
     assert(labels.includes('Finance owners (Entra group · all members)'));

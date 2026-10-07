@@ -3590,9 +3590,9 @@
     });
     if (!ok) return;
     // Its place in the list: focus goes to the template that takes it.
-    const place = $('template-groups')
-      .querySelectorAll('.list-row')
-      .findIndex((r) => r.dataset.focusKey === 'template:' + t.asx_templateid);
+    const place = [...$('template-groups').querySelectorAll('.list-row')].findIndex(
+      (r) => r.dataset.focusKey === 'template:' + t.asx_templateid,
+    );
     const done = await ui.busy($('overview-menu'), 'Deleting…', 'templates', async () => {
       await xrm.WebApi.deleteRecord('asx_template', t.asx_templateid);
       panel?.close(false);

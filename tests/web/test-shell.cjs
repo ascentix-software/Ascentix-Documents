@@ -153,7 +153,7 @@ const selected = (d) => visible(d)[0];
 // The h1s a page shows: a hidden ancestor inside the page (the editor while the overview
 // shows) hides its h1; the page section's own hidden does not count.
 const shownH1s = (section) =>
-  section.querySelectorAll('h1').filter((h) => {
+  [...section.querySelectorAll('h1')].filter((h) => {
     const hidden = h.closest('[hidden]');
     return !hidden || hidden === section;
   });
@@ -256,7 +256,7 @@ const shownH1s = (section) =>
     assert.equal(d.querySelectorAll('.shell').length, 0);
     // The only tabs are the template editor's steps.
     assert.deepEqual(
-      d.querySelectorAll('[role=tab]').map((tab) => tab.id),
+      [...d.querySelectorAll('[role=tab]')].map((tab) => tab.id),
       ['step-tab-1', 'step-tab-2', 'step-tab-3'],
     );
     for (const page of ['templates', 'access', 'monitor', 'settings']) {
@@ -299,13 +299,10 @@ const shownH1s = (section) =>
     assert.equal(d.querySelector('main').firstElementChild, prompt);
     assert.match(prompt.visibleText, /You have unsaved changes to Account onboarding\./);
     assert.deepEqual(
-      prompt.querySelectorAll('button').map((b) => b.textContent),
+      [...prompt.querySelectorAll('button')].map((b) => b.textContent),
       ['Save draft', 'Discard changes', 'Stay'],
     );
-    prompt
-      .querySelectorAll('button')
-      .find((b) => b.textContent === 'Stay')
-      .click();
+    [...prompt.querySelectorAll('button')].find((b) => b.textContent === 'Stay').click();
     await going;
     assert.deepEqual(run.navigations, []);
     assert.deepEqual(choices, []);
@@ -326,9 +323,7 @@ const shownH1s = (section) =>
     });
     const d = run.document;
     const choose = (label) =>
-      d
-        .getElementById('leavePrompt')
-        .querySelectorAll('button')
+      [...d.getElementById('leavePrompt').querySelectorAll('button')]
         .find((b) => b.textContent === label)
         .click();
     d.track(run.ui.navigate('settings'));
@@ -389,9 +384,7 @@ const shownH1s = (section) =>
     });
     const answer = failing.ui.confirmLeave();
     await failing.document.settle();
-    failing.document
-      .getElementById('leavePrompt')
-      .querySelectorAll('button')
+    [...failing.document.getElementById('leavePrompt').querySelectorAll('button')]
       .find((b) => b.textContent === 'Save draft')
       .click();
     assert.equal(await answer, false);
@@ -592,7 +585,7 @@ const shownH1s = (section) =>
     assert.equal(d.getElementById('fb-templates').textContent, '');
     // Details: Copy names what it copies (spec 5.1).
     const box = run.ui.details('folderjob:abc', 'Details', 'Contoso Ltd');
-    const copy = box.querySelectorAll('button').find((b) => b.textContent === 'Copy');
+    const copy = [...box.querySelectorAll('button')].find((b) => b.textContent === 'Copy');
     assert.equal(copy.getAttribute('aria-label'), 'Copy details for Contoso Ltd');
   }
   {
@@ -617,10 +610,7 @@ const shownH1s = (section) =>
     assert.equal(box.getAttribute('role'), 'group');
     assert.equal(d.activeElement.textContent, 'Delete Account onboarding and all its versions?');
     assert.equal(
-      box
-        .querySelectorAll('button')
-        .map((b) => b.textContent)
-        .join('|'),
+      [...box.querySelectorAll('button')].map((b) => b.textContent).join('|'),
       'Delete template|Keep template',
     );
     d.activeElement.key('Escape');

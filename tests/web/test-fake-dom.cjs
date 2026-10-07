@@ -94,8 +94,39 @@ const within = (promise, ms, what) => {
     assert.throws(() => d.querySelectorAll('tbody > tr'), /Unsupported selector/);
     assert.throws(() => d.querySelectorAll('tr + tr'), /Unsupported selector/);
   }
+  {
+    // querySelectorAll, children, childNodes and a select's options are browser collections:
+    // indexed and iterable, with no Array methods.
+    const d = createDocument(
+      '<html><body><ul id="l">One<li>a</li><li>b</li></ul><select id="s"><option>x</option></select></body></html>',
+    );
+    const list = d.getElementById('l');
+    const items = list.querySelectorAll('li');
+    assert.equal(items.length, 2);
+    assert.equal(items[1].textContent, 'b');
+    assert.equal(items.item(0).textContent, 'a');
+    assert.equal(items.item(5), null);
+    assert.deepEqual(
+      [...items].map((i) => i.textContent),
+      ['a', 'b'],
+    );
+    const seen = [];
+    items.forEach((i, n) => seen.push(n + i.textContent));
+    assert.deepEqual(seen, ['0a', '1b']);
+    assert.deepEqual([...items.keys()], [0, 1]);
+    assert.equal([...items.entries()][1][1], items[1]);
+    assert.equal([...items.values()][0], items[0]);
+    for (const method of ['map', 'filter', 'find', 'findIndex', 'some', 'every', 'slice', 'at'])
+      assert.equal(items[method], undefined, 'NodeList has no ' + method);
+    assert.equal(list.children.length, 2, 'children leaves out text');
+    assert.equal(list.childNodes.length, 3, 'childNodes keeps text');
+    assert.equal(list.children.forEach, undefined, 'children is an HTMLCollection');
+    assert.equal(list.children.findIndex, undefined);
+    assert.equal(d.getElementById('s').options.map, undefined);
+    assert.equal(d.getElementById('s').options[0].textContent, 'x');
+  }
   console.log(
-    'PASS fake DOM: settle() returns while a confirmation is open and resumes after the answer, waits for moving work, survives a throwing handler; descendant selectors and selector lists. Harness only.',
+    'PASS fake DOM: settle() returns while a confirmation is open and resumes after the answer, waits for moving work, survives a throwing handler; descendant selectors and selector lists; collections without Array methods. Harness only.',
   );
 })().catch((e) => {
   console.error(e);
