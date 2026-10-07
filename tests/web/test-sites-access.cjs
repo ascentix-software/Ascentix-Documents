@@ -1138,8 +1138,122 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     );
     assert.equal(fresh['ad-site-title'].textContent, 'Select or add a site');
   }
+  {
+    // A team deleted in Dataverse while it has access to the library: Dataverse no longer has
+    // the team, so reading it by ID fails. The library shows it as a deleted team by its last
+    // known name, or its ID when none is known, with what happens next; status polling goes on;
+    // and Apply access is enabled, sends the change and succeeds.
+    const fresh = {},
+      later = [],
+      sent = [],
+      teamReads = [],
+      gone = id(40),
+      unnamed = id(41),
+      deletedNotice =
+        'This team was deleted in Dataverse. Documents removes its access the next time access is applied.';
+    for (const m of html.matchAll(/<([a-z]+)[^>]*\bid="([^"]+)"[^>]*>/g))
+      fresh[m[2]] = new Node(m[1]);
+    const entries = [
+      { TeamId: gone, Access: 'Read' },
+      { TeamId: unnamed, Access: 'Contribute' },
+      { TeamId: id(4), Access: 'Read' },
+    ];
+    let current = {
+      Status: 'Queued',
+      RowVersion: '50',
+      Policy: { Desired: entries, Applied: entries, OperationKey: 'policywork:refresh' },
+      Teams: [
+        { TeamId: gone, Name: 'AcceptC Team 1', Deleted: true },
+        { TeamId: unnamed, Name: null, Deleted: true },
+        { TeamId: id(4), Name: 'Operations', Deleted: false },
+      ],
+    };
+    const deletedWindow = {
+      Xrm: {
+        Utility: xrm.Utility,
+        Navigation: xrm.Navigation,
+        WebApi: {
+          retrieveMultipleRecords: async (table) => ({
+            entities:
+              table === 'asx_site'
+                ? [site]
+                : table === 'asx_library'
+                  ? [lib]
+                  : table === 'team'
+                    ? [teams[0]]
+                    : [],
+          }),
+          retrieveRecord: async (table, key) => {
+            if (table === 'team') {
+              teamReads.push(key);
+              if (key === gone || key === unnamed)
+                throw new Error('The requested record was not found.');
+            }
+            return xrm.WebApi.retrieveRecord(table, key);
+          },
+          online: {
+            execute: async (req) => {
+              const command = JSON.parse(req.Request);
+              sent.push(command);
+              let result = { Status: 'Pending', Key: 'catalogprobe:none' };
+              if (command.Command === 'GetPolicy') result = current;
+              else if (command.Command === 'ApplyPolicy')
+                // The server leaves deleted teams out and queues the removal of their access.
+                result = current = {
+                  Status: 'Queued',
+                  RowVersion: '51',
+                  Policy: {
+                    Desired: command.Entries.filter((e) => e.TeamId === id(4)),
+                    Applied: entries,
+                    OperationKey: 'policywork:apply',
+                  },
+                  Teams: current.Teams,
+                };
+              return { ok: true, json: async () => ({ Result: JSON.stringify(result) }) };
+            },
+          },
+        },
+      },
+      AsxdAdmin: { refreshCatalog: async () => {} },
+    };
+    vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), {
+      window: deletedWindow,
+      document: { getElementById: (key) => fresh[key], createElement: (t) => new Node(t) },
+      URL,
+      crypto: { randomUUID: () => id(42) },
+      setTimeout: (fn) => later.push(fn),
+    });
+    fresh.access.hidden = false;
+    await deletedWindow.AsxdSites.open();
+    assert.doesNotMatch(fresh['ad-message'].textContent, /not found/);
+    const rows = () => fresh['ad-teams'].children.map((r) => r.children[0].textContent);
+    assert.equal(rows()[0], 'Deleted team: AcceptC Team 1' + deletedNotice);
+    assert.equal(rows()[1], 'Deleted team: ' + unnamed + deletedNotice);
+    assert.equal(rows()[2], 'Operations');
+    assert.deepEqual(teamReads, [], 'No team is read by ID once the policy names it');
+    // Its access cannot be chosen: the next Apply removes it.
+    assert.equal(fresh['ad-teams'].children[0].children[1].children[0].disabled, true);
+    // Polling the queued run keeps working.
+    for (let i = 0; i < 4; i++) await later.shift()();
+    assert.equal(fresh['ad-poll-status'].hidden, true);
+    assert.doesNotMatch(fresh['ad-poll-status'].textContent, /Status updates are unavailable/);
+    // Apply is enabled with no other change, and succeeds.
+    assert.equal(fresh['ad-apply'].disabled, false);
+    await fresh['ad-apply'].onclick();
+    const apply = sent.find((c) => c.Command === 'ApplyPolicy');
+    assert(apply, 'Apply access sends the change');
+    assert.doesNotMatch(fresh['ad-message'].textContent, /not found|changed since you opened/);
+    assert.match(fresh['ad-message'].textContent, /Access submitted/);
+    assert.deepEqual(rows(), ['Operations'], 'The deleted teams leave the list once applied');
+    // The next Apply sees the list it shows.
+    fresh['ad-teams'].children[0].children[1].children[0].value = 'Contribute';
+    fresh['ad-teams'].children[0].children[1].children[0].onchange();
+    await fresh['ad-apply'].onclick();
+    assert.match(fresh['ad-message'].textContent, /Access submitted/);
+    assert.equal(sent.filter((c) => c.Command === 'ApplyPolicy').length, 2);
+  }
   console.log(
-    'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, stuck access runs (also the inheritance stop) and library setups with Retry and Cancel, the access label from the policy and its run, discovery matched by list ID, re-point found again after a reload with no generic flash, removed destinations hidden at once and after a reload, and author deep link. Mocked APIs; connected acceptance pending.',
+    'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, stuck access runs (also the inheritance stop) and library setups with Retry and Cancel, the access label from the policy and its run, discovery matched by list ID, re-point found again after a reload with no generic flash, removed destinations hidden at once and after a reload, deleted Dataverse teams shown by name with polling and Apply still working, and author deep link. Mocked APIs; connected acceptance pending.',
   );
 })().catch((e) => {
   console.error(e);

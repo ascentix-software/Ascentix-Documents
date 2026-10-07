@@ -171,9 +171,12 @@ public sealed class LibraryProvisioning
             throw new EvaluationBlockedException(
                 "Select distinct teams with Read or Contribute access."
             );
+        var teams = TeamDirectory.Read(service, request.Entries.Select(e => e.TeamId));
         foreach (var entry in request.Entries)
             TeamPrincipal.Validate(
-                service.Retrieve("team", entry.TeamId, TeamPrincipal.Columns()),
+                teams.TryGetValue(entry.TeamId, out var team)
+                    ? team
+                    : throw new EvaluationBlockedException(TeamDirectory.DeletedRefusal),
                 request.AcknowledgeBroaderAccess
             );
         var site = service.Retrieve(

@@ -319,7 +319,9 @@ public sealed class TeamRetirementPlugin : IPlugin
             "asx_teamregistration",
             "team:" + context.PrimaryEntityId.ToString("N")
         );
-        if (registration == null)
+        // A registration the worker already finished, after it removed the team's access
+        // before this event was processed, stays finished.
+        if (registration == null || registration.Value.Status == TeamDirectory.Finished)
             return;
         if (RuntimeProfile.ReadCapture(service).WorkerId != context.UserId)
             throw new InvalidPluginExecutionException(

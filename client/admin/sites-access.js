@@ -8,6 +8,8 @@
     sites: [],
     libraries: [],
     teams: new Map(),
+    // Teams deleted in Dataverse, by lower-case ID, with their last known name or their ID.
+    deleted: new Map(),
     // Team ID to the broader-access warning its group carries.
     warnings: new Map(),
     // The selection whose warnings are shown: { kind: 'apply' | 'provision', key, warnings }.
@@ -117,6 +119,12 @@
   // library inherits permissions again is one of them: it needs attention like any other, and
   // Apply access with the acknowledgement is its remedy.
   const stuckRun = (p) => ['Blocked', 'RetryWait'].includes(p?.result.RunStatus);
+  // A team deleted in Dataverse keeps its row until access is applied, which removes its access
+  // (GetPolicy's Teams marks it); Dataverse can no longer read it by ID.
+  const deletedNotice =
+    'This team was deleted in Dataverse. Documents removes its access the next time access is applied.';
+  const deletedTeam = (teamId) => state.deleted.get(String(teamId).toLowerCase());
+  const deletedPending = (p) => !!p?.entries.some((e) => deletedTeam(e.TeamId) != null);
   // The library's access state, from its policy and queued run as GetPolicy last read them,
   // never from the catalog flag the library list was read with, which can be older.
   function accessLabel(p) {
@@ -481,9 +489,11 @@
         ['None', 'Read', 'Contribute'].forEach((level) =>
           select.append(opt(level, level === 'None' ? 'Remove access' : level)),
         );
+        const gone = deletedTeam(e.TeamId),
+          name = gone != null ? 'Deleted team: ' + gone : state.teams.get(e.TeamId) || e.TeamId;
         select.value = e.Access;
-        select.disabled = state.busy;
-        select.setAttribute('aria-label', (state.teams.get(e.TeamId) || 'Team') + ' access');
+        select.disabled = state.busy || gone != null;
+        select.setAttribute('aria-label', name + ' access');
         select.onchange = () => {
           e.Access = select.value;
           render();
@@ -491,8 +501,14 @@
         cell.append(select);
         const current =
           p.result.Policy?.Applied?.find((a) => a.TeamId === e.TeamId)?.Access || 'None';
+        const label = node('td', name);
+        if (gone != null) {
+          const notice = node('div', deletedNotice);
+          notice.className = 'ad-issue';
+          label.append(notice);
+        }
         tr.append(
-          node('td', state.teams.get(e.TeamId) || e.TeamId),
+          label,
           cell,
           node(
             'td',
@@ -510,7 +526,12 @@
       }
     }
     // A cancelled run leaves the policy to review: Apply access starts a new run.
-    const reapply = inherits(p) || ['Missing', 'NeedsReview'].includes(p?.result.Status);
+    // A library added again after it was removed keeps its policy marked Removed until its next
+    // access run. A deleted team's row waits for Apply to remove its access.
+    const reapply =
+      inherits(p) ||
+      ['Missing', 'NeedsReview', 'Removed'].includes(p?.result.Status) ||
+      deletedPending(p);
     $('ad-apply').disabled = state.busy || !p || (!changed(p) && !reapply);
     $('ad-add-team').disabled = state.busy || !p;
     // A stopped run comes first: a change waiting behind it applies only after Retry or Cancel.
@@ -536,7 +557,7 @@
               ? inheritsAgain
               : changed(p)
                 ? 'Changes not yet applied.'
-                : p.result.Status === 'Missing'
+                : ['Missing', 'Removed'].includes(p.result.Status)
                   ? 'Apply to confirm this library’s access.'
                   : p.result.Status === 'NeedsReview'
                     ? 'The access run was cancelled. Apply access to run it again.'
@@ -765,8 +786,24 @@
     if (changed(state.policies.get(l.asx_libraryid))) return;
     const entries = (result.Policy?.Desired || []).map((e) => ({ ...e }));
     state.policies.set(l.asx_libraryid, { result, entries, saved: JSON.stringify(entries) });
+    // The policy names its teams, so a team deleted in Dataverse is never read by ID.
+    const named = new Map();
+    for (const t of result.Teams || []) {
+      const key = String(t.TeamId).toLowerCase();
+      if (t.Deleted) state.deleted.set(key, t.Name || t.TeamId);
+      else {
+        state.deleted.delete(key);
+        if (t.Name) named.set(key, t.Name);
+      }
+    }
     for (const e of entries)
-      if (!state.teams.has(e.TeamId)) {
+      if (!state.teams.has(e.TeamId) && deletedTeam(e.TeamId) == null) {
+        const name = named.get(String(e.TeamId).toLowerCase());
+        // Its kind and any warning come with the team list (loadTeams).
+        if (name) {
+          state.teams.set(e.TeamId, name);
+          continue;
+        }
         const team = await xrm.WebApi.retrieveRecord(
           'team',
           e.TeamId,
@@ -1294,6 +1331,8 @@
       });
       state.consent = null;
       p.result = result;
+      // As saved: deleted teams are left out.
+      p.entries = (result.Policy?.Desired || p.entries).map((e) => ({ ...e }));
       p.saved = JSON.stringify(p.entries);
       issue(
         result.Policy?.ApplyPending

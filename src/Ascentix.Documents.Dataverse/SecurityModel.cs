@@ -20,6 +20,14 @@ public sealed class TeamRegistration : StoredDocument
     /// </summary>
     [DataMember]
     public bool? Group { get; set; }
+
+    /// <summary>
+    /// The team's name when Documents last read it, so a team deleted in Dataverse is still
+    /// shown by name. Null for registrations written before this was stored, until the team's
+    /// next access run.
+    /// </summary>
+    [DataMember]
+    public string? Name { get; set; }
 }
 
 [DataContract]
@@ -323,6 +331,29 @@ public sealed class SecurityResult
     /// <summary>When a waiting access run checks again (UTC).</summary>
     [DataMember]
     public DateTime? RunNextAttemptUtc { get; set; }
+
+    /// <summary>
+    /// The teams of the policy's wanted and applied access, with their names, so a team deleted
+    /// in Dataverse is shown as one instead of being read by ID.
+    /// </summary>
+    [DataMember]
+    public PolicyTeam[] Teams { get; set; } = Array.Empty<PolicyTeam>();
+}
+
+/// <summary>A team of a library's access, as the library shows it.</summary>
+[DataContract]
+public sealed class PolicyTeam
+{
+    [DataMember]
+    public Guid TeamId { get; set; }
+
+    /// <summary>The team's name, or its last known name once deleted; null when none is known.</summary>
+    [DataMember]
+    public string? Name { get; set; }
+
+    /// <summary>True when the team was deleted in Dataverse.</summary>
+    [DataMember]
+    public bool Deleted { get; set; }
 }
 
 [DataContract]

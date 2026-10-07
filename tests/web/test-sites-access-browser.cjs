@@ -39,10 +39,13 @@ fs.mkdirSync(evidence, { recursive: true });
         asx_policyapplied: true,
       };
       window.testRequests = [];
+      // A team deleted in Dataverse still has access to the library; Apply removes it.
+      const deleted = { TeamId: id(40), Access: 'Read' };
       window.testPolicy = {
         Status: 'Applied',
         RowVersion: '1',
-        Policy: { Desired: [], Applied: [] },
+        Policy: { Desired: [deleted], Applied: [deleted] },
+        Teams: [{ TeamId: id(40), Name: 'AcceptC Team 1', Deleted: true }],
       };
       window.Xrm = {
         Utility: { getGlobalContext: () => ({ getClientUrl: () => 'https://example.test' }) },
@@ -77,10 +80,15 @@ fs.mkdirSync(evidence, { recursive: true });
               };
               if (c.Command === 'GetPolicy') result = window.testPolicy;
               if (c.Command === 'ApplyPolicy')
+                // The server leaves deleted teams out.
                 result = window.testPolicy = {
                   Status: 'Queued',
                   RowVersion: '2',
-                  Policy: { Desired: c.Entries, Applied: [], OperationKey: 'policywork:test' },
+                  Policy: {
+                    Desired: c.Entries.filter((e) => e.TeamId !== id(40)),
+                    Applied: [],
+                    OperationKey: 'policywork:test',
+                  },
                 };
               if (c.Command === 'Inspect' && c.Key === 'siteprobe:test')
                 result = { Status: window.testSiteStatus || 'Inspecting' };
@@ -110,6 +118,30 @@ fs.mkdirSync(evidence, { recursive: true });
     });
     await page.locator('[data-view="access"]').click();
     await page.getByRole('heading', { name: 'General', exact: true }).waitFor();
+    // The deleted team is shown as one, with what happens next, and Apply is enabled for it.
+    const deletedRow = page.locator('#ad-teams tr').first();
+    await deletedRow.getByText('Deleted team: AcceptC Team 1').waitFor();
+    await deletedRow
+      .getByText(
+        'This team was deleted in Dataverse. Documents removes its access the next time access is applied.',
+        { exact: true },
+      )
+      .waitFor();
+    assert.equal(await deletedRow.locator('select').isDisabled(), true);
+    assert.equal(await page.locator('#ad-apply').isDisabled(), false);
+    for (const width of [1440, 400]) {
+      await page.setViewportSize({ width, height: 1000 });
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+        false,
+        'Overflow with a deleted team ' + width,
+      );
+      await page.screenshot({
+        path: path.join(evidence, `deleted-team-${width}.png`),
+        fullPage: true,
+      });
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
     await page.locator('#ad-add-team').click();
     await page.locator('#ad-team-choice').selectOption('00000004-0000-0000-0000-000000000000');
     await page.locator('#ad-stage-team').click();
@@ -119,6 +151,12 @@ fs.mkdirSync(evidence, { recursive: true });
     );
     await page.locator('#ad-apply').click();
     assert.equal(await page.locator('#ad-apply').isDisabled(), true);
+    // Applied: the deleted team's row is gone and nothing failed.
+    assert.equal(await page.getByText('Deleted team: AcceptC Team 1').count(), 0);
+    assert.equal(
+      await page.getByText('Status updates are unavailable', { exact: false }).count(),
+      0,
+    );
     await page.evaluate(() => {
       testPolicy = {
         Status: 'Applied',
@@ -241,7 +279,7 @@ fs.mkdirSync(evidence, { recursive: true });
     assert.equal(await page.locator('#ad-team-search,#ad-initial-team-search').count(), 0);
     assert.deepEqual(errors, []);
     console.log(
-      'PASS actual admin HTML, CSS and both scripts in headless Edge: team staging/apply/poll, existing-library discovery/add, library creation; 1440/800/400 light and dark; no page errors or horizontal overflow. All Dataverse APIs mocked; no live calls.',
+      'PASS actual admin HTML, CSS and both scripts in headless Edge: a deleted Dataverse team shown and removed by Apply, team staging/apply/poll, existing-library discovery/add, library creation; 1440/800/400 light and dark; no page errors or horizontal overflow. All Dataverse APIs mocked; no live calls.',
     );
   } finally {
     await browser.close();

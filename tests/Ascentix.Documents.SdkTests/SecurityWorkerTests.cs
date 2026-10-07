@@ -3603,8 +3603,40 @@ public sealed class SecurityWorkerTests
                 )
             );
 
+        // SharePoint's Documents groups of the other teams, by managed group key. Group and
+        // Members hold the group of the team the run works on, so a run over several teams sees
+        // each team's own group.
+        private readonly Dictionary<string, (SiteGroup? Group, List<SitePerson> Members)> parked =
+            new Dictionary<string, (SiteGroup? Group, List<SitePerson> Members)>();
+        private string? current;
+
+        private void Use()
+        {
+            var key = Store.Find<SecurityOperation>("asx_operation", Key)?.Value.GroupKey;
+            if (string.IsNullOrEmpty(key) || key == current)
+                return;
+            if (current != null)
+            {
+                parked[current] = (Group, Members);
+                (Group, Members) = parked.TryGetValue(key!, out var held)
+                    ? held
+                    : (null, new List<SitePerson>());
+            }
+            current = key;
+        }
+
+        /// <summary>The SharePoint ID of a team's Documents group on the fixture site.</summary>
+        public int GroupOf(Guid team) =>
+            Store
+                .Require<ManagedGroup>(
+                    "asx_managedgroup",
+                    "group:" + Site.ToString("N") + ":" + team.ToString("N")
+                )
+                .Value.GroupId;
+
         public WorkerResult Observe(WorkerResult work)
         {
+            Use();
             string body;
             switch (work.ProbeKind)
             {
@@ -3747,6 +3779,7 @@ public sealed class SecurityWorkerTests
 
         public void Apply()
         {
+            Use();
             var operation = Operation();
             Writes.Add(operation.MutationKind);
             switch (operation.MutationKind)

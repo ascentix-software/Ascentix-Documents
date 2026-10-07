@@ -165,6 +165,120 @@ public static class TeamPrincipal
         TeamSnapshotReader.Clean(team.GetAttributeValue<string>("name"), team.Id.ToString("D"));
 }
 
+/// <summary>
+/// Reads Dataverse teams by ID with a query, so a team deleted in Dataverse is found missing
+/// instead of failing the read ("record not found"). A deleted team never blocks a library's
+/// access: its registration is retired, the next access run of each library it reached removes
+/// Documents' grant for its Documents group, and once no library's access refers to it, its
+/// registration is finished. The group itself stays in SharePoint: Documents does not delete
+/// SharePoint groups.
+/// </summary>
+public static class TeamDirectory
+{
+    public const string DeletedRefusal =
+        "This team was deleted in Dataverse, so it cannot get library access. Choose another team.";
+
+    /// <summary>The status of a deleted team's registration once no library's access refers to it.</summary>
+    public const string Finished = "Revoked";
+
+    /// <summary>The teams that still exist, by ID, read with <see cref="TeamPrincipal.Columns"/>.</summary>
+    public static Dictionary<Guid, Entity> Read(
+        IOrganizationService service,
+        IEnumerable<Guid> teamIds
+    )
+    {
+        var ids = teamIds.Where(id => id != Guid.Empty).Distinct().Cast<object>().ToArray();
+        if (ids.Length == 0)
+            return new Dictionary<Guid, Entity>();
+        var query = new QueryExpression("team") { ColumnSet = TeamPrincipal.Columns() };
+        query.Criteria.AddCondition("teamid", ConditionOperator.In, ids);
+        return CompleteQuery.Read(service, query).ToDictionary(row => row.Id);
+    }
+
+    /// <summary>The team, or null when it was deleted in Dataverse.</summary>
+    public static Entity? Find(IOrganizationService service, Guid teamId) =>
+        Read(service, new[] { teamId }).TryGetValue(teamId, out var team) ? team : null;
+
+    /// <summary>
+    /// Retires a deleted team's registration, as TeamRetirementPlugin does when it sees the
+    /// delete, also when that event was missed or has not been processed yet.
+    /// </summary>
+    public static void Retire(DocumentStore store, Guid teamId)
+    {
+        var registration = store.Find<TeamRegistration>(
+            "asx_teamregistration",
+            "team:" + teamId.ToString("N")
+        );
+        if (registration == null || !registration.Value.Enabled)
+            return;
+        registration.Value.Enabled = false;
+        registration.Value.Status = "Revoking";
+        store.Save(registration);
+    }
+
+    /// <summary>Keeps the registration's last known name current while the team exists.</summary>
+    public static void Remember(DocumentStore store, Entity team)
+    {
+        var registration = store.Find<TeamRegistration>(
+            "asx_teamregistration",
+            "team:" + team.Id.ToString("N")
+        );
+        string name = TeamPrincipal.Name(team);
+        if (registration == null || registration.Value.Name == name)
+            return;
+        registration.Value.Name = name;
+        store.Save(registration);
+    }
+
+    /// <summary>
+    /// Finishes a deleted team's registration once no library's access refers to it any more.
+    /// True when it is finished, now or before.
+    /// </summary>
+    public static bool Finish(IOrganizationService service, DocumentStore store, Guid teamId)
+    {
+        var registration = store.Find<TeamRegistration>(
+            "asx_teamregistration",
+            "team:" + teamId.ToString("N")
+        );
+        if (registration == null || registration.Value.Enabled)
+            return false;
+        if (registration.Value.Status == Finished)
+            return true;
+        var references = new QueryExpression("asx_policyentry")
+        {
+            ColumnSet = new ColumnSet(false),
+            TopCount = 1,
+        };
+        references.Criteria.AddCondition(
+            "asx_teamkey",
+            ConditionOperator.Equal,
+            teamId.ToString("N")
+        );
+        references.Criteria.AddCondition("asx_status", ConditionOperator.Equal, "Active");
+        if (service.RetrieveMultiple(references).Entities.Count > 0)
+            return false;
+        registration.Value.Status = Finished;
+        store.Save(registration);
+        return true;
+    }
+
+    /// <summary>The policy notice of a deleted team whose access this library no longer has.</summary>
+    public static string DeletedNotice(string name, bool finished, bool group) =>
+        "Team '"
+        + name
+        + "' was deleted in Dataverse. Documents removed its access to this library"
+        + (
+            finished
+                ? " and finished the team's registration."
+                : "; its other libraries follow at their next access run."
+        )
+        + (
+            group
+                ? " Its Documents group stays in SharePoint: Documents does not delete SharePoint groups."
+                : ""
+        );
+}
+
 public sealed class TeamSnapshotReader
 {
     private readonly IOrganizationService service;
@@ -190,7 +304,11 @@ public sealed class TeamSnapshotReader
             throw new EvaluationBlockedException("Team registration identity mismatch.");
         if (!registration.Enabled)
             return new TeamSnapshot(); // Explicit opt-out tombstone; a failed native read never means an empty team.
-        var team = service.Retrieve("team", teamId, TeamPrincipal.Columns());
+        // A team deleted in Dataverse has no one left to sync, even before its registration is
+        // retired; the access run then removes its grant.
+        var team = TeamDirectory.Find(service, teamId);
+        if (team == null)
+            return new TeamSnapshot();
         if (TeamPrincipal.IsGroup(team))
             return GroupSnapshot(team);
         TeamPrincipal.RequireEligible(team);

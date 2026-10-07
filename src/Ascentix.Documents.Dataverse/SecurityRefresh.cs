@@ -170,6 +170,14 @@ public sealed class SecurityRefresh
                 Key = job.Value.Key,
                 Keys = keys,
             };
+        // A team deleted in Dataverse that no library's access refers to any more, such as one
+        // whose libraries were all removed from Documents, has nothing left to remove: its
+        // registration is finished now. Otherwise each library's next access run finishes it.
+        if (!page.MoreRecords && TeamDirectory.Find(service, job.Value.SecurityTeamId) == null)
+        {
+            TeamDirectory.Retire(store, job.Value.SecurityTeamId);
+            TeamDirectory.Finish(service, store, job.Value.SecurityTeamId);
+        }
         job.Value.Operations = keys;
         job.Value.SecurityPage = page.MoreRecords ? job.Value.SecurityPage + 1 : 1;
         job.Value.SecurityCookie = page.MoreRecords ? page.PagingCookie : null;
@@ -224,12 +232,13 @@ public sealed class SecurityRefresh
             var policy = store.Require<PolicyDocument>("asx_policy", pointer.Key);
             if (
                 policy.Value.Generation == Guid.Empty
-                || policy.Value.Status == "Removed"
                 || onlyTeam != Guid.Empty && !policy.Value.Approved.Any(e => e.TeamId == onlyTeam)
             )
                 continue;
             // A suspended or removed library (or site) is the admin's stop for that library
-            // only: it is skipped with a notice, and every other library still refreshes.
+            // only: it is skipped with a notice, and every other library still refreshes. This
+            // reads the library as it is now, not the policy's status: a library removed and
+            // then added again is refreshed again, though its policy still says Removed.
             if (Paused(policy))
                 continue;
             policy = store.Require<PolicyDocument>("asx_policy", pointer.Key);
@@ -270,12 +279,17 @@ public sealed class SecurityRefresh
                 policy.Value.OperationKey == null
                     ? null
                     : store.Require<SecurityOperation>("asx_operation", policy.Value.OperationKey);
-            foreach (
-                var entry in policy.Value.Approved.Where(e =>
-                    onlyTeam == Guid.Empty || e.TeamId == onlyTeam
-                )
-            )
+            var approved = policy
+                .Value.Approved.Where(e => onlyTeam == Guid.Empty || e.TeamId == onlyTeam)
+                .ToArray();
+            var live = TeamDirectory.Read(service, approved.Select(e => e.TeamId));
+            foreach (var entry in approved)
             {
+                // A team deleted in Dataverse is retired here too, so its access is removed even
+                // when its delete event was missed or came while the library was out of
+                // Documents (removed or suspended): the check below then sees it revoked.
+                if (!live.ContainsKey(entry.TeamId))
+                    TeamDirectory.Retire(store, entry.TeamId);
                 string hash = TeamSnapshotReader.Hash(
                     new TeamSnapshotReader(service).Read(entry.TeamId)
                 );

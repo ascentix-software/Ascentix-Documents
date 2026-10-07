@@ -845,9 +845,15 @@ public sealed class SecurityWorker
         }
         if (group == null)
         {
-            var title = service
-                .Retrieve("team", entry.TeamId, new Microsoft.Xrm.Sdk.Query.ColumnSet("name"))
-                .GetAttributeValue<string>("name");
+            // A team deleted in Dataverse since this run was queued never had a group here, so
+            // there is no access to remove: the run moves on, and its end records that.
+            var team = TeamDirectory.Find(service, entry.TeamId);
+            if (team == null)
+            {
+                op.Value.TeamIndex++;
+                return NextTeam(op, claim, catalog);
+            }
+            var title = team.GetAttributeValue<string>("name");
             if (string.IsNullOrWhiteSpace(title))
                 throw new EvaluationBlockedException(
                     "The Dataverse team must have a name before its SharePoint group can be created."
@@ -1117,14 +1123,7 @@ public sealed class SecurityWorker
             entry.Access == "Read" ? op.Value.ReadRole.Id
             : entry.Access == "Contribute" ? op.Value.ContributeRole.Id
             : 0;
-        if (
-            !store
-                .Require<TeamRegistration>(
-                    "asx_teamregistration",
-                    "team:" + entry.TeamId.ToString("N")
-                )
-                .Value.Enabled
-        )
+        if (!Granted(entry.TeamId))
             desired = 0;
         int[] target = desired == 0 ? Array.Empty<int>() : new[] { desired };
         // What Documents last applied. A receipt still Pending means Documents' own write may
@@ -1222,6 +1221,17 @@ public sealed class SecurityWorker
                 )
             );
 
+    /// <summary>
+    /// Whether the team keeps its configured access: it is still registered and still exists in
+    /// Dataverse. A team deleted since its run was queued gets none, also before its
+    /// registration is retired.
+    /// </summary>
+    private bool Granted(Guid teamId) =>
+        store
+            .Require<TeamRegistration>("asx_teamregistration", "team:" + teamId.ToString("N"))
+            .Value.Enabled
+        && TeamDirectory.Find(service, teamId) != null;
+
     private WorkerResult Complete(
         StoredRow<SecurityOperation> op,
         StoredRow<DispatcherDocument> claim,
@@ -1233,20 +1243,56 @@ public sealed class SecurityWorker
         foreach (var entry in op.Value.Entries)
             VerifyMembership(op.Value, entry.TeamId);
         var policy = store.Require<PolicyDocument>("asx_policy", op.Value.PolicyKey);
+        var before = policy.Value.Applied;
+        var live = TeamDirectory.Read(service, op.Value.Entries.Select(e => e.TeamId));
         policy.Value.Applied = op
             .Value.Entries.Select(e => new PolicyEntry
             {
                 TeamId = e.TeamId,
-                Access = store
-                    .Require<TeamRegistration>(
-                        "asx_teamregistration",
-                        "team:" + e.TeamId.ToString("N")
-                    )
-                    .Value.Enabled
-                    ? e.Access
-                    : "None",
+                Access =
+                    live.ContainsKey(e.TeamId)
+                    && store
+                        .Require<TeamRegistration>(
+                            "asx_teamregistration",
+                            "team:" + e.TeamId.ToString("N")
+                        )
+                        .Value.Enabled
+                        ? e.Access
+                        : "None",
             })
             .ToArray();
+        foreach (var entry in policy.Value.Applied)
+        {
+            var reference = store.Require<PolicyTeamReference>(
+                "asx_policyentry",
+                "policyteam:" + op.Value.LibraryId.ToString("N") + ":" + entry.TeamId.ToString("N")
+            );
+            reference.Value.Status = entry.Access == "None" ? "Inactive" : "Active";
+            store.Save(reference);
+        }
+        // A team deleted in Dataverse no longer has access here. Its registration is finished
+        // once no library's access refers to it; its Documents group stays in SharePoint.
+        foreach (var entry in op.Value.Entries.Where(e => !live.ContainsKey(e.TeamId)))
+        {
+            TeamDirectory.Retire(store, entry.TeamId);
+            bool finished = TeamDirectory.Finish(service, store, entry.TeamId);
+            if (!before.Any(a => a.TeamId == entry.TeamId && a.Access != "None"))
+                continue;
+            var group = store.Find<ManagedGroup>(
+                "asx_managedgroup",
+                "group:" + catalog.SiteId.ToString("N") + ":" + entry.TeamId.ToString("N")
+            );
+            string name =
+                store
+                    .Find<TeamRegistration>(
+                        "asx_teamregistration",
+                        "team:" + entry.TeamId.ToString("N")
+                    )
+                    ?.Value.Name
+                ?? group?.Value.Title
+                ?? entry.TeamId.ToString("D");
+            Notice(op.Value, TeamDirectory.DeletedNotice(name, finished, group?.Value.GroupId > 0));
+        }
         policy.Value.Queued = Array.Empty<PolicyEntry>();
         policy.Value.OperationKey = null;
         policy.Value.Status = "Applied";
@@ -1260,15 +1306,6 @@ public sealed class SecurityWorker
             "Documents manages only its own team groups and their grants on this library. People may still have access through other groups, direct shares, links, item permissions or site administration.",
         };
         store.Save(policy);
-        foreach (var entry in policy.Value.Applied)
-        {
-            var reference = store.Require<PolicyTeamReference>(
-                "asx_policyentry",
-                "policyteam:" + op.Value.LibraryId.ToString("N") + ":" + entry.TeamId.ToString("N")
-            );
-            reference.Value.Status = entry.Access == "None" ? "Inactive" : "Active";
-            store.Save(reference);
-        }
         foreach (var entry in op.Value.Entries)
         {
             var receipt = store.Find<MembershipDocument>(
@@ -1348,7 +1385,8 @@ public sealed class SecurityWorker
         );
         if (snapshot == null)
         {
-            if (op.Entries.Single(e => e.TeamId == teamId).Access != "None")
+            // A team deleted before the run reached it has no group here and no receipt.
+            if (op.Entries.Single(e => e.TeamId == teamId).Access != "None" && Granted(teamId))
                 throw new EvaluationBlockedException("Membership receipt missing.");
             return;
         }

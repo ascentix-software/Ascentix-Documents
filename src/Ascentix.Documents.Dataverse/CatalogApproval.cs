@@ -704,6 +704,8 @@ public sealed class CatalogAdministration
             {
                 update["statecode"] = new OptionSetValue(0);
                 update["statuscode"] = new OptionSetValue(1);
+                if (isLibrary)
+                    ResumeAccessRefresh(id);
             }
             if (isLibrary)
                 update["asx_policyapplied"] = false;
@@ -1291,6 +1293,32 @@ public sealed class CatalogAdministration
                 ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
             }
         );
+    }
+
+    /// <summary>
+    /// A removed library added again has its access refreshed again: the teams it has access
+    /// for schedule it once more, as the access run that applied them left them, and its access
+    /// review is due at once. So a team deleted or opted out while the library was out of
+    /// Documents, whose event then found no library to refresh, loses its access now.
+    /// </summary>
+    private void ResumeAccessRefresh(Guid library)
+    {
+        var policy = store.Find<PolicyDocument>("asx_policy", "policy:" + library.ToString("N"));
+        if (policy == null)
+            return;
+        foreach (var entry in policy.Value.Applied.Where(e => e.Access != "None"))
+        {
+            var reference = store.Find<PolicyTeamReference>(
+                "asx_policyentry",
+                "policyteam:" + library.ToString("N") + ":" + entry.TeamId.ToString("N")
+            );
+            if (reference == null || reference.Value.Status == "Active")
+                continue;
+            reference.Value.Status = "Active";
+            store.Save(reference);
+        }
+        policy.Value.NextReviewUtc = clock();
+        store.Save(policy);
     }
 
     /// <summary>

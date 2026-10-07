@@ -1567,6 +1567,74 @@ public sealed class CatalogApprovalTests
     }
 
     [Fact]
+    public void LibraryAddedAgainHasItsAccessRefreshedAgain()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var store = new DocumentStore(f.Service);
+        var team = Guid.NewGuid();
+        string policyKey = "policy:" + library.CatalogId.ToString("N"),
+            referenceKey =
+                "policyteam:" + library.CatalogId.ToString("N") + ":" + team.ToString("N");
+        var entries = new[]
+        {
+            new PolicyEntry { TeamId = team, Access = "Read" },
+        };
+        store.Create(
+            "asx_policy",
+            new PolicyDocument
+            {
+                Key = policyKey,
+                Status = "Applied",
+                LibraryId = library.CatalogId,
+                Generation = Guid.NewGuid(),
+                Approved = entries,
+                Applied = entries,
+                ManagedTeams = new[] { team },
+                NextReviewUtc = f.Now.AddDays(1),
+            }
+        );
+        store.Create(
+            "asx_policyentry",
+            new PolicyTeamReference
+            {
+                Key = referenceKey,
+                TeamId = team,
+                PolicyKey = policyKey,
+                Status = "Active",
+            }
+        );
+        Assert.Equal("Removed", Remove(f, "RemoveLibrary", library.CatalogId).Status);
+        PolicyTeamReference Reference() =>
+            store.Require<PolicyTeamReference>("asx_policyentry", referenceKey).Value;
+        Assert.Equal("Inactive", Reference().Status);
+        var siteId = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_siteid")
+            .Id;
+        var again = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = siteId,
+                    ListId = f.List,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Equal(library.CatalogId, again.CatalogId);
+        // Its team's events reach it again, and the scheduled refresh reviews it at once, so a
+        // team deleted while it was out of Documents loses its access now.
+        Assert.Equal("Active", Reference().Status);
+        Assert.True(
+            store.Require<PolicyDocument>("asx_policy", policyKey).Value.NextReviewUtc <= f.Now
+        );
+    }
+
+    [Fact]
     public void LibraryDeletedByRemoveIsAddedAgainAndReusesItsDocumentLocation()
     {
         var f = new Fixture();

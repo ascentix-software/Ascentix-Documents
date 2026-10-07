@@ -120,6 +120,46 @@ public sealed class LifecycleTests
     }
 
     [Fact]
+    public void TeamDeleteEventProcessedAfterTheWorkerFinishedTheRegistrationLeavesItFinished()
+    {
+        var f = Setup();
+        Guid team = Guid.NewGuid();
+        f.Store.Create(
+            "asx_teamregistration",
+            new TeamRegistration
+            {
+                Key = "team:" + team.ToString("N"),
+                TeamId = team,
+                Enabled = false,
+                Status = TeamDirectory.Finished,
+            }
+        );
+        var context = GuardTests.ContextProxy.Create(
+            new Dictionary<string, object>
+            {
+                ["Stage"] = 40,
+                ["Mode"] = 0,
+                ["IsInTransaction"] = true,
+                ["MessageName"] = "Delete",
+                ["PrimaryEntityName"] = "team",
+                ["PrimaryEntityId"] = team,
+                ["CorrelationId"] = Guid.NewGuid(),
+                ["UserId"] = f.RecordId,
+                ["SharedVariables"] = new ParameterCollection(),
+            }
+        );
+        new TeamRetirementPlugin().Execute(new Provider(f, context));
+        Assert.Empty(f.Service.Updates);
+        Assert.Equal(
+            TeamDirectory.Finished,
+            f.Store.Require<TeamRegistration>(
+                "asx_teamregistration",
+                "team:" + team.ToString("N")
+            ).Value.Status
+        );
+    }
+
+    [Fact]
     public void TeamDeletionKeepsRevocationTombstoneWithoutReadingDeletedNativeTeam()
     {
         var f = Setup();

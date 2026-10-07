@@ -109,7 +109,9 @@ public sealed class SecurityAdministration
             Entity? team = null;
             if (request.Enabled)
             {
-                team = service.Retrieve("team", request.TeamId, TeamPrincipal.Columns());
+                team =
+                    TeamDirectory.Find(service, request.TeamId)
+                    ?? throw new EvaluationBlockedException(TeamDirectory.DeletedRefusal);
                 TeamPrincipal.Validate(team, request.AcknowledgeBroaderAccess);
             }
             string key = "team:" + request.TeamId.ToString("N");
@@ -126,6 +128,7 @@ public sealed class SecurityAdministration
                         TeamId = request.TeamId,
                         Enabled = request.Enabled,
                         Group = team == null ? (bool?)null : TeamPrincipal.IsGroup(team),
+                        Name = team == null ? null : TeamPrincipal.Name(team),
                         Status = request.Enabled ? "Enabled" : "Revoking",
                     }
                 );
@@ -135,7 +138,10 @@ public sealed class SecurityAdministration
                 Version(old.Row, request.RowVersion);
                 old.Value.Enabled = request.Enabled;
                 if (team != null)
+                {
                     old.Value.Group = TeamPrincipal.IsGroup(team);
+                    old.Value.Name = TeamPrincipal.Name(team);
+                }
                 old.Value.Status = request.Enabled ? "Enabled" : "Revoking";
                 store.Save(old);
             }
@@ -184,16 +190,24 @@ public sealed class SecurityAdministration
                     TemplateStore.Text(catalog.Library, "asx_contributerole")
                 );
             Validate(request.Entries, request.ReadRole, request.ContributeRole);
+            // A team deleted in Dataverse leaves the library's teams, whatever access its row
+            // still shows: the other teams' changes go on, and the access run queued below
+            // removes Documents' grant for the deleted team's group (see the queued entries).
+            var teams = TeamDirectory.Read(service, request.Entries.Select(e => e.TeamId));
+            foreach (var deleted in request.Entries.Where(e => !teams.ContainsKey(e.TeamId)))
+                TeamDirectory.Retire(store, deleted.TeamId);
+            request.Entries = request.Entries.Where(e => teams.ContainsKey(e.TeamId)).ToArray();
             foreach (var entry in request.Entries.Where(e => e.Access != "None"))
             {
                 // Saving a draft validates eligibility; only applying explicitly onboards syncing.
-                var team = service.Retrieve("team", entry.TeamId, TeamPrincipal.Columns());
+                var team = teams[entry.TeamId];
                 TeamPrincipal.Validate(team, request.AcknowledgeBroaderAccess);
                 if (request.Command == "ApplyPolicy")
                 {
                     // teamtype is fixed when a team is created, so the kind recorded here stays
                     // true; membership events for group teams are then skipped at the source.
                     bool group = TeamPrincipal.IsGroup(team);
+                    string name = TeamPrincipal.Name(team);
                     string teamKey = "team:" + entry.TeamId.ToString("N");
                     var registration = store.Find<TeamRegistration>(
                         "asx_teamregistration",
@@ -208,13 +222,19 @@ public sealed class SecurityAdministration
                                 TeamId = entry.TeamId,
                                 Enabled = true,
                                 Group = group,
+                                Name = name,
                                 Status = "Enabled",
                             }
                         );
-                    else if (!registration.Value.Enabled || registration.Value.Group != group)
+                    else if (
+                        !registration.Value.Enabled
+                        || registration.Value.Group != group
+                        || registration.Value.Name != name
+                    )
                     {
                         registration.Value.Enabled = true;
                         registration.Value.Group = group;
+                        registration.Value.Name = name;
                         registration.Value.Status = "Enabled";
                         store.Save(registration);
                     }
@@ -307,15 +327,32 @@ public sealed class SecurityAdministration
         // for the run before it, applies the teams the admin chose.
         bool admin = !workerRefresh || request.Command == "ApplyPending";
         var desired = admin ? existing.Value.Desired : existing.Value.Approved;
-        var entries = desired
+        var queued = desired
             .Concat(
                 existing
                     .Value.ManagedTeams.Where(team => !desired.Any(d => d.TeamId == team))
                     .Select(team => new PolicyEntry { TeamId = team, Access = "None" })
             )
             .ToArray();
+        // A team deleted in Dataverse keeps no access, also when the scheduled refresh repeats
+        // what was applied: its entry asks for none, so the run removes Documents' grant for its
+        // Documents group, and its registration is retired. The group itself stays.
+        var live = TeamDirectory.Read(service, queued.Select(e => e.TeamId));
+        var entries = queued
+            .Select(e =>
+                live.ContainsKey(e.TeamId)
+                    ? e
+                    : new PolicyEntry { TeamId = e.TeamId, Access = "None" }
+            )
+            .ToArray();
         foreach (var entry in entries)
+        {
+            if (live.TryGetValue(entry.TeamId, out var team))
+                TeamDirectory.Remember(store, team);
+            else
+                TeamDirectory.Retire(store, entry.TeamId);
             new TeamSnapshotReader(service).Read(entry.TeamId);
+        }
         var generation = Guid.NewGuid();
         string operationKey = "policywork:" + generation.ToString("N");
         // The admin's consent is used by this run only; a later reset to inheritance asks again.
@@ -563,7 +600,40 @@ public sealed class SecurityAdministration
             result.RunNotice = run.ErrorCode ?? run.Notices.FirstOrDefault();
             result.RunNextAttemptUtc = run.Status == "RetryWait" ? run.NextAttemptUtc : null;
         }
+        if (row != null)
+            result.Teams = Teams(row.Value);
         return result;
+    }
+
+    /// <summary>
+    /// The policy's teams with their names, read with one query, so a team deleted in Dataverse
+    /// is shown as deleted by its last known name instead of failing the read.
+    /// </summary>
+    private PolicyTeam[] Teams(PolicyDocument policy)
+    {
+        var ids = policy
+            .Desired.Concat(policy.Applied)
+            .Select(e => e.TeamId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToArray();
+        var live = TeamDirectory.Read(service, ids);
+        return ids.Select(id =>
+                live.TryGetValue(id, out var team)
+                    ? new PolicyTeam { TeamId = id, Name = TeamPrincipal.Name(team) }
+                    : new PolicyTeam
+                    {
+                        TeamId = id,
+                        Deleted = true,
+                        Name = store
+                            .Find<TeamRegistration>(
+                                "asx_teamregistration",
+                                "team:" + id.ToString("N")
+                            )
+                            ?.Value.Name,
+                    }
+            )
+            .ToArray();
     }
 
     private static SecurityResult Describe(StoredRow<PolicyDocument>? row) =>
