@@ -37,11 +37,16 @@ public sealed class TemplateRunState
     [DataMember]
     public int Queued { get; set; }
 
+    /// <summary>
+    /// The records the run covers. Until the run is done it comes from the platform's daily
+    /// row-count snapshot, raised to what the run has already met; done, it is the exact count.
+    /// </summary>
     [DataMember]
     public int Total { get; set; }
 
+    /// <summary>True until the run is done: the page shows the total as "about N".</summary>
     [DataMember]
-    public bool TotalCapped { get; set; }
+    public bool TotalEstimated { get; set; }
 
     [DataMember]
     public DateTime? StartedUtc { get; set; }
@@ -76,23 +81,43 @@ public sealed class TemplateRun
     public const string IndexMarker = "templaterun";
 
     /// <summary>
-    /// Records queued per page: the page size of the related-record fan-out (TargetedReplan.Consume).
-    /// It keeps each Plan call short, and bounds the re-run work that waits ahead of new events.
+    /// Records queued per page: one fewer than the dispatcher's outbox page, so a page and its run
+    /// row fit in one dispatch. ListOutbox lists the run after its page, so with no other work the
+    /// run finds its page planned and queues the next in the same dispatch: a page per dispatch.
+    /// A larger page (spec 6.9 had 25, TargetedReplan's size) cannot be planned in one dispatch,
+    /// which halves the pace. It also bounds the re-run work that waits ahead of new events and
+    /// keeps each Plan call short.
     /// </summary>
-    public const int PageSize = 25;
+    public const int PageSize = DocumentStore.DispatchPage - 1;
 
     /// <summary>asx_priority of re-run folder jobs: after access and catalog work (0) and normal folder jobs (1).</summary>
     public const int Priority = 2;
 
+    public const string TableGone = "The table no longer exists.";
+
     private static readonly string[] Active = { "Pending", "Paused", "Blocked" };
     private readonly IOrganizationService service;
+    private readonly IOrganizationService reads;
     private readonly DocumentStore store;
     private readonly string[] allowed;
     private readonly Func<DateTime> clock;
 
-    public TemplateRun(IOrganizationService service, string[] allowed, Func<DateTime>? clock = null)
+    /// <param name="service">The caller's service: every write, and reads of Documents' own tables.</param>
+    /// <param name="allowed">The tables enabled in Documents.</param>
+    /// <param name="clock">The UTC clock.</param>
+    /// <param name="worker">
+    /// The worker's service, for the reads an operator may lack the privilege for: the table's
+    /// row count and the starter's name. Null when the caller is the worker (the dispatcher).
+    /// </param>
+    public TemplateRun(
+        IOrganizationService service,
+        string[] allowed,
+        Func<DateTime>? clock = null,
+        IOrganizationService? worker = null
+    )
     {
         this.service = service;
+        reads = worker ?? service;
         store = new DocumentStore(service);
         this.allowed = allowed;
         this.clock = clock ?? (() => DateTime.UtcNow);
@@ -132,7 +157,8 @@ public sealed class TemplateRun
                 result.Notices = new[] { "A re-run of this template is already in progress." };
             return result;
         }
-        int total = AggregateCount.Records(service, table, out bool capped);
+        if (TableInfo.Find(service, table) == null)
+            throw new EvaluationBlockedException(TableGone);
         var run = existing?.Value ?? new OutboxDocument { Key = key };
         run.Status = "Pending";
         run.TemplateId = request.TemplateId;
@@ -144,9 +170,9 @@ public sealed class TemplateRun
         run.PageKeys = Array.Empty<string>();
         run.Planned = 0;
         run.PlannedAtResume = 0;
-        run.Total = total;
-        run.TotalCapped = capped;
+        run.Total = TableInfo.Records(reads, table);
         run.StartedBy = caller;
+        run.StartedByName = Name(reads, "systemuser", caller, "fullname");
         run.StartedUtc = clock();
         run.ResumedUtc = run.StartedUtc;
         run.EndedUtc = null;
@@ -188,38 +214,31 @@ public sealed class TemplateRun
         var row = Require(key);
         if (!Active.Contains(row.Value.Status))
             return Result(row.Value);
-        foreach (var pageKey in row.Value.PageKeys)
-        {
-            var queued = store.Find<OutboxDocument>("asx_outbox", pageKey);
-            if (queued?.Value.Status != "Pending")
-                continue;
-            queued.Value.Status = "Cancelled";
-            queued.Value.NextAttemptUtc = null;
-            queued.Value.Notices = new[] { "Re-run cancelled." };
-            store.Save(queued);
-        }
+        CancelPage(row.Value, "Re-run cancelled.");
         return End(row, "Cancelled", "Re-run cancelled.");
     }
 
-    /// <summary>The number of records a re-run of the template would cover; writes nothing.</summary>
+    /// <summary>
+    /// About how many records a re-run of the template covers: the platform's daily row-count
+    /// snapshot of its table, read as the worker. Writes nothing and runs no aggregate.
+    /// </summary>
     public WorkerResult Count(Guid templateId)
     {
         var template =
             TemplateLifecycle.Find(service, templateId)
             ?? throw new EvaluationBlockedException("The template was deleted.");
-        int total = AggregateCount.Records(
-            service,
-            TemplateStore.Text(template, "asx_table"),
-            out bool capped
-        );
+        string table = TemplateStore.Text(template, "asx_table");
+        if (TableInfo.Find(service, table) == null)
+            throw new EvaluationBlockedException(TableGone);
         return new WorkerResult
         {
             Status = "Counted",
             Run = new TemplateRunState
             {
                 TemplateId = templateId,
-                Total = total,
-                TotalCapped = capped,
+                Table = table,
+                Total = TableInfo.Records(reads, table),
+                TotalEstimated = true,
             },
         };
     }
@@ -241,6 +260,14 @@ public sealed class TemplateRun
             return End(job, "Cancelled", "The template is off, so the re-run stopped.");
         if (!allowed.Contains(run.Table))
             return End(job, "Cancelled", WorkerCoordinator.TableNotEnabled(run.Table));
+        // Looked up without a fault, which would end the transaction: the page's rows could not
+        // be planned either, so they stop with the run.
+        var table = TableInfo.Find(service, run.Table);
+        if (table == null)
+        {
+            CancelPage(run, "The table no longer exists, so the re-run stopped.");
+            return End(job, "Cancelled", "The table no longer exists, so the re-run stopped.");
+        }
         // One page in flight: the next page waits until every row of this one has left Pending.
         if (
             run.PageKeys.Any(k =>
@@ -254,7 +281,7 @@ public sealed class TemplateRun
         }
         run.Planned += run.PageKeys.Length;
         run.PageKeys = Array.Empty<string>();
-        var page = ReadPage(run);
+        var page = ReadPage(run, table.PrimaryIdAttribute);
         var coordinator = new WorkerCoordinator(service, clock, allowed);
         var queued = new List<string>();
         foreach (var id in page.Ids)
@@ -291,15 +318,17 @@ public sealed class TemplateRun
         run.SourceCookie = page.Cookie;
         if (!page.More && run.PageKeys.Length == 0)
         {
-            run.Total = AggregateCount.Records(service, run.Table, out bool capped);
-            run.TotalCapped = capped;
+            // Every record has been met: the count is exact now.
+            run.Total = run.Planned;
             return End(job, "Planned", null);
         }
+        // The snapshot can be a day old; the run never shows fewer records than it has met.
+        run.Total = Math.Max(run.Total, run.Planned + run.PageKeys.Length);
         store.Save(job);
         return Result(run);
     }
 
-    /// <summary>The run's state for Monitor, with names resolved as the caller and an estimated finish.</summary>
+    /// <summary>The run's state for Monitor, with an estimated finish.</summary>
     public TemplateRunState Describe(OutboxDocument run)
     {
         DateTime now = clock();
@@ -317,17 +346,18 @@ public sealed class TemplateRun
         var described = new TemplateRunState
         {
             TemplateId = run.TemplateId,
-            TemplateName = Name("asx_template", run.TemplateId, "asx_name") ?? "Deleted template",
+            TemplateName =
+                Name(service, "asx_template", run.TemplateId, "asx_name") ?? "Deleted template",
             Table = run.Table,
-            TableLabel = AggregateCount.Label(service, run.Table),
+            TableLabel = TableInfo.Label(service, run.Table),
             Version = Version(run.RevisionId),
             State = state,
             Planned = planned,
             Queued = waiting,
             Total = run.Total,
-            TotalCapped = run.TotalCapped,
+            TotalEstimated = state != "Done",
             StartedUtc = run.StartedUtc,
-            StartedBy = Name("systemuser", run.StartedBy, "fullname"),
+            StartedBy = run.StartedByName,
             NextAttemptUtc = run.NextAttemptUtc > now ? run.NextAttemptUtc : null,
             EndedUtc = run.EndedUtc,
             Problem =
@@ -336,7 +366,7 @@ public sealed class TemplateRun
         // Seconds per record since the last start or resume, once a full page has finished (D15).
         int done = planned - run.PlannedAtResume;
         bool moving = state == "Running" || state == "Waiting" || state == "Retrying";
-        if (moving && !run.TotalCapped && run.ResumedUtc != null && done >= PageSize)
+        if (moving && run.ResumedUtc != null && done >= PageSize)
         {
             double perRecord = (now - run.ResumedUtc.Value).TotalSeconds / done;
             described.EstimatedFinishUtc = now.AddSeconds(
@@ -353,6 +383,21 @@ public sealed class TemplateRun
             store.Find<OutboxDocument>("asx_outbox", k)?.Value.Status == "Pending"
         );
         return (run.Planned + run.PageKeys.Length - waiting, waiting);
+    }
+
+    /// <summary>Cancels the rows of the page in flight that are still waiting to be planned.</summary>
+    private void CancelPage(OutboxDocument run, string notice)
+    {
+        foreach (var pageKey in run.PageKeys)
+        {
+            var queued = store.Find<OutboxDocument>("asx_outbox", pageKey);
+            if (queued?.Value.Status != "Pending")
+                continue;
+            queued.Value.Status = "Cancelled";
+            queued.Value.NextAttemptUtc = null;
+            queued.Value.Notices = new[] { notice };
+            store.Save(queued);
+        }
     }
 
     private WorkerResult Change(
@@ -403,7 +448,7 @@ public sealed class TemplateRun
             Notices = run.Notices,
         };
 
-    private (Guid[] Ids, bool More, string? Cookie) ReadPage(OutboxDocument run)
+    private (Guid[] Ids, bool More, string? Cookie) ReadPage(OutboxDocument run, string primaryId)
     {
         var query = new QueryExpression(run.Table)
         {
@@ -415,7 +460,7 @@ public sealed class TemplateRun
                 PagingCookie = run.SourceCookie,
             },
         };
-        query.AddOrder(AggregateCount.PrimaryId(service, run.Table), OrderType.Ascending);
+        query.AddOrder(primaryId, OrderType.Ascending);
         var page = service.RetrieveMultiple(query);
         // The same continuation check as TargetedReplan.Consume: a page that claims more but gives
         // no way on fails, and the dispatcher's FailOutbox retries it at the same cursor.
@@ -434,7 +479,7 @@ public sealed class TemplateRun
         return (page.Entities.Select(e => e.Id).ToArray(), page.MoreRecords, page.PagingCookie);
     }
 
-    private string? Name(string table, Guid id, string column)
+    private static string? Name(IOrganizationService service, string table, Guid id, string column)
     {
         if (id == Guid.Empty)
             return null;

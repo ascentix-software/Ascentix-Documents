@@ -421,13 +421,19 @@ public sealed class DocumentStore
     }
 
     /// <summary>
+    /// Keys per dispatch page: the dispatcher flow plans each listed key in turn on every run.
+    /// A template re-run's page size follows from it (TemplateRun.PageSize).
+    /// </summary>
+    public const int DispatchPage = 20;
+
+    /// <summary>
     /// Returns a bounded dispatch page of pending work and due retries.
     /// </summary>
     /// <param name="table">The logical name of the durable-state table to query.</param>
     /// <param name="limit">The maximum number of work keys to return, from 1 through 100.</param>
     /// <param name="now">The UTC retry cutoff; null uses the current UTC time.</param>
     /// <returns>The selected work keys in dispatch order.</returns>
-    public string[] Pending(string table, int limit = 20, DateTime? now = null)
+    public string[] Pending(string table, int limit = DispatchPage, DateTime? now = null)
     {
         Table(table);
         if (limit < 1 || limit > 100)

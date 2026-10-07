@@ -131,10 +131,20 @@ public sealed class WorkerCoordinator
             case "Queue":
                 return Queue(request);
             case "ListOutbox":
+                // A template re-run comes after the rest of the page, its own page in flight
+                // included, so it finds that page planned and queues the next in this dispatch.
+                var outbox = store.Pending("asx_outbox", now: clock());
                 return new WorkerResult
                 {
                     Status = "Page",
-                    Keys = store.Pending("asx_outbox", now: clock()),
+                    Keys = outbox
+                        .Where(k => !k.StartsWith(TemplateRun.Prefix, StringComparison.Ordinal))
+                        .Concat(
+                            outbox.Where(k =>
+                                k.StartsWith(TemplateRun.Prefix, StringComparison.Ordinal)
+                            )
+                        )
+                        .ToArray(),
                 };
             case "ListOperations":
                 return new WorkerResult

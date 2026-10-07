@@ -141,10 +141,11 @@ public sealed class OutboxDocument : StoredDocument
     public int Total { get; set; }
 
     [DataMember]
-    public bool TotalCapped { get; set; }
-
-    [DataMember]
     public Guid StartedBy { get; set; }
+
+    /// <summary>The starter's name, read as the worker at Start: an operator may not read users.</summary>
+    [DataMember]
+    public string? StartedByName { get; set; }
 
     [DataMember]
     public DateTime? StartedUtc { get; set; }

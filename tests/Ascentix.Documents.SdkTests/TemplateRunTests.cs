@@ -5,6 +5,7 @@ using System.ServiceModel;
 using Ascentix.Documents.Conditions;
 using Ascentix.Documents.Dataverse;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Query;
 using Xunit;
 
 namespace Ascentix.Documents.SdkTests;
@@ -13,35 +14,30 @@ namespace Ascentix.Documents.SdkTests;
 public sealed class TemplateRunTests
 {
     private static readonly Guid Admin = Guid.NewGuid();
+    private static readonly Guid Worker = Guid.NewGuid();
 
-    /// <summary>A published template on account, account enabled, and `records` more account rows.</summary>
-    private static DurableWorkerTests.Fixture Setup(int records, int total = -1)
+    /// <summary>
+    /// A published template on account, account enabled, and `records` more account rows. The
+    /// platform's daily snapshot counts the rows unless `snapshot` says otherwise; an aggregate
+    /// fails the test, because a plug-in never runs one.
+    /// </summary>
+    private static DurableWorkerTests.Fixture Setup(int records, long snapshot = -1)
     {
         var f = new DurableWorkerTests.Fixture(seedBinding: false)
         {
             AllowedTables = new[] { "account" },
         };
         f.SeedTemplate();
-        RuntimeSeed.Seed(f.Service, Guid.NewGuid(), "account");
+        RuntimeSeed.Seed(f.Service, Worker, "account");
         f.Service.Seed(new Entity("systemuser", Admin) { ["fullname"] = "Matt LaCasse" });
         for (int i = 0; i < records; i++)
             f.Service.Seed(new Entity("account", Guid.NewGuid()) { ["name"] = "Account " + i });
-        int count = total < 0 ? records + 1 : total;
-        f.Service.FetchHook = fetch =>
-        {
-            Assert.Contains("aggregate=\"true\"", fetch.Query);
-            return Count(count);
-        };
+        if (snapshot >= 0)
+            f.Service.SnapshotCounts["account"] = snapshot;
+        f.Service.FetchHook = _ =>
+            throw new InvalidOperationException("A plug-in must not run an aggregate.");
         return f;
     }
-
-    private static EntityCollection Count(int n) =>
-        new EntityCollection(
-            new List<Entity>
-            {
-                new Entity { ["count"] = new AliasedValue("account", "accountid", n) },
-            }
-        );
 
     private static TemplateRun Runs(DurableWorkerTests.Fixture f) =>
         new TemplateRun(f.Service, new[] { "account" }, () => f.Now);
@@ -97,6 +93,25 @@ public sealed class TemplateRunTests
         return page;
     }
 
+    /// <summary>A record event, as the record's Create or Update queues it.</summary>
+    private static string Event(DurableWorkerTests.Fixture f)
+    {
+        var id = Guid.NewGuid();
+        f.Service.Seed(new Entity("account", id) { ["name"] = "Changed" });
+        return f.Execute(
+            new WorkerRequest
+            {
+                Command = "Queue",
+                TemplateId = f.TemplateId,
+                RecordId = id,
+                RequestId = Guid.NewGuid(),
+            }
+        ).Key;
+    }
+
+    private static int PendingRerunRows(DurableWorkerTests.Fixture f) =>
+        Requests(f).Count(r => r.Priority == TemplateRun.Priority && r.Status == "Pending");
+
     [Fact]
     public void StartIsIdempotentAndKeepsOneActiveRunPerTemplate()
     {
@@ -107,6 +122,7 @@ public sealed class TemplateRunTests
         Assert.Equal(TemplateRun.Key(f.TemplateId), started.Key);
         Assert.Equal("Running", started.Run!.State);
         Assert.Equal(4, started.Run.Total);
+        Assert.True(started.Run.TotalEstimated);
         Assert.Equal("Matt LaCasse", started.Run.StartedBy);
         Assert.Equal(started.Key, Start(f, request).Key);
         var again = Start(f);
@@ -252,6 +268,26 @@ public sealed class TemplateRunTests
         var done = Runs(f).Describe(run);
         Assert.Equal("Done", done.State);
         Assert.Equal(31, done.Planned);
+        Assert.Equal(31, done.Total);
+        Assert.False(done.TotalEstimated);
+    }
+
+    [Fact]
+    public void AStaleSnapshotTotalGrowsWithTheRunAndIsExactWhenDone()
+    {
+        var f = Setup(30, snapshot: 5);
+        Assert.Equal(5, Start(f).Run!.Total);
+        Consume(f);
+        Assert.Equal(TemplateRun.PageSize, Run(f).Total);
+        PlanPage(f);
+        Consume(f);
+        // Planned plus the page in flight.
+        Assert.Equal(31, Runs(f).Describe(Run(f)).Total);
+        Assert.True(Runs(f).Describe(Run(f)).TotalEstimated);
+        PlanPage(f);
+        Consume(f);
+        Assert.Equal("Done", Runs(f).Describe(Run(f)).State);
+        Assert.Equal(31, Run(f).Total);
     }
 
     [Fact]
@@ -285,6 +321,30 @@ public sealed class TemplateRunTests
     }
 
     [Fact]
+    public void ATableDeletedFromTheOrganizationCancelsTheRun()
+    {
+        var f = Setup(30);
+        Start(f);
+        Consume(f);
+        f.Service.MissingTables.Add("account");
+        var result = Consume(f);
+        Assert.Equal("Cancelled", result.Status);
+        Assert.Equal(
+            new[] { "The table no longer exists, so the re-run stopped." },
+            Run(f).Notices
+        );
+        Assert.Equal("account", result.Run!.TableLabel);
+        Assert.Equal(
+            "The table no longer exists.",
+            Assert
+                .Throws<EvaluationBlockedException>(() =>
+                    f.Service.Transaction(() => Runs(f).Count(f.TemplateId))
+                )
+                .Message
+        );
+    }
+
+    [Fact]
     public void BlockedRequestRowsCountAsPlannedAndTheRunContinues()
     {
         var f = Setup(30);
@@ -298,7 +358,7 @@ public sealed class TemplateRunTests
         Consume(f);
         Assert.Equal(TemplateRun.PageSize, Run(f).Planned);
         Assert.Equal("Pending", Run(f).Status);
-        Assert.Equal(6, Run(f).PageKeys.Length);
+        Assert.Equal(31 - TemplateRun.PageSize, Run(f).PageKeys.Length);
     }
 
     [Fact]
@@ -456,31 +516,70 @@ public sealed class TemplateRunTests
     }
 
     [Fact]
+    public void ListOutboxPutsRunsLastSoARunSeesItsPagePlanned()
+    {
+        var f = Setup(60);
+        Start(f);
+        Consume(f);
+        var page = f.Execute(new WorkerRequest { Command = "ListOutbox" }).Keys;
+        Assert.Equal(DocumentStore.DispatchPage, page.Length);
+        Assert.Equal(TemplateRun.Key(f.TemplateId), page.Last());
+        Assert.Equal(Run(f).PageKeys, page.Take(TemplateRun.PageSize));
+    }
+
+    [Fact]
+    public void WithNoOtherWorkARunPlansAPagePerDispatch()
+    {
+        var f = Setup(200);
+        Start(f);
+        Dispatch(f);
+        for (int dispatch = 1; dispatch <= 5; dispatch++)
+        {
+            var page = Dispatch(f);
+            Assert.Equal(TemplateRun.Key(f.TemplateId), page.Last());
+            Assert.Equal(dispatch * TemplateRun.PageSize, Run(f).Planned);
+            Assert.Equal(TemplateRun.PageSize, PendingRerunRows(f));
+        }
+    }
+
+    [Fact]
+    public void WithOtherWorkTheRunInterleavesFairly()
+    {
+        var f = Setup(200);
+        Start(f);
+        Dispatch(f);
+        Dispatch(f);
+        Assert.Equal(TemplateRun.PageSize, Run(f).Planned);
+        // Thirty record events arrive behind the run's page in flight.
+        var events = Enumerable.Range(0, 30).Select(_ => Event(f)).ToArray();
+        int planned = Run(f).Planned;
+        for (int dispatch = 0; dispatch < 3; dispatch++)
+        {
+            Dispatch(f);
+            Assert.True(PendingRerunRows(f) <= TemplateRun.PageSize);
+        }
+        // Each event waited behind at most one page of re-run work, and the run kept going.
+        Assert.All(
+            events,
+            e =>
+                Assert.Equal(
+                    "Planned",
+                    f.Store.Require<OutboxDocument>("asx_outbox", e).Value.Status
+                )
+        );
+        Assert.True(Run(f).Planned >= planned + TemplateRun.PageSize);
+    }
+
+    [Fact]
     public void NewRecordEventsArePlannedWithinTwoDispatchPages()
     {
         var f = Setup(40000);
         Start(f);
         Assert.Equal(new[] { TemplateRun.Key(f.TemplateId) }, Dispatch(f));
         Dispatch(f);
-        // Ten records change while the re-run's page is half planned.
-        var events = Enumerable
-            .Range(0, 10)
-            .Select(_ =>
-            {
-                var id = Guid.NewGuid();
-                f.Service.Seed(new Entity("account", id) { ["name"] = "Changed" });
-                return f.Execute(
-                    new WorkerRequest
-                    {
-                        Command = "Queue",
-                        TemplateId = f.TemplateId,
-                        RecordId = id,
-                        RequestId = Guid.NewGuid(),
-                    }
-                ).Key;
-            })
-            .ToArray();
-        var next = Dispatch(f);
+        // Ten records change while the re-run has a page in flight.
+        var events = Enumerable.Range(0, 10).Select(_ => Event(f)).ToArray();
+        var next = Dispatch(f).Concat(Dispatch(f)).ToArray();
         Assert.All(events, e => Assert.Contains(e, next));
         Assert.All(
             events,
@@ -490,16 +589,13 @@ public sealed class TemplateRunTests
                     f.Store.Require<OutboxDocument>("asx_outbox", e).Value.Status
                 )
         );
-        Assert.True(
-            Requests(f).Count(r => r.Priority == TemplateRun.Priority && r.Status == "Pending")
-                <= TemplateRun.PageSize
-        );
+        Assert.True(PendingRerunRows(f) <= TemplateRun.PageSize);
     }
 
     [Fact]
     public void ProgressShowsAnEstimatedFinishOnceAPageIsDone()
     {
-        var f = Setup(100, total: 101);
+        var f = Setup(100);
         Start(f);
         Assert.Null(Runs(f).Describe(Run(f)).EstimatedFinishUtc);
         Consume(f);
@@ -507,43 +603,176 @@ public sealed class TemplateRunTests
         f.Now = f.Now.AddMinutes(10);
         Consume(f);
         var state = Runs(f).Describe(Run(f));
-        Assert.Equal(25, state.Planned);
-        // 25 records in 10 minutes: 76 left take about 30.4 minutes.
-        Assert.Equal(f.Now.AddSeconds(76 * 24), state.EstimatedFinishUtc);
+        Assert.Equal(TemplateRun.PageSize, state.Planned);
+        Assert.Equal(101, state.Total);
+        // One page in 10 minutes: the records left take as long each.
+        double perRecord = 600.0 / TemplateRun.PageSize;
+        Assert.Equal(
+            f.Now.AddSeconds(perRecord * (101 - TemplateRun.PageSize)),
+            state.EstimatedFinishUtc
+        );
         f.Service.Transaction(() => Runs(f).Pause(TemplateRun.Key(f.TemplateId)));
         Assert.Null(Runs(f).Describe(Run(f)).EstimatedFinishUtc);
     }
 
     [Fact]
-    public void CountsAboveTheAggregateLimitAreCapped()
+    public void CountsComeFromTheDailySnapshotAtAnySize()
     {
-        var f = Setup(1);
-        f.Service.FetchHook = _ =>
-            throw new FaultException<OrganizationServiceFault>(
-                new OrganizationServiceFault
-                {
-                    ErrorCode = unchecked((int)0x8004E023),
-                    Message = "AggregateQueryRecordLimit exceeded. Cannot perform this operation.",
-                }
-            );
+        var f = Setup(1, snapshot: 120000);
         var counted = f.Service.Transaction(() => Runs(f).Count(f.TemplateId));
         Assert.Equal("Counted", counted.Status);
-        Assert.Equal(AggregateCount.Limit, counted.Run!.Total);
-        Assert.True(counted.Run.TotalCapped);
+        Assert.Equal(120000, counted.Run!.Total);
+        Assert.True(counted.Run.TotalEstimated);
         var started = Start(f);
-        Assert.True(started.Run!.TotalCapped);
+        Assert.Equal(120000, started.Run!.Total);
         Assert.Null(started.Run.EstimatedFinishUtc);
     }
 
     [Fact]
-    public void ATableTheDailySnapshotPutsAtTheLimitIsCappedWithoutAnAggregate()
+    public void AnOperatorWhoCannotReadTheTableOrUsersStartsARunThroughTheWorker()
     {
-        var f = Setup(1);
-        f.Service.SnapshotCounts["account"] = AggregateCount.Limit;
-        f.Service.FetchHook = _ =>
-            throw new InvalidOperationException("The aggregate would exceed the limit.");
-        var counted = f.Service.Transaction(() => Runs(f).Count(f.TemplateId));
-        Assert.Equal(AggregateCount.Limit, counted.Run!.Total);
-        Assert.True(counted.Run.TotalCapped);
+        var f = Setup(3);
+        var caller = new ReadDenied(f.Service, "account", "systemuser");
+        IOrganizationService Factory(Guid? user) =>
+            user == Worker ? f.Service
+            : user == Admin ? caller
+            : throw new InvalidOperationException("Unexpected identity " + user);
+        var count = ManageWork(
+            f,
+            Factory,
+            new WorkerRequest { Command = "CountRecords", TemplateId = f.TemplateId }
+        );
+        Assert.Equal(4, count.Run!.Total);
+        var started = ManageWork(
+            f,
+            Factory,
+            new WorkerRequest
+            {
+                Command = "StartTemplateRun",
+                TemplateId = f.TemplateId,
+                RequestId = Guid.NewGuid(),
+            }
+        );
+        Assert.Equal("Pending", started.Status);
+        Assert.Equal(4, started.Run!.Total);
+        Assert.Equal("Matt LaCasse", started.Run.StartedBy);
+        Assert.Equal("Matt LaCasse", Run(f).StartedByName);
+        var paused = ManageWork(
+            f,
+            Factory,
+            new WorkerRequest { Command = "PauseTemplateRun", Key = started.Key }
+        );
+        Assert.Equal("Paused", paused.Run!.State);
+        Assert.Equal("Matt LaCasse", paused.Run.StartedBy);
+    }
+
+    private static WorkerResult ManageWork(
+        DurableWorkerTests.Fixture f,
+        Func<Guid?, IOrganizationService> factory,
+        WorkerRequest request
+    )
+    {
+        var context = GuardTests.ContextProxy.Create(
+            new Dictionary<string, object>
+            {
+                ["Stage"] = 30,
+                ["Mode"] = 0,
+                ["IsInTransaction"] = true,
+                ["UserId"] = Admin,
+                ["InitiatingUserId"] = Admin,
+                ["CorrelationId"] = Guid.NewGuid(),
+                ["MessageName"] = "asx_ManageWork",
+                ["InputParameters"] = new ParameterCollection
+                {
+                    ["Request"] = JsonWire.Write(request),
+                },
+                ["OutputParameters"] = new ParameterCollection(),
+                ["SharedVariables"] = new ParameterCollection(),
+            }
+        );
+        return f.Service.Transaction(() =>
+        {
+            new Ascentix.Documents.Plugins.ManageWorkApi().Execute(new Provider(context, factory));
+            return JsonWire.Read<WorkerResult>((string)context.OutputParameters["Result"]);
+        });
+    }
+
+    private sealed class Provider : IServiceProvider, IOrganizationServiceFactory
+    {
+        private readonly IPluginExecutionContext context;
+        private readonly Func<Guid?, IOrganizationService> factory;
+
+        public Provider(IPluginExecutionContext context, Func<Guid?, IOrganizationService> factory)
+        {
+            this.context = context;
+            this.factory = factory;
+        }
+
+        public object GetService(Type type) =>
+            type == typeof(IPluginExecutionContext) ? context : this;
+
+        public IOrganizationService CreateOrganizationService(Guid? userId) => factory(userId);
+    }
+
+    /// <summary>
+    /// A caller with the Documents Operator role only: no Read on the listed tables. Dataverse
+    /// refuses those reads with a fault, which ends the caller's transaction.
+    /// </summary>
+    private sealed class ReadDenied : IOrganizationService
+    {
+        private readonly DurableWorkerTests.MemoryService inner;
+        private readonly string[] denied;
+
+        public ReadDenied(DurableWorkerTests.MemoryService inner, params string[] denied)
+        {
+            this.inner = inner;
+            this.denied = denied;
+        }
+
+        private T Read<T>(string table, Func<T> read) =>
+            denied.Contains(table)
+                ? throw inner.Refuse(
+                    new FaultException<OrganizationServiceFault>(
+                        new OrganizationServiceFault
+                        {
+                            ErrorCode = unchecked((int)0x80040220),
+                            Message = "Principal user is missing prvRead privilege on " + table,
+                        }
+                    )
+                )
+                : read();
+
+        public Entity Retrieve(string entityName, Guid id, ColumnSet columnSet) =>
+            Read(entityName, () => inner.Retrieve(entityName, id, columnSet));
+
+        public EntityCollection RetrieveMultiple(QueryBase query) =>
+            query is QueryExpression expression
+                ? Read(expression.EntityName, () => inner.RetrieveMultiple(query))
+                : throw inner.Refuse(new InvalidOperationException("Aggregates are not allowed."));
+
+        public OrganizationResponse Execute(OrganizationRequest request) =>
+            request is Microsoft.Crm.Sdk.Messages.RetrieveTotalRecordCountRequest totals
+                ? Read(totals.EntityNames.Single(), () => inner.Execute(request))
+                : inner.Execute(request);
+
+        public Guid Create(Entity entity) => inner.Create(entity);
+
+        public void Update(Entity entity) => inner.Update(entity);
+
+        public void Delete(string entityName, Guid id) => inner.Delete(entityName, id);
+
+        public void Associate(
+            string entityName,
+            Guid entityId,
+            Relationship relationship,
+            EntityReferenceCollection relatedEntities
+        ) => inner.Associate(entityName, entityId, relationship, relatedEntities);
+
+        public void Disassociate(
+            string entityName,
+            Guid entityId,
+            Relationship relationship,
+            EntityReferenceCollection relatedEntities
+        ) => inner.Disassociate(entityName, entityId, relationship, relatedEntities);
     }
 }

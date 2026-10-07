@@ -6,6 +6,7 @@ using Ascentix.Documents.Dataverse;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Metadata;
+using Microsoft.Xrm.Sdk.Metadata.Query;
 using Microsoft.Xrm.Sdk.Query;
 using Xunit;
 
@@ -2984,13 +2985,28 @@ public sealed class DurableWorkerTests
             Rows[copy.Id] = copy;
         }
 
+        private int depth;
+        private bool doomed;
+
+        private const string NoTransaction =
+            "There is no active transaction. A service call failed inside it and the plug-in carried on.";
+
+        /// <summary>
+        /// Runs the action as one Dataverse transaction: a failure rolls every write back. As in
+        /// Dataverse, a service call that fails inside it ends the transaction even when the
+        /// caller catches the fault: every later call, and the commit, fail.
+        /// </summary>
         public T Transaction<T>(Func<T> action)
         {
             var snapshot = Rows.ToDictionary(p => p.Key, p => Copy(p.Value));
             var oldVersion = version;
+            depth++;
             try
             {
-                return action();
+                var result = action();
+                if (doomed)
+                    throw new InvalidOperationException(NoTransaction);
+                return result;
             }
             catch
             {
@@ -2998,9 +3014,91 @@ public sealed class DurableWorkerTests
                 version = oldVersion;
                 throw;
             }
+            finally
+            {
+                if (--depth == 0)
+                    doomed = false;
+            }
         }
 
-        public Entity Retrieve(string name, Guid id, ColumnSet columns)
+        /// <summary>Tables deleted from the organization: metadata lookups find nothing, and other calls fault.</summary>
+        public HashSet<string> MissingTables { get; } = new HashSet<string>();
+
+        /// <summary>A fault a wrapping service raises for this one (a refused privilege): it dooms the transaction.</summary>
+        public Exception Refuse(Exception fault)
+        {
+            if (depth > 0)
+                doomed = true;
+            return fault;
+        }
+
+        private static Exception Missing(string table) =>
+            new System.ServiceModel.FaultException<OrganizationServiceFault>(
+                new OrganizationServiceFault
+                {
+                    ErrorCode = unchecked((int)0x80040217),
+                    Message = "Could not find an entity with name " + table + ".",
+                }
+            );
+
+        private EntityMetadata Metadata(string table)
+        {
+            var metadata = new EntityMetadata { LogicalName = table };
+            typeof(EntityMetadata)
+                .GetProperty("PrimaryIdAttribute")!
+                .SetValue(metadata, table + "id", null);
+            typeof(EntityMetadata)
+                .GetProperty("PrimaryNameAttribute")!
+                .SetValue(
+                    metadata,
+                    PrimaryNames.TryGetValue(table, out var primary) ? primary : "name",
+                    null
+                );
+            metadata.DisplayName = new Label(
+                new LocalizedLabel(
+                    DisplayNames.TryGetValue(table, out var label) ? label : table,
+                    1033
+                ),
+                new LocalizedLabel[0]
+            );
+            return metadata;
+        }
+
+        /// <summary>One service call: refused once the transaction is doomed, and dooms it when it fails.</summary>
+        private T Call<T>(Func<T> call)
+        {
+            if (doomed)
+                throw new InvalidOperationException(NoTransaction);
+            try
+            {
+                return call();
+            }
+            catch
+            {
+                if (depth > 0)
+                    doomed = true;
+                throw;
+            }
+        }
+
+        public Entity Retrieve(string name, Guid id, ColumnSet columns) =>
+            Call(() => RetrieveRow(name, id, columns));
+
+        public Guid Create(Entity row) => Call(() => CreateRow(row));
+
+        public OrganizationResponse Execute(OrganizationRequest request) =>
+            Call(() => ExecuteRequest(request));
+
+        public EntityCollection RetrieveMultiple(QueryBase raw) => Call(() => Query(raw));
+
+        public void Delete(string name, Guid id) =>
+            Call(() =>
+            {
+                DeleteRow(name, id);
+                return 0;
+            });
+
+        private Entity RetrieveRow(string name, Guid id, ColumnSet columns)
         {
             var row = Rows[id];
             if (row.LogicalName != name)
@@ -3008,7 +3106,7 @@ public sealed class DurableWorkerTests
             return Copy(row, columns);
         }
 
-        public Guid Create(Entity row)
+        private Guid CreateRow(Entity row)
         {
             if (row.Id == Guid.Empty)
                 row.Id = Guid.NewGuid();
@@ -3043,7 +3141,7 @@ public sealed class DurableWorkerTests
             return copy.Id;
         }
 
-        public OrganizationResponse Execute(OrganizationRequest request)
+        private OrganizationResponse ExecuteRequest(OrganizationRequest request)
         {
             if (request is DeleteRequest delete)
             {
@@ -3082,39 +3180,40 @@ public sealed class DurableWorkerTests
             }
             if (request is RetrieveEntityRequest entityRequest)
             {
-                var metadata = new EntityMetadata { LogicalName = entityRequest.LogicalName };
-                typeof(EntityMetadata)
-                    .GetProperty("PrimaryIdAttribute")!
-                    .SetValue(metadata, entityRequest.LogicalName + "id", null);
-                typeof(EntityMetadata)
-                    .GetProperty("PrimaryNameAttribute")!
-                    .SetValue(
-                        metadata,
-                        PrimaryNames.TryGetValue(entityRequest.LogicalName, out var primary)
-                            ? primary
-                            : "name",
-                        null
-                    );
-                metadata.DisplayName = new Label(
-                    new LocalizedLabel(
-                        DisplayNames.TryGetValue(entityRequest.LogicalName, out var label)
-                            ? label
-                            : entityRequest.LogicalName,
-                        1033
-                    ),
-                    new LocalizedLabel[0]
-                );
+                if (MissingTables.Contains(entityRequest.LogicalName))
+                    throw Missing(entityRequest.LogicalName);
                 var response = new RetrieveEntityResponse();
-                response.Results["EntityMetadata"] = metadata;
+                response.Results["EntityMetadata"] = Metadata(entityRequest.LogicalName);
+                return response;
+            }
+            if (request is RetrieveMetadataChangesRequest changes)
+            {
+                // Answers the one query shape Documents sends: a table by its logical name.
+                var condition = changes.Query.Criteria.Conditions.Single();
+                if (
+                    condition.PropertyName != "LogicalName"
+                    || condition.ConditionOperator != MetadataConditionOperator.Equals
+                )
+                    throw new NotSupportedException("Only a LogicalName lookup is supported.");
+                string table = (string)condition.Value;
+                var found = new EntityMetadataCollection();
+                if (!MissingTables.Contains(table))
+                    found.Add(Metadata(table));
+                var response = new RetrieveMetadataChangesResponse();
+                response.Results["EntityMetadata"] = found;
                 return response;
             }
             if (request is Microsoft.Crm.Sdk.Messages.RetrieveTotalRecordCountRequest totals)
             {
                 var counts = new EntityRecordCountCollection();
                 foreach (var table in totals.EntityNames)
+                {
+                    if (MissingTables.Contains(table))
+                        throw Missing(table);
                     counts[table] = SnapshotCounts.TryGetValue(table, out var snapshot)
                         ? snapshot
                         : Rows.Values.Count(r => r.LogicalName == table);
+                }
                 var response = new Microsoft.Crm.Sdk.Messages.RetrieveTotalRecordCountResponse();
                 response.Results["EntityRecordCountCollection"] = counts;
                 return response;
@@ -3146,7 +3245,7 @@ public sealed class DurableWorkerTests
             throw new NotSupportedException(request.RequestName);
         }
 
-        public EntityCollection RetrieveMultiple(QueryBase raw)
+        private EntityCollection Query(QueryBase raw)
         {
             if (raw is FetchExpression fetch)
                 return FetchHook?.Invoke(fetch)
@@ -3241,7 +3340,7 @@ public sealed class DurableWorkerTests
 
         public void Update(Entity row) => throw new NotSupportedException("Use UpdateRequest CAS.");
 
-        public void Delete(string name, Guid id)
+        private void DeleteRow(string name, Guid id)
         {
             if (Rows[id].LogicalName != name)
                 throw new InvalidOperationException("Wrong delete table.");

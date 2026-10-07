@@ -8,6 +8,47 @@ namespace Ascentix.Documents.SdkTests;
 
 public sealed class MemoryServiceTests
 {
+    /// <summary>
+    /// Dataverse rolls a plug-in's transaction back when a service call inside it fails, even if
+    /// the plug-in catches the fault: later calls fail with "There is no active transaction", and
+    /// so does the commit. The double does the same, so no test passes on a caught fault.
+    /// </summary>
+    [Fact]
+    public void ACaughtFaultEndsTheTransaction()
+    {
+        var s = new DurableWorkerTests.MemoryService();
+        var id = Guid.NewGuid();
+        s.Seed(new Entity("thing", id) { ["n"] = 1 });
+        s.QueryHook = q =>
+            q.EntityName == "broken" ? throw new InvalidOperationException("Fault.") : null;
+        var later = Assert.Throws<InvalidOperationException>(() =>
+            s.Transaction(() =>
+            {
+                try
+                {
+                    s.RetrieveMultiple(new QueryExpression("broken"));
+                }
+                catch (InvalidOperationException) { }
+                return s.Retrieve("thing", id, new ColumnSet(false));
+            })
+        );
+        Assert.Contains("no active transaction", later.Message);
+        var commit = Assert.Throws<InvalidOperationException>(() =>
+            s.Transaction(() =>
+            {
+                try
+                {
+                    s.RetrieveMultiple(new QueryExpression("broken"));
+                }
+                catch (InvalidOperationException) { }
+                return 0;
+            })
+        );
+        Assert.Contains("no active transaction", commit.Message);
+        // The next transaction starts clean.
+        Assert.Equal(id, s.Transaction(() => s.Retrieve("thing", id, new ColumnSet(false))).Id);
+    }
+
     [Fact]
     public void InConditionsAndPagingBehaveLikeDataverse()
     {

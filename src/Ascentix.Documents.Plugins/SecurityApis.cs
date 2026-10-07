@@ -131,7 +131,17 @@ public sealed class ManageWorkApi : IPlugin
             // CountRecords only reads; the others write through the guarded transport as the caller.
             if (request.Command != "CountRecords")
                 context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
-            var runs = new TemplateRun(service, RuntimeProfile.Read(service).Tables);
+            var profile = RuntimeProfile.Read(service);
+            // The table's row count and the starter's name are read as the worker, which reads
+            // every enabled table and users; the caller may hold only the Operator role.
+            var runs = new TemplateRun(
+                service,
+                profile.Tables,
+                worker: (
+                    (IOrganizationServiceFactory)
+                        provider.GetService(typeof(IOrganizationServiceFactory))
+                ).CreateOrganizationService(profile.WorkerId)
+            );
             context.OutputParameters["Result"] = JsonWire.Write(
                 request.Command switch
                 {
