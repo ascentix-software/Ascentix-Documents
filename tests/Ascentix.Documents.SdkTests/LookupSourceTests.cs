@@ -265,6 +265,64 @@ public sealed class LookupSourceTests
         Assert.Equal(contact.ToString("D"), loaded.Literal);
     }
 
+    [Fact]
+    public void ManyLookupConditionsOnOneColumnReadEachTargetsMetadataAndPrivilegeOnce()
+    {
+        var f = LookupTemplate();
+        f.Service.PrimaryNames["contact"] = "fullname";
+        f.Service.Lookups["account.primarycontactid"] = "account,contact";
+        var contacts = Enumerable
+            .Range(0, 4)
+            .Select(i =>
+            {
+                var id = Guid.NewGuid();
+                f.Service.Seed(new Entity("contact", id) { ["fullname"] = "Contact " + i });
+                return id;
+            })
+            .ToArray();
+        var draft = WithLookupCondition(f, contacts[0]);
+        var group = draft.Destinations[0].Folders[0].Condition!;
+        group.All = false;
+        group.Conditions = contacts
+            .Select(id => new ConditionDto
+            {
+                Column = "primarycontactid",
+                Operator = "Equal",
+                LiteralKind = "Lookup",
+                Literal = id.ToString("D"),
+            })
+            .ToArray();
+        Save(f, draft);
+        f.Service.Executed.Clear();
+
+        var loaded = new DraftReader(f.Service).Read(LatestRevision(f));
+
+        Assert.Equal(
+            new[] { "Contact 0", "Contact 1", "Contact 2", "Contact 3" },
+            loaded
+                .Draft.Destinations[0]
+                .Folders[0]
+                .Condition!.Conditions.Select(c => c.LiteralLabel)
+        );
+        var metadata = f
+            .Service.Executed.OfType<Microsoft.Xrm.Sdk.Messages.RetrieveMetadataChangesRequest>()
+            .ToArray();
+        Assert.Single(metadata, r => r.Query.AttributeQuery != null);
+        Assert.Equal(
+            new[] { "account", "contact" },
+            metadata
+                .Where(r => r.Query.AttributeQuery == null)
+                .Select(r => (string)r.Query.Criteria.Conditions.Single().Value)
+                .OrderBy(t => t)
+        );
+        Assert.Equal(
+            2,
+            f.Service.Executed.OfType<Microsoft.Crm.Sdk.Messages.RetrieveUserPrivilegeByPrivilegeIdRequest>()
+                .Count()
+        );
+        Assert.Single(f.Service.Executed.OfType<Microsoft.Crm.Sdk.Messages.WhoAmIRequest>());
+    }
+
     /// <summary>The template's draft with its root folder kept only when the primary contact is the given one.</summary>
     private static DraftDto WithLookupCondition(DurableWorkerTests.Fixture f, Guid contact)
     {

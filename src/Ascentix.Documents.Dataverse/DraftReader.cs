@@ -4,6 +4,7 @@ using System.Linq;
 using System.Runtime.Serialization;
 using Ascentix.Documents.Conditions;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Metadata;
 using Microsoft.Xrm.Sdk.Query;
 
 namespace Ascentix.Documents.Dataverse;
@@ -177,6 +178,16 @@ public sealed class DraftReader
 
     private Guid? caller;
 
+    // Metadata and privileges read once per reader: a draft may compare many conditions with
+    // the same lookup column, and each answer is the same for all of them.
+    private readonly Dictionary<string, string[]> targets = new Dictionary<string, string[]>(
+        StringComparer.Ordinal
+    );
+    private readonly Dictionary<string, EntityMetadata?> readable = new Dictionary<
+        string,
+        EntityMetadata?
+    >(StringComparer.Ordinal);
+
     // The record a lookup condition compares with, by name, read as the caller from each target
     // of the lookup in turn; null when it is not found or not readable (spec 6.4). LoadDraft runs
     // in a transaction that a faulting call would end even when caught, so every read here is
@@ -193,14 +204,10 @@ public sealed class DraftReader
             || !tables.TryGetValue(condition.Source, out var table)
         )
             return condition;
-        foreach (var target in TableInfo.LookupTargets(service, table, condition.Column))
+        foreach (var target in Targets(table, condition.Column))
         {
-            var metadata = TableInfo.Find(service, target);
-            if (
-                metadata?.PrimaryIdAttribute == null
-                || metadata.PrimaryNameAttribute == null
-                || !TableInfo.CanRead(service, metadata, Caller())
-            )
+            var metadata = Readable(target);
+            if (metadata == null)
                 continue;
             var query = new QueryExpression(target)
             {
@@ -216,6 +223,32 @@ public sealed class DraftReader
             break;
         }
         return condition;
+    }
+
+    // The tables a lookup column targets.
+    private string[] Targets(string table, string column)
+    {
+        string key = table + "." + column;
+        if (!targets.TryGetValue(key, out var found))
+            targets[key] = found = TableInfo.LookupTargets(service, table, column);
+        return found;
+    }
+
+    // The table's metadata when the caller can query it for a name, else null.
+    private EntityMetadata? Readable(string table)
+    {
+        if (!readable.TryGetValue(table, out var metadata))
+        {
+            metadata = TableInfo.Find(service, table);
+            if (
+                metadata?.PrimaryIdAttribute == null
+                || metadata.PrimaryNameAttribute == null
+                || !TableInfo.CanRead(service, metadata, Caller())
+            )
+                metadata = null;
+            readable[table] = metadata;
+        }
+        return metadata;
     }
 
     private Guid Caller() =>

@@ -46,16 +46,14 @@ public abstract class Predicate
 {
     public abstract bool Evaluate(Snapshot snapshot);
     public abstract IEnumerable<FieldReference> Fields { get; }
-    internal abstract int Validate(int depth);
+    internal abstract void ValidateShape();
 
     /// <summary>
     /// Checks the tree's shape. Its size is bounded where it is saved (Bounds.ConfigurationRows,
-    /// one row per group and condition). Its depth (groups nested at most 9 below a folder's
-    /// group, conditions at depth 10) keeps the draft that carries it inside JsonWire's 32-level
-    /// nesting quota, which refuses a save or a preview with groups nested 12 deep
-    /// (CapTraceTests.TheDeepestConditionTreeAPreviewCarriesFitsTheWireNestingQuota).
+    /// one row per group and condition) and its depth where a template is validated
+    /// (Bounds.ConditionDepth, in TemplateValidator).
     /// </summary>
-    public void Validate() => Validate(0);
+    public void Validate() => ValidateShape();
 }
 
 public sealed class Condition : Predicate
@@ -79,16 +77,15 @@ public sealed class Condition : Predicate
         Validate();
     }
 
-    internal override int Validate(int depth)
+    internal override void ValidateShape()
     {
-        if (depth > 10 || !Enum.IsDefined(typeof(Comparison), Operator))
+        if (!Enum.IsDefined(typeof(Comparison), Operator))
             throw new EvaluationBlockedException("Invalid condition shape.");
         bool unary = Operator == Comparison.IsNull || Operator == Comparison.IsNotNull;
         if (unary ? Literal != null || Right != null : (Literal == null) == (Right == null))
             throw new EvaluationBlockedException(
                 "Condition must have exactly one comparison source, or none for a null predicate."
             );
-        return 1;
     }
 
     public override bool Evaluate(Snapshot snapshot) =>
@@ -114,11 +111,12 @@ public sealed class ConditionGroup : Predicate
         Validate();
     }
 
-    internal override int Validate(int depth)
+    internal override void ValidateShape()
     {
-        if (depth > 10 || Children.Count == 0 || Children.Any(c => c == null))
+        if (Children.Count == 0 || Children.Any(c => c == null))
             throw new EvaluationBlockedException("Invalid or empty condition group.");
-        return Children.Sum(c => c.Validate(depth + 1));
+        foreach (var child in Children)
+            child.ValidateShape();
     }
 
     public override bool Evaluate(Snapshot snapshot)

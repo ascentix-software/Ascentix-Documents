@@ -499,7 +499,9 @@ public sealed class SecurityAdministration
             || entries.Select(e => e.TeamId).Distinct().Count() != entries.Length
         )
             throw new EvaluationBlockedException(
-                "At most ten unique team policy entries with named access levels required."
+                "At most "
+                    + Domain.Bounds.TeamEntries
+                    + " unique team policy entries with named access levels required."
             );
         ValidateRole(read, true);
         ValidateRole(contribute, false);

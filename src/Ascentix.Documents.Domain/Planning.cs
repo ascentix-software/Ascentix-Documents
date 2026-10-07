@@ -223,13 +223,28 @@ public static class FolderNames
 public static class Bounds
 {
     /// <summary>
-    /// Related records per template. Record plans index each related record in asx_source0 to
-    /// asx_source5 (DocumentStore.Index), so a change to one re-runs the records that use it.
+    /// Related records per template. A record plan lists the record and its related records
+    /// (Sources = RelatedRecords + 1). DocumentStore.Index writes each related record, never the
+    /// record itself, to its own index column among asx_source0 to asx_source5, so a change to
+    /// one re-runs the records that use it.
     /// </summary>
     public const int RelatedRecords = 5;
 
-    /// <summary>The root record and its related records.</summary>
+    /// <summary>
+    /// The sources of a template, and so of a record plan: the record itself and its related
+    /// records. It is also the number of asx_sourceN index columns DocumentStore.Index writes.
+    /// </summary>
     public const int Sources = RelatedRecords + 1;
+
+    /// <summary>
+    /// Levels of condition groups under one folder: its own group and the groups nested inside
+    /// it. The draft that carries them is read by JsonWire, whose nesting quota (MaxDepth 32)
+    /// was measured on 2026-10-07 to read 11 groups nested inside a folder's group and refuse
+    /// 12, for a save and for a preview alike (CapTraceTests
+    /// .TheDeepestConditionTreeAPreviewCarriesFitsTheWireNestingQuota). 10 levels stay inside
+    /// it with room to spare, so a tree too deep is refused by name, not by the serializer.
+    /// </summary>
+    public const int ConditionDepth = 10;
 
     /// <summary>
     /// Destinations per template. Each destination is planned inside one worker Plan call, which
@@ -389,7 +404,7 @@ public static class TemplateValidator
                 if (node.Condition != null)
                 {
                     node.Condition.Validate();
-                    ValidatePredicate(sources, node.Condition);
+                    ValidatePredicate(sources, node.Condition, 1);
                 }
             }
         }
@@ -411,13 +426,25 @@ public static class TemplateValidator
         return kind;
     }
 
-    private static int ValidatePredicate(
+    // level: the group levels down to this predicate, 1 for a folder's own condition group.
+    private static void ValidatePredicate(
         IDictionary<string, ValueSource> sources,
-        Predicate predicate
+        Predicate predicate,
+        int level
     )
     {
         if (predicate is ConditionGroup group)
-            return group.Children.Sum(child => ValidatePredicate(sources, child));
+        {
+            if (level > Bounds.ConditionDepth)
+                throw new EvaluationBlockedException(
+                    "Condition groups can be nested at most "
+                        + Bounds.ConditionDepth
+                        + " levels deep."
+                );
+            foreach (var child in group.Children)
+                ValidatePredicate(sources, child, level + 1);
+            return;
+        }
         if (!(predicate is Condition condition))
             throw new EvaluationBlockedException("Unknown predicate type.");
         var kind = RequireField(sources, condition.Left);
@@ -430,7 +457,6 @@ public static class TemplateValidator
             || (condition.Right != null && RequireField(sources, condition.Right) != kind)
         )
             throw new EvaluationBlockedException("Typed operator/value mismatch.");
-        return 1;
     }
 }
 

@@ -248,12 +248,14 @@ public sealed class DocumentStore
 
     private static void Index(RecordPlanDocument selection, Entity target)
     {
-        if (selection.Sources.Length > 6)
+        if (selection.Sources.Length > Domain.Bounds.Sources)
             throw new EvaluationBlockedException("Record source index exceeds the template limit.");
         var related = selection
             .Sources.Where(s => s.Table != selection.Table || s.Id != selection.RecordId)
             .ToArray();
-        for (int i = 0; i < 6; i++)
+        // The index columns asx_source0 to asx_source5, one per source a template may have: the
+        // related records fill them in order and the rest are cleared.
+        for (int i = 0; i < Domain.Bounds.Sources; i++)
             target["asx_source" + i] =
                 i < related.Length
                     ? TargetedReplan.SourceKey(related[i].Table, related[i].Id)

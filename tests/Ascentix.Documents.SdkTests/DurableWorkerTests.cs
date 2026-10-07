@@ -3126,8 +3126,15 @@ public sealed class DurableWorkerTests
 
         public Guid Create(Entity row) => Call(() => CreateRow(row));
 
+        /// <summary>Every request Execute was asked to run, in order.</summary>
+        public List<OrganizationRequest> Executed { get; } = new List<OrganizationRequest>();
+
         public OrganizationResponse Execute(OrganizationRequest request) =>
-            Call(() => ExecuteRequest(request));
+            Call(() =>
+            {
+                Executed.Add(request);
+                return ExecuteRequest(request);
+            });
 
         public EntityCollection RetrieveMultiple(QueryBase raw) => Call(() => Query(raw));
 

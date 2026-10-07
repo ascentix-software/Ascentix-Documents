@@ -122,6 +122,20 @@ public sealed class CapTraceTests
             Source("src/Ascentix.Documents.Dataverse/BatchReplan.cs")
         );
         Assert.Contains(
+            "Bounds.Sources",
+            Source("src/Ascentix.Documents.Dataverse/DocumentStore.cs")
+        );
+        foreach (var old in new[] { "Sources.Length > 6", "i < 6" })
+            Assert.DoesNotContain(old, Source("src/Ascentix.Documents.Dataverse/DocumentStore.cs"));
+        Assert.Contains(
+            "Bounds.ConditionDepth",
+            Source("src/Ascentix.Documents.Domain/Planning.cs")
+        );
+        Assert.DoesNotContain(
+            "depth > 10",
+            Source("src/Ascentix.Documents.Conditions/Expressions.cs")
+        );
+        Assert.Contains(
             "Bounds.ConfigurationRows",
             Source("src/Ascentix.Documents.Dataverse/DraftTemplate.cs")
         );
@@ -260,12 +274,121 @@ public sealed class CapTraceTests
                     .Concat(group.Groups.Select(Model))
                     .ToArray()
             );
-        // The domain allows groups nested 9 deep below a folder's group; the request carrying
-        // such a tree reads back within JsonWire's 32-level quota, and one level more is refused.
-        var deepest = JsonWire.Read<PreviewRequest>(JsonWire.Write(Request(9)));
-        Model(deepest.Draft!.Destinations[0].Folders[0].Condition!);
-        Assert.Throws<EvaluationBlockedException>(() =>
-            Model(Request(10).Draft!.Destinations[0].Folders[0].Condition!)
+        void Validate(PreviewRequest request)
+        {
+            var section = new DestinationSection
+            {
+                Key = "main",
+                Library = new ApprovedLibrary
+                {
+                    ApprovalId = Guid.NewGuid(),
+                    WebId = Guid.NewGuid(),
+                    ListId = Guid.NewGuid(),
+                    EntryId = Guid.NewGuid(),
+                    EntryUrl = "https://example.sharepoint.com/sites/proto/General",
+                    Approved = true,
+                },
+            };
+            section.Nodes.Add(
+                new FolderNode
+                {
+                    Key = "root",
+                    Name = "{root.name}",
+                    Condition = Model(request.Draft!.Destinations[0].Folders[0].Condition!),
+                }
+            );
+            var template = new DocumentTemplate
+            {
+                Id = Guid.NewGuid(),
+                Table = "account",
+                Revision = 1,
+            };
+            template.Sources.Add(
+                new SourceDto
+                {
+                    Alias = "root",
+                    Table = "account",
+                    Columns = new[]
+                    {
+                        new ColumnDto { Name = "name", Kind = "Text" },
+                    },
+                }.ToModel()
+            );
+            template.Destinations.Add(section);
+            TemplateValidator.Validate(template);
+        }
+        // Nested(n) is a folder's condition group with n more groups nested inside it, so
+        // Nested(Bounds.ConditionDepth - 1) has Bounds.ConditionDepth group levels: the deepest
+        // the domain allows. It reads back within JsonWire's quota and one level more is refused.
+        Validate(JsonWire.Read<PreviewRequest>(JsonWire.Write(Request(Bounds.ConditionDepth - 1))));
+        Assert.Throws<EvaluationBlockedException>(() => Validate(Request(Bounds.ConditionDepth)));
+        // The measured quota: MaxDepth 32 reads 11 nested groups and refuses 12, for a save
+        // (DraftDto) and a preview (PreviewRequest) alike. A change to MaxDepth fails here.
+        JsonWire.Read<PreviewRequest>(JsonWire.Write(Request(11)));
+        JsonWire.Read<DraftDto>(JsonWire.Write(Request(11).Draft));
+        Assert.ThrowsAny<Exception>(() =>
+            JsonWire.Read<PreviewRequest>(JsonWire.Write(Request(12)))
+        );
+        Assert.ThrowsAny<Exception>(() =>
+            JsonWire.Read<DraftDto>(JsonWire.Write(Request(12).Draft))
+        );
+    }
+
+    [Fact]
+    public void ARevisionIsReadAcrossEveryPage()
+    {
+        var service = new DurableWorkerTests.MemoryService();
+        var revision = Guid.NewGuid();
+        var seeded = Enumerable
+            .Range(0, 5)
+            .Select(i =>
+            {
+                var row = new Entity("asx_folder", Guid.NewGuid())
+                {
+                    ["asx_revisionid"] = new EntityReference("asx_revision", revision),
+                    ["asx_key"] = "f" + i,
+                };
+                service.Seed(row);
+                return row.Id;
+            })
+            .ToArray();
+        service.Seed(
+            new Entity("asx_folder", Guid.NewGuid())
+            {
+                ["asx_revisionid"] = new EntityReference("asx_revision", Guid.NewGuid()),
+            }
+        );
+        int pages = 0;
+        // Pages of two rows stand in for Dataverse's 5,000, so five rows take three pages.
+        service.QueryHook = query =>
+        {
+            pages++;
+            query.PageInfo.Count = 2;
+            return null;
+        };
+        var rows = new TemplateStore(service).Children("asx_folder", revision, "asx_key");
+        Assert.Equal(3, pages);
+        Assert.Equal(seeded.OrderBy(id => id), rows.Select(r => r.Id).OrderBy(id => id));
+    }
+
+    [Fact]
+    public void TheTeamEntryRefusalNamesTheBound()
+    {
+        var error = Assert.Throws<EvaluationBlockedException>(() =>
+            SecurityAdministration.Validate(
+                Enumerable
+                    .Range(0, Bounds.TeamEntries + 1)
+                    .Select(_ => new PolicyEntry { TeamId = Guid.NewGuid(), Access = "Read" })
+                    .ToArray(),
+                new PolicyRole(),
+                new PolicyRole()
+            )
+        );
+        Assert.Equal(
+            "At most "
+                + Bounds.TeamEntries
+                + " unique team policy entries with named access levels required.",
+            error.Message
         );
     }
 

@@ -23,6 +23,7 @@
     configurationRows: 1216,
     teamEntries: 10,
     previewRecords: 5,
+    conditionDepth: 10,
   };
   const ROLES = {
     prvCreateasx_publication: 'Documents Publisher',
