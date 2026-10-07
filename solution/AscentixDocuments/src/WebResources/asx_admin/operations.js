@@ -828,10 +828,12 @@
       'row:' + list + ':' + row.Key + ':' + action + (candidate ? ':' + candidate.ListId : '');
     control.setAttribute('aria-label', text + ' for ' + row.Title);
     into.append(control);
+    // The role of the API the action goes to: a library setup's own choices go through the
+    // catalog API; Retry, like every other action, through asx_ManageWork.
     const missing =
       action === 'Check' || action === 'OpenRecord'
         ? null
-        : row.Kind === 'LibrarySetup'
+        : row.Kind === 'LibrarySetup' && action !== 'Retry'
           ? ui.needs('prvCreateasx_site')
           : ui.needs(OPERATOR);
     if (missing)
@@ -1550,7 +1552,8 @@
     ui.onRuntime(showSettings);
     await showSettings(ui.runtime());
     const link = ui.deeplink();
-    if (link?.table) focusTable(link.table);
+    // A link with a table lands on its row; with an empty one (Manage tables), on the card.
+    if (link && 'table' in link) focusTable(link.table);
   }
 
   function showSettings(runtime) {
@@ -1907,8 +1910,8 @@
 
   // A table's row takes focus: its first action, else the row itself.
   function focusTable(table) {
-    const row = $('tables-rows').querySelector('[data-table="' + table + '"]');
-    if (!row) return;
+    const row = table && $('tables-rows').querySelector('[data-table="' + table + '"]');
+    if (!row) return $('tables-title').focus();
     const first = row.querySelector('button');
     if (first) return first.focus();
     row.tabIndex = -1;

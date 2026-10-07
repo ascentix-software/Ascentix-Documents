@@ -129,11 +129,6 @@
     dropRef(control, 'aria-describedby', reasonId);
     note?.remove();
   }
-  const help = (id, text) => {
-    const node = el('p', text, 'help');
-    node.id = id;
-    return node;
-  };
 
   function feedback(area, text, kind = 'success', action = null) {
     const line = $('fb-' + area);
@@ -254,7 +249,9 @@
         all[(index + (event.key === 'ArrowDown' ? 1 : all.length - 1)) % all.length].focus();
       }
     });
-    list.addEventListener('click', () => close(false));
+    // Focus still on an item (a blocked one, or one whose action moved it nowhere) goes back to
+    // the button, not to the page.
+    list.addEventListener('click', () => close(list.contains(document.activeElement)));
     // Tab out of the button or the list closes it; focus stays where it went. A focus change
     // with no element to go to (another window, a click on a button that does not take focus)
     // leaves it to the click handler below.
@@ -527,7 +524,7 @@
     const choice = await asking;
     if (choice === 'stay') return false;
     if (choice === 'discard') {
-      guard.discard();
+      await guard.discard();
       return true;
     }
     try {
@@ -628,11 +625,6 @@
     node.append(dot(tone), text);
     return node;
   };
-  const pill = (text, tone) => {
-    const node = el('span', text, 'pill');
-    node.dataset.tone = tone;
-    return node;
-  };
   // A stored name such as "P-{root.projectnumber}" with each field token as a chip. A token
   // labelOf does not know stays as its literal text. Nothing is parsed as markup.
   function tokens(text, labelOf) {
@@ -692,6 +684,36 @@
   // goes back to the invoker, or to the control that replaced it (same data-focus-key). One
   // panel is open at a time.
   let openPanel = null;
+  // Below 1000px a panel covers the page, so while it is open the rest of the page is inert and
+  // Tab and clicks stay in the panel: what sits beside it, at each level up to <main>. Wider, the
+  // page beside it stays usable. The unsaved-changes prompt stays reachable. Returns what puts
+  // the page back.
+  function inertOutside(panel) {
+    const covers = window.matchMedia?.('(max-width: 999px)');
+    let made = [];
+    const release = () => {
+      made.forEach((n) => (n.inert = false));
+      made = [];
+    };
+    const apply = () => {
+      release();
+      if (covers && !covers.matches) return;
+      for (let node = panel; node.parentNode && node.parentNode !== document.body;) {
+        for (const sibling of node.parentNode.children)
+          if (sibling !== node && sibling.id !== 'leavePrompt' && !sibling.inert) {
+            sibling.inert = true;
+            made.push(sibling);
+          }
+        node = node.parentNode;
+      }
+    };
+    apply();
+    covers?.addEventListener?.('change', apply);
+    return () => {
+      covers?.removeEventListener?.('change', apply);
+      release();
+    };
+  }
   function sidePanel(panel, invoker, { onClose = null } = {}) {
     openPanel?.close(false);
     const heading = panel.querySelector('h1, h2, h3');
@@ -708,10 +730,16 @@
       handle.close();
     };
     panel.addEventListener('keydown', onKey);
+    const restore = inertOutside(panel);
     const handle = {
       close(focus = true) {
         if (panel.hidden) return;
+        // A confirmation open inside it is answered with its keep value, so the action waiting
+        // on it ends with the panel and does not come back in its next use.
+        for (const open of [...panel.querySelectorAll('.confirm[role=group]')])
+          confirmations.get(open)?.();
         panel.hidden = true;
+        restore();
         panel.removeEventListener('keydown', onKey);
         if (openPanel === handle) openPanel = null;
         onClose?.();
@@ -827,7 +855,6 @@
     plural,
     dot,
     status,
-    pill,
     tokens,
     ruleSentence,
     card,
@@ -839,7 +866,6 @@
     busy,
     disable,
     blocked,
-    help,
     api,
     can,
     needs,

@@ -56,6 +56,8 @@ async function boot({
   // What Copy ID's clipboard write does with its text (it may throw), and the page's #hash.
   clipboard = () => {},
   hash = '',
+  // A link another page stored before it navigated here.
+  stored = null,
 } = {}) {
   const document = createDocument(html);
   const sent = [];
@@ -183,6 +185,7 @@ async function boot({
     },
   };
   const session = new Map([['asxd.launched', '1']]);
+  if (stored) session.set('asxd.deeplink', JSON.stringify(stored));
   const window = {
     parent: { Xrm: xrm },
     location: { search: '?data=' + tab + '-' + BUILD, hash },
@@ -1014,6 +1017,35 @@ async function boot({
     assert.equal(m.$('fb-monitor').textContent, '');
   }
   {
+    // A blocked library setup: Retry goes through asx_ManageWork and needs the Operator role;
+    // Cancel setup goes through the catalog API and needs Documents Security Administrator.
+    const m = await boot({
+      summary: { BlockedJobs: 1 },
+      missing: ['prvCreateasx_site'],
+      lists: {
+        BlockedJobs: [
+          row({
+            Key: 'librarycreate:y',
+            Kind: 'LibrarySetup',
+            KindLabel: 'Library setup',
+            Title: 'Contracts',
+            Record: null,
+            TemplateId: null,
+            Status: 'Blocked',
+            Actions: ['Retry', 'Cancel'],
+          }),
+        ],
+      },
+    });
+    const tr = trs(m)[0];
+    assert.equal(primaryOf(tr).textContent, 'Retry');
+    assert.equal(primaryOf(tr).hasAttribute('aria-disabled'), false, 'An Operator can retry');
+    const cancel = [...tr.querySelectorAll('[role=menuitem]')].find(
+      (i) => i.textContent === 'Cancel setup',
+    );
+    assert.equal(cancel.getAttribute('aria-disabled'), 'true');
+  }
+  {
     // Recovery rows: each finding shows its sentence and its choices; no input asks for evidence.
     const setup = (recovery, actions) =>
       row({
@@ -1609,6 +1641,17 @@ async function boot({
     // The 60-second tick reads nothing off Monitor: the problem count elsewhere is read once.
     const s = await boot({ tab: 'settings' });
     const before = s.sent.length;
+    // Manage tables lands on the Tables card's heading; a named table on its row.
+    const tables = await boot({ tab: 'settings', stored: { tab: 'settings', table: '' } });
+    assert.equal(tables.document.activeElement.id, 'tables-title');
+    const one = await boot({ tab: 'settings', stored: { tab: 'settings', table: 'account' } });
+    assert.ok(
+      one
+        .$('tables-rows')
+        .querySelector('[data-table="account"]')
+        .contains(one.document.activeElement),
+      'The named table row takes focus',
+    );
     await s.tick();
     assert.equal(s.sent.length, before);
   }
@@ -2167,7 +2210,7 @@ async function boot({
     assert.equal(s.document.activeElement.getAttribute('aria-label'), 'Remove Account');
   }
   console.log(
-    'PASS Monitor and Settings: Monitor as one table (chips counted from Summary with 5,000+ and zero chips, the merged list sorted by Since with one primary action and a ⋯ menu with Copy ID, a filter and its fallback to All, Not captured checkboxes kept across a redraw), the re-runs strip, Tools side panels and links to them, lists on open, row actions, Retry now, 60-second re-read announcements after an unread error, recovery choices (table and Look up an operation), load errors, Refresh, the automation pill and its Settings link, checklist, Check a record, Look up an operation, Settings, Repair all, danger zone, the Settings switch and its refusals, Settings as cards (the automation card, the save bar with its count and Discard, the Tables card with counts, change tracking, Repair, Remove and Add table, Connections, read-only values, the Monitor problem pill; fix round 1: the read-only page for a non-administrator from the Default runtime row, Add table by its Add button and a refused add, removing a host, a runtime change under a Remove confirmation, Discard clears the save bar message), runtime shared with the form, no tick off Monitor, a late or refused Get; fix round 1: the tick keeps appended rows and drops removed ones, defers redraws under confirmations, open menus and unkeyed focus; checkboxes only on re-runnable rows with per-row reasons; Show more once, paged by 50 from Summary, and its errors; capped Refresh text; recent lookup errors; Repair focus and text; one announcement for the switch, one Monitor line for every announcement of a tick. Fake DOM; browser QA separate.',
+    'PASS Monitor and Settings: Monitor as one table (chips counted from Summary with 5,000+ and zero chips, the merged list sorted by Since with one primary action and a ⋯ menu with Copy ID, a filter and its fallback to All, Not captured checkboxes kept across a redraw), the re-runs strip, Tools side panels and links to them, lists on open, row actions, Retry now, 60-second re-read announcements after an unread error, recovery choices (table and Look up an operation), load errors, Refresh, the automation pill and its Settings link, checklist, Check a record, Look up an operation, Settings, Repair all, danger zone, the Settings switch and its refusals, Settings as cards (the automation card, the save bar with its count and Discard, the Tables card with counts, change tracking, Repair, Remove and Add table, Connections, read-only values, the Monitor problem pill; fix round 1: the read-only page for a non-administrator from the Default runtime row, Add table by its Add button and a refused add, removing a host, a runtime change under a Remove confirmation, Discard clears the save bar message), runtime shared with the form, no tick off Monitor, a late or refused Get; fix round 1: the tick keeps appended rows and drops removed ones, defers redraws under confirmations, open menus and unkeyed focus; checkboxes only on re-runnable rows with per-row reasons; Show more once, paged by 50 from Summary, and its errors; capped Refresh text; recent lookup errors; Repair focus and text; one announcement for the switch, one Monitor line for every announcement of a tick; Retry of a library setup on the Operator role and Cancel setup on the Security Administrator role; a Settings link landing on the Tables card or the row of its table. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

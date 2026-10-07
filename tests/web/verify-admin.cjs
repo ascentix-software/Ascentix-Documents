@@ -135,17 +135,12 @@ assert.doesNotMatch(
   /contenteditable|Drag folders/i,
   'Plain name input; no drag and drop in this release',
 );
-// AsxdUi.help itself builds its node with el('p', text, 'help') (shell.js, Task 1). The pattern
-// skips exactly that expression (negative lookahead), and the two checks after it keep the
-// exemption to that one place: it appears once in all scripts, and it is in shell.js.
-const HELPER = "el('p', text, 'help')";
+// Help text is written in index.html only: no script makes a help element.
 assert.doesNotMatch(
   js,
-  /el\((?!'p', text, 'help'\))[^)]*,\s*'help'\)|className\s*=\s*'help'/,
-  'help elements come only from AsxdUi.help',
+  /el\([^)]*,\s*'help'\)|className\s*=\s*'help'|classList\.add\('help'\)/,
+  'help elements come only from index.html',
 );
-assert.equal(js.split(HELPER).length - 1, 1, 'Only AsxdUi.help uses ' + HELPER);
-assert(read('client/admin/shell.js').includes(HELPER), 'AsxdUi.help is defined in shell.js');
 for (const [, text] of html.matchAll(/placeholder="([^"]*)"/g))
   assert(text.split(/\s+/).length <= 4, 'Placeholder longer than 4 words: ' + text);
 assert.doesNotMatch(

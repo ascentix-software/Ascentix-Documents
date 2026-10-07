@@ -55,8 +55,10 @@
     // Which open editor work belongs to: a save that answers after another template opened
     // leaves the new one alone.
     session: 0,
-    // Publish is under way: autosave waits for it.
+    // Publish is under way: autosave waits for it. publishRun: the whole of Publish, from its
+    // first save to the overview; leaving the editor waits for it.
     publishing: false,
+    publishRun: null,
     // The published revision the draft is compared with ({ version, sources, sections }), and
     // what changed since it (changesSince). snapshotFailed: the template has a published
     // revision that could not be read, which is not the same as never having published, and
@@ -101,7 +103,6 @@
     railStale: false,
   };
   const OPERATOR = 'prvCreateasx_operatorcommand';
-  const READ_ONLY = 'Viewing an earlier version.';
   // The states of a re-run that has not ended.
   const ACTIVE = ['Running', 'Waiting', 'Retrying', 'Paused', 'Blocked'];
   // The open side panel (Schedule, Version history or Re-run): one at a time.
@@ -169,6 +170,14 @@
     const base = state.editBase;
     return !base ? 1 : base.Status === 'Draft' ? base.Version : base.Version + 1;
   }
+  // A new template's first save names it: its name cannot change until that save answers.
+  function lockName() {
+    const name = $('templateName');
+    const locked = !state.template && !!state.saving;
+    name.readOnly = locked;
+    if (locked) name.setAttribute('aria-disabled', 'true');
+    else name.removeAttribute('aria-disabled');
+  }
   // The header's first row: the table, the name (typed in for a new template), the version the
   // draft becomes, which version stays live, and the save status.
   function renderHeader() {
@@ -180,6 +189,7 @@
     if (!naming && !name.hidden && document.activeElement === name) $('editor-title').focus();
     name.hidden = !naming;
     name.disabled = state.busy;
+    lockName();
     $('editor-name').textContent = naming
       ? ''
       : state.template.asx_name || tableName(state.root.LogicalName);
@@ -349,7 +359,12 @@
       return undefined;
     state.invalid = !validate({ focus: false });
     renderStepper();
-    if (state.invalid) return undefined;
+    if (state.invalid) {
+      // Not saved: the header stops saying it was.
+      state.saveState = '';
+      renderSaveStatus();
+      return undefined;
+    }
     const edits = state.edits,
       session = state.session;
     state.saveState = 'saving';
@@ -395,11 +410,14 @@
       }
     })();
     state.saving = saving;
+    lockName();
     return saving;
   }
   // Saves what can be saved now, without waiting for the pause: before another template, ＋ New
-  // or Close replace the editor.
-  async function settleSave() {
+  // or Close replace the editor. A Publish under way finishes first, so its start date, its
+  // re-run and the edits made while it ran are not cut short; Publish's own saves do not wait.
+  async function settleSave(inPublish = false) {
+    if (!inPublish) await state.publishRun;
     clearTimeout(state.saveTimer);
     await state.saving;
     await autosave(true);
@@ -407,8 +425,8 @@
   }
   // Saves now: Save draft in the unsaved-changes prompt, and Publish. Refuses with the reason
   // when the draft could not be saved.
-  async function flushSave() {
-    await settleSave();
+  async function flushSave(inPublish = false) {
+    await settleSave(inPublish === true);
     if (state.unsaved && !state.template && !state.readOnly) {
       // A new template is saved once it has a name and a destination.
       if (!$('templateName').value.trim()) {
@@ -2424,12 +2442,12 @@
   // ran are saved as the next version. It ends on the overview with what happened.
   async function publish() {
     const control = $('publish');
-    if (ui.blocked(control) || state.publishing) return;
+    if (ui.blocked(control) || state.publishing || state.publishRun) return;
     const session = state.session;
-    await ui.busy(control, 'Publishing…', 'editor', async () => {
+    state.publishRun = ui.busy(control, 'Publishing…', 'editor', async () => {
       const start = startsValue();
       const rerun = rerunChecked();
-      await flushSave();
+      await flushSave(true);
       if (session !== state.session) return;
       // A new template without a name cannot be saved yet.
       if (!state.saved) {
@@ -2472,7 +2490,8 @@
           refused = error.message || String(error);
         }
       // Edits made while it ran are saved as the next version, with the row version publishing
-      // gave the revision. If they cannot be saved, the editor stays open with them.
+      // gave the revision. If they cannot be read back or saved, the editor stays open with them
+      // and says why.
       let kept = true;
       if (session === state.session && state.unsaved) {
         try {
@@ -2484,9 +2503,12 @@
           state.changes = changesSince(state.publishedSnapshot, current());
           state.template = await reloadTemplate(id);
           state.publishing = false;
-          await flushSave();
-        } catch {
+          await flushSave(true);
+          // An edit typed while that save ran is not saved yet: the editor stays open with it.
+          kept = !state.unsaved;
+        } catch (error) {
           kept = false;
+          ui.feedback('editor', error.message || String(error), 'error');
         }
       }
       state.publishing = false;
@@ -2536,6 +2558,11 @@
       else ui.feedback('templates', ['Published v' + next + '.', ...notices].join(' '));
       if (mine && kept) $('overview-title').focus();
     });
+    try {
+      await state.publishRun;
+    } finally {
+      state.publishRun = null;
+    }
   }
   $('publish').onclick = publish;
   // Sites & access, from a link in the editor: edits that can be saved are saved first, so the
@@ -3482,6 +3509,8 @@
   async function closeEditor() {
     // Edits that can be saved are saved; the question is only for those that cannot.
     await settleSave();
+    // A Publish that was under way ended on the overview already.
+    if (state.view !== 'edit') return;
     if (!(await ui.confirmLeave())) return;
     const id = state.template?.asx_templateid || state.overview?.template.asx_templateid;
     panel?.close(false);
@@ -3776,7 +3805,8 @@
   }
   $('go-access').onclick = () => toAccess();
   // Tables are added, removed and repaired in Settings.
-  $('manage-tables').onclick = () => ui.navigate('settings');
+  // Settings opens on its Tables card.
+  $('manage-tables').onclick = () => ui.navigate('settings', { table: '' });
   // Every row of a paged read.
   async function pages(table, query) {
     const rows = [];
@@ -4046,16 +4076,21 @@
       throw refused;
     }
   }
-  // Unsaved edits and a save in flight ask before the page changes; Save draft saves them first.
-  // A version opened read-only has nothing to save: leaving it never asks.
+  // Unsaved edits, a save in flight and a Publish under way ask before the page changes; Save
+  // draft saves them first. Either answer lets Publish finish before the page goes. A version
+  // opened read-only has nothing to save: leaving it never asks.
   ui.setDirtyGuard(() =>
-    state.root && !state.readOnly && (state.unsaved || state.saving || state.saveState === 'error')
+    state.publishRun ||
+    (state.root &&
+      !state.readOnly &&
+      (state.unsaved || state.saving || state.saveState === 'error'))
       ? {
           template: templateLabel(),
           save: flushSave,
-          discard: () => {
+          discard: async () => {
             clearTimeout(state.saveTimer);
             state.unsaved = false;
+            await state.publishRun;
           },
         }
       : null,

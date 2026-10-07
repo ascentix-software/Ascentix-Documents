@@ -78,7 +78,7 @@
               <div id="overview-cards" class="page-body one-column"></div>
             </div>
             <div id="template-editor" hidden>
-              <header id="editor-header" class="editor-header">
+              <header class="editor-header">
                 <div class="editor-row">
                   <span id="editor-table" class="editor-table"></span>
                   <h1 id="editor-title" tabindex="-1">
@@ -664,7 +664,7 @@
         </aside>
       </section>
       <section id="monitor" class="page" aria-labelledby="monitor-title" tabindex="-1" hidden>
-        <header id="monitor-header" class="page-header">
+        <header class="page-header">
           <h1 id="monitor-title" tabindex="-1">Monitor</h1>
           <span id="monitor-automation" class="pill" hidden></span>
           <button id="monitor-settings-link" type="button" class="link">Change in Settings</button>
@@ -852,7 +852,7 @@
                 <span class="label-text" id="worker-label">Run as</span
                 ><span class="sub">Application user</span>
               </div>
-              <div id="worker-value">
+              <div>
                 <select id="runtimeWorker" aria-labelledby="worker-label" disabled></select>
                 <span id="worker-text" class="value-text" hidden></span>
               </div>
@@ -875,7 +875,7 @@
                 <!-- prettier-ignore -->
                 <p class="help" id="help-record-updates">Applies to records changed from now on. To update existing records, re-run their template.</p>
               </div>
-              <div id="record-updates-value">
+              <div>
                 <button
                   id="record-updates"
                   type="button"

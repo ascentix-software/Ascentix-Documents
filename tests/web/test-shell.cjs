@@ -426,12 +426,19 @@ const shownH1s = (section) =>
     assert.equal(panel.getAttribute('role'), 'dialog');
     assert.equal(panel.getAttribute('aria-labelledby'), 'test-panel-title');
     assert.equal(d.activeElement, heading);
+    // The rest of the page is inert while it is open; the unsaved-changes prompt is not.
+    assert.equal(invoker.inert, true);
+    assert.equal(d.getElementById('templates').inert, true);
+    assert.equal(d.getElementById('leavePrompt').inert, undefined);
+    assert.equal(panel.inert, undefined);
     field.key('Escape');
     assert.equal(panel.hidden, false, 'An Escape inside a popover belongs to the popover');
     item.key('Escape');
     assert.equal(panel.hidden, false, 'An Escape inside a menu belongs to the menu');
     heading.key('Escape');
     assert.equal(panel.hidden, true);
+    assert.equal(invoker.inert, false, 'Closed, the page is reachable again');
+    assert.equal(d.getElementById('templates').inert, false);
     assert.equal(d.activeElement, invoker);
     assert.deepEqual(closed, ['closed']);
     // Opening another panel closes the open one without moving focus back; close() on a
@@ -457,6 +464,39 @@ const shownH1s = (section) =>
     host.append(again);
     second.close();
     assert.equal(d.activeElement, again);
+    // Wider than 1000px the page beside a panel stays usable; narrowed with the panel open, the
+    // rest of the page becomes inert, and closing puts it back.
+    const media = { matches: false, listeners: [] };
+    media.addEventListener = (type, fn) => media.listeners.push(fn);
+    media.removeEventListener = (type, fn) =>
+      (media.listeners = media.listeners.filter((f) => f !== fn));
+    run.window.matchMedia = (query) => {
+      assert.equal(query, '(max-width: 999px)');
+      return media;
+    };
+    const wide = ui.sidePanel(panel, invoker);
+    assert.equal(invoker.inert, false);
+    media.matches = true;
+    media.listeners.forEach((fn) => fn());
+    assert.equal(invoker.inert, true, 'Narrowed, the page under the panel is inert');
+    wide.close();
+    assert.equal(invoker.inert, false);
+    assert.equal(media.listeners.length, 0, 'Closed, it stops listening');
+    delete run.window.matchMedia;
+    // A confirmation open inside a panel is answered with its keep value when the panel closes,
+    // so it does not come back in the panel's next use.
+    const third = ui.sidePanel(panel, invoker);
+    const remove = ui.button('Remove A', () => {});
+    const row = ui.el('div', null, 'row');
+    row.setAttribute('data-actions', '');
+    row.append(remove);
+    panel.append(row);
+    const asking = ui.confirmInline(remove, { text: 'Remove A?', confirm: 'Remove', keep: 'Keep' });
+    assert.equal(panel.querySelectorAll('.confirm').length, 1);
+    third.close();
+    assert.equal(await asking, false);
+    assert.equal(panel.querySelectorAll('.confirm').length, 0);
+    assert.ok(d.activeElement === invoker, 'Focus goes back to what opened the panel');
   }
   {
     // tokens: field tokens render as chips; an unknown token stays as text; no markup is parsed.
@@ -470,12 +510,11 @@ const shownH1s = (section) =>
     const unknown = run.ui.tokens('{root.gone}', label);
     assert.equal(unknown.visibleText, '{root.gone}');
     assert.equal(unknown.querySelector('.token'), null);
-    // status pairs a dot with text; pills carry a tone.
+    // status pairs a dot with text.
     const ok = run.ui.status('ok', 'Ready');
     assert.equal(ok.querySelector('.dot').dataset.tone, 'ok');
     assert.equal(ok.querySelector('.dot').getAttribute('aria-hidden'), 'true');
     assert.equal(ok.visibleText, 'Ready');
-    assert.equal(run.ui.pill('Live v3', 'ok').dataset.tone, 'ok');
     // plural counts with separators; ms reads "/Date(…)/" and ISO, NaN otherwise.
     assert.equal(run.ui.plural(1, 'problem', 'problems'), '1 problem');
     assert.equal(run.ui.plural(1214, 'problem', 'problems'), '1,214 problems');
@@ -730,13 +769,6 @@ const shownH1s = (section) =>
     assert.equal(missing.hasAttribute('datetime'), false);
     assert.equal(ui.time('not a date').hasAttribute('datetime'), false);
 
-    // help: the only maker of class="help".
-    const note = ui.help('saveHelp', 'Saving starts the next draft.');
-    assert.equal(note.tagName, 'P');
-    assert.equal(note.className, 'help');
-    assert.equal(note.id, 'saveHelp');
-    assert.equal(note.textContent, 'Saving starts the next draft.');
-
     // busy: the clicked button shows the -ing label, the row is aria-busy and its other buttons
     // wait; a second press does nothing; everything comes back after the work.
     const row = ui.el('div', null, 'row');
@@ -886,6 +918,18 @@ const shownH1s = (section) =>
     trigger.key('ArrowDown');
     item('menu-rerun').dispatchEvent(new FakeEvent('focusout', { relatedTarget: null }));
     assert.equal(list.hidden, false);
+    // A blocked item closes the menu and focus goes back to its button, not to the page.
+    item('menu-delete').setAttribute('aria-disabled', 'true');
+    item('menu-delete').focus();
+    item('menu-delete').click();
+    assert.equal(list.hidden, true);
+    assert.ok(d.activeElement === trigger, 'Focus goes back to the button');
+    // An item whose action moved focus elsewhere keeps it there.
+    trigger.key('ArrowDown');
+    item('menu-rerun').onclick = () => item('overview-edit').focus();
+    item('menu-rerun').click();
+    assert.equal(list.hidden, true);
+    assert.ok(d.activeElement === item('overview-edit'), 'Focus stays where the action put it');
   }
   {
     // A ⋯ menu whose button has left the page stops listening for document clicks at the next
@@ -939,7 +983,7 @@ const shownH1s = (section) =>
     );
   }
   console.log(
-    'PASS shell contract: pages without tabs, landing, deep links, unsaved prompt at the top, side panel, tokens, status, plural, ms, automation, problem pill, feedback, confirmation (a replaced one answers keep), offline, a slow Get that does not delay the page, withFocus, time, help, busy, api errors, the ⋯ menu closing when focus leaves it, a redrawn-away menu letting go of its document listener, and rule sentences. Fake DOM; browser QA separate.',
+    'PASS shell contract: pages without tabs, landing, deep links, unsaved prompt at the top, side panel, tokens, status, plural, ms, automation, problem pill, feedback, confirmation (a replaced one answers keep), offline, a slow Get that does not delay the page, withFocus, time, busy, api errors, the ⋯ menu closing when focus leaves it, a redrawn-away menu letting go of its document listener, a blocked menu item handing focus back to its button, a side panel making the rest of the page inert and answering its confirmation when it closes, and rule sentences. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

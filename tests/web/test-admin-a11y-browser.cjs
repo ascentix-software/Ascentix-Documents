@@ -373,11 +373,36 @@ async function check(page, label) {
     await sites.getByRole('dialog', { name: 'General' }).waitFor();
     await sites.waitForTimeout(300);
     assert.equal((await sites.locator('#ad-drawer').boundingBox()).width, 900);
+    // The page under the full-width drawer is inert: Tab stays in the drawer.
+    let inside = 0;
+    for (let i = 0; i < 30; i++) {
+      await sites.keyboard.press('Tab');
+      const where = await sites.evaluate(() =>
+        document.activeElement === document.body
+          ? 'body'
+          : document.getElementById('ad-drawer').contains(document.activeElement)
+            ? 'drawer'
+            : document.activeElement.id || document.activeElement.tagName,
+      );
+      assert.ok(
+        where === 'drawer' || where === 'body',
+        'Tab reached ' + where + ' under the drawer',
+      );
+      if (where === 'drawer') inside++;
+    }
+    assert.ok(inside > 0, 'Tab reaches the drawer');
     // An install with no templates yet: ＋ New starts the first one.
     const empty = await open(narrow, 'templates', 'window.__mock.empty = true');
     await empty.locator('#new-template').click();
     await empty.locator('#template-editor').waitFor();
     assert.equal(await empty.locator('#templateName').isVisible(), true);
+    // The header's meta line wraps under the title instead of hiding.
+    const narrowSettings = await open(narrow, 'settings');
+    await narrowSettings.locator('#settings-title').waitFor();
+    assert.equal(await narrowSettings.locator('#settings-meta').isVisible(), true);
+    const heading = await narrowSettings.locator('#settings-title').boundingBox();
+    const line = await narrowSettings.locator('#settings-meta').boundingBox();
+    assert.ok(line.y >= heading.y + heading.height - 1, 'The meta line is under the title');
     await narrow.close();
     // Every page at 1440, 1000, 800 and 400 in light and dark: nothing scrolls sideways, and
     // a Monitor row's ⋯ menu opens without being cut off.
@@ -433,7 +458,7 @@ async function check(page, label) {
       });
     }
     console.log(
-      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel, the editor, step 2 with a condition, a test record and the ＋ Field popover, and step 3 Review and publish; Sites & access with its access drawer open; Monitor with Check a record open; Settings with its save bar), computed borders, text and targets, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the steps, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel, Escape in the access drawer confirmation and then the drawer), below 1000px (the templates select, the folder panel under the tree, the full-width drawer), and every page and step at 1440/1000/800/400 in light and dark without sideways scrolling and with a whole Monitor row menu, screenshots. Mocked Dataverse.',
+      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel, the editor, step 2 with a condition, a test record and the ＋ Field popover, and step 3 Review and publish; Sites & access with its access drawer open; Monitor with Check a record open; Settings with its save bar), computed borders, text and targets, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the steps, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel, Escape in the access drawer confirmation and then the drawer), below 1000px (the templates select, the folder panel under the tree, the full-width drawer with Tab kept inside it, the header meta line under the title), and every page and step at 1440/1000/800/400 in light and dark without sideways scrolling and with a whole Monitor row menu, screenshots. Mocked Dataverse.',
     );
   } finally {
     await browser.close();

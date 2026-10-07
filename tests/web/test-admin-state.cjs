@@ -741,6 +741,11 @@ async function boot({
         .data.split('-')[0],
       'settings',
     );
+    // It lands on the Tables card.
+    assert.deepEqual(JSON.parse(t.window.sessionStorage.getItem('asxd.deeplink')), {
+      table: '',
+      tab: 'settings',
+    });
   }
   {
     // Edit template opens the editor; Close returns to the overview with focus on Edit.
@@ -2148,6 +2153,9 @@ async function boot({
     await t.flush(); // save 1 starts and waits at the gate
     assert.equal(drafts().length, 1);
     assert.equal(drafts()[0].Name, 'Client onboarding');
+    // The first save names the template: its name cannot change until that save answers.
+    assert.equal(t.$('templateName').readOnly, true);
+    assert.equal(t.$('templateName').getAttribute('aria-disabled'), 'true');
     await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files'); // an edit during the flight
     await t.flush();
     assert.equal(drafts().length, 1, 'No second save while the first runs');
@@ -2162,6 +2170,8 @@ async function boot({
     assert.equal(drafts()[1].Destinations[0].Name, 'Client files');
     assert.equal(t.$('templateName').hidden, true, 'The saved name shows as the heading');
     assert.equal(t.$('editor-name').textContent, 'Client onboarding');
+    assert.equal(t.$('templateName').readOnly, false);
+    assert.equal(t.$('templateName').hasAttribute('aria-disabled'), false);
   }
   {
     // A failed save says so with Retry; Retry saves again.
@@ -2213,6 +2223,22 @@ async function boot({
     await t.flush();
     assert.equal(t.sent.filter(([a]) => a === 'asx_CreateDraft').length, 1);
     assert.equal(t.$('step-tab-2').classList.contains('has-error'), false);
+  }
+  {
+    // An autosave refused for invalid conditions takes "Saved" away: the edits are not saved.
+    const t = await boot();
+    await t.open();
+    await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files');
+    await t.flush();
+    assert.match(t.$('save-status').textContent, /^Saved /);
+    await t.step(2);
+    await t.select('General');
+    await t.mode(1);
+    await t.change(t.labelled(t.$('conditions'), 'Field, condition 1'), 'root.revenue');
+    await t.change(t.labelled(t.$('conditions'), 'Value, condition 1'), '1e5');
+    await t.flush();
+    assert.equal(t.sent.filter(([a]) => a === 'asx_CreateDraft').length, 1);
+    assert.equal(t.$('save-status').textContent, '');
   }
   {
     // The dirty guard covers an edit not saved yet: Save draft flushes the autosave first.
@@ -2707,28 +2733,149 @@ async function boot({
     assert.equal(k.$('folder-name').value, 'Kept');
     assert.equal(k.$('fb-editor').textContent, 'The server is busy.');
     assert.match(k.$('fb-templates').textContent, /^Published v2\./);
-    // Close while Publish runs: its answer leaves the closed editor alone.
+    // When the published version cannot be read back for those edits, the editor stays open
+    // with them and says why.
+    let open_up;
+    const shut = new Promise((resolve) => (open_up = resolve));
+    let after = false;
+    const r = await boot({
+      loaded: { RevisionId: 'rev-2', RowVersion: '4', Status: 'Draft', Version: 2, Draft: draft() },
+      handle: async (api) => {
+        if (api === 'asx_PublishTemplate') {
+          await shut;
+          after = true;
+          return { Status: 'Published', Notices: [] };
+        }
+        if (api === 'asx_LoadDraft' && after) return new Error('The published version is busy.');
+        return null;
+      },
+    });
+    await r.open();
+    await r.step(3);
+    await r.press(r.$('publish'));
+    await r.rename('General', 'Unread');
+    open_up();
+    await r.document.settle();
+    assert.equal(r.$('template-editor').hidden, false);
+    assert.equal(r.$('folder-name').value, 'Unread');
+    assert.equal(r.$('fb-editor').textContent, 'The published version is busy.');
+    assert.match(r.$('fb-templates').textContent, /^Published v2\./);
+    // An edit typed while those edits save is not dropped: the editor stays open with it, and
+    // it is saved next.
+    let pass;
+    const publishing = new Promise((resolve) => (pass = resolve));
+    let land;
+    const landing = new Promise((resolve) => (land = resolve));
+    let through = false;
+    const w = await boot({
+      loaded: { RevisionId: 'rev-2', RowVersion: '4', Status: 'Draft', Version: 2, Draft: draft() },
+      versions: { 'rev-3': 3 },
+      handle: async (api) => {
+        if (api === 'asx_PublishTemplate') {
+          await publishing;
+          through = true;
+          return { Status: 'Published', Notices: [] };
+        }
+        if (api === 'asx_LoadDraft' && through)
+          return {
+            RevisionId: 'rev-2',
+            RowVersion: '5',
+            Status: 'Published',
+            Version: 2,
+            Draft: draft(),
+          };
+        if (api === 'asx_CreateDraft') {
+          await landing;
+          return { TemplateId: TEMPLATE, RevisionId: 'rev-3', RowVersion: '1', Status: 'Draft' };
+        }
+        return null;
+      },
+    });
+    await w.open();
+    await w.step(3);
+    await w.press(w.$('publish'));
+    await w.rename('General', 'First');
+    pass();
+    await w.document.settle();
+    assert.equal(w.last('asx_CreateDraft').Destinations[0].Folders[1].Name, 'First');
+    await w.rename('First', 'Second');
+    land();
+    await w.document.settle();
+    assert.equal(w.$('template-editor').hidden, false, 'The editor stays open');
+    assert.equal(w.$('folder-name').value, 'Second');
+    await w.flush();
+    assert.equal(w.last('asx_CreateDraft').Destinations[0].Folders[1].Name, 'Second');
+    // Close while Publish runs waits for it: an edit made meanwhile is saved as the next
+    // version, the re-run starts, and Publish ends on the overview.
     let let_go;
     const wait = new Promise((resolve) => (let_go = resolve));
+    let out = false;
     const c = await boot({
       loaded: { RevisionId: 'rev-2', RowVersion: '4', Status: 'Draft', Version: 2, Draft: draft() },
-      handle: async (api) =>
-        api === 'asx_PublishTemplate'
-          ? wait.then(() => ({ Status: 'Published', Notices: [] }))
-          : null,
+      versions: { 'rev-3': 3 },
+      handle: async (api) => {
+        if (api === 'asx_PublishTemplate') {
+          await wait;
+          out = true;
+          return { Status: 'Published', Notices: [] };
+        }
+        if (api === 'asx_LoadDraft' && out)
+          return {
+            RevisionId: 'rev-2',
+            RowVersion: '5',
+            Status: 'Published',
+            Version: 2,
+            Draft: draft(),
+          };
+        if (api === 'asx_CreateDraft')
+          return { TemplateId: TEMPLATE, RevisionId: 'rev-3', RowVersion: '1', Status: 'Draft' };
+        return null;
+      },
     });
     await c.open();
     await c.step(3);
+    assert.equal(c.$('publish-rerun').checked, true);
     await c.press(c.$('publish'));
+    await c.step(2);
+    await c.rename('General', 'During');
     await c.press(c.$('editor-close'));
-    assert.equal(c.$('template-overview').hidden, false);
+    assert.equal(c.$('template-editor').hidden, false, 'Close waits for Publish');
     let_go();
     await c.document.settle();
     assert.equal(c.$('template-editor').hidden, true);
-    assert.equal(
-      c.$('fb-templates').classList.contains('is-error'),
-      false,
-      c.$('fb-templates').textContent,
+    assert.equal(c.$('leavePrompt').visibleText, '', 'Nothing left to ask about');
+    const next = c.last('asx_CreateDraft');
+    assert.deepEqual([next.RevisionId, next.RowVersion], ['rev-2', '5']);
+    assert.equal(next.Destinations[0].Folders[1].Name, 'During');
+    assert.equal(c.sent.filter(([, b]) => b?.Command === 'StartTemplateRun').length, 1);
+    assert.match(c.$('fb-templates').textContent, /^Published v2\. Re-run started\./);
+    // A link while Publish runs asks first, and Save draft lets Publish finish, its re-run
+    // included, before the page goes.
+    let free_link;
+    const held = new Promise((resolve) => (free_link = resolve));
+    const l = await boot({
+      handle: async (api) =>
+        api === 'asx_PublishTemplate'
+          ? held.then(() => ({ Status: 'Published', Notices: [] }))
+          : null,
+    });
+    await l.open();
+    await l.change(l.labelled(l.$('step-1'), 'Name'), 'Client files');
+    await l.flush();
+    await l.step(3);
+    await l.press(l.$('publish'));
+    const going = l.window.AsxdUi.navigate('monitor');
+    await l.document.settle();
+    assert.match(l.$('leavePrompt').visibleText, /You have unsaved changes to /);
+    await l.press(l.find(l.$('leavePrompt'), 'Save draft'));
+    free_link();
+    await l.document.settle();
+    await going;
+    assert.deepEqual(
+      l.sent
+        .map(([a, b]) => b?.Command || a)
+        .filter((x) => ['asx_PublishTemplate', 'StartTemplateRun', 'navigate'].includes(x)),
+      ['asx_PublishTemplate', 'StartTemplateRun', 'navigate'],
     );
   }
   {
@@ -3939,7 +4086,7 @@ async function boot({
     assert.equal(t.$('template-editor').hidden, false);
   }
   console.log(
-    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step; Task 6 fix round 1: a new template unnamed until named and not saved mid-name, saving before switching or closing, a late save answer kept out of a new template, an edit during Publish kept and saved next, a published read retried and its failure, a failed policy read, trimmed destination names, problems not announced twice, and Save draft refusing a nameless template; Task 7: the folder tree with destination pills, rules, New, edited and Removed with Undo (aliases mapped, a removed parent first), ＋ Folder and ＋ Subfolder with their bound, the folder panel and its ⋯ menu, ＋ Field inserting at the caret, Create this folder, the condition sentence with Another field…, debounced test-record previews with Created or Skipped and the failing value, their bound, Out of date and failures, and links to Sites & access that save first; Task 7 fix round 1: conditions kept across Always and back, Undo at the folder bound counting removed parents, and ＋ Subfolder at the folder depth; Task 8: Review and publish (the change list with every kind in words and links to its step, Result for with Choose record…, the consequences with the record count, record updates and the first-publish wording, a published version that could not be read, the re-run box and its role and Later reasons, Starts with a stored start, the paused warning, Publish and re-run ending on the overview, a refused publish, a refused re-run after a publish, edits made during Publish saved or kept) and the narrow-screen Template select. Fake DOM; browser QA separate.',
+    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step; Task 6 fix round 1: a new template unnamed until named and not saved mid-name, saving before switching or closing, a late save answer kept out of a new template, an edit during Publish kept and saved next, a published read retried and its failure, a failed policy read, trimmed destination names, problems not announced twice, and Save draft refusing a nameless template; Task 7: the folder tree with destination pills, rules, New, edited and Removed with Undo (aliases mapped, a removed parent first), ＋ Folder and ＋ Subfolder with their bound, the folder panel and its ⋯ menu, ＋ Field inserting at the caret, Create this folder, the condition sentence with Another field…, debounced test-record previews with Created or Skipped and the failing value, their bound, Out of date and failures, and links to Sites & access that save first; Task 7 fix round 1: conditions kept across Always and back, Undo at the folder bound counting removed parents, and ＋ Subfolder at the folder depth; Task 8: Review and publish (the change list with every kind in words and links to its step, Result for with Choose record…, the consequences with the record count, record updates and the first-publish wording, a published version that could not be read, the re-run box and its role and Later reasons, Starts with a stored start, the paused warning, Publish and re-run ending on the overview, a refused publish, a refused re-run after a publish, edits made during Publish saved or kept) and the narrow-screen Template select; final fixes: Delete against real NodeLists, no Saved while invalid edits wait, Close and links waiting for Publish, a failed read-back after Publish shown and a late edit kept, the new name locked during its first save, and Manage tables landing on the Tables card. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);
