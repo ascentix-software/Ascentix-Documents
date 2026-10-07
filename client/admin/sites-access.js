@@ -33,7 +33,14 @@
     confirm: null,
     // What the last re-point changed, such as "old URL → new URL".
     changes: [],
+    // Sites and libraries removed in this page. They leave the lists at once, whatever a list
+    // read returns, until they are added again.
+    removed: new Set(),
+    // List IDs, in lower case, of the libraries on the shown discovery page that Documents
+    // already has as active rows.
+    registered: new Set(),
   };
+  const noList = '00000000-0000-0000-0000-000000000000';
   const node = (tag, text) => {
     const n = document.createElement(tag);
     if (text != null) n.textContent = text;
@@ -268,8 +275,15 @@
   function drawProgress() {
     const area = $('ad-provision-progress');
     area.replaceChildren();
+    let loading = false;
     for (const [key, o] of new Map([...state.completed, ...state.operations])) {
       if (elsewhere(key, o)) continue;
+      // Found again after a reload and not read yet: its status alone does not say which
+      // message and action apply, so nothing is offered until its first read.
+      if (o.unread) {
+        loading = true;
+        continue;
+      }
       const p = progressState(o),
         card = node('section'),
         heading = node('div'),
@@ -320,16 +334,19 @@
             state.completed.delete(key);
           });
         card.append(add);
-      } else if (p.status === 'Blocked' && o.kind === 'Repoint' && o.command) {
-        // Re-point only reads SharePoint; once the cause is fixed it simply reads again.
-        const again = node('button', 'Re-point again');
-        again.onclick = () =>
-          action(async () => {
-            state.operations.delete(key);
-            state.completed.delete(key);
-            await runConfirmed({ kind: o.command, id: o.id, name: o.name });
-          });
-        card.append(again);
+      } else if (p.status === 'Blocked' && o.kind === 'Repoint') {
+        // Re-point only reads SharePoint; once the cause is fixed it simply reads again. It is
+        // never retried in place.
+        if (o.command) {
+          const again = node('button', 'Re-point again');
+          again.onclick = () =>
+            action(async () => {
+              state.operations.delete(key);
+              state.completed.delete(key);
+              await runConfirmed({ kind: o.command, id: o.id, name: o.name });
+            });
+          card.append(again);
+        }
       } else if (
         o.kind === 'LibrarySetup' &&
         ['Blocked', 'RecoveryRequired', 'RetryWait'].includes(p.status)
@@ -377,6 +394,11 @@
         card.append(dismiss);
       }
       area.append(card);
+    }
+    if (loading) {
+      const wait = node('p', 'Loading…');
+      wait.className = 'ad-muted';
+      area.append(wait);
     }
     area.hidden = area.children.length === 0;
   }
@@ -659,6 +681,9 @@
       // Refused while a Draft or published template uses the library; the error names them.
       const removed = await catalog({ Command: c.kind, CatalogId: c.id });
       state.changes = removed.Notices || [];
+      state.removed.add(c.id);
+      state.policies.delete(c.id);
+      forget(c.id, c.kind === 'RemoveSite' ? state.site?.asx_url : null);
       state.library = null;
       if (c.kind === 'RemoveSite') {
         state.site = null;
@@ -694,7 +719,9 @@
             term +
             "')",
     );
-    state.sites = append ? state.sites.concat(result.entities) : result.entities;
+    state.sites = (append ? state.sites.concat(result.entities) : result.entities).filter(
+      (s) => !state.removed.has(s.asx_siteid),
+    );
     state.nextSites = result.nextLink || null;
     render();
   }
@@ -706,7 +733,9 @@
         : '?$select=asx_libraryid,asx_name,asx_approved,asx_policyapplied&$orderby=asx_name&$filter=statecode eq 0 and _asx_siteid_value eq ' +
             state.site.asx_siteid,
     );
-    state.libraries = append ? state.libraries.concat(result.entities) : result.entities;
+    state.libraries = (append ? state.libraries.concat(result.entities) : result.entities).filter(
+      (l) => !state.removed.has(l.asx_libraryid),
+    );
     state.nextLibraries = result.nextLink || null;
     if (state.library)
       state.library =
@@ -779,6 +808,58 @@
       });
     });
   }
+  // The catalog row a card is about, once its first read names it: a re-point's library or
+  // site, or the library a setup created.
+  function destination(o) {
+    const probe = o.result?.Observation;
+    if (o.kind === 'Repoint' && guid(probe?.CatalogId))
+      return probe.ListId && probe.ListId !== noList
+        ? { table: 'asx_library', id: probe.CatalogId }
+        : { table: 'asx_site', id: probe.CatalogId };
+    if (o.kind === 'LibrarySetup' && guid(o.result?.CatalogId) && o.result.CatalogId !== noList)
+      return { table: 'asx_library', id: o.result.CatalogId };
+    return null;
+  }
+  // Whether a site or library is Removed (statecode 1) or deleted: no active row has its ID.
+  async function gone(target) {
+    if (state.removed.has(target.id)) return true;
+    const key = target.table + 'id',
+      rows = await page(
+        target.table,
+        '?$select=' + key + '&$filter=statecode eq 0 and ' + key + ' eq ' + target.id,
+      );
+    return rows.entities.length === 0;
+  }
+  // Drops the cards of a site or library just removed: its setup or re-point cannot go on. A
+  // removed site also takes the cards of the setups on its address.
+  function forget(id, url) {
+    for (const cards of [state.operations, state.completed])
+      for (const [key, o] of cards)
+        if (
+          (destination(o)?.id ?? o.id) === id ||
+          (url && (o.siteId === id || o.result?.Observation?.SiteId === id || o.url === url))
+        )
+          cards.delete(key);
+    state.progressSignature = null;
+  }
+  // List IDs of the libraries on a discovery page that Documents already has as active rows,
+  // matched by list ID, so a library renamed in SharePoint is still recognized. Removed rows
+  // do not match: adding one again reactivates it.
+  async function registeredLists(d) {
+    const ids = (d.Observation?.Libraries || []).map((l) => l.Id).filter(guid),
+      found = new Set();
+    let options = ids.length
+      ? '?$select=asx_listid&$filter=statecode eq 0 and (' +
+        ids.map((v) => "asx_listid eq '" + v + "'").join(' or ') +
+        ')'
+      : null;
+    while (options) {
+      const rows = await page('asx_library', options);
+      rows.entities.forEach((r) => found.add(String(r.asx_listid).toLowerCase()));
+      options = rows.nextLink ? nextOptions(rows.nextLink) : null;
+    }
+    return found;
+  }
   async function discoverActivity(append = false) {
     const rows = await page(
       'asx_operation',
@@ -788,12 +869,14 @@
     );
     // A re-point's command and ID come from its probe when it is first read (see
     // refreshOperations), so a blocked re-point still offers "Re-point again" after a reload.
+    // Until that read its card shows neither a message nor an action.
     for (const r of rows.entities)
       state.operations.set(r.asx_workkey, {
         name: r.asx_displayname,
         url: r.asx_workkind === 'Repoint' ? undefined : r.asx_siteurl,
         kind: r.asx_workkind,
         status: r.asx_status,
+        unread: true,
       });
     state.nextActivity = rows.nextLink || null;
   }
@@ -809,7 +892,6 @@
       if (elsewhere(key, o)) continue;
       observations.push([key, o, await catalog({ Command: 'Inspect', Key: key })]);
     }
-    const noList = '00000000-0000-0000-0000-000000000000';
     for (const [key, o, result] of observations) {
       o.result = result;
       o.status = result.Status;
@@ -820,13 +902,29 @@
         o.siteId = probe.SiteId;
       }
     }
+    // A setup or re-point of a site or library that was removed or deleted cannot go on, so
+    // its card is dropped, also when it is found again after a reload, instead of staying as
+    // needing attention. Each card's destination is checked once, when it is first known.
+    for (const [key, o] of observations) {
+      const target = destination(o);
+      if (target && !o.checked) {
+        o.checked = true;
+        if (await gone(target)) {
+          state.operations.delete(key);
+          state.completed.delete(key);
+          state.progressSignature = null;
+        }
+      }
+      o.unread = false;
+    }
+    const live = observations.filter(([key]) => state.operations.has(key));
     const signature = JSON.stringify([
       state.site?.asx_siteid,
       state.selectedOperation,
-      observations.map(([key, o]) => [key, progressState(o)]),
+      live.map(([key, o]) => [key, progressState(o)]),
     ]);
     if (signature === state.progressSignature && !pendingPolicy()) return;
-    for (const [key, o, result] of observations) {
+    for (const [key, o, result] of live) {
       if (['Ready', 'Approved', 'Applied', 'Discovered'].includes(result.Status)) {
         state.completed.set(key, {
           ...o,
@@ -839,6 +937,7 @@
         state.operations.delete(key);
         if (state.site?.asx_siteid === result.Observation.SiteId) {
           state.discovery = result;
+          state.registered = await registeredLists(result);
           showDiscovery();
         }
         continue;
@@ -855,6 +954,8 @@
         continue;
       }
       if (['Ready', 'Approved', 'Applied'].includes(result.Status)) {
+        // A removed site or library added again is active again.
+        state.removed.delete(result.CatalogId);
         await loadSites();
         if (o.kind === 'SiteValidation' && result.CatalogId) {
           const added = state.sites.find((s) => s.asx_siteid === result.CatalogId);
@@ -881,6 +982,11 @@
       await loadTeams();
       await discoverActivity();
       state.loaded = true;
+      // Shows the cards found again as loading, then reads them at once, so each shows its
+      // own message and action. A failure here is left to the poll, which reads them again
+      // and reports it.
+      render();
+      await refreshOperations().catch(() => {});
     }).finally(() => {
       state.startPromise = null;
     });
@@ -895,8 +1001,11 @@
         const l = await xrm.WebApi.retrieveRecord(
           'asx_library',
           id,
-          '?$select=asx_libraryid,asx_name,_asx_siteid_value,asx_approved,asx_policyapplied',
+          '?$select=asx_libraryid,asx_name,_asx_siteid_value,asx_approved,asx_policyapplied,statecode',
         );
+        // A link to a removed library does not bring it back into the list.
+        if (l.statecode === 1 || state.removed.has(l.asx_libraryid))
+          throw new Error('This library was removed from Documents. Add it again to use it.');
         const s = await xrm.WebApi.retrieveRecord(
           'asx_site',
           l._asx_siteid_value,
@@ -1014,7 +1123,12 @@
       ? asking.warnings.join(' ') + ' Select Confirm and add to continue.'
       : '';
     $('ad-existing-warning').hidden = !asking;
-    for (const l of d.Observation.Libraries) {
+    // A library Documents already has is not offered again, also after a rename in SharePoint:
+    // it is matched by list ID. A removed one is offered; adding it again reactivates it.
+    const offered = d.Observation.Libraries.filter(
+      (l) => !state.registered.has(String(l.Id).toLowerCase()),
+    );
+    for (const l of offered) {
       const confirming = asking?.key === l.Id,
         b = node('button', (confirming ? 'Confirm and add ' : 'Add ') + l.Title);
       b.type = 'button';
@@ -1035,8 +1149,15 @@
         });
       $('ad-existing-choices').append(b);
     }
-    if (!d.Observation.Libraries.length)
-      $('ad-existing-choices').append(node('p', 'No document libraries found on this page.'));
+    if (!offered.length)
+      $('ad-existing-choices').append(
+        node(
+          'p',
+          d.Observation.Libraries.length
+            ? 'Every document library on this page is already in Documents.'
+            : 'No document libraries found on this page.',
+        ),
+      );
     $('ad-existing-more').hidden = !d.Observation.NextLibraries;
   }
   $('ad-existing').onclick = () =>

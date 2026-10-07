@@ -115,6 +115,8 @@ let discovery = false;
 // Inspect results by operation key, checked before the shared mock answers.
 const inspectByKey = {};
 let discovered = [{ Id: id(8), Title: 'Archive' }];
+// List IDs of active catalog libraries, as Dataverse stores them (any case).
+let registeredLists = [];
 // Finds a rendered node depth-first.
 const find = (n, test) => {
   if (test(n)) return n;
@@ -137,6 +139,12 @@ const xrm = {
       if (table === 'team') teamQueries.push(options);
       if (table === 'asx_library') libraryQueries.push(options);
       if (table === 'asx_site') siteQueries.push(options);
+      if (table === 'asx_library' && /asx_listid eq/.test(options))
+        return {
+          entities: registeredLists
+            .filter((v) => options.toLowerCase().includes("asx_listid eq '" + v.toLowerCase()))
+            .map((v) => ({ asx_listid: v })),
+        };
       return {
         entities:
           table === 'asx_site'
@@ -460,10 +468,23 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   assert.equal(created.Entries[0].Access, 'Contribute');
   await window.AsxdSites.selectLibrary(id(3));
   assert.equal(nodes['ad-library-title'].textContent, 'General');
+  // A library already in Documents is not offered again, also after a rename in SharePoint:
+  // it is matched by list ID, not by title. A removed one (no active row) is still offered.
+  discovered = [
+    { Id: id(8), Title: 'Archive' },
+    { Id: id(27), Title: 'AcceptCRenamed' },
+    { Id: id(28), Title: 'Removed earlier' },
+  ];
+  registeredLists = [id(27).toUpperCase()];
   await nodes['ad-existing'].onclick();
   await timers.shift()();
   assert.equal(nodes['ad-existing-form'].hidden, false);
   assert.equal(nodes['ad-existing-more'].hidden, false);
+  assert.deepEqual(
+    nodes['ad-existing-choices'].children.map((c) => c.textContent),
+    ['Add Archive', 'Add Removed earlier'],
+  );
+  assert.match(libraryQueries.at(-1), /statecode eq 0 and \(asx_listid eq '00000008-.*' or /);
   await nodes['ad-existing-choices'].children[0].onclick();
   const existing = requests.find((r) => r.Command === 'AddLibrary');
   assert.equal(existing.ListId, id(8));
@@ -934,12 +955,34 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   {
     // After a reload, a re-point still running or blocked is found again with the other setup
     // activity, and its command and ID come from its probe, so "Re-point again" still works.
+    // Until a card is read it shows "Loading…", never the generic message or action. Cards of
+    // a library that was removed or deleted are not shown at all.
     const fresh = {},
       later = [],
       sent = [],
-      activity = [];
+      activity = [],
+      lists = [],
+      checks = [],
+      // Active catalog rows; a removed or deleted one is not here.
+      active = new Set([id(1), id(3)]),
+      moved = { ...site, asx_url: 'https://example.sharepoint.com/sites/moved' };
+    let release,
+      inspecting = false;
+    const gate = new Promise((resolve) => (release = resolve));
     for (const m of html.matchAll(/<([a-z]+)[^>]*\bid="([^"]+)"[^>]*>/g))
       fresh[m[2]] = new Node(m[1]);
+    const inspected = {
+      'catalogprobe:repoint:removed': {
+        Status: 'Blocked',
+        Issue: 'This library no longer exists on the site. Remove it, or register the new library.',
+        Observation: { Repoint: true, CatalogId: id(30), SiteId: id(1), ListId: id(31) },
+      },
+      'librarycreate:deleted': {
+        Status: 'RecoveryRequired',
+        Issue: 'The library create may have reached SharePoint and its answer was lost.',
+        CatalogId: id(32),
+      },
+    };
     const reloaded = {
       Xrm: {
         Utility: xrm.Utility,
@@ -957,11 +1000,35 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
                     asx_siteurl: 'https://example.sharepoint.com/sites/moved',
                     asx_status: 'Blocked',
                   },
+                  {
+                    asx_workkey: 'catalogprobe:repoint:removed',
+                    asx_workkind: 'Repoint',
+                    asx_displayname: 'AcceptC Chrome 1',
+                    asx_siteurl: 'https://example.sharepoint.com/sites/moved',
+                    asx_status: 'Blocked',
+                  },
+                  {
+                    asx_workkey: 'librarycreate:deleted',
+                    asx_workkind: 'LibrarySetup',
+                    asx_displayname: 'Deleted later',
+                    asx_siteurl: 'https://example.sharepoint.com/sites/moved',
+                    asx_status: 'RecoveryRequired',
+                  },
                 ],
               };
             }
+            const by = /(asx_libraryid|asx_siteid) eq ([0-9a-f-]{36})/.exec(options);
+            if (by) {
+              checks.push(options);
+              return {
+                entities: active.has(by[2]) && /statecode eq 0/.test(options) ? [{}] : [],
+              };
+            }
+            if (table === 'asx_library') lists.push(options);
+            // The list reads answer as they did before the Remove, like a read that does not
+            // reflect it yet.
             return {
-              entities: table === 'asx_site' ? [site] : table === 'asx_library' ? [lib] : [],
+              entities: table === 'asx_site' ? [moved] : table === 'asx_library' ? [lib] : [],
             };
           },
           retrieveRecord: xrm.WebApi.retrieveRecord,
@@ -969,23 +1036,32 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
             execute: async (req) => {
               const command = JSON.parse(req.Request);
               sent.push(command);
+              if (command.Command === 'Inspect') {
+                inspecting = true;
+                await gate;
+              }
               const result =
                 command.Command === 'Inspect'
                   ? {
-                      Status: 'Blocked',
                       Key: command.Key,
-                      Issue:
-                        'This library no longer exists on the site. Remove it, or register the new library.',
-                      Observation: {
-                        Repoint: true,
-                        CatalogId: id(3),
-                        SiteId: id(1),
-                        ListId: id(21),
-                      },
+                      ...(inspected[command.Key] || {
+                        Status: 'Blocked',
+                        Issue:
+                          'This library no longer exists on the site. Remove it, or register the new library.',
+                        Observation: {
+                          Repoint: true,
+                          CatalogId: id(3),
+                          SiteId: id(1),
+                          ListId: id(21),
+                        },
+                      }),
                     }
                   : command.Command === 'GetPolicy'
                     ? { Status: 'Applied', RowVersion: '1', Policy: { Desired: [], Applied: [] } }
-                    : { Status: 'Pending', Key: 'catalogprobe:repoint:again' };
+                    : command.Command.startsWith('Remove')
+                      ? { Status: 'Removed', CatalogId: command.CatalogId, Notices: [] }
+                      : { Status: 'Pending', Key: 'catalogprobe:repoint:again' };
+              if (command.Command.startsWith('Remove')) active.delete(command.CatalogId);
               return { ok: true, json: async () => ({ Result: JSON.stringify(result) }) };
             },
           },
@@ -1000,21 +1076,69 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
       crypto: { randomUUID: () => id(22) },
       setTimeout: (fn) => later.push(fn),
     });
-    await reloaded.AsxdSites.open();
+    const card = fresh['ad-provision-progress'],
+      opening = reloaded.AsxdSites.open();
+    for (let i = 0; i < 50 && !inspecting; i++) await new Promise((r) => setImmediate(r));
+    // Before the first read: no generic message or action, and nothing of the removed ones.
+    assert.doesNotMatch(card.textContent, /Setup needs review|Retry after repair/);
+    assert.doesNotMatch(card.textContent, /Needs attention/);
+    assert.doesNotMatch(card.textContent, /AcceptC Chrome 1|Deleted later/);
+    assert.match(card.textContent, /Loading…/);
+    release();
+    await opening;
     assert.match(activity[0], /asx_workkind eq 'Repoint'/);
-    await later.shift()();
-    const card = fresh['ad-provision-progress'];
+    // Read at once after the load, not at the first poll.
     assert.match(card.textContent, /General.*no longer exists on the site/);
+    assert.doesNotMatch(card.textContent, /Loading…/);
+    assert(checks.some((c) => c.includes('asx_libraryid eq ' + id(30))));
+    assert(checks.some((c) => c.includes('asx_libraryid eq ' + id(32))));
+    await later.shift()();
+    assert.doesNotMatch(
+      card.textContent,
+      /AcceptC Chrome 1|Deleted later/,
+      'Cards of a removed or deleted library are not shown',
+    );
+    assert.equal(card.children.length, 1);
     const again = find(card, (n) => n.textContent === 'Re-point again');
     assert(again, 'A blocked re-point found after a reload offers to re-point again');
+    assert(!find(card, (n) => n.textContent === 'Retry after repair'));
     await again.onclick();
     assert.deepEqual(
       sent.filter((c) => c.Command === 'RepointLibrary').map((c) => c.CatalogId),
       [id(3)],
     );
+    await later.shift()();
+    assert.match(card.textContent, /General.*no longer exists on the site/);
+    // Remove: the library leaves the list and its re-point card goes, with no reload.
+    const listed = () => fresh['ad-libraries'].children.map((c) => c.textContent);
+    assert.deepEqual(listed(), ['General']);
+    const before = lists.length;
+    fresh['ad-remove-library'].onclick();
+    await fresh['ad-confirm-go'].onclick();
+    assert.deepEqual(sent.at(-1), { Command: 'RemoveLibrary', CatalogId: id(3) });
+    assert.match(fresh['ad-message'].textContent, /General was removed from Documents/);
+    assert(lists.length > before, 'The library list is read again after Remove');
+    assert.deepEqual(listed(), [], 'The removed library is no longer listed');
+    assert.equal(fresh['ad-library-detail'].hidden, true);
+    assert.doesNotMatch(card.textContent, /General/, 'Its re-point card goes with it');
+    assert.equal(card.hidden, true);
+    // A link to it does not bring it back.
+    await reloaded.AsxdSites.selectLibrary(id(3));
+    assert.match(fresh['ad-message'].textContent, /This library was removed from Documents/);
+    assert.deepEqual(listed(), []);
+    // Remove site: the site leaves the list the same way.
+    fresh['ad-remove-site'].onclick();
+    await fresh['ad-confirm-go'].onclick();
+    assert.deepEqual(sent.at(-1), { Command: 'RemoveSite', CatalogId: id(1) });
+    assert.deepEqual(
+      fresh['ad-sites'].children.map((c) => c.textContent),
+      [],
+      'The removed site is no longer listed',
+    );
+    assert.equal(fresh['ad-site-title'].textContent, 'Select or add a site');
   }
   console.log(
-    'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, stuck access runs and library setups with Retry and Cancel, re-point found again after a reload, and author deep link. Mocked APIs; connected acceptance pending.',
+    'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, stuck access runs (also the inheritance stop) and library setups with Retry and Cancel, the access label from the policy and its run, discovery matched by list ID, re-point found again after a reload with no generic flash, removed destinations hidden at once and after a reload, and author deep link. Mocked APIs; connected acceptance pending.',
   );
 })().catch((e) => {
   console.error(e);
