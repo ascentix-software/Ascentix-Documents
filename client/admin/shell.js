@@ -263,10 +263,14 @@
     };
     trigger.addEventListener('focusout', leaving);
     list.addEventListener('focusout', leaving);
-    document.addEventListener('click', (event) => {
+    // A menu redrawn away (a table row's ⋯) stops listening at the next click.
+    const outside = (event) => {
+      if (!trigger.isConnected) return document.removeEventListener('click', outside);
       if (!list.hidden && !trigger.contains(event.target) && !list.contains(event.target))
         close(false);
-    });
+      return undefined;
+    };
+    document.addEventListener('click', outside);
   }
 
   // What Documents' SharePoint check found for a library setup whose create answer was lost,

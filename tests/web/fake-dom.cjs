@@ -360,7 +360,11 @@ function createDocument(html) {
       if (!document.listeners.has(type)) document.listeners.set(type, []);
       document.listeners.get(type).push(fn);
     },
-    removeEventListener: () => {},
+    removeEventListener: (type, fn) =>
+      document.listeners.set(
+        type,
+        (document.listeners.get(type) || []).filter((f) => f !== fn),
+      ),
     dispatchEvent: (event) => {
       for (const fn of document.listeners.get(event.type) || []) document.track(fn(event));
       return true;

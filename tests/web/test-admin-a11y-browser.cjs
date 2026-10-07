@@ -182,21 +182,32 @@ async function openTemplate(page) {
       'Field, condition 1',
     );
     const monitor = await open(context, 'monitor');
-    await monitor
-      .locator('#monitor-tiles')
-      .getByRole('button', { name: /^Blocked jobs/ })
-      .click();
-    assert.equal(await monitor.evaluate(() => document.activeElement.id), 'h-BlockedJobs');
-    await monitor.getByRole('button', { name: /^Cancel job for/ }).click();
+    const focused = (attr) =>
+      monitor.evaluate((name) => document.activeElement?.getAttribute(name), attr);
+    // A chip filters the table and keeps focus.
+    await monitor.getByRole('button', { name: 'Blocked jobs · 1' }).click();
+    assert.equal(await focused('data-focus-key'), 'filter:BlockedJobs');
+    assert.equal(await monitor.locator('#problem-rows tr').count(), 1);
+    // The row's ⋯ opens with the keyboard; Cancel job confirms; Escape keeps and returns to ⋯.
+    await monitor.getByRole('button', { name: /^More actions for Contoso Ltd/ }).focus();
+    await monitor.keyboard.press('ArrowDown');
+    assert.equal(await monitor.evaluate(() => document.activeElement.textContent), 'Cancel job');
+    await monitor.keyboard.press('Enter');
     assert.match(
       await monitor.evaluate(() => document.activeElement.textContent),
       /^Cancel the folder job for /,
     );
     await monitor.keyboard.press('Escape');
-    assert.match(
-      await monitor.evaluate(() => document.activeElement.getAttribute('aria-label')),
-      /^Cancel job for/,
-    );
+    assert.match(await focused('aria-label'), /^More actions for Contoso Ltd/);
+    // Tools opens Check a record as a side panel; Escape closes it and returns to Tools.
+    await monitor.locator('#monitor-tools').focus();
+    await monitor.keyboard.press('ArrowDown');
+    await monitor.keyboard.press('Enter');
+    assert.equal(await monitor.evaluate(() => document.activeElement.id), 'check-title');
+    assert.equal(await monitor.locator('#check-panel').getAttribute('role'), 'dialog');
+    await monitor.keyboard.press('Escape');
+    assert.equal(await monitor.locator('#check-panel').isHidden(), true);
+    assert.equal(await monitor.evaluate(() => document.activeElement.id), 'monitor-tools');
     for (const state of ['Checking', 'Found', 'NotFound', 'Ambiguous']) {
       const shown = await open(context, 'monitor', 'window.__recovery = ' + JSON.stringify(state));
       await shown.screenshot({
@@ -205,7 +216,7 @@ async function openTemplate(page) {
       });
     }
     console.log(
-      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark, computed borders, text and targets, keyboard flows, screenshots. Mocked Dataverse.',
+      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark, computed borders, text and targets, keyboard flows (Monitor chips, a row menu and its confirmation, the Tools panel), screenshots. Mocked Dataverse.',
     );
   } finally {
     await browser.close();

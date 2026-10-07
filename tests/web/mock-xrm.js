@@ -177,6 +177,17 @@
       Actions: recovery.Choices,
     };
   }
+  // A record row of Monitor's problem table: the record, its table and template.
+  const recordRow = (key, extra) => ({
+    Key: key,
+    Kind: 'RecordPlan',
+    KindLabel: 'Record',
+    Title: 'Fabrikam Logistics · Account onboarding',
+    Record: { Table: 'account', TableLabel: 'Account', Id: IDS.record, Name: 'Fabrikam Logistics' },
+    TemplateId: IDS.template,
+    TemplateName: 'Account onboarding',
+    ...extra,
+  });
   function problems(list) {
     if (list === 'TemplateRuns')
       return [
@@ -201,6 +212,39 @@
           Actions: ['Pause', 'CancelRun'],
         },
       ];
+    if (list === 'BlockedRecords')
+      return [
+        recordRow('request:' + IDS.record, {
+          Status: 'Blocked',
+          Problem: 'Library General is not ready for folder templates.',
+          SinceUtc: ago(70),
+          Actions: ['Retry', 'Cancel', 'OpenRecord', 'Check'],
+        }),
+      ];
+    if (list === 'WaitingRecords')
+      return [
+        recordRow('request:' + IDS.other, {
+          Status: 'Waiting',
+          Problem: 'Needs a value in Account Number.',
+          SinceUtc: ago(60),
+          Actions: ['Rerun', 'Check', 'OpenRecord'],
+        }),
+      ];
+    if (list === 'RetryingJobs')
+      return [
+        {
+          Key: 'folderjob:' + IDS.candidate,
+          Kind: 'FolderJob',
+          KindLabel: 'Folder job',
+          Title: 'Folder job · Northwind Traders',
+          Problem: 'SharePoint is limiting requests.',
+          Status: 'RetryWait',
+          Attempt: 3,
+          NextAttemptUtc: new Date(Date.now() + 10 * 60000).toISOString(),
+          SinceUtc: ago(50),
+          Actions: ['Retry', 'Cancel'],
+        },
+      ];
     if (list === 'BlockedJobs')
       return [
         {
@@ -221,10 +265,10 @@
   const summary = () => ({
     TemplateRuns: 1,
     NotCaptured: 0,
-    BlockedRecords: 0,
-    WaitingRecords: 0,
+    BlockedRecords: 1,
+    WaitingRecords: 1,
     BlockedJobs: window.__recovery ? 2 : 1,
-    RetryingJobs: 0,
+    RetryingJobs: 1,
     Capped: [],
     CountedUtc: new Date().toISOString(),
   });

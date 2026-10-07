@@ -53,6 +53,9 @@ async function boot({
   missing = [],
   handle = () => null,
   getGate = null,
+  // What Copy ID's clipboard write does with its text (it may throw), and the page's #hash.
+  clipboard = () => {},
+  hash = '',
 } = {}) {
   const document = createDocument(html);
   const sent = [];
@@ -182,7 +185,7 @@ async function boot({
   const session = new Map([['asxd.launched', '1']]);
   const window = {
     parent: { Xrm: xrm },
-    location: { search: '?data=' + tab + '-' + BUILD, hash: '' },
+    location: { search: '?data=' + tab + '-' + BUILD, hash },
     sessionStorage: {
       getItem: (k) => session.get(k) ?? null,
       setItem: (k, v) => session.set(k, v),
@@ -196,7 +199,7 @@ async function boot({
     URLSearchParams,
     URL,
     console,
-    navigator: { clipboard: { writeText: async () => {} } },
+    navigator: { clipboard: { writeText: async (text) => clipboard(text) } },
     crypto: require('node:crypto').webcrypto,
     // Privilege checks hold every role; the document-enabled tables are account, contact, lead.
     fetch: async (url) => ({
@@ -244,8 +247,287 @@ async function boot({
 }
 
 (async () => {
+  // Monitor -------------------------------------------------------------------------------------
+  const table = (m) => m.$('problem-table');
+  const trs = (m) => m.$('problem-rows').querySelectorAll('tr');
+  const named = (m, scope, text) => m.buttons(scope).find((b) => b.textContent === text);
+  const chip = (m, start) =>
+    m
+      .$('monitor-filters')
+      .querySelectorAll('.filter-chip')
+      .find((c) => c.textContent.startsWith(start));
+  // A row's ⋯ menu items, and its one primary action (fake-dom refuses ">" and ":not(.class)").
+  const menuOf = (tr) => tr.querySelectorAll('[role=menuitem]').map((i) => i.textContent);
+  const primaryOf = (tr) =>
+    tr
+      .querySelector('td.actions')
+      .querySelectorAll('button')
+      .find((b) => !b.classList.contains('menu-button') && b.getAttribute('role') !== 'menuitem');
+  const openTool = async (m, index) => {
+    await m.press(m.$('monitor-tools'));
+    await m.press(m.$('monitor-tools-list').querySelectorAll('[role=menuitem]')[index]);
+  };
   {
-    // Opening Monitor loads Summary and every list without a click; counts show in headings and tiles.
+    // Filter chips with counts from Summary; zero chips are not buttons; All sums the five lists.
+    const m = await boot({
+      summary: {
+        BlockedRecords: 3,
+        WaitingRecords: 6,
+        BlockedJobs: 1,
+        RetryingJobs: 4,
+        NotCaptured: 0,
+      },
+    });
+    const chips = m.$('monitor-filters').querySelectorAll('.filter-chip');
+    assert.deepEqual(
+      chips.map((c) => c.textContent),
+      [
+        'All · 14',
+        'Blocked records · 3',
+        'Waiting for data · 6',
+        'Blocked jobs · 1',
+        'Retrying · 4',
+        'Not captured · 0',
+      ],
+    );
+    assert.equal(chips[0].getAttribute('aria-pressed'), 'true');
+    assert.equal(chips[5].tagName, 'SPAN', 'A zero chip is not interactive');
+    const capped = await boot({ summary: { BlockedRecords: 5000, Capped: ['BlockedRecords'] } });
+    const cappedChips = capped.$('monitor-filters').querySelectorAll('.filter-chip');
+    assert.equal(cappedChips[1].textContent, 'Blocked records · 5,000+');
+    assert.equal(cappedChips[0].textContent, 'All · 5,000+');
+  }
+  {
+    // One table merging the lists by Since (newest first), with type, item, problem and one primary
+    // action plus a ⋯ menu holding the rest. Since mixes ISO and "/Date(…)/" values (ui.ms).
+    const m = await boot({
+      summary: { BlockedRecords: 1, WaitingRecords: 1, RetryingJobs: 1 },
+      lists: {
+        BlockedRecords: [
+          row({
+            Key: 'rec:1',
+            SinceUtc: '/Date(' + Date.parse('2026-10-06T10:12:00Z') + ')/',
+            Actions: ['Retry', 'Cancel', 'OpenRecord', 'Check'],
+          }),
+        ],
+        WaitingRecords: [
+          row({
+            Key: 'wait:1',
+            Status: 'Waiting',
+            SinceUtc: '2026-10-06T10:20:00Z',
+            Problem: 'Needs a value in Account Number.',
+            Actions: ['Rerun', 'Check', 'OpenRecord'],
+          }),
+        ],
+        RetryingJobs: [
+          row({
+            Key: 'folderjob:r',
+            Kind: 'FolderJob',
+            Record: null,
+            Title: 'Folder job · Northwind Traders',
+            Attempt: 3,
+            NextAttemptUtc: '2026-10-06T10:45:00Z',
+            SinceUtc: '2026-10-06T10:31:00Z',
+            Actions: ['Retry', 'Cancel'],
+          }),
+        ],
+      },
+    });
+    const rows = trs(m);
+    assert.deepEqual(
+      rows.map((r) => r.querySelector('.type').textContent),
+      ['Retrying', 'Waiting for data', 'Blocked record'],
+    );
+    assert.deepEqual(
+      rows.map((r) => r.querySelector('.type').dataset.tone),
+      ['muted', 'warning', 'danger'],
+    );
+    assert.match(rows[0].querySelector('.sub').textContent, /^Attempt 3 · next /);
+    assert.equal(rows[1].querySelector('.sub').textContent, 'Account · Account documents');
+    assert.deepEqual(
+      rows.map((r) => primaryOf(r)?.textContent),
+      ['Retry now', 'Check', 'Retry'],
+    );
+    assert.deepEqual(menuOf(rows[2]), ['Cancel job', 'Check', 'Copy ID']);
+    await m.press(table(m).querySelector('th[aria-sort] button'));
+    assert.equal(table(m).querySelector('th[aria-sort]').getAttribute('aria-sort'), 'ascending');
+    assert.equal(trs(m)[0].querySelector('.type').textContent, 'Blocked record');
+  }
+  {
+    // A filter shows one list; Not captured keeps its checkboxes and Re-run selected (n).
+    const m = await boot({
+      summary: { NotCaptured: 2, BlockedRecords: 1 },
+      lists: {
+        NotCaptured: [
+          row({ Key: 'cap:1', Kind: 'CaptureJob', Actions: ['Rerun', 'Dismiss'] }),
+          row({ Key: 'cap:2', Kind: 'CaptureJob', Actions: ['Rerun', 'Dismiss'] }),
+        ],
+        BlockedRecords: [row({ Key: 'rec:1' })],
+      },
+    });
+    assert.equal(
+      m.$('problem-rows').querySelectorAll('input[type=checkbox]').length,
+      0,
+      'No boxes under All',
+    );
+    assert.equal(m.$('rerun-selected-row').hidden, true);
+    await m.press(chip(m, 'Not captured'));
+    assert.equal(trs(m).length, 2);
+    const boxes = m.$('problem-rows').querySelectorAll('input[type=checkbox]');
+    assert.equal(boxes.length, 2);
+    boxes[0].checked = true;
+    boxes[0].onchange();
+    assert.equal(m.$('rerun-selected-row').hidden, false);
+    assert.equal(
+      m.$('rerun-selected-row').querySelector('button').textContent,
+      'Re-run selected (1)',
+    );
+  }
+  {
+    // Re-runs strip: one card per active run with progress and Pause / Cancel re-run.
+    const m = await boot({
+      summary: { TemplateRuns: 1 },
+      lists: {
+        TemplateRuns: [
+          row({
+            Key: 'templaterun:1',
+            Kind: 'TemplateRun',
+            Title: 'Account onboarding',
+            Record: null,
+            Run: {
+              TemplateName: 'Account onboarding',
+              TableLabel: 'Account',
+              Version: 3,
+              State: 'Running',
+              Planned: 812,
+              Total: 1284,
+              TotalEstimated: true,
+              StartedUtc: '2026-10-06T09:58:00Z',
+              StartedBy: 'Dana Reyes',
+              EstimatedFinishUtc: '2026-10-06T11:30:00Z',
+            },
+            Actions: ['Pause', 'CancelRun'],
+          }),
+        ],
+      },
+    });
+    assert.equal(m.$('runs-strip').hidden, false);
+    const card = m.$('runs-strip').querySelector('.run-card');
+    assert.equal(card.querySelector('h2').textContent, 'Re-run of Account onboarding v3');
+    assert.match(card.querySelector('.sub').visibleText, /^Started .+ by Dana Reyes$/);
+    assert.match(
+      card.querySelector('.progress-text').visibleText,
+      /^812 of about 1,284 · ends around /,
+    );
+    assert.deepEqual(
+      card.querySelectorAll('button').map((b) => b.textContent),
+      ['Pause', 'Cancel re-run'],
+    );
+    assert.equal(trs(m).length, 1, 'A re-run is not a problem row');
+    const none = await boot();
+    assert.equal(none.$('runs-strip').hidden, true);
+  }
+  {
+    // Tools ▾ opens Check a record and Look up an operation as side panels; Escape returns focus.
+    const m = await boot();
+    assert.equal(m.$('monitor-tools').getAttribute('aria-haspopup'), 'menu');
+    assert.deepEqual(
+      m
+        .$('monitor-tools-list')
+        .querySelectorAll('[role=menuitem]')
+        .map((i) => i.textContent),
+      ['Check a record…', 'Look up an operation…'],
+    );
+    await openTool(m, 0);
+    assert.equal(m.$('check-panel').hidden, false);
+    assert.equal(m.$('check-panel').getAttribute('role'), 'dialog');
+    assert.equal(m.$('check-panel').getAttribute('aria-labelledby'), 'check-title');
+    assert.equal(m.document.activeElement, m.$('check-title'));
+    m.$('check-title').key('Escape');
+    assert.equal(m.$('check-panel').hidden, true);
+    assert.equal(m.document.activeElement, m.$('monitor-tools'));
+    // Close does the same through the panel handle.
+    await openTool(m, 1);
+    assert.equal(m.$('lookup-panel').hidden, false);
+    assert.equal(m.$('lookup-title').textContent, 'Look up an operation');
+    await m.press(m.$('lookup-close'));
+    assert.equal(m.$('lookup-panel').hidden, true);
+    assert.equal(m.document.activeElement, m.$('monitor-tools'));
+    // Opening one panel closes the other.
+    await openTool(m, 0);
+    await openTool(m, 1);
+    assert.equal(m.$('check-panel').hidden, true);
+    assert.equal(m.$('lookup-panel').hidden, false);
+  }
+  {
+    // The setup checklist still replaces the content while setup is incomplete.
+    const m = await boot({ runtime: { WorkerId: '00000000-0000-0000-0000-000000000000' } });
+    assert.equal(m.$('setup-checklist').hidden, false);
+    for (const id of ['runs-strip', 'monitor-filters', 'rerun-selected-row', 'problem-table-card'])
+      assert.equal(m.$(id).hidden, true, id);
+  }
+  {
+    // The 60-second watch does not redraw the table under an open confirmation or menu.
+    const m = await boot({
+      summary: { BlockedJobs: 1 },
+      lists: { BlockedJobs: [row({ Actions: ['Retry', 'Cancel'] })] },
+    });
+    const tr = trs(m)[0];
+    await m.press(tr.querySelector('.menu-button'));
+    const item = m.document.activeElement;
+    await m.tick();
+    assert.equal(item.isConnected, true, 'An open menu survives the tick');
+    assert.equal(m.document.activeElement, item);
+    await m.press(
+      tr.querySelectorAll('[role=menuitem]').find((i) => i.textContent === 'Cancel job'),
+    );
+    const confirm = table(m).querySelector('.confirm');
+    assert.ok(confirm);
+    await m.tick();
+    assert.equal(table(m).querySelector('.confirm'), confirm, 'Still the same confirmation');
+  }
+  {
+    // A tick's announcement does not replace an error the admin has not read: it follows it.
+    const runRow = (State) =>
+      row({
+        Key: 'templaterun:1',
+        Kind: 'TemplateRun',
+        Title: 'Account onboarding',
+        Record: null,
+        Run: {
+          TemplateName: 'Account onboarding',
+          TableLabel: 'Account',
+          Version: 3,
+          State,
+          Planned: 10,
+          Total: 10,
+          TotalEstimated: false,
+          StartedUtc: '2026-10-06T09:58:00Z',
+          StartedBy: 'Dana Reyes',
+          EstimatedFinishUtc: null,
+        },
+        Actions: [],
+      });
+    const lists = { TemplateRuns: [runRow('Running')], BlockedJobs: [row()] };
+    const m = await boot({
+      summary: { TemplateRuns: 1, BlockedJobs: 1 },
+      lists,
+      handle: (api, b) =>
+        b.Command === 'Retry' ? new Error('The job changed. Refresh it.') : null,
+    });
+    await m.press(primaryOf(trs(m)[0]));
+    assert.equal(m.$('fb-monitor').textContent, 'The job changed. Refresh it.');
+    lists.TemplateRuns = [runRow('Done')];
+    await m.tick();
+    assert.equal(
+      m.$('fb-monitor').textContent,
+      'The job changed. Refresh it. Re-run of Account onboarding: Done.',
+    );
+    assert.equal(m.$('fb-monitor').getAttribute('role'), 'alert', 'The error stays an alert');
+    assert.equal(m.$('runs-strip').hidden, true, 'A finished re-run leaves the strip');
+  }
+  {
+    // Opening Monitor loads Summary and every list without a click; the table lists the rows.
     const m = await boot({
       summary: { BlockedJobs: 1, NotCaptured: 0 },
       lists: { BlockedJobs: [row()] },
@@ -265,96 +547,153 @@ async function boot({
         'WaitingRecords',
       ],
     );
-    assert.equal(m.$('h-BlockedJobs').textContent, 'Blocked jobs · 1');
-    assert.equal(m.$('h-NotCaptured').textContent, 'Changes not captured · 0');
-    assert.equal(m.$('list-NotCaptured').visibleText.includes('No missed changes.'), true);
-    assert.equal(
-      m.$('list-NotCaptured').querySelectorAll('button').length,
-      0,
-      'An empty list offers no actions',
+    assert.equal(trs(m).length, 1);
+    assert.equal(m.$('problem-table-card').hasAttribute('aria-busy'), false);
+    // Nothing to show: All says nothing needs attention, with no actions.
+    const empty = await boot();
+    assert.equal(empty.$('problem-rows').visibleText, 'Nothing needs attention.');
+    assert.equal(empty.$('problem-rows').querySelectorAll('button').length, 0);
+    assert.equal(empty.$('problem-more').hidden, true);
+    // A chip shows its list only and keeps focus on itself.
+    const both = await boot({
+      summary: { BlockedJobs: 1, RetryingJobs: 1 },
+      lists: {
+        BlockedJobs: [row()],
+        RetryingJobs: [
+          row({
+            Key: 'folderjob:r',
+            Attempt: 2,
+            NextAttemptUtc: '2026-10-06T17:45:00Z',
+            Actions: ['Retry', 'Cancel'],
+          }),
+        ],
+      },
+    });
+    assert.equal(trs(both).length, 2);
+    const retrying = chip(both, 'Retrying');
+    retrying.focus();
+    await both.press(retrying);
+    assert.deepEqual(
+      trs(both).map((r) => r.querySelector('.type').textContent),
+      ['Retrying'],
     );
-    const tile = m
-      .$('monitor-tiles')
-      .querySelectorAll('button')
-      .find((b) => b.textContent.startsWith('Blocked jobs'));
-    assert.equal(tile.textContent, 'Blocked jobs 1');
-    await m.press(tile);
-    assert.equal(m.document.activeElement.id, 'h-BlockedJobs');
+    assert.equal(both.document.activeElement.dataset.focusKey, 'filter:RetryingJobs');
+    assert.equal(both.document.activeElement.getAttribute('aria-pressed'), 'true');
+    assert.equal(chip(both, 'All').getAttribute('aria-pressed'), 'false');
+    // Summary counts a blocked job the first page did not bring: the list's own text says so.
+    const stale = await boot({ summary: { BlockedJobs: 1 } });
+    await stale.press(chip(stale, 'Blocked jobs'));
+    assert.equal(stale.$('problem-rows').visibleText, 'No blocked jobs.');
   }
   {
-    // Rows show names, local times and server actions; keys only inside Details.
-    const m = await boot({ summary: { BlockedJobs: 1 }, lists: { BlockedJobs: [row()] } });
-    const list = m.$('list-BlockedJobs');
-    const outside = list.visibleText;
+    // When the chosen list's count drops to 0, the chips fall back to All and focus follows.
+    let blocked = 1;
+    const m = await boot({
+      lists: { BlockedJobs: [row()] },
+      handle: (api, b) =>
+        b.Command === 'Summary'
+          ? { Status: 'Summary', Summary: { BlockedJobs: blocked, RetryingJobs: 1, Capped: [] } }
+          : null,
+    });
+    const blockedChip = chip(m, 'Blocked jobs');
+    blockedChip.focus();
+    await m.press(blockedChip);
+    blocked = 0;
+    await m.tick();
+    assert.equal(chip(m, 'All').getAttribute('aria-pressed'), 'true');
+    assert.equal(chip(m, 'Blocked jobs').tagName, 'SPAN');
+    assert.equal(m.document.activeElement.dataset.focusKey, 'filter:all');
+  }
+  {
+    // Rows show names, local times and one primary action; the rest and Copy ID are in the ⋯
+    // menu. No key or ID shows; Copy ID copies the operation's key.
+    const copied = [];
+    const m = await boot({
+      summary: { BlockedJobs: 1 },
+      lists: { BlockedJobs: [row()] },
+      clipboard: (text) => copied.push(text),
+    });
+    const outside = table(m).visibleText;
     assert.match(outside, /Contoso Ltd · Account documents/);
     assert.match(outside, /The folder path is too long/);
     assert.doesNotMatch(outside, /folderjob:abc/);
     assert.doesNotMatch(outside, GUID);
     assert.doesNotMatch(outside, /2026-10-06T/);
-    assert.equal(list.querySelector('time').getAttribute('datetime'), '2026-10-06T17:38:07Z');
-    const details = list.querySelector('details');
-    details.open = true;
-    assert.match(details.visibleText, /folderjob:abc/);
-    assert.deepEqual(
-      m
-        .buttons(list.querySelector('tbody'))
-        .map((b) => b.textContent)
-        .filter((t) => t !== 'Copy'),
-      ['Retry', 'Cancel job', 'Open record', 'Check'],
+    assert.equal(table(m).querySelector('time').getAttribute('datetime'), '2026-10-06T17:38:07Z');
+    const [tr] = trs(m);
+    assert.equal(tr.querySelector('.type').textContent, 'Blocked job');
+    assert.equal(tr.querySelector('.type').dataset.tone, 'danger');
+    assert.equal(tr.querySelector('.sub').textContent, 'Folder job');
+    assert.equal(primaryOf(tr).textContent, 'Retry');
+    assert.deepEqual(menuOf(tr), ['Cancel job', 'Open record', 'Check', 'Copy ID']);
+    assert.equal(
+      tr.querySelector('.menu-button').getAttribute('aria-label'),
+      'More actions for Contoso Ltd · Account documents',
     );
-    // Open record opens the form in a new window.
-    await m.press(m.buttons(list).find((b) => b.textContent === 'Open record'));
+    assert.equal(tr.querySelector('.menu').hidden, true);
+    // Copy ID copies the key and says so in the Monitor line.
+    const copy = named(m, tr, 'Copy ID');
+    assert.equal(copy.getAttribute('aria-label'), 'Copy ID for Contoso Ltd · Account documents');
+    await m.press(copy);
+    assert.deepEqual(copied, ['folderjob:abc']);
+    assert.equal(m.$('fb-monitor').textContent, 'Copied');
+    // A job's item is not a link, so Open record is in its menu; it opens the form.
+    await m.press(named(m, tr, 'Open record'));
     assert.deepEqual(m.opened.at(-1), {
       entityName: 'account',
       entityId: '00000000-0000-0000-0000-0000000000a1',
       openInNewWindow: true,
     });
     // Retry sends the operation's Retry and leaves the row with its new status.
-    const retry = m.buttons(list).find((b) => b.textContent === 'Retry');
+    const retry = primaryOf(tr);
     await m.press(retry);
     assert.deepEqual(m.sent.at(-1), ['asx_ManageWork', { Command: 'Retry', Key: 'folderjob:abc' }]);
-    assert.match(list.visibleText, /Queued again/);
+    assert.match(table(m).visibleText, /Queued again/);
     assert.equal(retry.disabled, true);
-    assert.equal(
-      m.buttons(list).find((b) => b.textContent === 'Cancel job').disabled,
-      true,
-      'The row actions disable',
-    );
-    assert.equal(m.buttons(list).find((b) => b.textContent === 'Open record').disabled, false);
+    assert.equal(named(m, tr, 'Cancel job').disabled, true, 'The row actions disable');
+    assert.equal(named(m, tr, 'Open record').disabled, false);
     assert.equal(
       m.$('fb-monitor').textContent,
       'Queued again. It blocks again if the cause remains.',
     );
-    // Cancel job confirms in the page first, with no key in its text.
+    // Cancel job from the menu confirms in the page first, with no key in its text; Keep
+    // returns focus to the row's ⋯.
     const fresh = await boot({ summary: { BlockedJobs: 1 }, lists: { BlockedJobs: [row()] } });
-    const cancel = fresh
-      .buttons(fresh.$('list-BlockedJobs'))
-      .find((b) => b.textContent === 'Cancel job');
-    await fresh.press(cancel);
+    const ft = trs(fresh)[0];
+    await fresh.press(ft.querySelector('.menu-button'));
+    assert.equal(ft.querySelector('.menu').hidden, false);
+    assert.equal(fresh.document.activeElement.textContent, 'Cancel job', 'The first item');
+    await fresh.press(fresh.document.activeElement);
+    assert.equal(ft.querySelector('.menu').hidden, true);
     assert.equal(
       fresh.document.activeElement.textContent,
       'Cancel the folder job for Contoso Ltd · Account documents? Nothing in SharePoint is undone or deleted.',
     );
-    const keep = fresh
-      .buttons(fresh.$('list-BlockedJobs'))
-      .find((b) => b.textContent === 'Keep job');
-    await fresh.press(keep);
+    await fresh.press(named(fresh, table(fresh), 'Keep job'));
     assert.equal(fresh.commands().includes('Cancel'), false);
-    await fresh.press(cancel);
+    assert.equal(fresh.document.activeElement, ft.querySelector('.menu-button'));
+    await fresh.press(named(fresh, ft, 'Cancel job'));
     await fresh.press(
-      fresh
-        .buttons(fresh.$('list-BlockedJobs'))
-        .find((b) => b.textContent === 'Cancel job' && b !== cancel),
+      table(fresh)
+        .querySelectorAll('.confirm button')
+        .find((b) => b.textContent === 'Cancel job'),
     );
     assert.deepEqual(fresh.sent.at(-1), [
       'asx_ManageWork',
       { Command: 'Cancel', Key: 'folderjob:abc' },
     ]);
-    assert.equal(
-      fresh.$('list-BlockedJobs').querySelectorAll('.confirm').length,
-      0,
-      'The confirmation closes',
-    );
+    assert.equal(table(fresh).querySelectorAll('.confirm').length, 0, 'The confirmation closes');
+    // A clipboard that refuses says so.
+    const refused = await boot({
+      summary: { BlockedJobs: 1 },
+      lists: { BlockedJobs: [row()] },
+      clipboard: () => {
+        throw new Error('Not allowed.');
+      },
+    });
+    await refused.press(named(refused, trs(refused)[0], 'Copy ID'));
+    assert.equal(refused.$('fb-monitor').textContent, 'Copy failed');
+    assert.equal(refused.$('fb-monitor').getAttribute('role'), 'alert');
   }
   {
     // A record the caller cannot read says so, with no ID.
@@ -377,12 +716,12 @@ async function boot({
         ],
       },
     });
-    assert.match(m.$('list-BlockedRecords').visibleText, /Record not available to you/);
-    await m.press(m.buttons(m.$('list-BlockedRecords')).find((b) => b.textContent === 'Retry'));
+    assert.match(table(m).visibleText, /Record not available to you/);
+    await m.press(primaryOf(trs(m)[0]));
     assert.deepEqual(m.sent.at(-1)[1], { Command: 'RetryOutbox', Key: 'request:1' });
   }
   {
-    // Retrying automatically: the row action is "Retry now" (spec 3.3) and sends the job's Retry.
+    // Retrying automatically: the row action is "Retry now" and sends the job's Retry.
     const waiting = row({
       Key: 'folderjob:wait',
       Status: 'RetryWait',
@@ -392,32 +731,20 @@ async function boot({
       Actions: ['Retry', 'Cancel'],
     });
     const m = await boot({ summary: { RetryingJobs: 1 }, lists: { RetryingJobs: [waiting] } });
-    const list = m.$('list-RetryingJobs');
-    assert.deepEqual(
-      m
-        .buttons(list.querySelector('tbody'))
-        .map((b) => b.textContent)
-        .filter((t) => t !== 'Copy'),
-      ['Retry now', 'Cancel job'],
-    );
-    const now = m.buttons(list).find((b) => b.textContent === 'Retry now');
+    const [tr] = trs(m);
+    assert.deepEqual(menuOf(tr), ['Cancel job', 'Copy ID']);
+    const now = primaryOf(tr);
+    assert.equal(now.textContent, 'Retry now');
     assert.equal(now.getAttribute('aria-label'), 'Retry now for Contoso Ltd · Account documents');
     await m.press(now);
     assert.deepEqual(m.sent.at(-1), [
       'asx_ManageWork',
       { Command: 'Retry', Key: 'folderjob:wait' },
     ]);
-    // Copy names what it copies (spec 5.1).
-    assert.equal(
-      m
-        .buttons(list)
-        .find((b) => b.textContent === 'Copy')
-        .getAttribute('aria-label'),
-      'Copy details for Contoso Ltd · Account documents',
-    );
   }
   {
-    // Missed changes: Re-run selected for checked rows; Dismiss removes the row and keeps focus in the list.
+    // Not captured: Re-run selected for checked rows, kept across a redraw; Dismiss removes the
+    // row and keeps focus in the table.
     const capture = (id, name) =>
       row({
         Key: id,
@@ -444,18 +771,23 @@ async function boot({
             ? { Status: 'Dismissed' }
             : null,
     });
-    const list = m.$('list-NotCaptured');
-    const boxes = list.querySelectorAll('input[type=checkbox]');
+    await m.press(chip(m, 'Not captured'));
+    const boxes = m.$('problem-rows').querySelectorAll('input[type=checkbox]');
     assert.equal(boxes.length, 2);
     // Each checkbox is named by its record cell.
     assert.equal(
       m.document.getElementById(boxes[0].getAttribute('aria-labelledby')).textContent,
       'Alpha',
     );
-    const selected = m.buttons(list).find((b) => b.textContent.startsWith('Re-run selected'));
+    assert.equal(table(m).querySelector('thead').visibleText.includes('Select'), true);
+    const selected = m.$('rerun-selected-row').querySelector('button');
     assert.equal(selected.textContent, 'Re-run selected (0)');
     boxes[1].checked = true;
     boxes[1].onchange();
+    assert.equal(selected.textContent, 'Re-run selected (1)');
+    await m.tick();
+    const again = m.$('problem-rows').querySelectorAll('input[type=checkbox]');
+    assert.equal(again[1].checked, true, 'A redraw keeps the selection');
     assert.equal(selected.textContent, 'Re-run selected (1)');
     await m.press(selected);
     const rerun = m.sent.filter(([, b]) => b.Command === 'RerunRecord');
@@ -463,18 +795,22 @@ async function boot({
     assert.equal(rerun[0][1].RecordId, 'aaaaaaaa-0000-0000-0000-000000000002');
     assert.equal(rerun[0][1].Table, 'account');
     assert.ok(rerun[0][1].RequestId);
-    const dismiss = m.buttons(list).find((b) => b.textContent === 'Dismiss');
-    dismiss.focus();
-    await m.press(dismiss);
+    const first = trs(m)[0];
+    assert.equal(primaryOf(first).textContent, 'Re-run');
+    assert.deepEqual(menuOf(first), ['Dismiss', 'Copy ID']);
+    await m.press(first.querySelector('.menu-button'));
+    assert.equal(m.document.activeElement.textContent, 'Dismiss');
+    await m.press(m.document.activeElement);
     assert.deepEqual(m.sent.at(-1)[1], {
       Command: 'DismissCaptureJob',
       JobId: 'aaaaaaaa-0000-0000-0000-000000000001',
     });
-    assert.equal(list.querySelectorAll('tbody tr').length, 1);
+    assert.equal(trs(m).length, 1);
     assert.equal(m.document.activeElement.textContent, 'Beta', 'Focus moves to the next row');
   }
   {
-    // Template re-runs: progress text and value text, states, Pause, Resume, Retry and Cancel re-run.
+    // Template re-runs in the strip: progress text and value text, states, Pause, Resume, Retry and
+    // Cancel re-run.
     const run = (state, extra = {}) =>
       row({
         Key: 'templaterun:9c4e',
@@ -513,32 +849,34 @@ async function boot({
           ? { Status: 'Paused', Key: b.Key, Run: run('Paused').Run }
           : null,
     });
-    const list = m.$('list-TemplateRuns');
-    const bar = list.querySelector('progress');
+    const strip = m.$('runs-strip');
+    const bar = strip.querySelector('progress');
     assert.equal(bar.getAttribute('aria-valuetext'), '12,500 of 40,000, running');
-    assert.match(list.visibleText, /12,500 of 40,000/);
-    assert.match(list.visibleText, /TEST Account Documents · Account · v2/);
-    assert.match(list.visibleText, /Ends around/);
-    assert.match(list.visibleText, /Alex Rivera/);
-    await m.press(m.buttons(list).find((b) => b.textContent === 'Pause'));
+    assert.equal(bar.getAttribute('aria-label'), 'Progress of TEST Account Documents');
+    assert.match(strip.visibleText, /12,500 of 40,000 · ends around/);
+    assert.match(strip.visibleText, /Re-run of TEST Account Documents v2/);
+    assert.match(strip.visibleText, /Alex Rivera/);
+    await m.press(named(m, strip, 'Pause'));
     assert.deepEqual(m.sent.at(-1)[1], { Command: 'PauseTemplateRun', Key: 'templaterun:9c4e' });
-    assert.match(list.visibleText, /Paused/);
-    // Cancel re-run confirms with the spec text.
+    assert.match(strip.visibleText, /12,500 of 40,000 · Paused/);
+    assert.equal(m.$('fb-monitor').textContent, 'Re-run paused.');
+    // Cancel re-run confirms with its text.
     const c = await boot({
       summary: { TemplateRuns: 1 },
       lists: { TemplateRuns: [run('Blocked')] },
     });
-    await c.press(
-      c.buttons(c.$('list-TemplateRuns')).find((b) => b.textContent === 'Cancel re-run'),
-    );
+    const cs = c.$('runs-strip');
+    assert.match(cs.visibleText, /Needs attention/);
+    assert.match(cs.visibleText, /The re-run stopped while planning a page of records\./);
+    await c.press(named(c, cs, 'Cancel re-run'));
     assert.equal(
       c.document.activeElement.textContent,
       'Cancel the re-run of TEST Account Documents? Records not yet planned are skipped. Folder work already queued for planned records continues, and nothing in SharePoint is undone.',
     );
-    await c.press(c.buttons(c.$('list-TemplateRuns')).find((b) => b.textContent === 'Keep re-run'));
-    await c.press(c.buttons(c.$('list-TemplateRuns')).find((b) => b.textContent === 'Retry'));
+    await c.press(named(c, cs, 'Keep re-run'));
+    await c.press(named(c, cs, 'Retry'));
     assert.deepEqual(c.sent.at(-1)[1], { Command: 'RetryOutbox', Key: 'templaterun:9c4e' });
-    assert.match(c.$('list-TemplateRuns').visibleText, /Needs attention|Queued again/);
+    assert.match(cs.visibleText, /Queued again/);
     // Estimated totals (the daily row-count snapshot) and finished runs.
     const capped = await boot({
       summary: { TemplateRuns: 1 },
@@ -548,20 +886,20 @@ async function boot({
         ],
       },
     });
-    assert.match(capped.$('list-TemplateRuns').visibleText, /12,500 of about 40,000/);
-    assert.match(capped.$('list-TemplateRuns').visibleText, /Estimating/);
+    assert.match(capped.$('runs-strip').visibleText, /12,500 of about 40,000 · Estimating…/);
     const done = await boot({ lists: { TemplateRuns: [run('Done', { Planned: 40000 })] } });
-    assert.match(done.$('list-TemplateRuns').visibleText, /Done/);
-    assert.equal(
-      done
-        .buttons(done.$('list-TemplateRuns').querySelector('tbody'))
-        .filter((b) => b.textContent !== 'Copy').length,
-      0,
-    );
+    assert.equal(done.$('runs-strip').hidden, true, 'A finished re-run is not shown');
+    // A link to a run focuses its first action.
+    const linked = await boot({
+      summary: { TemplateRuns: 1 },
+      lists: { TemplateRuns: [run('Running')] },
+      hash: '#monitor?run=templaterun:9c4e',
+    });
+    assert.equal(linked.document.activeElement.textContent, 'Pause');
   }
   {
-    // The 60-second re-read while Monitor is open (spec 5.3): progress updates silently; a re-run
-    // reaching Done, and a setup leaving "Checking SharePoint…", are each announced once.
+    // The 60-second re-read while Monitor is open: progress updates silently; a re-run reaching
+    // Done, and a setup leaving "Checking SharePoint…", are each announced once.
     const runRow = (State, Planned) =>
       row({
         Key: 'templaterun:9c4e',
@@ -609,7 +947,7 @@ async function boot({
     const m = await boot({ summary: { TemplateRuns: 1, BlockedJobs: 1 }, lists });
     lists.TemplateRuns = [runRow('Running', 200)];
     await m.tick();
-    assert.match(m.$('list-TemplateRuns').visibleText, /200 of 40,000/);
+    assert.match(m.$('runs-strip').visibleText, /200 of 40,000/);
     assert.equal(
       m.$('fb-monitor').textContent,
       '',
@@ -630,8 +968,9 @@ async function boot({
         "SharePoint has no library named Project documents. The creation didn't happen.",
     );
     assert.equal(m.$('fb-monitor').getAttribute('role'), 'status');
-    assert.ok(
-      m.buttons(m.$('list-BlockedJobs')).find((b) => b.textContent === 'Create it again'),
+    assert.equal(
+      primaryOf(trs(m)[0]).textContent,
+      'Create it again',
       'The finding brings its choices',
     );
     // Once: an unchanged tick announces nothing again.
@@ -674,17 +1013,9 @@ async function boot({
         ],
       },
     });
-    assert.match(
-      checking.$('list-BlockedJobs').visibleText,
-      /Checking SharePoint for Project documents…/,
-    );
-    assert.deepEqual(
-      checking
-        .buttons(checking.$('list-BlockedJobs').querySelector('tbody'))
-        .map((b) => b.textContent)
-        .filter((t) => t !== 'Copy'),
-      ['Cancel setup'],
-    );
+    assert.match(table(checking).visibleText, /Checking SharePoint for Project documents…/);
+    assert.equal(primaryOf(trs(checking)[0]), undefined, 'Cancel is never the primary action');
+    assert.deepEqual(menuOf(trs(checking)[0]), ['Cancel setup', 'Copy ID']);
     const found = await boot({
       summary: { BlockedJobs: 1 },
       lists: {
@@ -700,14 +1031,14 @@ async function boot({
         ],
       },
     });
-    const list = found.$('list-BlockedJobs');
     assert.match(
-      list.visibleText,
+      table(found).visibleText,
       /SharePoint has a library Project documents at \/sites\/x\/Project documents, created .*\. It matches this request\./,
     );
-    await found.press(
-      found.buttons(list).find((b) => b.textContent === 'Use the library that was created'),
-    );
+    const use = primaryOf(trs(found)[0]);
+    assert.equal(use.textContent, 'Use the library that was created');
+    assert.equal(use.className, 'primary');
+    await found.press(use);
     assert.deepEqual(found.sent.at(-1), [
       'asx_CatalogAdmin',
       {
@@ -731,14 +1062,11 @@ async function boot({
       },
     });
     assert.match(
-      notFound.$('list-BlockedJobs').visibleText,
+      table(notFound).visibleText,
       /SharePoint has no library named Project documents\. The creation didn't happen\./,
     );
-    await notFound.press(
-      notFound
-        .buttons(notFound.$('list-BlockedJobs'))
-        .find((b) => b.textContent === 'Create it again'),
-    );
+    assert.deepEqual(menuOf(trs(notFound)[0]), ['Check again', 'Cancel setup', 'Copy ID']);
+    await notFound.press(primaryOf(trs(notFound)[0]));
     assert.deepEqual(notFound.sent.at(-1)[1], {
       Command: 'ResolveSetup',
       Key: 'librarycreate:x',
@@ -757,9 +1085,7 @@ async function boot({
         ],
       },
     });
-    await recheck.press(
-      recheck.buttons(recheck.$('list-BlockedJobs')).find((b) => b.textContent === 'Check again'),
-    );
+    await recheck.press(named(recheck, trs(recheck)[0], 'Check again'));
     assert.deepEqual(recheck.sent.at(-1), [
       'asx_CatalogAdmin',
       { Command: 'RecheckSetup', Key: 'librarycreate:x' },
@@ -781,19 +1107,19 @@ async function boot({
         ],
       },
     });
-    const a = ambiguous.$('list-BlockedJobs');
+    const a = table(ambiguous);
     assert.match(a.visibleText, /A library has this name but a different address\./);
     assert.match(a.visibleText, /\/sites\/x\/Project documents1/);
     assert.equal(
       ambiguous.buttons(a).some((b) => b.textContent === 'Create it again'),
       false,
     );
-    await ambiguous.press(ambiguous.buttons(a).find((b) => b.textContent === 'Use this one'));
+    await ambiguous.press(named(ambiguous, a, 'Use this one'));
     assert.equal(
       ambiguous.document.activeElement.textContent,
       'Use Project documents at /sites/x/Project documents1 for this setup? Documents stops its permission inheritance if needed and manages its team access.',
     );
-    await ambiguous.press(ambiguous.buttons(a).find((b) => b.textContent === 'Use this library'));
+    await ambiguous.press(named(ambiguous, a, 'Use this library'));
     assert.deepEqual(ambiguous.sent.at(-1)[1], {
       Command: 'ResolveSetup',
       Key: 'librarycreate:x',
@@ -811,18 +1137,23 @@ async function boot({
   }
   {
     // A list that fails to load says so, with Try again; the others still render.
+    let refuse = true;
     const m = await boot({
+      summary: { BlockedJobs: 1 },
+      lists: { BlockedJobs: [row()] },
       handle: (api, b) =>
-        b.List === 'RetryingJobs'
+        b.List === 'RetryingJobs' && refuse
           ? new Error('Principal user is missing prvReadasx_operation.')
           : null,
     });
     assert.equal(
-      m.$('list-RetryingJobs').querySelector('[role=alert]').textContent,
+      m.$('monitor-errors').querySelector('[role=alert]').textContent,
       "Couldn't load Retrying automatically: Principal user is missing prvReadasx_operation.",
     );
-    assert.ok(m.buttons(m.$('list-RetryingJobs')).find((b) => b.textContent === 'Try again'));
-    assert.match(m.$('list-BlockedJobs').visibleText, /No blocked jobs\./);
+    assert.equal(trs(m).length, 1, 'The other lists still show');
+    refuse = false;
+    await m.press(named(m, m.$('monitor-errors'), 'Try again'));
+    assert.equal(m.$('monitor-errors').querySelectorAll('[role=alert]').length, 0);
   }
   {
     // Refresh reloads everything and says what it found.
@@ -867,14 +1198,14 @@ async function boot({
     );
   }
   {
-    // Setup incomplete: a checklist replaces the counts, each open step linking to its tab.
+    // Setup incomplete: a checklist replaces the table, each open step linking to its page.
     const m = await boot({
       runtime: { WorkerId: '00000000-0000-0000-0000-000000000000', Enabled: false },
     });
     const checklist = m.$('setup-checklist');
     assert.equal(checklist.hidden, false);
     assert.match(checklist.visibleText, /Choose who runs automation \(Settings\)/);
-    assert.equal(m.$('monitor-tiles').hidden, true);
+    assert.equal(m.$('problem-table-card').hidden, true);
   }
   {
     // Check a record: disabled until table, template and record are set; the result is readable.
@@ -900,7 +1231,8 @@ async function boot({
     assert.equal(m.$('fb-check').textContent, 'Re-run queued for Contoso Ltd.');
   }
   {
-    // Advanced: recent operations page on open; Look up validates the ID; there is no recovery panel.
+    // Look up an operation: recent operations page on open; Look up validates the ID; there is no
+    // recovery panel.
     const m = await boot({
       lists: { RecentOperations: [row({ Status: 'Applied', Actions: [] })] },
       handle: (api, b) =>
@@ -908,10 +1240,12 @@ async function boot({
           ? { Key: b.Key, Status: 'Blocked', Notices: ['RequestUrlTooLong'] }
           : null,
     });
-    const advanced = m.$('advanced');
-    advanced.open = true;
-    await advanced.ontoggle();
-    await m.document.settle();
+    assert.equal(
+      m.sent.some(([, b]) => b.List === 'RecentOperations'),
+      false,
+      'Recent operations load when the panel opens',
+    );
+    await openTool(m, 1);
     assert.match(m.$('recent-rows').visibleText, /Contoso Ltd · Account documents/);
     m.$('operation-id').value = 'recordplan:abc';
     await m.press(m.$('operation-lookup'));
@@ -924,7 +1258,7 @@ async function boot({
     assert.deepEqual(m.sent.at(-1)[1], { Command: 'Inspect', Key: 'folderjob:abc' });
     assert.equal(m.$('operation-result').hidden, false);
     assert.equal(m.document.getElementById('recoveryPanel'), null);
-    // A library setup with a SharePoint finding offers its recovery choices here too (spec 3.3).
+    // A library setup with a SharePoint finding offers its recovery choices here too.
     const finding = {
       State: 'NotFound',
       Candidates: [],
@@ -942,8 +1276,7 @@ async function boot({
             }
           : null,
     });
-    r.$('advanced').open = true;
-    await r.$('advanced').ontoggle();
+    await openTool(r, 1);
     r.$('operation-id').value = 'librarycreate:x';
     await r.press(r.$('operation-lookup'));
     assert.match(
@@ -995,8 +1328,7 @@ async function boot({
             }
           : null,
     });
-    amb.$('advanced').open = true;
-    await amb.$('advanced').ontoggle();
+    await openTool(amb, 1);
     amb.$('operation-id').value = 'librarycreate:y';
     await amb.press(amb.$('operation-lookup'));
     await amb.press(
@@ -1012,6 +1344,44 @@ async function boot({
       ListId: moved.ListId,
       RowVersion: 'rv-4',
     });
+  }
+  {
+    // Links: an operation opens Look up an operation with its result; a record opens Check a
+    // record ready to check; a row's Check opens Check a record and Escape returns to that row.
+    const op = await boot({
+      hash: '#monitor?operation=folderjob:abc',
+      handle: (api, b) =>
+        b.Command === 'Inspect' ? { Key: b.Key, Status: 'Blocked', Notices: [] } : null,
+    });
+    assert.equal(op.$('lookup-panel').hidden, false);
+    assert.equal(op.$('operation-id').value, 'folderjob:abc');
+    assert.equal(op.$('operation-result').hidden, false);
+    assert.equal(op.document.activeElement, op.$('operation-result-title'));
+    const rec = await boot({
+      hash: '#monitor?record=account:00000000-0000-0000-0000-0000000000a1&template=11111111-2222-3333-4444-555555555555',
+    });
+    assert.equal(rec.$('check-panel').hidden, false);
+    assert.equal(rec.$('check-table').value, 'account');
+    assert.equal(rec.document.activeElement, rec.$('check-run'));
+    rec.$('check-run').key('Escape');
+    assert.equal(rec.$('check-panel').hidden, true);
+    assert.equal(rec.document.activeElement, rec.$('monitor-tools'));
+    const c = await boot({
+      summary: { WaitingRecords: 1 },
+      lists: {
+        WaitingRecords: [
+          row({ Key: 'wait:1', Status: 'Waiting', Actions: ['Check', 'OpenRecord'] }),
+        ],
+      },
+    });
+    const check = primaryOf(trs(c)[0]);
+    assert.equal(check.textContent, 'Check');
+    await c.press(check);
+    assert.equal(c.$('check-panel').hidden, false);
+    assert.equal(c.$('check-record-name').textContent, 'Contoso Ltd');
+    assert.equal(c.$('check-template').value, '11111111-2222-3333-4444-555555555555');
+    c.$('check-run').key('Escape');
+    assert.equal(c.document.activeElement, check);
   }
   {
     // Settings loads at once; hosts are a list; Save sends them; Repair and Repair all; Stop tracking confirms.
@@ -1545,7 +1915,7 @@ async function boot({
   // Fix round 1 -------------------------------------------------------------------------------
   {
     // A row acted on and gone from the server's next first page is gone after the tick; a row
-    // that "Show 50 more" appended stays. Show 50 more runs once however often it is pressed.
+    // that "Show N more" appended stays. Show more runs once however often it is pressed.
     const a = row({ Key: 'folderjob:a', Title: 'Alpha · Account documents' });
     const b = row({ Key: 'folderjob:b', Title: 'Beta · Account documents' });
     let first = [a];
@@ -1559,25 +1929,55 @@ async function boot({
         return { Status: 'Page', Problems: [b], Next: null };
       },
     });
-    const list = m.$('list-BlockedJobs');
-    const showMore = m.$('more-BlockedJobs');
+    const showMore = m.$('problem-more');
+    assert.equal(showMore.hidden, false);
+    assert.equal(showMore.textContent, 'Show 1 more');
     showMore.click();
     showMore.click();
     await m.document.settle();
-    assert.equal(more, 1, 'Show 50 more appends once');
-    assert.equal(list.querySelectorAll('tbody tr').length, 2);
+    assert.equal(more, 1, 'Show more appends once');
+    assert.equal(trs(m).length, 2);
+    assert.equal(showMore.hidden, true, 'Nothing more to show');
     await m.press(
       m
-        .buttons(list)
+        .buttons(table(m))
         .find((x) => x.getAttribute('aria-label') === 'Retry for Alpha · Account documents'),
     );
     first = [];
     await m.tick();
-    assert.doesNotMatch(list.visibleText, /Alpha/, 'The retried row is gone');
-    assert.match(list.visibleText, /Beta/, 'The appended row stays');
+    assert.doesNotMatch(table(m).visibleText, /Alpha/, 'The retried row is gone');
+    assert.match(table(m).visibleText, /Beta/, 'The appended row stays');
   }
   {
-    // Show 50 more that fails keeps the loaded rows and reports in the list's feedback line.
+    // Show more pages the merged list: 50 rows at a time, counted from Summary, and "Show 50 more"
+    // for a capped list.
+    const many = (list, n) =>
+      Array.from({ length: n }, (_, i) =>
+        row({
+          Key: list + ':' + String(i).padStart(3, '0'),
+          SinceUtc: new Date(Date.parse('2026-10-06T10:00:00Z') - i * 60000).toISOString(),
+        }),
+      );
+    const m = await boot({
+      summary: { BlockedJobs: 40, RetryingJobs: 30 },
+      lists: { BlockedJobs: many('job', 40), RetryingJobs: many('retry', 30) },
+    });
+    assert.equal(trs(m).length, 50);
+    assert.equal(m.$('problem-more').textContent, 'Show 20 more');
+    await m.press(m.$('problem-more'));
+    assert.equal(trs(m).length, 70);
+    assert.equal(m.$('problem-more').hidden, true);
+    const capped = await boot({
+      summary: { BlockedJobs: 5000, Capped: ['BlockedJobs'] },
+      handle: (api, q) =>
+        q.Command === 'ListProblems' && q.List === 'BlockedJobs'
+          ? { Status: 'Page', Problems: many('job', 50), Next: 'p2' }
+          : null,
+    });
+    assert.equal(capped.$('problem-more').textContent, 'Show 50 more');
+  }
+  {
+    // Show more that fails keeps the loaded rows and reports in the Monitor feedback line.
     const m = await boot({
       summary: { BlockedJobs: 1 },
       handle: (api, q) =>
@@ -1587,50 +1987,59 @@ async function boot({
             : { Status: 'Page', Problems: [row()], Next: 'p2' }
           : null,
     });
-    await m.press(m.$('more-BlockedJobs'));
-    assert.equal(m.$('list-BlockedJobs').querySelectorAll('tbody tr').length, 1);
+    // Summary is behind the server here: the next page is still offered.
+    assert.equal(m.$('problem-more').textContent, 'Show 50 more');
+    await m.press(m.$('problem-more'));
+    assert.equal(trs(m).length, 1);
     assert.equal(m.$('fb-monitor').textContent, 'The list changed. Refresh it.');
-    assert.ok(m.$('more-BlockedJobs'), 'Show 50 more stays to try again');
+    assert.equal(m.$('problem-more').hidden, false, 'Show more stays to try again');
   }
   {
-    // The tick does not redraw a list with an open confirmation, open Details or focus on a
-    // control it cannot restore; it redraws it on a later tick once that is over.
+    // The tick does not redraw the table under an open confirmation or focus on a control it
+    // cannot restore; it redraws it on a later tick once that is over. Focus on a chip, a row
+    // action or the Since sort comes back after the redraw.
     const lists = { BlockedJobs: [row()] };
     const m = await boot({ summary: { BlockedJobs: 1 }, lists });
-    const list = m.$('list-BlockedJobs');
-    const cancel = m.buttons(list).find((x) => x.textContent === 'Cancel job');
+    const cancel = named(m, trs(m)[0], 'Cancel job');
     await m.press(cancel);
     const question = m.document.activeElement;
     lists.BlockedJobs = [row({ Problem: 'Something else now.' })];
     await m.tick();
     assert.equal(m.document.activeElement, question, 'The open confirmation keeps focus');
     assert.equal(question.isConnected, true, 'The open confirmation survives the tick');
-    await m.press(m.buttons(list).find((x) => x.textContent === 'Cancel job' && x !== cancel));
+    await m.press(
+      table(m)
+        .querySelectorAll('.confirm button')
+        .find((x) => x.textContent === 'Cancel job'),
+    );
     assert.deepEqual(m.sent.at(-1)[1], { Command: 'Cancel', Key: 'folderjob:abc' });
     m.document.body.focus();
     await m.tick();
-    assert.match(list.visibleText, /Something else now\./, 'Redrawn on the next tick');
-    // Focus on Copy (no focus key) survives a tick, and so does an open Details.
-    const copy = m.buttons(list).find((x) => x.textContent === 'Copy');
-    copy.focus();
+    assert.match(table(m).visibleText, /Something else now\./, 'Redrawn on the next tick');
+    // A control with no focus key (a load error's Try again aside) holds the redraw.
+    const unkeyed = m.document.createElement('button');
+    trs(m)[0].querySelector('td').append(unkeyed);
+    unkeyed.focus();
+    lists.BlockedJobs = [row({ Problem: 'Third problem.' })];
     await m.tick();
-    assert.equal(m.document.activeElement, copy);
-    assert.equal(copy.isConnected, true);
+    assert.equal(unkeyed.isConnected, true, 'Unkeyed focus holds the redraw');
     m.document.body.focus();
-    const details = list.querySelector('details');
-    details.open = true;
     await m.tick();
-    assert.equal(details.isConnected, true, 'Open Details stays open');
-    // A focused tile keeps focus across the tick's redraw.
-    const tile = m.$('monitor-tiles').querySelectorAll('button')[0];
-    tile.focus();
+    assert.match(table(m).visibleText, /Third problem\./);
+    // Keyed focus comes back to the same control after the redraw.
+    primaryOf(trs(m)[0]).focus();
     await m.tick();
-    assert.equal(m.document.activeElement.textContent, tile.textContent);
+    assert.equal(m.document.activeElement.textContent, 'Retry');
+    assert.equal(m.document.activeElement.isConnected, true);
+    const blockedChip = chip(m, 'Blocked jobs');
+    blockedChip.focus();
+    await m.tick();
+    assert.equal(m.document.activeElement.textContent, 'Blocked jobs · 1');
     assert.equal(m.document.activeElement.isConnected, true);
   }
   {
-    // Changes not captured: only rows the server can re-run get a checkbox; Re-run selected
-    // reports each row it could not queue and still queues the rest.
+    // Not captured: only rows the server can re-run get a checkbox; Re-run selected reports each
+    // row it could not queue and still queues the rest.
     const capture = (id, name, record, actions) =>
       row({
         Key: id,
@@ -1674,14 +2083,14 @@ async function boot({
             : { Status: 'Queued', Keys: ['request:x'], Notices: [] }
           : null,
     });
-    const list = m.$('list-NotCaptured');
-    const boxes = list.querySelectorAll('input[type=checkbox]');
+    await m.press(chip(m, 'Not captured'));
+    const boxes = m.$('problem-rows').querySelectorAll('input[type=checkbox]');
     assert.equal(boxes.length, 2, 'No checkbox on team rows or rows without a record');
     for (const box of boxes) {
       box.checked = true;
       box.onchange();
     }
-    await m.press(m.buttons(list).find((b) => b.textContent.startsWith('Re-run selected')));
+    await m.press(m.$('rerun-selected-row').querySelector('button'));
     assert.equal(m.sent.filter(([, b]) => b.Command === 'RerunRecord').length, 2);
     assert.equal(
       m.$('fb-monitor').textContent,
@@ -1696,13 +2105,12 @@ async function boot({
     assert.equal(m.$('fb-monitor').textContent, 'Refreshed. 5,000+ changes not captured.');
   }
   {
-    // A recent operation that cannot be looked up says why in Advanced.
+    // A recent operation that cannot be looked up says why in Look up an operation.
     const m = await boot({
       lists: { RecentOperations: [row({ Status: 'Applied', Actions: [] })] },
       handle: (api, b) => (b.Command === 'Inspect' ? new Error('Operation not found.') : null),
     });
-    m.$('advanced').open = true;
-    await m.$('advanced').ontoggle();
+    await openTool(m, 1);
     await m.press(m.buttons(m.$('recent-rows'))[0]);
     assert.equal(m.$('fb-advanced').textContent, 'Operation not found.');
   }
@@ -1731,7 +2139,7 @@ async function boot({
     assert.equal(s.document.activeElement.getAttribute('aria-label'), 'Remove Account');
   }
   console.log(
-    'PASS Monitor and Settings: lists on open, names and Details, row actions, Retry now, re-runs, 60-second re-read announcements, recovery choices (lists and Advanced), load errors, Refresh, the automation pill and its Settings link, checklist, Check a record, Advanced, Settings, Repair all, danger zone, the Settings switch and its refusals, Settings as cards (the automation card, the save bar with its count and Discard, the Tables card with counts, change tracking, Repair, Remove and Add table, Connections, read-only values, the Monitor problem pill; fix round 1: the read-only page for a non-administrator from the Default runtime row, Add table by its Add button and a refused add, removing a host, a runtime change under a Remove confirmation, Discard clears the save bar message), runtime shared with the form, no tick off Monitor, a late or refused Get; fix round 1: the tick keeps appended rows and drops removed ones, defers redraws under confirmations, Details and focus; checkboxes only on re-runnable rows with per-row reasons; Show 50 more once, and its errors; capped Refresh text; recent lookup errors; Repair focus and text; one announcement for the switch, one Monitor line for every announcement of a tick. Fake DOM; browser QA separate.',
+    'PASS Monitor and Settings: Monitor as one table (chips counted from Summary with 5,000+ and zero chips, the merged list sorted by Since with one primary action and a ⋯ menu with Copy ID, a filter and its fallback to All, Not captured checkboxes kept across a redraw), the re-runs strip, Tools side panels and links to them, lists on open, row actions, Retry now, 60-second re-read announcements after an unread error, recovery choices (table and Look up an operation), load errors, Refresh, the automation pill and its Settings link, checklist, Check a record, Look up an operation, Settings, Repair all, danger zone, the Settings switch and its refusals, Settings as cards (the automation card, the save bar with its count and Discard, the Tables card with counts, change tracking, Repair, Remove and Add table, Connections, read-only values, the Monitor problem pill; fix round 1: the read-only page for a non-administrator from the Default runtime row, Add table by its Add button and a refused add, removing a host, a runtime change under a Remove confirmation, Discard clears the save bar message), runtime shared with the form, no tick off Monitor, a late or refused Get; fix round 1: the tick keeps appended rows and drops removed ones, defers redraws under confirmations, open menus and unkeyed focus; checkboxes only on re-runnable rows with per-row reasons; Show more once, paged by 50 from Summary, and its errors; capped Refresh text; recent lookup errors; Repair focus and text; one announcement for the switch, one Monitor line for every announcement of a tick. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

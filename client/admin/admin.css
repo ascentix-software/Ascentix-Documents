@@ -1236,26 +1236,6 @@ input[type='checkbox'] {
   left: 19px;
   background: var(--on-accent);
 }
-.tiles {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 12px 0;
-}
-.tile {
-  min-height: 32px;
-}
-.problem-list table {
-  width: 100%;
-  border-collapse: collapse;
-}
-.problem-list td,
-.problem-list th {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--line);
-  text-align: left;
-  vertical-align: top;
-}
 .skeleton {
   height: 14px;
   margin: 8px 0;
@@ -1265,19 +1245,11 @@ input[type='checkbox'] {
 .checklist .is-done {
   color: var(--muted);
 }
-.problem-list progress {
-  width: 100%;
-  height: 10px;
-  accent-color: var(--teal);
-}
 .candidates {
   margin: 6px 0;
   padding-left: 18px;
 }
-/* Monitor panels: spacing, wrapping form rows and list layout. */
-#monitor {
-  padding: 24px;
-}
+/* Monitor: the re-runs strip, filter chips, one problems table and the Tools panels. */
 #monitor > * + * {
   margin-top: 16px;
 }
@@ -1289,43 +1261,12 @@ input[type='checkbox'] {
   align-items: end;
   gap: 12px;
 }
-#monitor .row.wrap > label,
-#monitor .row.wrap > .field {
-  flex: 1;
-  min-width: 180px;
-  margin: 12px 0 0;
-}
 #monitor label select,
 #monitor label input {
   margin-top: 7px;
 }
-#monitor .card > summary h3 {
-  display: inline;
-}
-#monitor .card > summary + *,
-#monitor .card [data-actions] {
-  margin-top: 12px;
-}
 #monitor-checked {
   font-size: 12px;
-}
-.status-header .help {
-  margin-top: 4px;
-}
-.tile strong {
-  margin-left: 6px;
-}
-.problem-list {
-  margin-top: 24px;
-}
-.problem-list > h3 {
-  font-size: 15px;
-}
-.problem-list td.actions > button {
-  margin: 0 6px 6px 0;
-}
-.problem-list td p + p {
-  margin-top: 4px;
 }
 .row-status {
   display: block;
@@ -1335,13 +1276,6 @@ input[type='checkbox'] {
 }
 .row-status:empty {
   display: none;
-}
-.problem-list .empty {
-  padding: 12px 0;
-  text-align: left;
-}
-.problem-list .error {
-  color: var(--danger);
 }
 .checklist {
   margin: 12px 0;
@@ -1364,21 +1298,262 @@ input[type='checkbox'] {
 #settings a {
   color: var(--teal);
 }
-.problem-list > div > label {
+.menu-anchor {
+  position: relative;
   display: inline-block;
-  margin: 8px 12px 8px 0;
 }
-.problem-list > div > label select {
-  width: auto;
-  min-width: 200px;
+.menu-anchor > .menu {
+  top: 100%;
+  right: 0;
+}
+.feedback.is-error .feedback-note {
+  color: var(--ink);
+}
+.runs-strip {
+  display: grid;
+  gap: 10px;
+}
+.run-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(200px, 2fr) auto;
+  align-items: center;
+  gap: 8px 20px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.run-card h2 {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+.run-card progress {
+  display: block;
+  width: 100%;
+  height: 8px;
+  border: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  appearance: none;
+  background: var(--line);
+  accent-color: var(--teal);
+}
+.run-card progress::-webkit-progress-bar {
+  background: var(--line);
+  border-radius: 8px;
+}
+.run-card progress::-webkit-progress-value {
+  background: var(--teal);
+  border-radius: 8px;
+}
+.run-card progress::-moz-progress-bar {
+  background: var(--teal);
+  border-radius: 8px;
+}
+.progress-text {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.run-progress > p + p {
+  margin-top: 4px;
+}
+.run-actions {
+  justify-content: flex-end;
+}
+.run-card > .confirm-slot {
+  grid-column: 1 / -1;
+}
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 1px solid var(--control-border);
+  border-radius: 30px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+button.filter-chip[aria-pressed='true'] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-accent);
+}
+.filter-chip.is-empty {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+#monitor-errors:empty {
+  display: none;
+}
+.load-error .error {
+  color: var(--danger);
+}
+/* The card lets a row's ⋯ menu reach past its bottom edge; the header and last row keep the
+   card's rounded corners themselves. */
+#problem-table-card {
+  overflow: visible;
+}
+#problem-table {
+  width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+#problem-table th:first-child {
+  border-top-left-radius: 11px;
+}
+#problem-table th:last-child {
+  border-top-right-radius: 11px;
+}
+#problem-table tbody tr:last-child td:first-child {
+  border-bottom-left-radius: 11px;
+}
+#problem-table tbody tr:last-child td:last-child {
+  border-bottom-right-radius: 11px;
+}
+#problem-table time {
+  white-space: nowrap;
+}
+#problem-table th {
+  padding: 9px 16px;
+  border-bottom: 0;
+  background: var(--canvas);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  text-align: left;
+  white-space: nowrap;
+}
+#problem-table td {
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+  text-align: left;
+  vertical-align: middle;
+}
+#problem-table tbody tr:hover {
+  background: var(--tint);
+}
+#problem-table .col-select {
+  width: 48px;
+}
+#problem-table .col-type {
+  width: 140px;
+}
+#problem-table .col-since {
+  width: 90px;
+}
+#problem-table .col-actions {
+  width: 190px;
+}
+#problem-table .sort {
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+}
+#problem-table td.item,
+#problem-table td.problem {
+  overflow-wrap: anywhere;
+}
+#problem-table td.item > :first-child {
+  font-weight: 700;
+}
+#problem-table td.item > button.link {
+  padding: 0;
+  text-align: left;
+}
+#problem-table td.problem p + p,
+#problem-table td.problem p + button {
+  margin-top: 4px;
+}
+#problem-table td.actions {
+  text-align: right;
+  white-space: nowrap;
+}
+#problem-table td.actions > * + * {
+  margin-left: 6px;
+}
+#problem-table td.actions .reason {
+  white-space: normal;
+}
+#problem-table .menu {
+  text-align: left;
+}
+.menu-button {
+  min-width: 32px;
+  padding: 6px 8px;
+  line-height: 1;
+}
+.type {
+  font-weight: 650;
+}
+.type[data-tone='danger'] {
+  color: var(--danger);
+}
+.type[data-tone='warning'] {
+  color: var(--warning);
+}
+.type[data-tone='muted'] {
+  color: var(--muted);
+}
+#problem-table .empty {
+  color: var(--muted);
+}
+.side-panel .panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.side-panel .panel-head h2 {
+  font-size: 17px;
+  font-weight: 800;
+}
+.side-panel .panel-head .link {
+  margin-left: auto;
+}
+.side-panel .panel-body {
+  display: grid;
+  gap: 12px;
+  padding: 16px 20px;
+}
+.side-panel .panel-body label {
+  margin: 0;
+}
+.side-panel table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.side-panel th,
+.side-panel td {
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
 }
 @media (max-width: 700px) {
-  #monitor {
-    padding: 14px;
-  }
-  .problem-list table {
-    display: block;
+  #problem-table-card {
     overflow-x: auto;
+  }
+  .run-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .run-actions {
+    justify-content: flex-start;
   }
 }
 /* Folder templates: template bar, version chip, ⋯ menu, panels, rail, tree, folder
@@ -1708,9 +1883,12 @@ main a {
 #monitor {
   padding: 0 0 24px;
 }
-#monitor > :not(.page-header) {
+#monitor > :not(.page-header, .side-panel) {
   margin-left: 24px;
   margin-right: 24px;
+}
+#monitor > .side-panel {
+  margin: 0;
 }
 /* Content that sat on the old shell card keeps a surface until its page is rebuilt. */
 .template-layout,

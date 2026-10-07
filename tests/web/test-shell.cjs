@@ -891,8 +891,28 @@ const shownH1s = (section) =>
     item('menu-history').dispatchEvent(new FakeEvent('focusout', { relatedTarget: null }));
     assert.equal(list.hidden, false);
   }
+  {
+    // A ⋯ menu whose button has left the page stops listening for document clicks at the next
+    // click, so menus drawn on every table redraw do not pile up.
+    const run = await boot({ session: storage({ 'asxd.launched': '1' }) });
+    const d = run.document;
+    const clicks = () => (d.listeners.get('click') || []).length;
+    const before = clicks();
+    const trigger = run.ui.button('⋯', null);
+    const list = run.ui.el('ul', null, 'menu');
+    list.hidden = true;
+    d.getElementById('monitor').append(trigger, list);
+    run.ui.menu(trigger, list);
+    assert.equal(clicks(), before + 1);
+    d.dispatchEvent(new FakeEvent('click', { target: d.body }));
+    assert.equal(clicks(), before + 1, 'A connected menu keeps listening');
+    trigger.remove();
+    list.remove();
+    d.dispatchEvent(new FakeEvent('click', { target: d.body }));
+    assert.equal(clicks(), before);
+  }
   console.log(
-    'PASS shell contract: pages without tabs, landing, deep links, unsaved prompt at the top, side panel, tokens, status, plural, ms, automation, problem pill, feedback, confirmation (a replaced one answers keep), offline, a slow Get that does not delay the page, withFocus, time, help, busy, api errors and the ⋯ menu closing when focus leaves it. Fake DOM; browser QA separate.',
+    'PASS shell contract: pages without tabs, landing, deep links, unsaved prompt at the top, side panel, tokens, status, plural, ms, automation, problem pill, feedback, confirmation (a replaced one answers keep), offline, a slow Get that does not delay the page, withFocus, time, help, busy, api errors, the ⋯ menu closing when focus leaves it, and a redrawn-away menu letting go of its document listener. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

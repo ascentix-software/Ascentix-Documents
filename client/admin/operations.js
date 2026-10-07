@@ -13,47 +13,39 @@
   const EMPTY = '00000000-0000-0000-0000-000000000000';
   const OPERATOR = 'prvCreateasx_operatorcommand';
   const ADMIN = 'prvWriteasx_runtime';
+  // Every list Monitor reads. `title` names a list whose read failed; `empty` is what a filter
+  // with no rows says.
   const LISTS = [
-    {
-      id: 'TemplateRuns',
-      title: 'Template re-runs',
-      tile: 'Re-runs',
-      empty: 'No re-runs in progress.',
-    },
-    {
-      id: 'NotCaptured',
-      title: 'Changes not captured',
-      tile: 'Changes not captured',
-      empty: 'No missed changes.',
-    },
-    {
-      id: 'BlockedRecords',
-      title: 'Blocked records',
-      tile: 'Blocked records',
-      empty: 'Nothing blocked.',
-    },
-    {
-      id: 'WaitingRecords',
-      title: 'Waiting for record data',
-      tile: 'Waiting for record data',
-      empty: 'No records waiting.',
-    },
-    { id: 'BlockedJobs', title: 'Blocked jobs', tile: 'Blocked jobs', empty: 'No blocked jobs.' },
-    {
-      id: 'RetryingJobs',
-      title: 'Retrying automatically',
-      tile: 'Retrying',
-      empty: 'Nothing waiting to retry.',
-    },
+    { id: 'TemplateRuns', title: 'Template re-runs' },
+    { id: 'NotCaptured', title: 'Changes not captured', empty: 'No missed changes.' },
+    { id: 'BlockedRecords', title: 'Blocked records', empty: 'Nothing blocked.' },
+    { id: 'WaitingRecords', title: 'Waiting for record data', empty: 'No records waiting.' },
+    { id: 'BlockedJobs', title: 'Blocked jobs', empty: 'No blocked jobs.' },
+    { id: 'RetryingJobs', title: 'Retrying automatically', empty: 'Nothing waiting to retry.' },
   ];
-  const COLUMNS = {
-    TemplateRuns: ['Template', 'Progress', 'State', 'Started', 'Actions'],
-    NotCaptured: ['Select', 'Record', 'Table', 'Problem', 'Since', 'Actions'],
-    BlockedRecords: ['Record', 'Table · Template', 'Problem', 'Since', 'Actions'],
-    WaitingRecords: ['Record', 'Table · Template', 'What it needs', 'Since', 'Actions'],
-    BlockedJobs: ['What', 'Kind', 'Problem and fix', 'Since', 'Actions'],
-    RetryingJobs: ['What', 'Kind', 'Last error', 'Attempt', 'Next attempt', 'Actions'],
+  // The five problem lists in chip order, with each chip's label and each row's type and tone.
+  const PROBLEMS = {
+    BlockedRecords: { chip: 'Blocked records', type: 'Blocked record', tone: 'danger' },
+    WaitingRecords: { chip: 'Waiting for data', type: 'Waiting for data', tone: 'warning' },
+    BlockedJobs: { chip: 'Blocked jobs', type: 'Blocked job', tone: 'danger' },
+    RetryingJobs: { chip: 'Retrying', type: 'Retrying', tone: 'muted' },
+    NotCaptured: { chip: 'Not captured', type: 'Not captured', tone: 'warning' },
   };
+  const PROBLEM_LISTS = Object.keys(PROBLEMS);
+  // Lists whose item is a record: its name opens the form, so Open record is not offered again.
+  const RECORD_LISTS = ['NotCaptured', 'BlockedRecords', 'WaitingRecords'];
+  // A row's one button is the first of these it offers; the rest go in its ⋯ menu. Cancel,
+  // Cancel re-run and Dismiss are never the one button.
+  const PRIMARY = [
+    'UseLibrary',
+    'CreateAgain',
+    'Retry',
+    'Check',
+    'Rerun',
+    'CheckAgain',
+    'OpenRecord',
+  ];
+  const PAGE = 50;
   const RUN_STATE = {
     Running: 'Running',
     Waiting: 'Waiting for other work',
@@ -77,9 +69,14 @@
     Check: 'Check',
     OpenRecord: 'Open record',
   };
-  // Retrying automatically says "Retry now": the job retries anyway; this runs it at once.
-  const labelFor = (list, action) =>
-    list === 'RetryingJobs' && action === 'Retry' ? 'Retry now' : LABEL[action];
+  // Retrying automatically says "Retry now": the job retries anyway; this runs it at once. A
+  // library setup's Cancel cancels the setup.
+  const labelFor = (list, action, row = null) =>
+    list === 'RetryingJobs' && action === 'Retry'
+      ? 'Retry now'
+      : action === 'Cancel' && row?.Kind === 'LibrarySetup'
+        ? 'Cancel setup'
+        : LABEL[action];
   const BUSY = {
     Retry: 'Retrying…',
     Cancel: 'Cancelling…',
@@ -120,31 +117,47 @@
   const INSTALL_DOCS =
     'https://github.com/ascentix-software/Ascentix-Documents/blob/main/docs/customer-installation.md';
   // templates and hasLibrary stay null until read, so the setup checklist never flashes open.
+  // filter: the chosen chip ('all' or a problem list); order: Since newest first or oldest first;
+  // limit: how many merged rows show; selected: the Not captured rows checked for Re-run selected.
   const monitor = {
     summary: null,
     lists: new Map(),
+    filter: 'all',
+    order: 'desc',
+    limit: PAGE,
+    selected: new Set(),
+    setupOpen: false,
     tables: [],
     templates: null,
     hasLibrary: null,
     record: null,
     recent: null,
     recentLoad: null,
+    rerunSelected: null,
   };
   // edited: the form has changes not saved yet, which a runtime change from elsewhere keeps.
   // tables: the document-enabled tables ＋ Add table offers; counts: templates per table (null
   // when unread); tablesStale: a Tables redraw waits for the open confirmation there.
   const settings = { workers: [], edited: false, tables: [], counts: null, tablesStale: false };
   const number = (n) => Number(n || 0).toLocaleString('en-US');
-  const counted = (list) =>
-    monitor.summary?.Capped?.includes(list)
-      ? '5,000+'
-      : number(monitor.summary?.[list] ?? monitor.lists.get(list)?.rows.length ?? 0);
+  const countOf = (list) => monitor.summary?.[list] ?? monitor.lists.get(list)?.rows.length ?? 0;
+  const capped = (list) => !!monitor.summary?.Capped?.includes(list);
+  const counted = (list) => (capped(list) ? '5,000+' : number(countOf(list)));
   const plural = ui.plural;
 
   // Monitor -----------------------------------------------------------------------------------
 
   async function openMonitor() {
-    renderLists();
+    // extra: keys of rows that Show more appended, which the tick's re-read keeps.
+    for (const list of LISTS)
+      monitor.lists.set(list.id, {
+        rows: [],
+        next: null,
+        extra: new Set(),
+        loading: false,
+        error: null,
+        meta: list,
+      });
     renderPill();
     ui.onRuntime(() => {
       renderPill();
@@ -153,7 +166,18 @@
     $('monitor-settings-link').onclick = () => ui.navigate('settings');
     $('monitor-refresh').onclick = () =>
       ui.busy($('monitor-refresh'), 'Refreshing…', 'monitor', () => refresh(true));
-    $('advanced').ontoggle = () => ($('advanced').open ? ensureRecent() : undefined);
+    ui.menu($('monitor-tools'), $('monitor-tools-list'));
+    $('tools-check').onclick = () => openCheck($('monitor-tools'));
+    $('tools-lookup').onclick = () => openLookup($('monitor-tools'));
+    $('check-close').onclick = () => panels.check?.close();
+    $('lookup-close').onclick = () => panels.lookup?.close();
+    $('problem-sort').onclick = () => {
+      monitor.order = monitor.order === 'desc' ? 'asc' : 'desc';
+      ui.withFocus(renderTable);
+    };
+    $('problem-more').onclick = showMore;
+    monitor.rerunSelected = rerunSelected();
+    $('rerun-selected-row').replaceChildren(monitor.rerunSelected);
     $('recent-more').onclick = () =>
       ui.busy($('recent-more'), 'Loading…', 'advanced', () => loadRecent(true));
     $('operation-lookup').onclick = () =>
@@ -174,7 +198,7 @@
     $('monitor-checked').textContent = 'Checked ';
     $('monitor-checked').append(ui.time(summary?.CountedUtc || new Date().toISOString()));
     if (!announce || !summary) return;
-    // Counted as the tiles count: a list Dataverse stopped counting says "5,000+".
+    // Counted as the chips count: a list Dataverse stopped counting says "5,000+".
     const say = (list, one, many, after = '') =>
       summary[list]
         ? counted(list) +
@@ -202,7 +226,8 @@
     } catch {
       monitor.summary = null;
     }
-    renderTiles();
+    renderFilters();
+    renderMore();
     renderSetup();
     return monitor.summary;
   }
@@ -223,9 +248,13 @@
       ],
       ['Turn automation on', null, !!runtime?.Enabled],
     ];
-    const open = runtime && steps.some((s) => !s[2]);
+    const open = !!runtime && steps.some((s) => !s[2]);
+    monitor.setupOpen = open;
     $('setup-checklist').hidden = !open;
-    $('monitor-tiles').hidden = !!open;
+    for (const id of ['monitor-filters', 'monitor-errors', 'problem-table-card'])
+      $(id).hidden = open;
+    $('runs-strip').hidden = open || !activeRuns().length;
+    $('rerun-selected-row').hidden = open || monitor.filter !== 'NotCaptured';
     if (!open) return;
     // Redrawn on every count and runtime change: focus keys bring focus back to its step.
     ui.withFocus(() =>
@@ -244,20 +273,6 @@
             item.append(step);
           } else item.append(el('span', text));
           return item;
-        }),
-      ),
-    );
-  }
-
-  function renderTiles() {
-    // Redrawn on every tick: focus keys bring focus back to the same tile.
-    ui.withFocus(() =>
-      $('monitor-tiles').replaceChildren(
-        ...LISTS.map((list) => {
-          const tile = button(list.tile + ' ', () => $('h-' + list.id).focus(), 'tile');
-          tile.dataset.focusKey = 'tile:' + list.id;
-          tile.append(el('strong', counted(list.id)));
-          return tile;
         }),
       ),
     );
@@ -298,12 +313,20 @@
       if (was === 'Checking' && row.Recovery && row.Recovery.State !== 'Checking')
         said.push(ui.recoverySentence(row.Title, row.Recovery));
     }
-    if (said.length) ui.feedback('monitor', said.join(' '));
+    if (said.length) announce(said.join(' '));
+  }
+  // An error in the Monitor line stays until the admin acts again: a tick's announcement goes
+  // after it instead of replacing it.
+  function announce(text) {
+    const line = $('fb-monitor');
+    if (line.getAttribute('role') === 'alert' && line.textContent)
+      line.append(' ', el('span', text, 'feedback-note'));
+    else ui.feedback('monitor', text);
   }
   // The watch's re-read of a list's first page, with no skeleton. The fresh page replaces the
   // first page, so a row that was retried, cancelled or resolved and has left the list is gone;
-  // rows that "Show 50 more" appended stay. A failed read leaves the list as it was until the
-  // next tick.
+  // rows that Show more appended stay. A failed read leaves the list as it was until the next
+  // tick.
   async function reread(id) {
     const state = monitor.lists.get(id);
     if (!state) return;
@@ -319,51 +342,30 @@
       // Quiet: the next tick tries again.
     }
   }
-  // Redraws a list unless the admin is in the middle of something there: an open in-page
-  // confirmation, open Details, or focus on a control a redraw cannot give focus back to (Copy,
-  // a checkbox, the table filter, the Since sort). The next tick redraws it once that is over.
+  // Redraws the re-runs strip or the problems table unless the admin is in the middle of
+  // something there: an open in-page confirmation, an open ⋯ menu, or focus on a control a
+  // redraw cannot give focus back to (a checkbox). The next tick redraws it once that is over.
   function redraw(id) {
-    const section = listOf(id);
+    const area = id === 'TemplateRuns' ? $('runs-strip') : $('problem-table-card');
     const active = document.activeElement;
     const held =
-      !!section?.querySelector('.confirm[role=group]') ||
-      [...(section?.querySelectorAll('details') || [])].some((d) => d.open) ||
-      (!!section?.contains(active) && active !== $('h-' + id) && !active.dataset?.focusKey);
-    if (!held) ui.withFocus(() => renderList(id));
+      !!area.querySelector('.confirm[role=group]') ||
+      [...area.querySelectorAll('.menu')].some((menu) => !menu.hidden) ||
+      (area.contains(active) && active !== $('problem-heading') && !active.dataset?.focusKey);
+    if (!held) ui.withFocus(() => render(id));
   }
-
-  function renderLists() {
-    $('monitor-lists').replaceChildren(
-      ...LISTS.map((list) => {
-        const section = el('section', null, 'problem-list');
-        section.id = 'list-' + list.id;
-        section.setAttribute('data-focus-scope', '');
-        const heading = el('h3', list.title + ' · Loading…');
-        heading.id = 'h-' + list.id;
-        heading.tabIndex = -1;
-        heading.setAttribute('data-focus-heading', '');
-        const body = el('div');
-        body.id = 'body-' + list.id;
-        section.append(heading, body);
-        // extra: keys of rows that "Show 50 more" appended, which the tick's re-read keeps.
-        monitor.lists.set(list.id, {
-          rows: [],
-          next: null,
-          extra: new Set(),
-          filter: '',
-          order: 'desc',
-          meta: list,
-        });
-        return section;
-      }),
-    );
+  function render(id) {
+    if (id === 'TemplateRuns') return renderStrip();
+    renderFilters();
+    return renderTable();
   }
 
   async function loadList(id, append) {
     const state = monitor.lists.get(id);
-    const body = $('body-' + id);
-    body.setAttribute('aria-busy', 'true');
-    if (!append) body.replaceChildren(...[0, 1, 2].map(() => el('div', null, 'skeleton')));
+    if (!append) {
+      state.loading = true;
+      render(id);
+    }
     try {
       const page = await work({
         Command: 'ListProblems',
@@ -380,103 +382,234 @@
         state.extra = new Set();
       }
       state.next = page.Next;
-      ui.withFocus(() => renderList(id));
+      state.error = null;
     } catch (error) {
       if (append) throw error;
-      const failed = el(
-        'p',
-        "Couldn't load " + state.meta.title + ': ' + (error.message || String(error)),
-        'error',
-      );
-      failed.setAttribute('role', 'alert');
-      body.replaceChildren(
-        failed,
-        button('Try again', () => loadList(id, false)),
-      );
-      $('h-' + id).textContent = state.meta.title;
+      state.error = error.message || String(error);
     } finally {
-      body.removeAttribute('aria-busy');
+      if (!append) state.loading = false;
     }
+    ui.withFocus(() => {
+      render(id);
+      renderErrors();
+    });
+  }
+  // A list whose read failed says so above the table, with Try again; the others still show.
+  function renderErrors() {
+    $('monitor-errors').replaceChildren(
+      ...LISTS.filter((l) => monitor.lists.get(l.id).error).map((l) => {
+        const box = el('div', null, 'row load-error');
+        box.setAttribute('data-actions', '');
+        const failed = el(
+          'p',
+          "Couldn't load " + l.title + ': ' + monitor.lists.get(l.id).error,
+          'error',
+        );
+        failed.setAttribute('role', 'alert');
+        box.append(
+          failed,
+          button('Try again', () => loadList(l.id, false)),
+        );
+        return box;
+      }),
+    );
   }
 
-  function renderList(id) {
-    const state = monitor.lists.get(id);
-    $('h-' + id).textContent = state.meta.title + ' · ' + counted(id);
-    const body = $('body-' + id);
-    if (!state.rows.length) {
-      body.replaceChildren(el('p', state.meta.empty, 'empty'));
+  // Filter chips: All and the five problem lists, counted from Summary ("5,000+" for a list
+  // Dataverse stopped counting). A list with nothing in it is plain text, not a button. When the
+  // chosen list empties, the table goes back to All.
+  function renderFilters() {
+    const host = $('monitor-filters');
+    if (!monitor.summary && PROBLEM_LISTS.some((id) => monitor.lists.get(id)?.loading)) {
+      host.replaceChildren();
       return;
     }
-    const tables = [...new Set(state.rows.map((r) => r.Record?.TableLabel).filter(Boolean))];
-    const parts = [];
-    if (tables.length > 1) {
-      const filter = el('select');
-      filter.id = 'filter-' + id;
-      filter.append(option('', 'All tables'), ...tables.map((t) => option(t, t)));
-      filter.value = state.filter;
-      filter.onchange = () => {
-        state.filter = filter.value;
-        ui.withFocus(() => renderList(id));
-      };
-      const label = el('label', 'Table');
-      label.append(filter);
-      parts.push(label);
+    let refocus = false;
+    if (monitor.filter !== 'all' && !countOf(monitor.filter)) {
+      refocus = document.activeElement?.dataset?.focusKey === 'filter:' + monitor.filter;
+      monitor.filter = 'all';
+      monitor.limit = PAGE;
+      redraw('problems');
     }
-    if (id === 'NotCaptured') {
-      // Its own action row, so its busy state leaves the rows' buttons alone.
-      const tools = el('div', null, 'row');
-      tools.setAttribute('data-actions', '');
-      tools.append(rerunSelected());
-      parts.push(tools);
-    }
-    const table = el('table');
-    const caption = el('caption', state.meta.title, 'sr-only');
-    const head = el('thead');
-    const header = el('tr');
-    for (const name of COLUMNS[id]) {
-      const th = el('th', name === 'Select' ? null : name);
-      th.setAttribute('scope', 'col');
-      if (name === 'Select') th.append(el('span', 'Select', 'sr-only'));
-      if (name === 'Since') {
-        th.setAttribute('aria-sort', state.order === 'desc' ? 'descending' : 'ascending');
-        th.replaceChildren(
-          button(
-            'Since',
-            () => {
-              state.order = state.order === 'desc' ? 'asc' : 'desc';
-              ui.withFocus(() => renderList(id));
-            },
-            'link',
-          ),
-        );
-      }
-      header.append(th);
-    }
-    head.append(header);
-    const rows = el('tbody');
-    rows.id = 'rows-' + id;
-    const shown = state.rows
-      .filter((r) => !state.filter || r.Record?.TableLabel === state.filter)
+    const total = PROBLEM_LISTS.some(capped)
+      ? '5,000+'
+      : number(PROBLEM_LISTS.reduce((sum, id) => sum + countOf(id), 0));
+    ui.withFocus(() =>
+      host.replaceChildren(
+        ...[
+          ['all', 'All', total],
+          ...PROBLEM_LISTS.map((id) => [id, PROBLEMS[id].chip, counted(id)]),
+        ].map(([id, label, count]) => {
+          const text = label + ' · ' + count;
+          if (id !== 'all' && !countOf(id)) return el('span', text, 'filter-chip is-empty');
+          const chip = button(text, () => choose(id), 'filter-chip');
+          chip.setAttribute('aria-pressed', String(monitor.filter === id));
+          chip.dataset.focusKey = 'filter:' + id;
+          return chip;
+        }),
+      ),
+    );
+    if (refocus) host.querySelector('[data-focus-key="filter:all"]')?.focus();
+  }
+  function choose(id) {
+    monitor.filter = id;
+    monitor.limit = PAGE;
+    ui.withFocus(() => {
+      renderFilters();
+      renderTable();
+    });
+  }
+
+  // The lists the table shows: the five under All, else the chosen one.
+  const shownLists = () => (monitor.filter === 'all' ? PROBLEM_LISTS : [monitor.filter]);
+  // Their loaded rows as one list, by Since (newest or oldest first), ties by key.
+  function mergedRows() {
+    const sign = monitor.order === 'desc' ? -1 : 1;
+    const when = (row) => ui.ms(row.SinceUtc) || 0;
+    return shownLists()
+      .flatMap((list) => (monitor.lists.get(list)?.rows || []).map((row) => ({ list, row })))
       .sort(
         (a, b) =>
-          (state.order === 'desc' ? -1 : 1) *
-          String(a.SinceUtc || '').localeCompare(String(b.SinceUtc || '')),
+          sign * (when(a.row) - when(b.row)) || String(a.row.Key).localeCompare(String(b.row.Key)),
       );
-    for (const row of shown) rows.append(renderRow(id, row));
-    table.append(caption, head, rows);
-    parts.push(table);
-    if (state.next) {
-      const more = button('Show 50 more', () =>
-        ui.busy(more, 'Loading…', 'monitor', () => loadList(id, true)),
-      );
-      more.id = 'more-' + id;
-      more.dataset.focusKey = 'more:' + id;
-      const row = el('div', null, 'row');
-      row.setAttribute('data-actions', '');
-      row.append(more);
-      parts.push(row);
+  }
+
+  function renderTable() {
+    const select = monitor.filter === 'NotCaptured';
+    const head = $('problem-table').querySelector('thead tr');
+    const box = head.querySelector('.col-select');
+    if (select && !box) {
+      const th = el('th', null, 'col-select');
+      th.setAttribute('scope', 'col');
+      th.append(el('span', 'Select', 'sr-only'));
+      head.prepend(th);
+    } else if (!select) box?.remove();
+    const sort = head.querySelector('th[aria-sort]');
+    sort.setAttribute('aria-sort', monitor.order === 'desc' ? 'descending' : 'ascending');
+    $('problem-sort-arrow').textContent = monitor.order === 'desc' ? ' ▾' : ' ▴';
+    const lists = shownLists();
+    const loading = lists.some((id) => monitor.lists.get(id)?.loading);
+    if (loading) $('problem-table-card').setAttribute('aria-busy', 'true');
+    else $('problem-table-card').removeAttribute('aria-busy');
+    const shown = mergedRows().slice(0, monitor.limit);
+    const span = String(head.children.length);
+    const note = (content) => {
+      const tr = el('tr');
+      const td = el('td');
+      td.setAttribute('colspan', span);
+      td.append(content);
+      tr.append(td);
+      return tr;
+    };
+    $('problem-rows').replaceChildren(
+      ...(shown.length
+        ? shown.map(({ list, row }) => renderRow(list, row))
+        : loading
+          ? [0, 1, 2].map(() => note(el('div', null, 'skeleton')))
+          : lists.some((id) => monitor.lists.get(id)?.error)
+            ? []
+            : [
+                note(
+                  el(
+                    'p',
+                    monitor.filter === 'all'
+                      ? 'Nothing needs attention.'
+                      : LISTS.find((l) => l.id === monitor.filter).empty,
+                    'empty',
+                  ),
+                ),
+              ]),
+    );
+    $('rerun-selected-row').hidden = monitor.setupOpen || !select;
+    updateSelected();
+    renderMore();
+  }
+
+  // "Show N more": the rows of the shown lists not shown yet, counted from Summary (the loaded
+  // rows when it is missing), 50 at a time; "Show 50 more" when a shown list is capped.
+  function renderMore() {
+    const more = $('problem-more');
+    const lists = shownLists();
+    const merged = mergedRows().length;
+    const shown = Math.min(merged, monitor.limit);
+    const has = merged > monitor.limit || lists.some((id) => monitor.lists.get(id)?.next);
+    more.hidden = !has;
+    more.parentNode.hidden = !has;
+    if (!has || more.dataset.busy) return;
+    const total = lists.reduce((sum, id) => sum + countOf(id), 0);
+    const remaining = Math.max(total - shown, merged - shown);
+    more.textContent =
+      'Show ' + (lists.some(capped) || remaining <= 0 ? PAGE : Math.min(PAGE, remaining)) + ' more';
+  }
+  function showMore() {
+    return ui
+      .busy($('problem-more'), 'Loading…', 'monitor', async () => {
+        monitor.limit += PAGE;
+        await Promise.all(
+          shownLists()
+            .map((id) => [id, monitor.lists.get(id)])
+            .filter(([, state]) => state.next && state.rows.length < monitor.limit)
+            .map(([id]) => loadList(id, true)),
+        );
+      })
+      .then(() => ui.withFocus(renderTable));
+  }
+
+  // Re-runs in progress, one card each above the chips: progress, who started it, and its
+  // actions. Finished and cancelled runs are left out; the strip hides when there are none.
+  const activeRuns = () =>
+    (monitor.lists.get('TemplateRuns')?.rows || []).filter(
+      (r) => r.Run && r.Run.State !== 'Done' && r.Run.State !== 'Cancelled',
+    );
+  function renderStrip() {
+    const runs = activeRuns();
+    $('runs-strip').hidden = monitor.setupOpen || !runs.length;
+    $('runs-strip').replaceChildren(...runs.map(runCard));
+  }
+  function runCard(row) {
+    const run = row.Run;
+    const card = el('section', null, 'run-card');
+    card.dataset.key = row.Key;
+    card.setAttribute('data-focus-row', '');
+    const status = el('span', null, 'row-status');
+    const total = (run.TotalEstimated ? 'about ' : '') + number(run.Total);
+    const progressText = number(run.Planned) + ' of ' + total;
+    const bar = el('progress');
+    bar.max = Math.max(1, run.Total);
+    bar.value = Math.min(run.Planned, bar.max);
+    bar.setAttribute('aria-valuetext', progressText + ', ' + RUN_STATE[run.State].toLowerCase());
+    bar.setAttribute('aria-label', 'Progress of ' + run.TemplateName);
+    const text = el('p', progressText, 'progress-text');
+    if (['Running', 'Waiting', 'Retrying'].includes(run.State)) {
+      if (run.EstimatedFinishUtc) text.append(' · ends around ', ui.time(run.EstimatedFinishUtc));
+      else text.append(' · Estimating…');
     }
-    body.replaceChildren(...parts);
+    if (run.State !== 'Running') text.append(' · ' + RUN_STATE[run.State]);
+    if (run.State === 'Retrying' && run.NextAttemptUtc)
+      text.append(' · next try ', ui.time(run.NextAttemptUtc));
+    const head = el('div', null, 'run-head');
+    const started = el('p', 'Started ', 'sub');
+    started.append(ui.time(run.StartedUtc), run.StartedBy ? ' by ' + run.StartedBy : '');
+    head.append(el('h2', 'Re-run of ' + run.TemplateName + ' v' + run.Version), started);
+    const progress = el('div', null, 'run-progress');
+    progress.append(bar, text);
+    if (run.State === 'Blocked' && row.Problem) progress.append(el('p', row.Problem));
+    progress.append(status);
+    const actions = el('div', null, 'row run-actions');
+    actions.setAttribute('data-actions', '');
+    for (const action of row.Actions || [])
+      rowButton(
+        actions,
+        'TemplateRuns',
+        row,
+        action,
+        LABEL[action],
+        action === 'CancelRun' ? 'danger' : 'secondary',
+        card,
+        status,
+      );
+    card.append(head, progress, actions);
+    return card;
   }
 
   const option = (value, text) => {
@@ -508,103 +641,172 @@
       openInNewWindow: true,
     });
 
+  // One table row: type, item, problem, since, then the primary action and the ⋯ menu. Under the
+  // Not captured filter a row the server can re-run starts with its checkbox.
   function renderRow(list, row) {
     const tr = el('tr');
     tr.setAttribute('data-focus-row', '');
     tr.dataset.key = row.Key;
     const status = el('span', null, 'row-status');
-    const actions = el('td', null, 'actions');
-    actions.setAttribute('data-actions', '');
     const nameId = 'name-' + list + '-' + tr.dataset.key.replace(/[^\w-]/g, '_');
-    switch (list) {
-      case 'TemplateRuns':
-        tr.append(...runCells(row, status));
-        break;
-      case 'NotCaptured': {
-        // A team row or a row without a record cannot be re-run (the server offers no Rerun).
-        let box = null;
-        if (row.Actions?.includes('Rerun')) {
-          box = el('input');
-          box.type = 'checkbox';
-          box.dataset.key = row.Key;
-          box.setAttribute('aria-labelledby', nameId);
-          box.onchange = () => updateSelected();
-        }
-        tr.append(
-          cell(box),
-          recordCell(row, nameId),
-          cell(el('span', row.Record?.TableLabel || '')),
-          cell(el('span', row.Problem), status),
-          cell(ui.time(row.SinceUtc)),
-        );
-        break;
+    if (monitor.filter === 'NotCaptured') {
+      // A team row or a row without a record cannot be re-run (the server offers no Rerun).
+      let box = null;
+      if (row.Actions?.includes('Rerun')) {
+        box = el('input');
+        box.type = 'checkbox';
+        box.dataset.key = row.Key;
+        box.checked = monitor.selected.has(row.Key);
+        box.setAttribute('aria-labelledby', nameId);
+        box.onchange = () => {
+          if (box.checked) monitor.selected.add(row.Key);
+          else monitor.selected.delete(row.Key);
+          updateSelected();
+        };
       }
-      case 'BlockedRecords':
-      case 'WaitingRecords': {
-        const what = el('span', row.Problem);
-        const more = row.More?.length
-          ? button(
-              '+' + row.More.length + ' more',
-              () => more.replaceWith(...row.More.map((m) => el('p', m))),
-              'link',
-            )
-          : null;
-        tr.append(
-          recordCell(row, nameId),
-          cell(el('span', [row.Record?.TableLabel, row.TemplateName].filter(Boolean).join(' · '))),
-          cell(what, more, status),
-          cell(ui.time(row.SinceUtc)),
-        );
-        break;
-      }
-      case 'RetryingJobs':
-        tr.append(
-          cell(el('span', row.Title)),
-          cell(el('span', row.KindLabel)),
-          cell(el('span', row.Problem), status),
-          cell(el('span', String(row.Attempt))),
-          cell(ui.time(row.NextAttemptUtc)),
-        );
-        break;
-      default:
-        tr.append(
-          cell(el('span', row.Title)),
-          cell(el('span', row.KindLabel)),
-          problemCell(row, status),
-          cell(ui.time(row.SinceUtc)),
-        );
+      tr.append(cell(box));
     }
-    for (const action of row.Actions || []) {
-      // Lists with a Record column open the record from its name; job lists get a button.
-      if (
-        action === 'OpenRecord' &&
-        ['NotCaptured', 'BlockedRecords', 'WaitingRecords'].includes(list)
-      )
-        continue;
-      if (action === 'UseCandidate') continue;
-      if (action === 'Cancel' && row.Kind === 'LibrarySetup') {
-        rowButton(actions, list, row, 'Cancel', 'Cancel setup', 'danger', tr, status);
-        continue;
-      }
-      const style =
-        action === 'Cancel' || action === 'CancelRun'
-          ? 'danger'
-          : action === 'UseLibrary' || action === 'CreateAgain'
-            ? 'primary'
-            : 'secondary';
-      rowButton(actions, list, row, action, labelFor(list, action), style, tr, status);
-    }
-    actions.append(ui.details(row.Key, 'Details', row.Title));
-    tr.append(actions);
+    const type = el('span', PROBLEMS[list].type, 'type');
+    type.dataset.tone = PROBLEMS[list].tone;
+    tr.append(
+      cell(type),
+      itemCell(list, row, nameId),
+      problemCell(row, status),
+      cell(ui.time(row.SinceUtc)),
+      actionsCell(list, row, tr, status),
+    );
     return tr;
+  }
+  // A record links to its form with "Table · Template" under it; a job shows its title, with
+  // its attempt and next try when it is retrying, else its site or kind.
+  function itemCell(list, row, nameId) {
+    let td;
+    const sub = el('span', null, 'sub');
+    if (RECORD_LISTS.includes(list)) {
+      td = recordCell(row, nameId);
+      sub.textContent = [row.Record?.TableLabel, row.TemplateName].filter(Boolean).join(' · ');
+    } else {
+      const title = el('strong', row.Title);
+      title.id = nameId;
+      td = cell(title);
+      if (list === 'RetryingJobs')
+        sub.append('Attempt ' + row.Attempt + ' · next ', ui.time(row.NextAttemptUtc));
+      else sub.textContent = row.Site?.Name || row.KindLabel || '';
+    }
+    td.append(sub);
+    td.className = 'item';
+    return td;
+  }
+
+  // The actions a row's buttons offer: the server's, less the ones shown elsewhere (a record's
+  // name opens it; an ambiguous setup's candidates each have their own Use this one).
+  const offered = (list, row) =>
+    (row.Actions || []).filter(
+      (a) => a !== 'UseCandidate' && !(a === 'OpenRecord' && RECORD_LISTS.includes(list)),
+    );
+  const primaryAction = (list, row) =>
+    PRIMARY.find((action) => offered(list, row).includes(action)) || null;
+  function actionsCell(list, row, tr, status) {
+    const td = el('td', null, 'actions');
+    td.setAttribute('data-actions', '');
+    const primary = primaryAction(list, row);
+    if (primary)
+      rowButton(
+        td,
+        list,
+        row,
+        primary,
+        labelFor(list, primary, row),
+        primary === 'UseLibrary' || primary === 'CreateAgain' ? 'primary' : 'secondary',
+        tr,
+        status,
+      );
+    td.append(rowMenu(list, row, tr, status));
+    return td;
+  }
+  // The ⋯ menu: the row's other actions in the server's order, then Copy ID. An action chosen
+  // here works through the ⋯ button: its confirmation returns focus there and it shows busy.
+  function rowMenu(list, row, tr, status) {
+    const wrap = el('span', null, 'menu-anchor');
+    const key = 'row:' + list + ':' + row.Key;
+    const trigger = button('⋯', null, 'secondary menu-button');
+    trigger.dataset.focusKey = key + ':menu';
+    trigger.setAttribute('aria-haspopup', 'menu');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-label', 'More actions for ' + row.Title);
+    const menu = el('ul', null, 'menu');
+    menu.id = 'menu-' + key.replace(/[^\w-]/g, '_');
+    menu.setAttribute('role', 'menu');
+    menu.hidden = true;
+    trigger.setAttribute('aria-controls', menu.id);
+    const item = () => {
+      const li = el('li');
+      li.setAttribute('role', 'none');
+      menu.append(li);
+      return li;
+    };
+    const primary = primaryAction(list, row);
+    for (const action of offered(list, row).filter((a) => a !== primary)) {
+      const danger = action === 'Cancel' || action === 'CancelRun';
+      const choice = rowButton(
+        item(),
+        list,
+        row,
+        action,
+        labelFor(list, action, row),
+        danger ? 'danger' : null,
+        tr,
+        status,
+        null,
+        trigger,
+      );
+      choice.setAttribute('role', 'menuitem');
+      choice.tabIndex = -1;
+    }
+    const copy = button(
+      'Copy ID',
+      async () => {
+        trigger.focus();
+        try {
+          await navigator.clipboard.writeText(row.Key);
+          ui.feedback('monitor', 'Copied');
+        } catch {
+          ui.feedback('monitor', 'Copy failed', 'error');
+        }
+      },
+      null,
+    );
+    copy.setAttribute('role', 'menuitem');
+    copy.tabIndex = -1;
+    copy.setAttribute('aria-label', 'Copy ID for ' + row.Title);
+    item().append(copy);
+    ui.menu(trigger, menu);
+    wrap.append(trigger, menu);
+    return wrap;
   }
 
   // Adds one action button to its container, then marks it disabled with its reason when the
   // caller lacks the privilege (the reason is placed after the button, so it must be attached).
-  function rowButton(into, list, row, action, text, style, tr, status, candidate = null) {
+  // `via` is the control the action works through: the row's ⋯ for a menu item.
+  function rowButton(
+    into,
+    list,
+    row,
+    action,
+    text,
+    style,
+    tr,
+    status,
+    candidate = null,
+    via = null,
+  ) {
     const control = button(
       text,
-      () => act(list, row, action, control, tr, status, candidate),
+      () => {
+        if (ui.blocked(control)) return undefined;
+        via?.focus();
+        return act(list, row, action, via || control, tr, status, candidate);
+      },
       style,
     );
     control.dataset.action = action;
@@ -624,7 +826,7 @@
   }
 
   function problemCell(row, status) {
-    const td = el('td');
+    const td = el('td', null, 'problem');
     const recovery = row.Recovery;
     if (recovery && row.Kind === 'LibrarySetup') {
       td.append(el('p', ui.recoverySentence(row.Title, recovery)));
@@ -633,13 +835,21 @@
       return td;
     }
     td.append(el('p', row.Problem));
+    if (row.More?.length) {
+      const more = button(
+        '+' + row.More.length + ' more',
+        () => more.replaceWith(...row.More.map((m) => el('p', m))),
+        'link',
+      );
+      td.append(more);
+    }
     if (row.Fix) td.append(el('p', row.Fix, 'muted'));
     td.append(status);
     return td;
   }
 
   // An ambiguous finding lists each candidate with the checks it failed and its own Use this one.
-  // `list` is the area whose feedback line reports the choice: the Blocked jobs list or Advanced.
+  // `list` is the area whose feedback line reports the choice: Monitor's or Look up an operation's.
   function candidates(row, list = 'BlockedJobs') {
     const items = el('ul', null, 'candidates');
     for (const c of row.Recovery.Candidates) {
@@ -655,35 +865,6 @@
       items.append(item);
     }
     return items;
-  }
-
-  function runCells(row, status) {
-    const run = row.Run;
-    const total = (run.TotalEstimated ? 'about ' : '') + number(run.Total);
-    const progressText = number(run.Planned) + ' of ' + total;
-    const bar = el('progress');
-    bar.max = Math.max(1, run.Total);
-    bar.value = Math.min(run.Planned, bar.max);
-    bar.setAttribute('aria-valuetext', progressText + ', ' + RUN_STATE[run.State].toLowerCase());
-    bar.setAttribute('aria-label', 'Progress of ' + run.TemplateName);
-    const finish = el('div', null, 'muted');
-    if (['Running', 'Waiting', 'Retrying'].includes(run.State)) {
-      if (run.EstimatedFinishUtc)
-        finish.append(el('span', 'Ends around '), ui.time(run.EstimatedFinishUtc));
-      else finish.textContent = 'Estimating…';
-    }
-    status.textContent = RUN_STATE[run.State];
-    if (run.State === 'Retrying' && run.NextAttemptUtc)
-      status.append(el('span', ' · next try '), ui.time(run.NextAttemptUtc));
-    const state = el('td');
-    state.append(status);
-    if (run.State === 'Blocked') state.append(el('p', row.Problem));
-    return [
-      cell(el('span', run.TemplateName + ' · ' + run.TableLabel + ' · v' + run.Version)),
-      cell(bar, el('div', progressText), finish),
-      state,
-      cell(ui.time(run.StartedUtc), el('span', run.StartedBy ? ' · ' + run.StartedBy : '')),
-    ];
   }
 
   function confirmFor(row, action, candidate) {
@@ -829,7 +1010,7 @@
   }
 
   // A confirmation for a table row renders in a full-width row under it; elsewhere in a slot at
-  // the end of the anchor (a Tables row lays the slot across its full width).
+  // the end of the anchor (a re-run card, a Tables row lays the slot across its full width).
   function confirmHost(anchor) {
     if (anchor?.tagName === 'TR') {
       const holder = el('tr', null, 'confirm-row');
@@ -848,11 +1029,14 @@
     if (ui.blocked(control)) return;
     if (action === 'OpenRecord') return openRecord(row);
     if (action === 'Check')
-      return focusLink({
-        tab: 'monitor',
-        record: row.Record.Table + ':' + row.Record.Id,
-        template: row.TemplateId,
-      });
+      return focusLink(
+        {
+          tab: 'monitor',
+          record: row.Record.Table + ':' + row.Record.Id,
+          template: row.TemplateId,
+        },
+        control,
+      );
     const question = confirmFor(row, action, candidate);
     if (question) {
       const place = confirmHost(tr || control.closest('li') || control.parentNode);
@@ -868,18 +1052,21 @@
     if (!result) return;
     ui.feedback(area, said(row, action, result));
     if (action === 'Dismiss') {
-      // Gone from the list's rows too, so a later re-render does not bring it back.
+      // Gone from the list's rows too, so a later redraw does not bring it back.
       const state = monitor.lists.get(list);
       state.rows = state.rows.filter((r) => r.Key !== row.Key);
+      monitor.selected.delete(row.Key);
       ui.withFocus(() => tr.remove());
+      updateSelected();
       return;
     }
     if (!tr) return;
-    if (result.Run)
+    if (result.Run) {
+      const changed = { ...row, Run: result.Run, Status: result.Status, Actions: [] };
       tr.replaceChildren(
-        ...renderRow(list, { ...row, Run: result.Run, Status: result.Status, Actions: [] })
-          .children,
+        ...(list === 'TemplateRuns' ? runCard(changed) : renderRow(list, changed)).children,
       );
+    }
     const line = tr.querySelector('.row-status');
     if (line) line.textContent = DONE[action];
     // The row stays and its actions disable; opening or checking the record still works.
@@ -891,20 +1078,22 @@
       .forEach((b) => (b.disabled = true));
   }
 
+  // Re-run selected: the checked Not captured rows the server can re-run. The checks are kept
+  // by key, so a redraw keeps them.
+  const selectedRows = () =>
+    (monitor.lists.get('NotCaptured')?.rows || []).filter(
+      (r) => monitor.selected.has(r.Key) && r.Actions?.includes('Rerun'),
+    );
   function rerunSelected() {
     const run = button('Re-run selected (0)', () => {
-      const picked = [...listOf('NotCaptured').querySelectorAll('input[type=checkbox]')].filter(
-        (b) => b.checked,
-      );
-      if (!picked.length) return undefined;
+      const rows = selectedRows();
+      if (!rows.length) return undefined;
       return ui.busy(run, 'Re-running…', 'monitor', async () => {
-        const rows = monitor.lists.get('NotCaptured').rows;
         let queued = 0;
         const failed = [];
         // Each row on its own: one refusal is reported and the rest are still queued.
-        for (const box of picked) {
-          const row = rows.find((r) => r.Key === box.dataset.key);
-          const name = row?.Record?.Name || row?.Title || 'A record';
+        for (const row of rows) {
+          const name = row.Record?.Name || row.Title || 'A record';
           try {
             const result = await send(row, 'Rerun');
             if (result.Status === 'Inactive')
@@ -929,14 +1118,23 @@
           );
       });
     });
-    monitor.rerunSelected = run;
+    run.dataset.focusKey = 'rerun-selected';
     return run;
   }
   function updateSelected() {
-    const count = [...listOf('NotCaptured').querySelectorAll('input[type=checkbox]')].filter(
-      (b) => b.checked,
-    ).length;
-    monitor.rerunSelected.textContent = 'Re-run selected (' + count + ')';
+    const run = monitor.rerunSelected;
+    if (run && !run.dataset.busy)
+      run.textContent = 'Re-run selected (' + selectedRows().length + ')';
+  }
+
+  // The Tools panels. One is open at a time; Escape or Close returns focus to what opened it.
+  const panels = { check: null, lookup: null };
+  function openCheck(invoker) {
+    panels.check = ui.sidePanel($('check-panel'), invoker);
+  }
+  function openLookup(invoker) {
+    panels.lookup = ui.sidePanel($('lookup-panel'), invoker);
+    return ensureRecent();
   }
 
   // Check a record.
@@ -1077,8 +1275,8 @@
     return [el('p', sentence), ...(result.Notices || []).map((n) => el('p', n)), list];
   }
 
-  // Advanced: recent operations and look up by ID. The first page loads once, when
-  // Advanced opens or a link opens it; a failed read is reported and tried again next time.
+  // Look up an operation: recent operations and look up by ID. The first page loads once, when
+  // the panel opens or a link opens it; a failed read is reported and tried again next time.
   function ensureRecent() {
     if (!monitor.recentLoad)
       monitor.recentLoad = loadRecent(false).catch((error) => {
@@ -1190,17 +1388,19 @@
     $('operation-result').hidden = false;
   }
 
-  async function focusLink(link) {
+  // A link or a row's Check opens its panel: an operation in Look up an operation with its result,
+  // a record in Check a record ready to check, a re-run at its first action. `invoker` gets focus
+  // back when the panel closes.
+  async function focusLink(link, invoker = $('monitor-tools')) {
     if (link.operation) {
-      $('advanced').open = true;
-      await ensureRecent();
+      await openLookup(invoker);
       $('operation-id').value = link.operation;
       await ui.busy($('operation-lookup'), 'Looking up…', 'advanced', () => lookUp(link.operation));
       $('operation-result-title').focus();
     }
     if (link.record) {
       const [table, id] = link.record.split(':');
-      $('check-record').open = true;
+      openCheck(invoker);
       $('check-table').value = table;
       fillTemplates();
       if (link.template) $('check-template').value = link.template;
@@ -1213,13 +1413,10 @@
       $('check-run').focus();
     }
     if (link.run)
-      rowsOf('TemplateRuns')
-        ?.querySelector('[data-key="' + link.run + '"] button')
+      $('runs-strip')
+        .querySelector('[data-key="' + link.run + '"] button')
         ?.focus();
   }
-  // A list's section and its rows (tbody), which renderLists and renderList draw.
-  const listOf = (id) => document.getElementById('list-' + id);
-  const rowsOf = (id) => document.getElementById('rows-' + id);
 
   // Settings ----------------------------------------------------------------------------------
 

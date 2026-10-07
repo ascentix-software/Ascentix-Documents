@@ -460,15 +460,66 @@
           <div class="page-actions row" data-actions>
             <span id="monitor-checked" class="muted"></span>
             <button id="monitor-refresh" type="button" class="secondary">Refresh</button>
+            <div class="menu-anchor">
+              <button
+                id="monitor-tools"
+                type="button"
+                class="secondary"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="monitor-tools-list"
+              >
+                Tools<span aria-hidden="true"> ▾</span>
+              </button>
+              <ul id="monitor-tools-list" class="menu" role="menu" hidden>
+                <!-- prettier-ignore -->
+                <li role="none"><button id="tools-check" type="button" role="menuitem" tabindex="-1">Check a record…</button></li>
+                <!-- prettier-ignore -->
+                <li role="none"><button id="tools-lookup" type="button" role="menuitem" tabindex="-1">Look up an operation…</button></li>
+              </ul>
+            </div>
           </div>
         </header>
         <p class="feedback" id="fb-monitor"></p>
         <ol id="setup-checklist" class="checklist" hidden></ol>
-        <div id="monitor-tiles" class="tiles"></div>
-        <div id="monitor-lists"></div>
-        <details id="check-record" class="card">
-          <summary><h3>Check a record</h3></summary>
-          <div class="row wrap">
+        <div id="runs-strip" class="runs-strip" data-focus-scope hidden></div>
+        <div id="monitor-filters" class="filter-chips" role="group" aria-label="Show"></div>
+        <div id="monitor-errors"></div>
+        <div id="rerun-selected-row" class="row" data-actions hidden></div>
+        <section
+          class="section-card"
+          id="problem-table-card"
+          data-focus-scope
+          aria-labelledby="problem-heading"
+        >
+          <h2 id="problem-heading" class="sr-only" tabindex="-1" data-focus-heading>Problems</h2>
+          <table id="problem-table">
+            <thead>
+              <tr>
+                <th scope="col" class="col-type">Type</th>
+                <th scope="col">Item</th>
+                <th scope="col">Problem</th>
+                <th scope="col" class="col-since" aria-sort="descending">
+                  <!-- prettier-ignore -->
+                  <button id="problem-sort" type="button" class="link sort" data-focus-key="sort">Since<span id="problem-sort-arrow" aria-hidden="true"> ▾</span></button>
+                </th>
+                <th scope="col" class="col-actions"><span class="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="problem-rows"></tbody>
+          </table>
+          <div class="card-row" data-actions hidden>
+            <button id="problem-more" type="button" class="link" hidden></button>
+          </div>
+        </section>
+        <aside id="check-panel" class="side-panel" hidden>
+          <div class="panel-head">
+            <h2 id="check-title">Check a record</h2>
+            <button id="check-close" type="button" class="link" aria-label="Close check a record">
+              Close
+            </button>
+          </div>
+          <div class="panel-body">
             <label>Table<select id="check-table"></select></label>
             <label>Template<select id="check-template"></select></label>
             <div class="field">
@@ -476,48 +527,65 @@
               <button id="check-choose" type="button" class="secondary">Choose record…</button>
               <span id="check-record-name" role="status"></span>
             </div>
+            <div class="row wrap" data-actions>
+              <button id="check-run" type="button">Check record</button>
+              <button id="check-rerun" type="button" class="secondary">
+                Re-run published template for this record
+              </button>
+            </div>
+            <p class="feedback" id="fb-check"></p>
+            <div id="check-result"></div>
           </div>
-          <div class="row" data-actions>
-            <button id="check-run" type="button">Check record</button>
-            <button id="check-rerun" type="button" class="secondary">
-              Re-run published template for this record
+        </aside>
+        <aside id="lookup-panel" class="side-panel" hidden>
+          <div class="panel-head">
+            <h2 id="lookup-title">Look up an operation</h2>
+            <button
+              id="lookup-close"
+              type="button"
+              class="link"
+              aria-label="Close look up an operation"
+            >
+              Close
             </button>
           </div>
-          <p class="feedback" id="fb-check"></p>
-          <div id="check-result"></div>
-        </details>
-        <details id="advanced" class="card advanced">
-          <summary><h3>Advanced</h3></summary>
-          <h4>Recent operations</h4>
-          <table>
-            <caption class="sr-only">
-              Recent operations
-            </caption>
-            <thead>
-              <tr>
-                <th scope="col">Title</th>
-                <th scope="col">Kind</th>
-                <th scope="col">Status</th>
-                <th scope="col">Since</th>
-              </tr>
-            </thead>
-            <tbody id="recent-rows"></tbody>
-          </table>
-          <button id="recent-more" type="button" class="secondary" hidden>Show 50 more</button>
-          <h4>Look up an operation</h4>
-          <label
-            >Operation ID<input id="operation-id" type="text" spellcheck="false" autocomplete="off"
-          /></label>
-          <div class="row" data-actions>
-            <button id="operation-lookup" type="button" class="secondary">Look up</button>
+          <div class="panel-body">
+            <label
+              >Operation ID<input
+                id="operation-id"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+            /></label>
+            <div class="row" data-actions>
+              <button id="operation-lookup" type="button" class="secondary">Look up</button>
+            </div>
+            <p class="feedback" id="fb-advanced"></p>
+            <section id="operation-result" hidden aria-labelledby="operation-result-title">
+              <h3 id="operation-result-title" tabindex="-1">Operation</h3>
+              <dl id="operation-fields"></dl>
+              <div id="operation-actions" class="row" data-actions></div>
+            </section>
+            <h3>Recent operations</h3>
+            <table>
+              <caption class="sr-only">
+                Recent operations
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Title</th>
+                  <th scope="col">Kind</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Since</th>
+                </tr>
+              </thead>
+              <tbody id="recent-rows"></tbody>
+            </table>
+            <div class="row" data-actions>
+              <button id="recent-more" type="button" class="secondary" hidden>Show 50 more</button>
+            </div>
           </div>
-          <p class="feedback" id="fb-advanced"></p>
-          <section id="operation-result" hidden aria-labelledby="operation-result-title">
-            <h4 id="operation-result-title">Operation</h4>
-            <dl id="operation-fields"></dl>
-            <div id="operation-actions" class="row" data-actions></div>
-          </section>
-        </details>
+        </aside>
       </section>
       <section id="settings" class="page" aria-labelledby="settings-title" tabindex="-1" hidden>
         <header class="page-header">
