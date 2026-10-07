@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<WebResource xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <WebResourceId>{7E39A753-3BFA-49EE-AB53-E3F4100DECF6}</WebResourceId>
+  <Name>asx_form/documents-tab.js</Name>
+  <DisplayName>asx_form/documents-tab.js</DisplayName>
+  <Description>Ascentix Documents form script: hides a record's Documents until it has a document location</Description>
+  <WebResourceType>3</WebResourceType>
+  <IntroducedVersion>1.0</IntroducedVersion>
+  <IsEnabledForMobileClient>0</IsEnabledForMobileClient>
+  <IsAvailableForMobileOffline>0</IsAvailableForMobileOffline>
+  <IsCustomizable>1</IsCustomizable>
+  <CanBeDeleted>1</CanBeDeleted>
+  <IsHidden>0</IsHidden>
+  <FileName>/WebResources/asx_formdocuments-tabjs7E39A753-3BFA-49EE-AB53-E3F4100DECF6</FileName>
+</WebResource>

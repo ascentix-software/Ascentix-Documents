@@ -18,7 +18,20 @@ Use the managed solution package for evaluation. Review the [preview limitations
 3. As a System Administrator, open **Settings**, select the worker application user (**Run as**) on the **Automation settings** card and click **Save settings** in the bar at the bottom of the page. Documents registers and verifies its event steps; every table on the **Tables** card must show Ready. Repair any that does not with **Repair all** (or **Repair** on its row). Tables are enabled on the same card (**＋ Add table**). Registration refuses a table the worker cannot read and names it. Verify with a disposable record.
 4. Set up the target SharePoint site in Dataverse document management first: **＋ Add site** in Sites & access lists the SharePoint sites set up there. Then add the site, add or create the document library, and apply the intended team access. Confirm actual library role assignments and managed group membership. Keep the installation's Owners access intact.
 5. Publish a small template (Folder templates › **Edit template** › **Review and publish**), turn **Automation** on (the switch on the **Automation** card in Settings) and enable the worker flows, and provision a disposable business record. Verify physical folder IDs and paths. Replay the request to confirm reuse. Confirm that the worker's installed product and business-table roles are sufficient.
-6. Capture the resulting configuration and enable only the event paths needed by the installation. Use the operations runbook for backlog inspection, retry, cancellation, and recovery. Configure document navigation in the business app and forms used by the installation.
+6. Capture the resulting configuration and enable only the event paths needed by the installation. Use the operations runbook for backlog inspection, retry, cancellation, and recovery. Configure document navigation in the business app and forms used by the installation, and [hide the Documents tab until folders exist](#hide-the-documents-tab-until-folders-exist).
+
+## Hide the Documents tab until folders exist
+
+When a record's Documents tab opens before the record has a document location, Dynamics creates its own folder in the table's default library (named `<record name>_<id>`) and a location called "Documents on <site>". There is no setting to turn this off. Documents creates the record's location only after its SharePoint folder exists, so a user who opens the tab too early gets a stray folder.
+
+The solution includes a form script that hides Documents until the record has a location. On each form of a document-enabled table:
+
+1. Open the form in the form designer and add the web resource `asx_form/documents-tab.js` to the form libraries.
+2. Add an **On Load** event handler: library `asx_form/documents-tab.js`, function `AscentixDocuments.Form.onLoad`. Check **Pass execution context as first parameter**.
+3. Optional: if the form shows documents elsewhere, such as a tab with a Documents subgrid, list those tabs or sections in the handler's parameters, quoted and comma-separated: `"tab_documents", "tab_summary.section_files"` (a section is `tab.section`). The Related › Documents item is always handled. A name the form does not have is ignored.
+4. Save and publish the form.
+
+A new record keeps Documents hidden until it is saved. An existing record without a location keeps it hidden and shows "Folders are being created in SharePoint. Documents appears here when they're ready." The form checks every 5 seconds and shows Documents as soon as the location exists. After 2 minutes it stops checking and says "Folders aren't ready yet. Reopen this record later, or ask an administrator to check Monitor in Ascentix Documents." If a user cannot read document locations, Documents is shown as usual. Users do not need a Documents role for the script.
 
 ## Recovery and upgrade record
 

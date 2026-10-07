@@ -33,9 +33,10 @@ if ($SigningMode -eq 'Development') {
     $text = [IO.File]::ReadAllText($stagedMetadata).Replace($originalIdentity, $identity.FullName)
     [IO.File]::WriteAllText($stagedMetadata, $text, [Text.UTF8Encoding]::new($false))
 }
-$assets = @('index.html','admin.css','shell.js','admin.js','sites-access.js','operations.js')
+# client/<folder>/<file> ships as the web resource asx_<folder>/<file>.
+$assets = @('admin/index.html','admin/admin.css','admin/shell.js','admin/admin.js','admin/sites-access.js','admin/operations.js','form/documents-tab.js')
 foreach ($name in $assets) {
-    Copy-Item -LiteralPath (Join-Path $productRoot "client/admin/$name") -Destination (Join-Path $stage "WebResources/asx_admin/$name") -Force
+    Copy-Item -LiteralPath (Join-Path $productRoot "client/$name") -Destination (Join-Path $stage "WebResources/asx_$name") -Force
 }
 & node (Join-Path $PSScriptRoot 'verify-flows.cjs') (Join-Path $stage 'Workflows')
 if ($LASTEXITCODE -ne 0) { throw 'Solution flow validation failed.' }
@@ -114,9 +115,9 @@ $packages = foreach ($type in @('Unmanaged','Managed')) {
         $dlls = @($archive.Entries | Where-Object { $_.FullName -like '*.dll' })
         if ($dlls.Count -ne 1 -or (Entry-Hash $dlls[0]) -ne (Get-FileHash -LiteralPath $PluginAssemblyPath).Hash) { throw 'Packed plugin differs from supplied assembly.' }
         foreach ($name in $assets) {
-            [xml]$resource = Get-Content -LiteralPath (Join-Path $source "WebResources/asx_admin/$name.data.xml") -Raw
+            [xml]$resource = Get-Content -LiteralPath (Join-Path $source "WebResources/asx_$name.data.xml") -Raw
             $entry = $archive.GetEntry($resource.WebResource.FileName.TrimStart('/'))
-            if ($null -eq $entry -or (Entry-Hash $entry) -ne (Get-FileHash -LiteralPath (Join-Path $productRoot "client/admin/$name")).Hash) { throw "Packed web resource differs: $name" }
+            if ($null -eq $entry -or (Entry-Hash $entry) -ne (Get-FileHash -LiteralPath (Join-Path $productRoot "client/$name")).Hash) { throw "Packed web resource differs: $name" }
         }
         foreach ($flow in Get-ChildItem -LiteralPath (Join-Path $source 'Workflows') -Filter '*.json') {
             $entry = $archive.GetEntry('Workflows/' + $flow.Name)

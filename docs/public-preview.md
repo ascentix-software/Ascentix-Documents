@@ -54,5 +54,6 @@ Official packages use a stable assembly signing identity. Local builds use a dev
 - Operators see approximate record counts for template re-runs, from Dataverse's daily row count, even without read access to that table.
 - The re-run option when publishing is not blocked for a template that is off or past its end date; the re-run then stops at once and Monitor says why.
 - Bookmarks to the old `#access`, `#runtime` and `#operations` addresses open the default page.
+- Opening a record's Documents tab before its folders exist makes Dynamics create its own folder, unless the form has the Documents form script. See [Hide the Documents tab until folders exist](customer-installation.md#hide-the-documents-tab-until-folders-exist).
 
 See [operations](operations.md) for ongoing administration and [record-update processing](record-update-processing.md) for update behavior.
