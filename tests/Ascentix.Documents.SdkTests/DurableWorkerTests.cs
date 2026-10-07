@@ -63,6 +63,31 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
+    public void ALongRootFolderNameIsCutToTheLocationNameLimit()
+    {
+        var fixture = new Fixture();
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        var binding = JsonWire.Read<FolderStep>(JsonWire.Write(fixture.Binding));
+        binding.Key += "-long";
+        binding.Candidate = new string('a', 200);
+        binding.PhysicalId = completed.PhysicalId;
+        binding.PhysicalPath = "/sites/proto/General/" + binding.Candidate;
+        var id = new NativeLocations(fixture.Service).Complete(
+            binding,
+            fixture.NativeParent,
+            fixture.EntryUrl,
+            fixture.NativeSite
+        );
+        var row = fixture.Service.Rows[id];
+        Assert.Equal(new string('a', 160), row.GetAttributeValue<string>("name"));
+        Assert.Equal(binding.Candidate, row.GetAttributeValue<string>("relativeurl"));
+    }
+
+    [Fact]
     public void AnOlderNativeLocationTakesTheFolderNameButAnAdminRenameStays()
     {
         var fixture = new Fixture();

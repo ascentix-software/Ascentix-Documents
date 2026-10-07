@@ -10,6 +10,9 @@ namespace Ascentix.Documents.Dataverse;
 
 public sealed class NativeLocations
 {
+    /// <summary>The platform's length of sharepointdocumentlocation.name.</summary>
+    public const int LocationNameLength = 160;
+
     private readonly IOrganizationService service;
 
     public NativeLocations(IOrganizationService service)
@@ -162,7 +165,11 @@ public sealed class NativeLocations
         var rows = service.RetrieveMultiple(query).Entities;
         var marker = "AscentixDocuments:" + DocumentStore.Hash(binding.Key);
         // The record's Documents tab lists the location by name, so it reads as the root folder.
+        // The name column holds 160 characters, fewer than a folder name may have, so a longer
+        // name is cut; the folder itself keeps its full name.
         var name = binding.Candidate.Split('/').Last();
+        if (name.Length > LocationNameLength)
+            name = name.Substring(0, LocationNameLength);
         if (rows.Count > 1)
             throw new EvaluationBlockedException("Ambiguous native location.");
         if (rows.Count == 1)
