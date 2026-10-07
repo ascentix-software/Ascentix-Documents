@@ -627,8 +627,9 @@ public sealed class CatalogAdministration
                     != value.CollectionId.ToString("D")
             )
                 throw new EvaluationBlockedException("Site approval changed.");
+            var native = new NativeLocations(service);
             if (value.NativeParentId == Guid.Empty)
-                value.NativeParentId = new NativeLocations(service).EnsureLibrary(
+                value.NativeParentId = native.EnsureLibrary(
                     value.SiteId,
                     value.WebId,
                     value.ListId,
@@ -637,11 +638,10 @@ public sealed class CatalogAdministration
                     value.LibraryRootPath!,
                     request.Name
                 );
-            new NativeLocations(service).ValidateParent(
-                value.NativeParentId,
-                value.EntryUrl,
-                value.NativeSiteId
-            );
+            native.ValidateParent(value.NativeParentId, value.EntryUrl, value.NativeSiteId);
+            // Record locations copy the library location's site collection, which the record's
+            // Documents tab needs; one made before the site finished validation has none.
+            native.RepairSiteCollection(value.NativeParentId);
             target = new Entity(table, id)
             {
                 ["asx_name"] = request.Name,

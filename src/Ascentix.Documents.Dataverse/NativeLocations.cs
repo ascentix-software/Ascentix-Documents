@@ -40,7 +40,8 @@ public sealed class NativeLocations
                 "relativeurl",
                 "parentsiteorlocation",
                 "statecode",
-                "servicetype"
+                "servicetype",
+                "sitecollectionid"
             ),
             TopCount = 2,
         };
@@ -71,6 +72,10 @@ public sealed class NativeLocations
             throw new EvaluationBlockedException(
                 "Native library navigation differs; no reassignment."
             );
+        else
+            // A row made before the site finished validation has no site collection; it is
+            // repaired once the site has one.
+            Repair(rows.Entities[0], 0);
         return id;
     }
 
@@ -145,11 +150,15 @@ public sealed class NativeLocations
                 "parentsiteorlocation",
                 "regardingobjectid",
                 "description",
-                "statecode"
+                "statecode",
+                "sitecollectionid"
             ),
             TopCount = 2,
         };
         query.Criteria.AddCondition("sharepointdocumentlocationid", ConditionOperator.Equal, id);
+        // A record location copies its site collection from the library's location, so that one
+        // is repaired first.
+        bool parentListed = RepairSiteCollection(nativeParentId);
         var rows = service.RetrieveMultiple(query).Entities;
         var marker = "AscentixDocuments:" + DocumentStore.Hash(binding.Key);
         // The record's Documents tab lists the location by name, so it reads as the root folder.
@@ -173,17 +182,23 @@ public sealed class NativeLocations
                 throw new EvaluationBlockedException(
                     "Managed native location differs; refusing reassignment."
                 );
+            var target = new Entity("sharepointdocumentlocation", row.Id)
+            {
+                RowVersion = row.RowVersion,
+            };
             // Earlier versions named the location "Documents <destination key>". Such a name
             // takes the folder's; a name an admin chose is kept.
             if (row.GetAttributeValue<string>("name") == "Documents " + binding.Section)
+                target["name"] = name;
+            // Made under a library location that had no site collection, it has none either;
+            // setting its parent again copies the repaired one.
+            if (!HasSiteCollection(row) && parentListed)
+                target["parentsiteorlocation"] = parent;
+            if (target.Attributes.Count > 0)
                 service.Execute(
                     new UpdateRequest
                     {
-                        Target = new Entity("sharepointdocumentlocation", row.Id)
-                        {
-                            RowVersion = row.RowVersion,
-                            ["name"] = name,
-                        },
+                        Target = target,
                         ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
                     }
                 );
@@ -204,6 +219,56 @@ public sealed class NativeLocations
             }
         );
         return id;
+    }
+
+    /// <summary>
+    /// Makes sure a document location has the site collection Dataverse computes from its
+    /// parent. The record's Documents tab lists only locations that have one, and a location
+    /// made before its SharePoint site finished validation keeps none. Setting its parent again,
+    /// to the same parent, makes Dataverse compute it again. A parent location missing one is
+    /// repaired first, since a location copies its parent's. A location that has one is only
+    /// read.
+    /// </summary>
+    /// <param name="locationId">The document location to repair.</param>
+    /// <returns>Whether the location now has its site collection.</returns>
+    public bool RepairSiteCollection(Guid locationId) => Repair(Read(locationId), 0);
+
+    private Entity Read(Guid locationId) =>
+        service.Retrieve(
+            "sharepointdocumentlocation",
+            locationId,
+            new ColumnSet("parentsiteorlocation", "sitecollectionid")
+        );
+
+    private static bool HasSiteCollection(Entity row) =>
+        row.GetAttributeValue<object>("sitecollectionid") != null;
+
+    // Each write is checked against the version read. The parent chain was validated before,
+    // so the depth bound only leaves a chain that changed meanwhile unrepaired.
+    private bool Repair(Entity row, int depth)
+    {
+        if (HasSiteCollection(row))
+            return true;
+        var parent = row.GetAttributeValue<EntityReference>("parentsiteorlocation");
+        if (parent == null || depth >= 20)
+            return false;
+        if (
+            parent.LogicalName == "sharepointdocumentlocation"
+            && !Repair(Read(parent.Id), depth + 1)
+        )
+            return false;
+        service.Execute(
+            new UpdateRequest
+            {
+                Target = new Entity("sharepointdocumentlocation", row.Id)
+                {
+                    RowVersion = row.RowVersion,
+                    ["parentsiteorlocation"] = parent,
+                },
+                ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+            }
+        );
+        return HasSiteCollection(Read(row.Id));
     }
 
     /// <summary>

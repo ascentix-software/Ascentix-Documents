@@ -285,6 +285,51 @@ public sealed class CatalogApprovalTests
         Assert.NotNull(f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_readrole"));
     }
 
+    [Fact]
+    public void ApprovingALibraryRepairsItsDocumentLocationsMissingSiteCollection()
+    {
+        var f = new Fixture();
+        // Made before the site finished validation, so Dataverse left the site collection empty.
+        f.Service.Rows[f.NativeParent]["sitecollectionid"] = null;
+        var site = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddSite",
+                    Key = null!,
+                    NativeSiteId = f.NativeSite,
+                    Name = "Site",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        var library = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = site.CatalogId,
+                    ListId = f.List,
+                    NativeParentId = f.NativeParent,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Equal("Approved", library.Status);
+        Assert.Equal(
+            f.NativeSite,
+            f.Service.Rows[f.NativeParent].GetAttributeValue<object>("sitecollectionid")
+        );
+        var repair = Assert.Single(
+            f.Service.Updates,
+            u => u.Target.LogicalName == "sharepointdocumentlocation"
+        );
+        Assert.Equal(ConcurrencyBehavior.IfRowVersionMatches, repair.ConcurrencyBehavior);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

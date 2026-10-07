@@ -92,6 +92,223 @@ public sealed class DurableWorkerTests
         Assert.Equal("Client folder", Name());
     }
 
+    /// <summary>The site collection Dataverse computed for a location; null when missing.</summary>
+    private static object? SiteCollection(Fixture fixture, Guid location) =>
+        fixture.Service.Rows[location].GetAttributeValue<object>("sitecollectionid");
+
+    /// <summary>The updates sent to the location, each checked against the version read.</summary>
+    private static UpdateRequest[] LocationUpdates(Fixture fixture, Guid location)
+    {
+        var updates = fixture
+            .Service.Updates.Where(u =>
+                u.Target.LogicalName == "sharepointdocumentlocation" && u.Target.Id == location
+            )
+            .ToArray();
+        Assert.All(
+            updates,
+            u =>
+            {
+                Assert.Equal(ConcurrencyBehavior.IfRowVersionMatches, u.ConcurrencyBehavior);
+                Assert.False(string.IsNullOrEmpty(u.Target.RowVersion));
+            }
+        );
+        return updates;
+    }
+
+    [Fact]
+    public void ALibraryLocationMissingItsSiteCollectionIsRepairedBeforeTheRecordLocationIsMade()
+    {
+        var fixture = new Fixture();
+        // Made before the site finished validation, so Dataverse left the site collection empty.
+        fixture.Service.Rows[fixture.NativeParent]["sitecollectionid"] = null;
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        Assert.Equal("Applied", completed.Status);
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, fixture.NativeParent));
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, completed.LocationId));
+        var repair = Assert.Single(LocationUpdates(fixture, fixture.NativeParent));
+        Assert.Equal(
+            new EntityReference("sharepointsite", fixture.NativeSite),
+            repair.Target.GetAttributeValue<EntityReference>("parentsiteorlocation")
+        );
+        Assert.Empty(LocationUpdates(fixture, completed.LocationId));
+    }
+
+    [Fact]
+    public void AnExistingRecordLocationMissingItsSiteCollectionIsRepairedOnComplete()
+    {
+        var fixture = new Fixture();
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        var binding = JsonWire.Read<FolderStep>(JsonWire.Write(fixture.Binding));
+        binding.PhysicalId = completed.PhysicalId;
+        binding.PhysicalPath = "/sites/proto/General/" + binding.Candidate;
+        // Both rows were made while the site was unvalidated.
+        fixture.Service.Rows[fixture.NativeParent]["sitecollectionid"] = null;
+        fixture.Service.Rows[completed.LocationId]["sitecollectionid"] = null;
+        fixture.Service.Updates.Clear();
+        fixture.Service.Transaction(() =>
+            new NativeLocations(fixture.Service).Complete(
+                binding,
+                fixture.NativeParent,
+                fixture.EntryUrl,
+                fixture.NativeSite
+            )
+        );
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, fixture.NativeParent));
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, completed.LocationId));
+        var repair = Assert.Single(LocationUpdates(fixture, completed.LocationId));
+        Assert.Equal(
+            new EntityReference("sharepointdocumentlocation", fixture.NativeParent),
+            repair.Target.GetAttributeValue<EntityReference>("parentsiteorlocation")
+        );
+        Assert.Single(LocationUpdates(fixture, fixture.NativeParent));
+    }
+
+    [Fact]
+    public void ARecordLocationRepairAlsoRenamesItInOneWrite()
+    {
+        var fixture = new Fixture();
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        var binding = JsonWire.Read<FolderStep>(JsonWire.Write(fixture.Binding));
+        binding.PhysicalId = completed.PhysicalId;
+        binding.PhysicalPath = "/sites/proto/General/" + binding.Candidate;
+        fixture.Service.Rows[completed.LocationId]["sitecollectionid"] = null;
+        fixture.Service.Rows[completed.LocationId]["name"] = "Documents " + binding.Section;
+        fixture.Service.Updates.Clear();
+        new NativeLocations(fixture.Service).Complete(
+            binding,
+            fixture.NativeParent,
+            fixture.EntryUrl,
+            fixture.NativeSite
+        );
+        Assert.Single(LocationUpdates(fixture, completed.LocationId));
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, completed.LocationId));
+        Assert.Equal(
+            binding.Candidate,
+            fixture.Service.Rows[completed.LocationId].GetAttributeValue<string>("name")
+        );
+    }
+
+    [Fact]
+    public void LocationsThatHaveTheirSiteCollectionAreNotWritten()
+    {
+        var fixture = new Fixture();
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        var binding = JsonWire.Read<FolderStep>(JsonWire.Write(fixture.Binding));
+        binding.PhysicalId = completed.PhysicalId;
+        binding.PhysicalPath = "/sites/proto/General/" + binding.Candidate;
+        new NativeLocations(fixture.Service).Complete(
+            binding,
+            fixture.NativeParent,
+            fixture.EntryUrl,
+            fixture.NativeSite
+        );
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, completed.LocationId));
+        Assert.DoesNotContain(
+            fixture.Service.Updates,
+            u => u.Target.LogicalName == "sharepointdocumentlocation"
+        );
+    }
+
+    [Fact]
+    public void ARecordLocationUnderAnUnvalidatedSiteCompletesWithoutFaulting()
+    {
+        var fixture = new Fixture();
+        fixture.Service.UnvalidatedSites.Add(fixture.NativeSite);
+        fixture.Service.Rows[fixture.NativeParent]["sitecollectionid"] = null;
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        Assert.Equal("Applied", completed.Status);
+        // The site is still unvalidated: the repair runs once and the record row stays missing
+        // until a later run, with no write that cannot help.
+        Assert.Null(SiteCollection(fixture, fixture.NativeParent));
+        Assert.Null(SiteCollection(fixture, completed.LocationId));
+        Assert.Single(LocationUpdates(fixture, fixture.NativeParent));
+        Assert.Empty(LocationUpdates(fixture, completed.LocationId));
+    }
+
+    [Fact]
+    public void ALibraryLocationMadeUnderAnUnvalidatedSiteIsRepairedWhenReused()
+    {
+        var fixture = new Fixture();
+        fixture.Service.UnvalidatedSites.Add(fixture.NativeSite);
+        var native = new NativeLocations(fixture.Service);
+        Guid Ensure() =>
+            fixture.Service.Transaction(() =>
+                native.EnsureLibrary(
+                    fixture.SiteId,
+                    Guid.NewGuid(),
+                    fixture.ListId,
+                    fixture.NativeSite,
+                    "https://example.sharepoint.com/sites/proto",
+                    "/sites/proto/Archive",
+                    "Archive"
+                )
+            );
+        var library = Ensure();
+        Assert.Null(SiteCollection(fixture, library));
+        // Reused while the site is still unvalidated: the repair leaves it missing and faults
+        // nothing.
+        Assert.Equal(library, Ensure());
+        Assert.Null(SiteCollection(fixture, library));
+        fixture.Service.UnvalidatedSites.Clear();
+        fixture.Service.Updates.Clear();
+        Assert.Equal(library, Ensure());
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, library));
+        Assert.Single(LocationUpdates(fixture, library));
+        fixture.Service.Updates.Clear();
+        Ensure();
+        Assert.Empty(LocationUpdates(fixture, library));
+    }
+
+    [Fact]
+    public void TheDoubleComputesTheSiteCollectionAndRefusesWritesToIt()
+    {
+        var service = new MemoryService();
+        var site = Guid.NewGuid();
+        var id = service.Create(
+            new Entity("sharepointdocumentlocation")
+            {
+                ["parentsiteorlocation"] = new EntityReference("sharepointsite", site),
+            }
+        );
+        Assert.Equal(site, service.Rows[id].GetAttributeValue<object>("sitecollectionid"));
+        Assert.Throws<InvalidOperationException>(() =>
+            service.Create(new Entity("sharepointdocumentlocation") { ["sitecollectionid"] = site })
+        );
+        Assert.Throws<InvalidOperationException>(() =>
+            service.Execute(
+                new UpdateRequest
+                {
+                    Target = new Entity("sharepointdocumentlocation", id)
+                    {
+                        RowVersion = service.Rows[id].RowVersion,
+                        ["sitecollectionid"] = site,
+                    },
+                    ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+                }
+            )
+        );
+    }
+
     [Fact]
     public void NativeLocationAndCompletionRollbackTogetherOnCasConflict()
     {
@@ -3047,7 +3264,45 @@ public sealed class DurableWorkerTests
         {
             var copy = Copy(row);
             copy.RowVersion = (++version).ToString();
+            // A seeded location the platform made has its site collection, unless the test
+            // seeds it missing (an explicit null).
+            if (
+                copy.LogicalName == "sharepointdocumentlocation"
+                && !copy.Contains("sitecollectionid")
+            )
+                SiteCollection(copy);
             Rows[copy.Id] = copy;
+        }
+
+        /// <summary>
+        /// SharePoint sites the platform has not validated yet: a location placed directly under
+        /// one gets no site collection, as in Dataverse.
+        /// </summary>
+        public HashSet<Guid> UnvalidatedSites { get; } = new HashSet<Guid>();
+
+        /// <summary>
+        /// Computes a location's site collection as Dataverse does when it is created or its
+        /// parent is set: the site's from a site parent once the site is validated, otherwise
+        /// the parent location's, which may be missing.
+        /// </summary>
+        private void SiteCollection(Entity row)
+        {
+            var parent = row.GetAttributeValue<EntityReference>("parentsiteorlocation");
+            object? value = null;
+            if (parent?.LogicalName == "sharepointsite")
+                value = UnvalidatedSites.Contains(parent.Id) ? null : (object)parent.Id;
+            else if (parent != null && Rows.TryGetValue(parent.Id, out var above))
+                value = above.GetAttributeValue<object>("sitecollectionid");
+            row["sitecollectionid"] = value;
+        }
+
+        /// <summary>The platform computes a location's site collection; writing it is invalid.</summary>
+        private static void RefuseSiteCollection(Entity row)
+        {
+            if (row.LogicalName == "sharepointdocumentlocation" && row.Contains("sitecollectionid"))
+                throw new InvalidOperationException(
+                    "sitecollectionid is not valid for create or update."
+                );
         }
 
         private int depth;
@@ -3222,11 +3477,15 @@ public sealed class DurableWorkerTests
                 )
             )
                 throw new InvalidOperationException("Unique key conflict.");
+            RefuseSiteCollection(row);
             var copy = Copy(row);
             if (!copy.Contains("createdon"))
                 copy["createdon"] = new DateTime(2026, 9, 8).AddMilliseconds(version);
             if (copy.LogicalName == "sharepointdocumentlocation")
+            {
                 copy["statecode"] = new OptionSetValue(0);
+                SiteCollection(copy);
+            }
             Seed(copy);
             return copy.Id;
         }
@@ -3262,9 +3521,16 @@ public sealed class DurableWorkerTests
                     || row.RowVersion != update.Target.RowVersion
                 )
                     throw new InvalidOperationException("Version conflict.");
+                RefuseSiteCollection(update.Target);
                 var copy = Copy(row);
                 foreach (var value in update.Target.Attributes)
                     copy[value.Key] = value.Value;
+                // Setting the parent, even to the same one, recomputes the site collection.
+                if (
+                    copy.LogicalName == "sharepointdocumentlocation"
+                    && update.Target.Contains("parentsiteorlocation")
+                )
+                    SiteCollection(copy);
                 Seed(copy);
                 return new UpdateResponse();
             }
