@@ -2529,3 +2529,9 @@ main a {
 #access .menu [role='menuitem'][aria-disabled='true'] {
   background: none;
 }
+#access #ad-libraries-heading {
+  margin-top: 16px;
+}
+#access #ad-libraries-pane .ad-libraries {
+  margin-top: 8px;
+}

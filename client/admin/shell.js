@@ -218,8 +218,8 @@
     });
 
   // A "⋯" menu (spec 5.6): Enter, Space or Down opens and focuses the first item; Up and Down
-  // move; Escape closes and returns focus to the trigger. Choosing an item closes it, and so
-  // does a click anywhere else. A busy trigger (AsxdUi.busy) does not open.
+  // move; Escape closes and returns focus to the trigger. Choosing an item closes it, and so do
+  // Tab out of it and a click anywhere else. A busy trigger (AsxdUi.busy) does not open.
   function menu(trigger, list) {
     const items = () => [...list.querySelectorAll('[role=menuitem]')].filter((i) => !i.hidden);
     const open = () => {
@@ -254,6 +254,15 @@
       }
     });
     list.addEventListener('click', () => close(false));
+    // Tab out of the button or the list closes it; focus stays where it went. A focus change
+    // with no element to go to (another window, a click on a button that does not take focus)
+    // leaves it to the click handler below.
+    const leaving = (event) => {
+      const next = event.relatedTarget;
+      if (!list.hidden && next && !trigger.contains(next) && !list.contains(next)) close(false);
+    };
+    trigger.addEventListener('focusout', leaving);
+    list.addEventListener('focusout', leaving);
     document.addEventListener('click', (event) => {
       if (!list.hidden && !trigger.contains(event.target) && !list.contains(event.target))
         close(false);

@@ -1,6 +1,6 @@
 # System-wide record-update processing
 
-Runtime administration includes **Apply folder templates when record data changes**. It is off by default and is stored as `asx_runtime.asx_processrecordupdates`; the runtime API field is `ProcessRecordUpdates`.
+**Settings › Automation settings** includes **Update folders when records change**. It is off by default and is stored as `asx_runtime.asx_processrecordupdates`; the runtime API field is `ProcessRecordUpdates`.
 
 Saving the setting changes the state of the Update event steps that Documents registers. With the setting off, those steps are disabled, avoiding their invocation on high-volume record updates. With it on, update steps for the enabled source tables are enabled. Create, Delete, team events, integrity guards, and Power Automate flow activation are unaffected.
 
@@ -14,9 +14,9 @@ Load the runtime profile, change the setting, and save. Saving uses the runtime 
 
 The administrator saving this setting needs Dataverse privileges to read the relevant plug-in metadata and update plug-in steps. The API uses the caller's service and does not elevate privileges or grant a role. Runtime permission alone does not grant step-management privileges.
 
-The solution includes the runtime Boolean column used by the plug-in and admin resources. Fresh installations leave update monitoring off. Saving in Runtime administration creates, corrects, and verifies the event steps for every enabled table; each table shows Ready when its steps are in place. See the [upgrade notes](upgrade-0.1.0.4.md).
+The solution includes the runtime Boolean column used by the plug-in and admin resources. Fresh installations leave update monitoring off. **Save settings** in Settings › Automation settings creates, corrects, and verifies the event steps for every enabled table; Settings › Change tracking shows each table Ready when its steps are in place, and **Repair all** (or **Repair** on a row) fixes one that is not. See the [upgrade notes](upgrade-0.1.0.4.md).
 
-Turning updates off does not cancel already queued work. Turning them on does not replay updates missed while monitoring was off. Use an explicit, reviewed replan for catch-up. Creation processing remains available, subject to its own installed/enabled Create steps and the worker being enabled.
+Turning updates off does not cancel already queued work. Turning them on does not replay updates missed while monitoring was off. Use a reviewed re-run for catch-up: Folder templates › **Re-run for existing records…**, or **Re-run** in Monitor. Creation processing remains available, subject to its own installed/enabled Create steps and the worker being enabled.
 
 Enable monitoring during a quiet interval and verify a disposable write before depending on it. Registration changes can take time to propagate; there is no guaranteed propagation interval.
 

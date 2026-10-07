@@ -8,9 +8,9 @@ Ascentix Documents provisions SharePoint folder structures from Dataverse record
 
 - Creates conditional folder structures with names drawn from record data and supported lookups.
 - Supports multiple document destinations and a draft, preview, and publication workflow for templates.
-- Reuses existing managed folders when work is replayed or replanned.
+- Reuses existing managed folders when work is replayed or re-run.
 - Applies library Read and Contribute policies for registered Dataverse teams and reconciles membership changes.
-- Provides work inspection, retry, cancellation, and replan operations.
+- Provides work inspection in Monitor, with retry, cancellation, and re-runs.
 - Offers a system-wide record-update switch, Off by default. Turning it off deactivates the Update event steps Documents registers.
 - Retains document folders when their business record is deleted and marks the record for decommission review.
 
@@ -22,7 +22,7 @@ Ascentix Documents provisions SharePoint folder structures from Dataverse record
 - Admin stops always work.
 - B2B guests and Entra or Microsoft 365 group teams are supported (pending verification).
 - Re-point and Remove for destinations.
-- Stuck access runs, library setups, waiting folders and jobs waiting to retry are listed with **Retry**, **Cancel** or **Replan**.
+- Monitor lists blocked jobs and library setups, records waiting for data, and jobs retrying automatically, with **Retry**, **Cancel job** or **Re-run**; a stuck access run has **Retry access run** and **Cancel access run** in Sites & access.
 - Team access can be edited while it is being applied, and customized Read and Contribute permission levels are accepted.
 - SharePoint hosts in every Microsoft cloud, including GCC High, DoD and 21Vianet (pending verification outside the worldwide cloud).
 

@@ -286,6 +286,11 @@ async function trackSetup(key, name) {
   await window.AsxdSites.trackOperation(key, name, 'LibrarySetup');
   await document.settle();
 }
+// A click that takes focus first, as it does in a browser (the fake DOM's click() does not).
+const pressFocused = async (node) => {
+  node.focus();
+  await press(node);
+};
 const teamRows = () => nodes['ad-teams'].querySelectorAll('tr');
 const rowButton = (row, text) => row.querySelectorAll('button').find((b) => b.textContent === text);
 const stage = (team, access) => {
@@ -432,7 +437,8 @@ const stage = (team, access) => {
   await press(nodes['ad-add-site']);
   await press(nodes['ad-native-list'].querySelectorAll('[role=option]')[0]);
   assert.equal(nodes['ad-native-search'].value, 'Delivery');
-  await press(nodes['ad-validate']);
+  await pressFocused(nodes['ad-validate']);
+  assert(document.activeElement === nodes['ad-add-site'], 'Add site returns focus to ＋ Add site');
   assert.equal(requests.find((r) => r.Command === 'AddSite').NativeSiteId, id(2));
   assert.equal(requests.find((r) => r.Command === 'AddSite').Name, 'Delivery');
   await timers.shift()();
@@ -486,7 +492,11 @@ const stage = (team, access) => {
   nodes['ad-library-name'].value = 'Projects';
   nodes['ad-initial-team'].value = id(4);
   nodes['ad-initial-access'].value = 'Contribute';
-  await press(nodes['ad-provision']);
+  await pressFocused(nodes['ad-provision']);
+  assert(
+    document.activeElement === nodes['ad-create'],
+    'Create returns focus to ＋ Create library',
+  );
   const created = requests.find((r) => r.Command === 'CreateLibrary');
   assert.equal(created.SiteId, id(1));
   assert.equal(created.Entries[0].Access, 'Contribute');
@@ -510,7 +520,11 @@ const stage = (team, access) => {
     ['Add Archive', 'Add Removed earlier'],
   );
   assert.match(libraryQueries.at(-1), /statecode eq 0 and \(asx_listid eq '00000008-.*' or /);
-  await press(nodes['ad-existing-choices'].children[0]);
+  await pressFocused(nodes['ad-existing-choices'].children[0]);
+  assert(
+    document.activeElement === nodes['ad-existing'],
+    'Add existing returns focus to Add existing library',
+  );
   const existing = requests.find((r) => r.Command === 'AddLibrary');
   assert.equal(existing.ListId, id(8));
   assert.equal(existing.NativeParentId, undefined, 'Native navigation is automatic');
@@ -666,7 +680,7 @@ const stage = (team, access) => {
   );
   await press(confirmIn(nodes['ad-library-detail'], 'Keep current address'));
   assert.equal(nodes['ad-library-detail'].querySelector('.confirm'), null);
-  assert.equal(document.activeElement, nodes['ad-library-menu'], 'Keep returns to the ⋯ button');
+  assert(document.activeElement === nodes['ad-library-menu'], 'Keep returns to the ⋯ button');
   await nodes['ad-library-menu'].onclick();
   await press(menuItem('ad-library-menu-list', 'Re-point library'));
   await press(confirmIn(nodes['ad-library-detail'], 'Re-point'));
@@ -740,6 +754,11 @@ const stage = (team, access) => {
   await press(confirmIn(nodes['ad-library-detail'], 'Remove library'));
   assert.equal(removes().length, 2);
   assert.match(nodes['fb-access-site'].textContent, /Reset was removed from Documents/);
+  assert(
+    document.activeElement === nodes['ad-libraries-heading'],
+    'Remove library moves focus to the Libraries heading',
+  );
+  assert.equal(nodes['ad-libraries-heading'].getAttribute('tabindex'), '-1');
   assert.match(nodes['ad-changes'].textContent, /Nothing was deleted or changed in SharePoint/);
   assert.match(libraryQueries.at(-1), /statecode eq 0/, 'Removed libraries are hidden');
   assert.match(siteQueries.at(-1), /statecode eq 0/, 'Removed sites are hidden');
@@ -1120,6 +1139,10 @@ const stage = (team, access) => {
     await reloaded.press(reloaded.confirmIn(fresh['ad-library-detail'], 'Remove library'));
     assert.deepEqual(sent.at(-1), { Command: 'RemoveLibrary', CatalogId: id(3) });
     assert.match(fresh['fb-access-site'].textContent, /General was removed from Documents/);
+    assert(
+      reloaded.document.activeElement === fresh['ad-site-title'],
+      'With no library left, focus moves to the site heading',
+    );
     assert(lists.length > before, 'The library list is read again after Remove');
     assert.deepEqual(listed(), [], 'The removed library is no longer listed');
     assert.equal(fresh['ad-library-detail'].hidden, true);
@@ -1142,6 +1165,10 @@ const stage = (team, access) => {
       'The removed site is no longer listed',
     );
     assert.equal(fresh['ad-site-title'].textContent, 'Select or add a site');
+    assert(
+      reloaded.document.activeElement === fresh['ad-sites-heading'],
+      'Remove site moves focus to the Sites heading',
+    );
   }
   {
     // A team deleted in Dataverse while it has access to the library: Dataverse no longer has
@@ -1496,6 +1523,31 @@ const stage = (team, access) => {
     assert.doesNotMatch(nodes['ad-access'].visibleText, /Apply access to clear it/);
   }
   {
+    // Focus keys (spec 5.2): a redraw gives focus back to the new button with the same key.
+    const keyed = (area, key) => area.querySelector('[data-focus-key="' + key + '"]');
+    const siteKey = 'site:' + id(1);
+    const siteButton = keyed(nodes['ad-sites'], siteKey);
+    await pressFocused(siteButton);
+    assert(keyed(nodes['ad-sites'], siteKey) !== siteButton, 'The site list was redrawn');
+    assert(document.activeElement === keyed(nodes['ad-sites'], siteKey), 'focus');
+    const libraryKey = 'library:' + id(3);
+    const libraryButton = keyed(nodes['ad-libraries'], libraryKey);
+    await pressFocused(libraryButton);
+    assert(keyed(nodes['ad-libraries'], libraryKey) !== libraryButton, 'focus');
+    assert(document.activeElement === keyed(nodes['ad-libraries'], libraryKey), 'focus');
+    const cardKey = 'card:librarycreate:blocked:retry';
+    const cardButton = keyed(nodes['ad-provision-progress'], cardKey);
+    cardButton.focus();
+    inspectByKey['librarycreate:blocked'] = {
+      ...inspectByKey['librarycreate:blocked'],
+      Issue: 'SharePoint refused the create again.',
+    };
+    await timers.shift()();
+    assert.match(nodes['ad-provision-progress'].textContent, /refused the create again/);
+    assert(keyed(nodes['ad-provision-progress'], cardKey) !== cardButton, 'focus');
+    assert(document.activeElement === keyed(nodes['ad-provision-progress'], cardKey), 'focus');
+  }
+  {
     // No shared-connection section on this tab; no hint paragraphs.
     assert.equal(nodes['ad-manage-connection'], null);
     assert.doesNotMatch(
@@ -1511,7 +1563,7 @@ const stage = (team, access) => {
     assert(labels.includes('Operations'));
   }
   console.log(
-    'PASS Sites & access on the shell: staging versus apply, removals with Undo and their confirmation, consent in the page, server refusals at the form that failed, the Add site combobox, site and library menus with focus keys, library setups with Documents’ SharePoint check and Open in Monitor, stuck access runs (also the inheritance stop), the access label from the policy and its run, discovery matched by list ID, re-point found again after a reload, removed destinations hidden at once and after a reload, and deleted Dataverse teams. Mocked APIs; connected acceptance pending.',
+    'PASS Sites & access on the shell: staging versus apply, removals with Undo and their confirmation, consent in the page, server refusals at the form that failed, the Add site combobox, site and library menus with focus keys, library setups with Documents’ SharePoint check and Open in Monitor, stuck access runs (also the inheritance stop), the access label from the policy and its run, discovery matched by list ID, re-point found again after a reload, removed destinations hidden at once and after a reload, deleted Dataverse teams, and where focus goes after actions that close what was focused. Mocked APIs; connected acceptance pending.',
   );
 })().catch((e) => {
   console.error(e);

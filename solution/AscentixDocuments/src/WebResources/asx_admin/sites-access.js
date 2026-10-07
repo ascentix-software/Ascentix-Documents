@@ -25,6 +25,9 @@
     // The feedback area of the action that runs: access-site, access-add, access-create,
     // access-existing or access-library.
     area: 'access-library',
+    // Where focus goes when the action that runs closes or hides what was focused: element IDs,
+    // the first one shown wins.
+    focusAfter: null,
     polling: false,
     pollPromise: null,
     loaded: false,
@@ -200,6 +203,7 @@
     if (state.busy) return;
     state.busy = true;
     state.area = area;
+    state.focusAfter = null;
     ui.clearFeedback(area);
     render();
     try {
@@ -207,10 +211,26 @@
       await fn();
     } catch (e) {
       issue(e.message || String(e), true, area);
+      state.focusAfter = null;
     } finally {
       state.busy = false;
       render();
+      land();
     }
+  }
+  // An action that succeeded and closed or hid the focused control (a form, the library
+  // section, the site's actions) moves focus to the next sensible place it named, instead of
+  // leaving it on the page body. Focus the admin moved elsewhere meanwhile stays there.
+  const shown = (node) => !!node && node.isConnected && !node.closest('[hidden]') && !node.disabled;
+  function land() {
+    const targets = state.focusAfter;
+    state.focusAfter = null;
+    const active = document.activeElement;
+    if (!targets || (active && active !== document.body && shown(active))) return;
+    targets
+      .map((id) => $(id))
+      .find(shown)
+      ?.focus();
   }
   function policy() {
     return state.library ? state.policies.get(state.library.asx_libraryid) : null;
@@ -923,8 +943,11 @@
         await loadSites();
       } else await libraries();
       await window.AsxdAdmin?.refreshCatalog();
-      // The library section is gone with the library, so the site's line reports it.
+      // The library section is gone with the library, so the site's line reports it, and focus
+      // goes to the Libraries heading, or the site's when none is left; for a site, to Sites.
       issue(c.name + ' was removed from Documents.', false, 'access-site');
+      state.focusAfter =
+        c.kind === 'RemoveSite' ? ['ad-sites-heading'] : ['ad-libraries-heading', 'ad-site-title'];
       return;
     }
     const result = await catalog({
@@ -1459,6 +1482,7 @@
       $('ad-site-form').hidden = true;
       closeNative();
       issue('Checking ' + pick.name + '.', false, 'access-site');
+      state.focusAfter = ['ad-add-site', 'ad-sites-heading'];
     }, 'access-add');
   $('ad-recheck').onclick = () =>
     action(async () => {
@@ -1489,6 +1513,7 @@
     track(result.Key, { name, kind: 'LibraryValidation', url });
     $('ad-existing-form').hidden = true;
     issue('Checking ' + name + ' and setting up its navigation.', false, 'access-site');
+    state.focusAfter = ['ad-existing', 'ad-site-title'];
   }
   // An inheriting library is added only after the admin confirms, in the page, that Documents
   // stops the inheritance.
@@ -1609,8 +1634,9 @@
       });
       track(result.Key, { name, kind: 'LibrarySetup', url: state.site.asx_url });
       $('ad-library-form').hidden = true;
-      // The form closes, so the site's line reports it.
+      // The form closes, so the site's line reports it and focus returns to ＋ Create library.
       issue('Creating ' + name + '.', false, 'access-site');
+      state.focusAfter = ['ad-create', 'ad-site-title'];
     }, 'access-create');
   };
   $('ad-add-team').onclick = () => {

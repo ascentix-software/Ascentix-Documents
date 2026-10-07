@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { createDocument } = require('./fake-dom.cjs');
+const { createDocument, FakeEvent } = require('./fake-dom.cjs');
 const base = path.resolve(__dirname, '../../client/admin');
 const html = fs.readFileSync(path.join(base, 'index.html'), 'utf8');
 const shell = fs.readFileSync(path.join(base, 'shell.js'), 'utf8');
@@ -722,8 +722,33 @@ const visible = (d) =>
     assert.match(notice, /contact/);
     assert.match(notice, /Settings/);
   }
+  {
+    // Task 9 fix round 1: a ⋯ menu closes when focus leaves both its button and its list (Tab
+    // out of it), and stays open while focus moves between them.
+    const run = await boot({ session: storage({ 'asxd.launched': '1' }) });
+    const d = run.document;
+    const trigger = d.getElementById('template-menu'),
+      list = d.getElementById('template-menu-list'),
+      item = (id) => d.getElementById(id);
+    run.ui.menu(trigger, list);
+    trigger.key('ArrowDown');
+    assert.equal(list.hidden, false);
+    assert.equal(d.activeElement.id, 'menu-history');
+    trigger.dispatchEvent(new FakeEvent('focusout', { relatedTarget: item('menu-history') }));
+    item('menu-history').dispatchEvent(
+      new FakeEvent('focusout', { relatedTarget: item('menu-schedule') }),
+    );
+    assert.equal(list.hidden, false, 'Moving between items keeps it open');
+    item('menu-schedule').dispatchEvent(new FakeEvent('focusout', { relatedTarget: item('save') }));
+    assert.equal(list.hidden, true, 'Tab out of the menu closes it');
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+    // A focus change with no element to go to (another window) leaves it to the click handler.
+    trigger.key('ArrowDown');
+    item('menu-history').dispatchEvent(new FakeEvent('focusout', { relatedTarget: null }));
+    assert.equal(list.hidden, false);
+  }
   console.log(
-    'PASS shell contract: tab order, landing, deep links, menu sync, unsaved prompt, keyboard, chip, feedback, confirmation (a replaced one answers keep), offline, a slow Get that does not delay the tab, withFocus, time, help, busy, api errors and Turn on feedback. Fake DOM; browser QA separate.',
+    'PASS shell contract: tab order, landing, deep links, menu sync, unsaved prompt, keyboard, chip, feedback, confirmation (a replaced one answers keep), offline, a slow Get that does not delay the tab, withFocus, time, help, busy, api errors, Turn on feedback and the ⋯ menu closing when focus leaves it. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

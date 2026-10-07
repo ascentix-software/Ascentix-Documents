@@ -169,6 +169,11 @@ async function openTemplate(page) {
     assert.equal(await templates.evaluate(() => document.activeElement.id), 'menu-history');
     await templates.keyboard.press('Escape');
     assert.equal(await templates.evaluate(() => document.activeElement.id), 'template-menu');
+    // Tab out of the open menu closes it.
+    await templates.keyboard.press('ArrowDown');
+    await templates.keyboard.press('Tab');
+    assert.equal(await templates.locator('#template-menu-list').isHidden(), true);
+    assert.equal(await templates.locator('#template-menu').getAttribute('aria-expanded'), 'false');
     await templates.getByLabel('When should this folder appear?').selectOption('conditional');
     assert.equal(
       await templates.evaluate(() => document.activeElement.getAttribute('aria-label')),

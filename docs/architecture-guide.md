@@ -121,7 +121,7 @@ The template is the long-lived identity. A revision is a version of its configur
 
 A destination chooses an approved site/library and entry path, then defines the record root and descendants. Library access is configured separately from the folder tree. Existing valid folders at the expected path can be reused regardless of who created them. A file occupying a folder path is a conflict. Reusing a folder can cause records to share documents, so naming is a business decision as well as a formatting choice.
 
-Existing native record roots are reused to keep navigation stable. Template changes are additive provisioning instructions; they are not a request to rename, move or delete existing SharePoint content. Explicit replan is available for existing records; publishing alone should not be interpreted as a completed backfill.
+Existing native record roots are reused to keep navigation stable. Template changes are additive provisioning instructions; they are not a request to rename, move or delete existing SharePoint content. An explicit re-run (Re-run for existing records) is available for existing records; publishing alone should not be interpreted as a completed backfill.
 
 ## 4. Sites, libraries and team access
 
