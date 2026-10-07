@@ -32,6 +32,12 @@
     previewed: false,
     // The data-focus-key that takes focus after the next render (spec 5.2).
     focusKey: null,
+    // Related tables whose fields could not be read, even after a retry.
+    failedTables: new Set(),
+    // Which template open the background preload belongs to.
+    preloadId: 0,
+    // A rail redraw waits for the rail's open confirmation.
+    railStale: false,
   };
   const metadata = new Map();
   const xrm = window.parent?.Xrm || window.Xrm;
@@ -216,9 +222,19 @@
     };
     return map[attribute.AttributeType] || null;
   }
-  // A table's readable columns with their kinds, choice labels and lookup targets. Read once.
-  async function fields(table) {
-    if (metadata.has(table)) return metadata.get(table);
+  // A table's readable columns with their kinds, choice labels and lookup targets. Read once; a
+  // read in progress is shared, and a failed one is forgotten so it can be tried again.
+  const reading = new Map();
+  function fields(table) {
+    if (metadata.has(table)) return Promise.resolve(metadata.get(table));
+    if (!reading.has(table))
+      reading.set(
+        table,
+        readFields(table).finally(() => reading.delete(table)),
+      );
+    return reading.get(table);
+  }
+  async function readFields(table) {
     const base = "EntityDefinitions(LogicalName='" + table + "')/Attributes";
     const [values, dates, choices, singleChoices, lookups, info] = await Promise.all([
       all(base + '?$select=LogicalName,DisplayName,AttributeType,IsSecured,IsValidForRead'),
@@ -386,7 +402,21 @@
     const listed = new Set();
     for (const lookup of state.lookups) {
       const meta = metadata.get(lookup.Table);
-      if (!meta) continue;
+      if (!meta) {
+        // Still loading in the background, or failed twice: shown, never silently left out.
+        const g = el('optgroup');
+        g.setAttribute('label', lookup.Label);
+        g.disabled = true;
+        const note = option(
+          '',
+          state.failedTables.has(lookup.Table) ? "Couldn't load these fields" : 'Loading fields…',
+        );
+        note.disabled = true;
+        g.append(note);
+        picker.append(g);
+        listed.add(lookup.Lookup + ':' + lookup.Table);
+        continue;
+      }
       const used = state.sources.some(
         (s) => s.Lookup === lookup.Lookup && s.Table === lookup.Table,
       );
@@ -564,8 +594,19 @@
       render();
     };
     row.append(field);
-    if (!selected)
-      row.append(el('p', 'Unavailable field: ' + c.field + '. Select a replacement.', 'error'));
+    if (!selected) {
+      // Named by its label when Documents still knows it, never by its internal name.
+      const shown = readable('{' + c.field + '}');
+      row.append(
+        el(
+          'p',
+          'Unavailable field' +
+            (shown.startsWith('{') ? '' : ': ' + shown) +
+            '. Select a replacement.',
+          'error',
+        ),
+      );
+    }
     const operator = select(
       operators(selected?.kind).map((op) => ({ value: op, label: operatorLabel[op] })),
       c.Operator,
@@ -718,9 +759,8 @@
     field.oninput = () => {
       condition.Literal =
         kind === 'Number'
-          ? field.value === ''
-            ? ''
-            : String(Number(field.value))
+          ? // As typed: reformatting would turn large or small numbers into exponent form.
+            field.value.trim()
           : kind === 'DateTime'
             ? field.value
               ? new Date(field.value).toISOString()
@@ -731,6 +771,9 @@
     field.onchange = field.oninput;
     return named(field);
   }
+  // A number as the server reads it (decimal.Parse with a leading sign and a decimal point, in
+  // the invariant culture): no exponent, no thousands separators.
+  const DECIMAL = /^[+-]?(\d+(\.\d*)?|\.\d+)$/;
   // Checks every condition at its control; the first invalid control takes focus (spec 5.2).
   function validate() {
     document.querySelectorAll('.condition-error').forEach((n) => n.remove());
@@ -748,7 +791,7 @@
         const kind = availableFields().find((f) => f.value === c.field)?.kind;
         if (unary(c.Operator) || c.right) return;
         const message =
-          kind === 'Number' && (c.Literal === '' || isNaN(Number(c.Literal)))
+          kind === 'Number' && !DECIMAL.test(c.Literal)
             ? 'Enter a number'
             : (kind === 'DateOnly' || kind === 'DateTime') && !c.Literal
               ? 'Pick a date'
@@ -1344,8 +1387,9 @@
           RowVersion: state.saved.RowVersion,
         }),
       );
-      state.saved.Status = 'Published';
-      state.editBase = { ...state.saved, Version: next };
+      // Publishing changes the revision row, so its row version is read back with it; the next
+      // Save draft would be refused with the old one.
+      await reloadVersion(state.saved.RevisionId);
       state.template = await reloadTemplate(state.template.asx_templateid);
       controls();
       ui.feedback(
@@ -1467,7 +1511,7 @@
   // Unsaved edits ask before another template replaces them; true when it may.
   async function mayDiscard(control, what) {
     if (!state.unsaved || !state.root) return true;
-    return ui.confirmInline(control, {
+    return railAsk(control, {
       text:
         'Open ' +
         what +
@@ -1522,6 +1566,44 @@
     render();
     if (state.previewRecord) await runPreview();
   }
+  // Each table's fields take about seven metadata requests at once, and Dataverse serves 52
+  // concurrent requests per user before it answers 429. Four tables at a time stay well inside
+  // that, beside the page's other reads.
+  const PRELOAD_TABLES = 4;
+  async function preload(tables, id) {
+    const queue = tables.filter((t) => !metadata.has(t));
+    queue.forEach((t) => state.failedTables.delete(t));
+    const worker = async () => {
+      while (queue.length) {
+        const table = queue.shift();
+        try {
+          await fields(table);
+        } catch {
+          // One retry: a 429 or a dropped request usually passes the second time.
+          try {
+            await fields(table);
+          } catch {
+            state.failedTables.add(table);
+          }
+        }
+        if (id === state.preloadId) refreshPickers();
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(PRELOAD_TABLES, queue.length) }, worker));
+  }
+  // Redraws the pickers as related tables arrive, unless the admin is typing in the editor or
+  // answering a confirmation there; the next render picks the fields up then.
+  function refreshPickers() {
+    if (!state.root) return;
+    const editor = $('folderEditor');
+    const active = document.activeElement;
+    if (
+      editor.querySelector('.confirm[role=group]') ||
+      (editor.contains(active) && active.tagName === 'INPUT')
+    )
+      return;
+    ui.withFocus(render);
+  }
   function resetPreview() {
     state.previewRecord = null;
     state.previewed = false;
@@ -1555,20 +1637,23 @@
     renderTemplateTree();
     const meta = await fields(table);
     state.sources = [{ Alias: 'root', Table: table, Lookup: null, columns: meta.columns }];
-    // Every related table's fields are read before the first render, so the pickers, which render
-    // synchronously, read them from the cache. One that cannot be read is left out.
-    const targets = [...new Set(meta.lookups.flatMap((l) => l.Targets))];
-    await Promise.all(targets.map((t) => fields(t).catch(() => null)));
+    // The label reads the target's display name once its metadata is in.
     state.lookups = meta.lookups.flatMap((l) =>
       l.Targets.map((Table) => ({
         Lookup: l.LogicalName,
         Table,
-        Label: display(l) + ' → ' + tableName(Table),
+        get Label() {
+          return display(l) + ' → ' + tableName(Table);
+        },
       })),
     );
+    const id = ++state.preloadId;
+    // The tables the draft uses load before the first render (reloadVersion); the other related
+    // tables load after it, in the background.
     const latest = state.template ? await latestRevision() : null;
     if (latest) await reloadVersion(latest);
     else render();
+    preload([...new Set(meta.lookups.flatMap((l) => l.Targets))], id);
   }
   addTableButton.onclick = () => {
     renderEnablePicker();
@@ -1634,8 +1719,16 @@
     await tableChanged(await runtimeCommand({ Command: 'RemoveTable', Table: name }));
     message(tableName(name) + ' removed. Its templates are kept.');
   }
+  // A confirmation in the rail. A redraw asked for while it is open waits, and runs once it closes.
+  async function railAsk(control, options) {
+    try {
+      return await ui.confirmInline(control, options);
+    } finally {
+      if (state.railStale) renderTemplateTree();
+    }
+  }
   async function removeTable(table, control) {
-    const ok = await ui.confirmInline(control, {
+    const ok = await railAsk(control, {
       text:
         'Stop creating folders for ' +
         tableName(table) +
@@ -1666,6 +1759,9 @@
   }
   function renderTemplateTree() {
     const tree = $('templateTree');
+    // Never under an open confirmation (as Monitor's lists): railAsk redraws when it closes.
+    state.railStale = !!tree.querySelector('.confirm[role=group]');
+    if (state.railStale) return;
     // ＋ Add table goes home before the rail is redrawn, so it is never dropped with it.
     $('tables-header').append(addTableButton);
     tree.replaceChildren();
@@ -1781,14 +1877,38 @@
   async function save() {
     if (!validate()) throw new Error('Fix the highlighted conditions first.');
     const base = state.editBase;
-    state.saved = JSON.parse(await api('asx_CreateDraft', { Request: JSON.stringify(payload()) }));
-    state.template = await reloadTemplate(state.saved.TemplateId);
-    await loadTemplates();
+    const name = $('templateName').value.trim();
+    const saved = JSON.parse(await api('asx_CreateDraft', { Request: JSON.stringify(payload()) }));
+    // What the save made is recorded at once, so a failed read below cannot make the next save
+    // create a second template or a second draft.
+    state.saved = saved;
+    state.template = state.template || {
+      asx_templateid: saved.TemplateId,
+      asx_name: name,
+      asx_table: state.root.LogicalName,
+    };
     state.editBase = {
-      ...state.saved,
+      ...saved,
       Version: !base ? 1 : base.Status === 'Draft' ? base.Version : base.Version + 1,
     };
     state.unsaved = false;
+    controls();
+    try {
+      // The saved version's own number: a version opened from Version history is not the latest.
+      const revision = await xrm.WebApi.retrieveRecord(
+        'asx_revision',
+        saved.RevisionId,
+        '?$select=asx_version',
+      );
+      if (revision?.asx_version) state.editBase.Version = revision.asx_version;
+      state.template = await reloadTemplate(saved.TemplateId);
+      await loadTemplates();
+    } catch (error) {
+      controls();
+      throw new Error(
+        'Draft saved, but the page could not refresh: ' + (error.message || String(error)),
+      );
+    }
     controls();
     if (state.previewRecord) await runPreview();
   }
@@ -1910,7 +2030,10 @@
         button('Open in Monitor', () => ui.navigate('monitor', { run: state.run.Key }), 'link'),
       );
     }
-    ui.disable($('rerun-all'), 'rerun-all-reason', ui.needs('prvCreateasx_operatorcommand'));
+    // Every re-run action needs the Operator role; one reason line names it for all three.
+    const role = ui.needs('prvCreateasx_operatorcommand');
+    for (const id of ['rerun-all', 'rerun-preview', 'rerun-these'])
+      ui.disable($(id), 'rerun-role-reason', role);
     ($('rerun-all').hidden ? $('rerun-preview') : $('rerun-all')).focus();
   }
   $('rerun-all').onclick = async () => {
@@ -1948,8 +2071,7 @@
     let note = document.getElementById('rerun-reason');
     if (!text) {
       note?.remove();
-      control.removeAttribute('aria-describedby');
-      control.removeAttribute('aria-invalid');
+      describe(control, null);
       return;
     }
     if (!note) {
@@ -1959,9 +2081,19 @@
       control.closest('[data-actions]').after(note);
     }
     note.textContent = text;
-    control.setAttribute('aria-describedby', 'rerun-reason');
+    describe(control, 'rerun-reason');
+  }
+  // Adds or drops the preview error in the button's description, keeping any role reason.
+  function describe(control, id) {
+    const refs = (control.getAttribute('aria-describedby') || '')
+      .split(' ')
+      .filter((r) => r && r !== 'rerun-reason');
+    if (id) refs.push(id);
+    if (refs.length) control.setAttribute('aria-describedby', refs.join(' '));
+    else control.removeAttribute('aria-describedby');
   }
   $('rerun-preview').onclick = async () => {
+    if (ui.blocked($('rerun-preview'))) return;
     const picked = await xrm.Utility.lookupObjects({
       entityTypes: [state.root.LogicalName],
       defaultEntityType: state.root.LogicalName,
@@ -2004,6 +2136,7 @@
     });
   };
   $('rerun-these').onclick = () =>
+    ui.blocked($('rerun-these')) ||
     ui.busy($('rerun-these'), 'Re-running…', 'rerun', async () => {
       await ui.api('asx_ManageWork', {
         Command: 'QueueBatch',

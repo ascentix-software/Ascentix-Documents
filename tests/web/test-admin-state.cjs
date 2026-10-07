@@ -73,6 +73,13 @@ async function boot({
   privileges = {},
   handle = () => null,
   libraries,
+  // Fix round 1 hooks: a template or revision read's answer (or Error), saved revisions' numbers,
+  // more lookups on account, and a metadata request's delay or failure.
+  reads = () => null,
+  versions = { 'rev-2': 2 },
+  extraLookups = [],
+  delay = async () => {},
+  failFetch = () => false,
 } = {}) {
   const document = createDocument(html);
   const sent = [];
@@ -118,12 +125,18 @@ async function boot({
       },
     },
     WebApi: {
-      retrieveRecord: async (table, id) => ({
-        asx_templateid: id,
-        asx_name: 'Account onboarding',
-        asx_table: 'account',
-        asx_disabled: false,
-      }),
+      retrieveRecord: async (table, id) => {
+        const custom = reads(table, id);
+        if (custom instanceof Error) throw custom;
+        if (custom) return custom;
+        if (table === 'asx_revision') return { asx_revisionid: id, asx_version: versions[id] };
+        return {
+          asx_templateid: id,
+          asx_name: 'Account onboarding',
+          asx_table: 'account',
+          asx_disabled: false,
+        };
+      },
       retrieveMultipleRecords: async (table) => ({
         entities:
           table === 'asx_runtimetable'
@@ -218,6 +231,9 @@ async function boot({
       };
     }
     const table = /LogicalName='(\w+)'/.exec(url)?.[1];
+    await delay(table, url);
+    if (failFetch(url, table))
+      return { ok: false, json: async () => ({ error: { message: 'Too many requests.' } }) };
     const all = metadata[table] || [];
     const value = url.includes('DateTimeAttributeMetadata')
       ? [
@@ -244,6 +260,7 @@ async function boot({
                   Targets: ['contact'],
                   DisplayName: { UserLocalizedLabel: { Label: 'Primary Contact' } },
                 },
+                ...extraLookups,
               ]
             : []
           : url.includes('AttributeMetadata')
@@ -329,6 +346,7 @@ async function boot({
     labelled,
     change,
     open,
+    window,
     last: (api) => sent.filter(([a]) => a === api).at(-1)?.[1],
   };
 }
@@ -913,8 +931,214 @@ async function boot({
       false,
     );
   }
+  {
+    // Fix 1: Publish reloads the revision, so the next Save sends its new row version.
+    let published = false;
+    const t = await boot({
+      loaded: { RevisionId: 'rev-2', RowVersion: '4', Status: 'Draft', Version: 2, Draft: draft() },
+      handle: (api) => {
+        if (api === 'asx_PublishTemplate') {
+          published = true;
+          return { Status: 'Published', Notices: [] };
+        }
+        if (api === 'asx_LoadDraft' && published)
+          return {
+            RevisionId: 'rev-2',
+            RowVersion: '5',
+            Status: 'Published',
+            Version: 2,
+            Draft: draft(),
+          };
+        return null;
+      },
+    });
+    await t.open();
+    await t.press(t.$('publish'));
+    await t.press(t.find(t.$('template-bar').querySelector('.confirm'), 'Publish v2'));
+    assert.equal(t.$('version-chip').textContent, 'Published v2');
+    await t.press(t.find(t.$('destinations'), 'General'));
+    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'After publish');
+    await t.press(t.$('save'));
+    const after = t.last('asx_CreateDraft');
+    assert.deepEqual([after.RevisionId, after.RowVersion], ['rev-2', '5']);
+  }
+  {
+    // Fix 2: related tables load after the first render, at most 4 tables at a time; a group
+    // still loading says so.
+    const related = Array.from({ length: 10 }, (_, i) => 'rel' + i);
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    const active = new Map();
+    let peak = 0;
+    const t = await boot({
+      extraLookups: related.map((table) => ({
+        LogicalName: table + 'id',
+        Targets: [table],
+        DisplayName: { UserLocalizedLabel: { Label: 'Link ' + table } },
+      })),
+      delay: async (table) => {
+        if (!related.includes(table)) return;
+        active.set(table, (active.get(table) || 0) + 1);
+        peak = Math.max(peak, active.size);
+        await gate;
+        active.set(table, active.get(table) - 1);
+        if (!active.get(table)) active.delete(table);
+      },
+    });
+    await t.open();
+    assert.match(
+      t.$('destinations').visibleText,
+      /\[Account Name\]/,
+      'The template renders before its related tables load',
+    );
+    assert.equal(peak, 4, 'Four related tables load at a time');
+    await t.press(t.find(t.$('destinations'), 'General'));
+    const group = () =>
+      t
+        .labelled(t.$('folderEditor'), 'Insert field')
+        .querySelectorAll('optgroup')
+        .find((g) => g.getAttribute('label') === 'Link rel9 → rel9');
+    assert.equal(group().disabled, true);
+    assert.equal(group().querySelectorAll('option')[0].textContent, 'Loading fields…');
+    release();
+    await t.document.settle();
+    assert.equal(peak, 4, 'Never more than four');
+    assert.equal(group().disabled, false, 'The picker redraws as tables arrive');
+    assert.equal(
+      group()
+        .querySelectorAll('option')
+        .some((o) => o.textContent === 'Loading fields…'),
+      false,
+    );
+    // A table that fails twice (one retry) shows as unavailable, not as missing.
+    let attempts = 0;
+    const failed = await boot({
+      failFetch: (url, table) =>
+        table === 'contact' && url.includes('/Attributes?') && ++attempts > 0,
+    });
+    await failed.open();
+    await failed.press(failed.find(failed.$('destinations'), 'General'));
+    const contact = failed
+      .labelled(failed.$('folderEditor'), 'Insert field')
+      .querySelectorAll('optgroup')
+      .find((g) => g.getAttribute('label') === 'Primary Contact → Contact');
+    assert.equal(contact.disabled, true);
+    assert.equal(contact.querySelectorAll('option')[0].textContent, "Couldn't load these fields");
+    assert.equal(attempts, 2, 'One retry');
+  }
+  {
+    // Fix 3: a save reads the new version's number. v1 opened while v3 is the latest saves as v4.
+    const t = await boot({ versions: { 'rev-2': 4 } });
+    await t.open();
+    await t.press(t.find(t.$('destinations'), 'General'));
+    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'From v1');
+    await t.press(t.$('save'));
+    assert.equal(t.$('version-chip').textContent, 'Draft v4');
+    await t.press(t.$('publish'));
+    assert.equal(t.document.activeElement.textContent, 'Publish v4?');
+  }
+  {
+    // Fix 4: a save whose follow-up reads fail still records the template, so the next save
+    // updates it instead of creating a second one.
+    let failing = false;
+    const t = await boot({
+      templates: [],
+      versions: { 'rev-2': 1 },
+      reads: (table) => (failing && table === 'asx_template' ? new Error('Network down.') : null),
+    });
+    await t.press(t.find(t.$('templateTree'), '＋ New template'));
+    await t.press(t.$('addDestination'));
+    failing = true;
+    await t.press(t.$('save'));
+    assert.match(
+      t.$('fb-templates').textContent,
+      /^Draft saved, but the page could not refresh: Network down\./,
+    );
+    assert.equal(t.$('version-chip').textContent, 'Draft v1');
+    failing = false;
+    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Second save');
+    await t.press(t.$('save'));
+    const second = t.last('asx_CreateDraft');
+    assert.deepEqual(
+      [second.TemplateId, second.RevisionId, second.RowVersion],
+      [TEMPLATE, 'rev-2', '4'],
+    );
+  }
+  {
+    // Fix 5: a runtime result does not wipe an open rail confirmation; the rail redraws after it.
+    const t = await boot();
+    const remove = t
+      .$('templateTree')
+      .querySelectorAll('button')
+      .find((b) => b.getAttribute('aria-label') === 'Remove Account');
+    await t.press(remove);
+    t.window.AsxdUi.setRuntime({
+      WorkerId: 'worker-1',
+      Enabled: false,
+      CanChange: true,
+      RowVersion: '8',
+      Registration: { Readiness: [{ Scope: 'account', Status: 'Ready' }], Error: null },
+    });
+    await t.document.settle();
+    assert.ok(t.find(t.$('templateTree'), 'Keep table'), 'The open confirmation survives');
+    assert.doesNotMatch(t.$('templateTree').visibleText, /automation paused/);
+    await t.press(t.find(t.$('templateTree'), 'Keep table'));
+    assert.match(t.$('templateTree').visibleText, /Ready · automation paused/);
+  }
+  {
+    // Fix 6: an unavailable condition field is not shown by its internal name.
+    const d = draft();
+    d.Destinations[0].Folders[1].Condition = {
+      All: true,
+      Groups: [],
+      Conditions: [{ Source: 'root', Column: 'retired_code', Operator: 'IsNotNull' }],
+    };
+    const t = await boot({
+      loaded: { RevisionId: 'rev-1', RowVersion: '3', Status: 'Published', Version: 1, Draft: d },
+    });
+    await t.open();
+    await t.press(t.find(t.$('destinations'), 'General'));
+    assert.match(t.$('folderEditor').visibleText, /Unavailable field\. Select a replacement\./);
+    assert.doesNotMatch(t.$('folderEditor').visibleText, /retired_code/);
+  }
+  {
+    // Fix 7: a number is sent as typed; one the server cannot read is refused at the control.
+    const t = await boot();
+    await t.open();
+    await t.press(t.find(t.$('destinations'), 'General'));
+    const editor = t.$('folderEditor');
+    await t.change(t.labelled(editor, 'When should this folder appear?'), 'conditional');
+    await t.change(t.labelled(editor, 'Field, condition 1'), 'root.revenue');
+    await t.change(t.labelled(editor, 'Value, condition 1'), '1e5');
+    await t.press(t.$('save'));
+    assert.equal(t.sent.filter(([k]) => k === 'asx_CreateDraft').length, 0);
+    assert.equal(editor.querySelector('[role=alert]').textContent, 'Enter a number');
+    await t.change(t.labelled(editor, 'Value, condition 1'), ' 12345678901234567890.5 ');
+    await t.press(t.$('save'));
+    const saved = t.last('asx_CreateDraft').Destinations[0].Folders[1].Condition.Conditions[0];
+    assert.equal(saved.Literal, '12345678901234567890.5');
+  }
+  {
+    // Fix 8: without the Operator role every re-run action is disabled with the reason.
+    const t = await boot({ privileges: { prvCreateasx_operatorcommand: false } });
+    await t.open();
+    await t.press(t.$('template-menu'));
+    await t.press(t.$('menu-rerun'));
+    for (const id of ['rerun-all', 'rerun-preview', 'rerun-these']) {
+      const control = t.$(id);
+      assert.equal(control.getAttribute('aria-disabled'), 'true', id);
+      const reasons = control
+        .getAttribute('aria-describedby')
+        .split(' ')
+        .map((r) => t.document.getElementById(r).textContent);
+      assert.ok(reasons.includes('Needs the Documents Operator role.'), id);
+    }
+    const picks = t.looked.length;
+    await t.press(t.$('rerun-preview'));
+    assert.equal(t.looked.length, picks, 'A blocked preview opens no picker');
+  }
   console.log(
-    'PASS Folder templates: empty states, version chip, Publish and its reasons, unsaved-changes prompts, menu, Delete and focus after it, Schedule, Version history, rail, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals. Fake DOM; browser QA separate.',
+    'PASS Folder templates: empty states, version chip, Publish and its reasons, unsaved-changes prompts, menu, Delete and focus after it, Schedule, Version history, rail, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, rail redraws wait for its confirmations, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);
