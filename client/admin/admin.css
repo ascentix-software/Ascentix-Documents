@@ -1088,9 +1088,6 @@ table {
 .template-main {
   min-width: 0;
 }
-#tablePicker {
-  margin-top: 14px;
-}
 #templateName {
   min-width: 0;
   width: 100%;
@@ -1215,18 +1212,19 @@ input[type='checkbox'] {
 }
 .switch-track {
   position: relative;
-  width: 36px;
-  height: 20px;
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
   border: 1px solid var(--control-border);
-  border-radius: 10px;
+  border-radius: 11px;
   background: var(--surface);
 }
 .switch-thumb {
   position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
+  top: 1px;
+  left: 1px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: var(--muted);
 }
@@ -1235,7 +1233,7 @@ input[type='checkbox'] {
   border-color: var(--teal);
 }
 .switch[aria-checked='true'] .switch-thumb {
-  left: 18px;
+  left: 19px;
   background: var(--on-accent);
 }
 .tiles {
@@ -1247,15 +1245,12 @@ input[type='checkbox'] {
 .tile {
   min-height: 32px;
 }
-.problem-list table,
-#settings table {
+.problem-list table {
   width: 100%;
   border-collapse: collapse;
 }
 .problem-list td,
-.problem-list th,
-#settings td,
-#settings th {
+.problem-list th {
   padding: 6px 8px;
   border-bottom: 1px solid var(--line);
   text-align: left;
@@ -1270,10 +1265,6 @@ input[type='checkbox'] {
 .checklist .is-done {
   color: var(--muted);
 }
-.danger-zone {
-  margin-top: 32px;
-  border: 1px solid var(--danger);
-}
 .problem-list progress {
   width: 100%;
   height: 10px;
@@ -1283,21 +1274,17 @@ input[type='checkbox'] {
   margin: 6px 0;
   padding-left: 18px;
 }
-/* Monitor and Settings panels: spacing, wrapping form rows and list layout. */
-#monitor,
-#settings {
+/* Monitor panels: spacing, wrapping form rows and list layout. */
+#monitor {
   padding: 24px;
 }
-#monitor > * + *,
-#settings > * + * {
+#monitor > * + * {
   margin-top: 16px;
 }
-#monitor [data-actions],
-#settings [data-actions] {
+#monitor [data-actions] {
   flex-wrap: wrap;
 }
-#monitor .row.wrap,
-#settings .row.wrap {
+#monitor .row.wrap {
   flex-wrap: wrap;
   align-items: end;
   gap: 12px;
@@ -1309,9 +1296,7 @@ input[type='checkbox'] {
   margin: 12px 0 0;
 }
 #monitor label select,
-#monitor label input,
-#settings label select,
-#settings label input {
+#monitor label input {
   margin-top: 7px;
 }
 #monitor .card > summary h3 {
@@ -1324,12 +1309,8 @@ input[type='checkbox'] {
 #monitor-checked {
   font-size: 12px;
 }
-.status-header .help,
-#settings .help {
+.status-header .help {
   margin-top: 4px;
-}
-.switch-state {
-  color: var(--muted);
 }
 .tile strong {
   margin-left: 6px;
@@ -1359,8 +1340,7 @@ input[type='checkbox'] {
   padding: 12px 0;
   text-align: left;
 }
-.problem-list .error,
-#settings .error {
+.problem-list .error {
   color: var(--danger);
 }
 .checklist {
@@ -1380,36 +1360,6 @@ input[type='checkbox'] {
   font-size: 12px;
   font-weight: 750;
 }
-#settings .stack {
-  margin-top: 12px;
-  max-width: 560px;
-}
-#settings .stack > label {
-  margin: 0;
-}
-.hosts {
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-.hosts legend {
-  font-size: 12px;
-  font-weight: 750;
-}
-#hosts-list {
-  display: grid;
-  gap: 8px;
-  margin: 8px 0;
-  padding: 0;
-  list-style: none;
-}
-#hosts-list .host input {
-  flex: 1;
-}
-#settings-readonly,
-#settings-missing {
-  margin-top: 8px;
-}
 #monitor a,
 #settings a {
   color: var(--teal);
@@ -1422,13 +1372,8 @@ input[type='checkbox'] {
   width: auto;
   min-width: 200px;
 }
-#connection-list {
-  margin: 8px 0;
-  padding-left: 18px;
-}
 @media (max-width: 700px) {
-  #monitor,
-  #settings {
+  #monitor {
     padding: 14px;
   }
   .problem-list table {
@@ -1580,11 +1525,6 @@ input[type='checkbox'] {
   gap: 4px 8px;
   align-items: baseline;
 }
-.template-nav .status {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 450;
-}
 .template-list {
   margin: 0;
   padding: 0;
@@ -1710,7 +1650,6 @@ input[type='checkbox'] {
   border-color: var(--warning);
   background: var(--warning-bg);
 }
-/* Sites & access: menus, in-page confirmations, the Add site combobox, team rows. */
 /* Every target at least 24×24 (WCAG 2.5.8), links too. */
 main a {
   display: inline-block;
@@ -1766,12 +1705,10 @@ main a {
 #leavePrompt .confirm {
   margin-top: 0;
 }
-#monitor,
-#settings {
+#monitor {
   padding: 0 0 24px;
 }
-#monitor > :not(.page-header),
-#settings > :not(.page-header) {
+#monitor > :not(.page-header) {
   margin-left: 24px;
   margin-right: 24px;
 }
@@ -2050,6 +1987,9 @@ button.problem-pill:hover {
   padding: 12px 0;
   color: var(--muted);
 }
+.ad-access-footer {
+  padding-top: 6px;
+}
 .ad-access-notices {
   margin: 6px 0 0;
   padding-left: 18px;
@@ -2208,5 +2148,199 @@ button.problem-pill:hover {
   .page-header .page-actions {
     flex-wrap: wrap;
     margin-left: 0;
+  }
+}
+
+/* Settings: one column of cards, and a save bar that shows while there are unsaved changes. */
+#settings > .feedback,
+#settings > #settings-missing {
+  margin: 12px 28px 0;
+}
+.page-body.one-column {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  /* 760px of cards inside the side padding. */
+  max-width: 816px;
+  padding: 22px 28px;
+}
+.problem-host:empty {
+  display: none;
+}
+.switch-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px;
+}
+.switch-row > .switch,
+.card-actions > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.switch-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+.card-row.setting {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 8px 16px;
+  align-items: start;
+  padding: 10px 16px;
+}
+.setting .label-text,
+.table-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.sub {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sub:empty {
+  display: none;
+}
+/* A switch setting: the label and its help across the row, the switch at the right. */
+.card-row.setting.toggle {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+#hosts-list {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+}
+#hosts-list .host input {
+  flex: 1;
+  min-width: 0;
+}
+#hosts-list .error {
+  color: var(--danger);
+}
+#hosts-list:has(.error) .host {
+  flex-wrap: wrap;
+}
+#hosts-list .host .error {
+  flex-basis: 100%;
+}
+input.is-edited {
+  border-color: var(--warning);
+  background: var(--warning-bg);
+}
+.value-text {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.card-head .card-actions,
+.card-head .card-action {
+  margin-left: auto;
+}
+#table-picker label {
+  max-width: 360px;
+  margin: 0;
+}
+#tracking-error {
+  color: var(--danger);
+}
+.tables-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 200px minmax(130px, auto);
+  gap: 4px 12px;
+  align-items: center;
+}
+.tables-grid .tracking {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.table-actions {
+  justify-content: flex-end;
+}
+.tables-grid > .confirm-slot {
+  grid-column: 1 / -1;
+}
+button.link.muted {
+  color: var(--muted);
+}
+.card-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.card-list > li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.card-list > .error {
+  color: var(--danger);
+}
+.danger-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+}
+.danger-body h2 {
+  font-size: 14px;
+  font-weight: 700;
+}
+.danger-body [data-actions] {
+  flex-shrink: 0;
+}
+button.danger-outline {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+#settings-footer {
+  padding: 12px 28px;
+}
+#settings-footer .feedback {
+  margin: 0;
+}
+.status-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 650;
+}
+.status-text.warning {
+  color: var(--warning);
+}
+.status-text.warning::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+@media (max-width: 700px) {
+  .page-body.one-column {
+    padding: 14px;
+  }
+  .card-row.setting,
+  .tables-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tables-grid.col-head {
+    display: none;
+  }
+  .table-actions {
+    justify-content: flex-start;
+  }
+  .danger-body {
+    flex-wrap: wrap;
+  }
+  #settings-footer {
+    flex-wrap: wrap;
+    padding: 12px 14px;
   }
 }

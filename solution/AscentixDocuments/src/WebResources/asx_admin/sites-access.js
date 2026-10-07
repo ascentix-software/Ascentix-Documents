@@ -1,7 +1,8 @@
 'use strict';
 // Sites & access: sites, their libraries, each library's team access, and the setup
 // activity on them. Results report in the line under the page header, or in the Add site or
-// library access line; every command asks in the page, next to what asked. Text is only ever set with textContent.
+// library access line; every command asks in the page, next to what asked. Text is only ever
+// set with textContent.
 (() => {
   const root = document.getElementById('access'),
     $ = (id) => document.getElementById(id),

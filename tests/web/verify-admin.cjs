@@ -41,6 +41,7 @@ const FEEDBACK = [
   'fb-check',
   'fb-advanced',
   'fb-settings',
+  'fb-settings-save',
 ];
 assert.deepEqual(
   [...html.matchAll(/\bid="(fb-[^"]+)"/g)].map((m) => m[1]).sort(),
@@ -101,6 +102,7 @@ for (const [, name, value] of bounds.matchAll(/public const int (\w+) = (\d+);/g
 const KEPT = [
   'help-automation-settings',
   'help-record-updates',
+  'help-stop-tracking',
   'help-publish',
   'help-include-root',
   'help-folder-access',

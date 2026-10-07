@@ -16,7 +16,6 @@
     template: null,
     templates: [],
     enabledTables: [],
-    readiness: null,
     expandedTables: new Set(),
     sectionSequence: 0,
     editBase: null,
@@ -43,8 +42,6 @@
   const metadata = new Map();
   const xrm = window.parent?.Xrm || window.Xrm;
   const ui = window.AsxdUi;
-  // The rail's ＋ Add table moves into the rail's empty state and back to the rail header.
-  const addTableButton = $('addTable');
   // Results of an action show in the feedback line under the header of the page that ran it.
   const message = (text, error = false) =>
     ui.feedback(ui.activeTab(), text, error ? 'error' : 'success');
@@ -1625,26 +1622,9 @@
     else render();
     preload([...new Set(meta.lookups.flatMap((l) => l.Targets))], id);
   }
-  addTableButton.onclick = () => {
-    renderEnablePicker();
-    $('tablePicker').hidden = !$('tablePicker').hidden;
-    if (!$('tablePicker').hidden) $('enableTable').focus();
-  };
-  function renderEnablePicker() {
-    $('enableTable').replaceChildren(
-      option('', 'Choose a table'),
-      ...state.tables
-        .filter((t) => !state.enabledTables.includes(t.LogicalName))
-        .map((t) => option(t.LogicalName, display(t))),
-    );
-    $('enableTable').value = '';
-  }
-  $('enableTable').onchange = () => {
-    const name = $('enableTable').value;
-    if (name) return task(() => enableTable(name));
-    return undefined;
-  };
   $('go-access').onclick = () => ui.navigate('access');
+  // Tables are added, removed and repaired in Settings.
+  $('manage-tables').onclick = () => ui.navigate('settings');
   async function loadEnabledTables() {
     const rows = [];
     let options = '?$select=asx_logicalname&$orderby=asx_logicalname';
@@ -1657,38 +1637,6 @@
     } while (options);
     state.enabledTables = [...new Set(rows.map((r) => r.asx_logicalname).filter(Boolean))].sort();
   }
-  const runtimeCommand = (payload) => ui.api('asx_RuntimeAdmin', payload);
-  function setReadiness(result) {
-    const readiness = result?.Registration?.Readiness;
-    state.readiness = Array.isArray(readiness)
-      ? Object.fromEntries(readiness.map((r) => [r.Scope, r.Status]))
-      : null;
-  }
-  // One of three readiness words per table.
-  function readiness(table) {
-    const status = state.readiness?.[table];
-    if (!status) return null;
-    if (status !== 'Ready') return 'repair';
-    return ui.runtime() && !ui.runtime().Enabled ? 'Ready · automation paused' : 'Ready';
-  }
-  // Applies a Get-shaped result from AddTable/RemoveTable to the panel, and shares it with the
-  // chip and the other tabs through the shell's runtime.
-  async function tableChanged(result) {
-    setReadiness(result);
-    ui.setRuntime(result);
-    await loadEnabledTables();
-    renderEnablePicker();
-    $('tablePicker').hidden = true;
-    renderTemplateTree();
-  }
-  async function enableTable(name) {
-    await tableChanged(await runtimeCommand({ Command: 'AddTable', Table: name }));
-    message(tableName(name) + ' added.');
-  }
-  async function disableTable(name) {
-    await tableChanged(await runtimeCommand({ Command: 'RemoveTable', Table: name }));
-    message(tableName(name) + ' removed. Its templates are kept.');
-  }
   // A confirmation in the rail. A redraw asked for while it is open waits, and runs once it closes.
   async function railAsk(control, options) {
     try {
@@ -1696,18 +1644,6 @@
     } finally {
       if (state.railStale) renderTemplateTree();
     }
-  }
-  async function removeTable(table, control) {
-    const ok = await railAsk(control, {
-      text:
-        'Stop creating folders for ' +
-        tableName(table) +
-        '? Queued folder work for this table is cancelled. Templates are kept, and nothing in SharePoint is deleted.',
-      confirm: 'Remove table',
-      keep: 'Keep table',
-      danger: true,
-    });
-    if (ok) await task(() => disableTable(table));
   }
   async function loadTemplates() {
     const rows = [];
@@ -1732,8 +1668,6 @@
     // Never under an open confirmation (as Monitor's lists): railAsk redraws when it closes.
     state.railStale = !!tree.querySelector('.confirm[role=group]');
     if (state.railStale) return;
-    // ＋ Add table goes home before the rail is redrawn, so it is never dropped with it.
-    $('tables-header').append(addTableButton);
     tree.replaceChildren();
     if (!state.loaded) return;
     const templated = [...new Set(state.templates.map((t) => t.asx_table))].filter(Boolean);
@@ -1744,7 +1678,6 @@
       const empty = el('div', null, 'empty');
       empty.append(el('p', 'No tables yet'));
       tree.append(empty);
-      empty.append(addTableButton);
       return;
     }
     const entry = (table, isEnabled) => {
@@ -1753,8 +1686,6 @@
         summary = el('summary');
       wrap.dataset.table = table;
       summary.append(el('span', tableName(table), 'table-name'));
-      const ready = isEnabled ? readiness(table) : null;
-      if (ready && ready !== 'repair') summary.append(el('span', ready, 'status'));
       section.open = state.expandedTables.has(table);
       section.ontoggle = () => {
         if (section.open) state.expandedTables.add(table);
@@ -1789,13 +1720,6 @@
       }
       section.append(list);
       wrap.append(section);
-      if (ready === 'repair')
-        wrap.append(button('Needs repair', () => ui.navigate('settings', { table }), 'link'));
-      const action = isEnabled
-        ? button('Remove', () => removeTable(table, action), 'link danger')
-        : button('Enable', () => task(() => enableTable(table)), 'link');
-      action.setAttribute('aria-label', (isEnabled ? 'Remove ' : 'Enable ') + tableName(table));
-      wrap.append(action);
       tree.append(wrap);
     };
     enabled.forEach((table) => entry(table, true));
@@ -1808,8 +1732,8 @@
   function renderNoTemplate(noTables) {
     const panel = $('no-template');
     panel.replaceChildren(el('h2', 'No template selected'));
-    if (noTables) panel.append(button('＋ Add table', () => addTableButton.click()));
-    else panel.append(el('p', 'Pick a template in Tables, or create one with ＋ New template.'));
+    if (!noTables)
+      panel.append(el('p', 'Pick a template in Tables, or create one with ＋ New template.'));
   }
   $('addDestination').onclick = () => {
     if (ui.blocked($('addDestination')) || !state.libraries.length) return;
@@ -2166,18 +2090,9 @@
       await loadEnabledTables();
       state.loaded = true;
       await loadTemplates();
-      // The shell's runtime Get, if it is back; onRuntime below fills in the rest. A caller
-      // who cannot read the runtime gets null and sees no readiness.
-      setReadiness(ui.runtime());
-      renderEnablePicker();
       renderTemplateTree();
       render();
     });
   }
-  // Table readiness follows the shell's runtime result: its one Get per load, and Turn on.
-  ui.onRuntime((result) => {
-    setReadiness(result);
-    renderTemplateTree();
-  });
   ui.onTab('templates', start);
 })();

@@ -118,7 +118,6 @@
   const OPERATION_PREFIXES = ['folderjob:', 'librarycreate:', 'catalogprobe:', 'policywork:'];
   const INSTALL_DOCS =
     'https://github.com/ascentix-software/Ascentix-Documents/blob/main/docs/customer-installation.md';
-  const ADMIN_ONLY = 'Only a System Administrator can change these settings.';
   // templates and hasLibrary stay null until read, so the setup checklist never flashes open.
   const monitor = {
     summary: null,
@@ -131,7 +130,9 @@
     recentLoad: null,
   };
   // edited: the form has changes not saved yet, which a runtime change from elsewhere keeps.
-  const settings = { workers: [], edited: false };
+  // tables: the document-enabled tables ＋ Add table offers; counts: templates per table (null
+  // when unread); tablesStale: a Tables redraw waits for the open confirmation there.
+  const settings = { workers: [], edited: false, tables: [], counts: null, tablesStale: false };
   const number = (n) => Number(n || 0).toLocaleString('en-US');
   const counted = (list) =>
     monitor.summary?.Capped?.includes(list)
@@ -826,7 +827,8 @@
     }
   }
 
-  // A confirmation for a table row renders in a full-width row under it; elsewhere inside the anchor.
+  // A confirmation for a table row renders in a full-width row under it; elsewhere in a slot at
+  // the end of the anchor (a Tables row lays the slot across its full width).
   function confirmHost(anchor) {
     if (anchor?.tagName === 'TR') {
       const holder = el('tr', null, 'confirm-row');
@@ -836,7 +838,7 @@
       anchor.after(holder);
       return { host, remove: () => holder.remove() };
     }
-    const host = el('div');
+    const host = el('div', null, 'confirm-slot');
     anchor.append(host);
     return { host, remove: () => host.remove() };
   }
@@ -1218,30 +1220,29 @@
   const listOf = (id) => document.getElementById('list-' + id);
   const rowsOf = (id) => document.getElementById('rows-' + id);
 
-  // Automation switch (Settings): SetEnabled, never a whole-profile save. The switch keeps its
-  // label and state spans while it works: its state text says what it is doing.
+  // Settings ----------------------------------------------------------------------------------
+
+  // The automation switch: SetEnabled at once, never part of Save. While it works its state text
+  // says what it is doing. A caller who cannot change settings sees the state as text only.
   function renderSwitch() {
     const runtime = ui.runtime();
     const control = $('automation-switch-settings');
-    control.hidden = !runtime;
     if (!runtime) return;
+    control.hidden = runtime.CanChange === false;
     if (!control.dataset.busy) {
       control.setAttribute('aria-checked', String(!!runtime.Enabled));
-      $('automation-state-settings').textContent = runtime.Enabled ? 'Running' : 'Paused';
+      $('automation-state-settings').textContent = runtime.Enabled
+        ? 'Automation is running'
+        : 'Automation is paused';
     }
-    ui.disable(
-      control,
-      'automation-reason-settings',
-      runtime.CanChange === false
-        ? 'Only a System Administrator can pause or resume automation.'
-        : null,
-    );
     control.onclick = toggleAutomation;
   }
   async function toggleAutomation() {
     const control = $('automation-switch-settings');
-    if (ui.blocked(control) || control.dataset.busy || !ui.runtime()) return;
-    const turnOn = !ui.runtime().Enabled;
+    const runtime = ui.runtime();
+    if (ui.blocked(control) || control.dataset.busy || !runtime || runtime.CanChange === false)
+      return;
+    const turnOn = !runtime.Enabled;
     control.dataset.busy = '1';
     control.setAttribute('aria-busy', 'true');
     $('automation-state-settings').textContent = turnOn ? 'Turning on…' : 'Pausing…';
@@ -1262,33 +1263,48 @@
     }
   }
 
-  // Settings ----------------------------------------------------------------------------------
-
-  // The page starts before the shell's runtime Get may be back: the form stays busy
-  // until it is, then follows every runtime change (the switch, Save, Repair). A refused Get shows the missing-settings alert.
+  // The page starts before the shell's runtime Get may be back: the form stays busy until it
+  // is, then follows every runtime change (the switch, Save, Repair, a table added or removed).
+  // A refused Get shows the missing-settings alert.
   async function openSettings() {
+    ui.problemPill($('settings-problems'));
     $('automation-settings').setAttribute('aria-busy', 'true');
     $('add-host').onclick = () => {
-      addHost('', true);
-      settings.edited = true;
+      addHost('');
+      markEdited();
       const inputs = $('hosts-list').querySelectorAll('input');
       inputs[inputs.length - 1].focus();
     };
-    $('runtimeWorker').onchange = () => (settings.edited = true);
+    $('runtimeWorker').onchange = markEdited;
     $('record-updates').onclick = () => {
       if (ui.blocked($('record-updates'))) return;
-      settings.edited = true;
       $('record-updates').setAttribute(
         'aria-checked',
         String($('record-updates').getAttribute('aria-checked') !== 'true'),
       );
+      markEdited();
     };
-    $('save-settings').onclick = () => ui.busy($('save-settings'), 'Saving…', 'settings', save);
+    $('save-settings').onclick = () =>
+      ui.busy($('save-settings'), 'Saving…', 'settings-save', save);
+    $('settings-discard').onclick = () => {
+      if (!ui.runtime()) return;
+      settings.edited = false;
+      renderSettings(ui.runtime());
+      markEdited();
+      $('settings-title').focus();
+    };
+    $('add-table').onclick = () => {
+      renderPicker();
+      $('table-picker').hidden = !$('table-picker').hidden;
+      if (!$('table-picker').hidden) $('enableTable').focus();
+    };
+    $('enableTable').onchange = () =>
+      $('enableTable').value ? addTable($('enableTable').value) : undefined;
     // Once Repair all ends, the button shows what is still pending, not its progress text.
     $('repair-all').onclick = async () => {
       if (ui.blocked($('repair-all'))) return;
       await ui.busy($('repair-all'), 'Repairing…', 'settings', repairAll);
-      if (ui.runtime()) renderTracking(ui.runtime());
+      if (ui.runtime()) renderTables(ui.runtime());
     };
     $('stop-tracking').onclick = async () => {
       if (ui.blocked($('stop-tracking'))) return;
@@ -1304,24 +1320,25 @@
         ui.feedback('settings', 'Change tracking stopped for every table.');
       });
     };
-    [settings.workers] = await Promise.all([workers(), loadConnections(), ui.runtimeReady()]);
+    [settings.workers] = await Promise.all([
+      workers(),
+      loadConnections(),
+      loadTables(),
+      countTemplates(),
+      ui.runtimeReady(),
+    ]);
     ui.onRuntime(showSettings);
     showSettings(ui.runtime());
     const link = ui.deeplink();
-    if (link?.table)
-      $('tracking-rows')
-        .querySelector(
-          '[data-table="' + link.table + '"] button, [data-table="' + link.table + '"] td',
-        )
-        ?.focus();
+    if (link?.table) focusTable(link.table);
   }
 
   function showSettings(runtime) {
     $('settings-missing').hidden = !!runtime;
-    $('automation-settings').querySelector('.stack').hidden = !runtime;
+    for (const id of ['automation-card', 'automation-settings', 'tables-card', 'danger-zone'])
+      $(id).hidden = !runtime;
     if (!runtime) {
-      $('save-settings').hidden = true;
-      $('settings-readonly').hidden = true;
+      $('settings-footer').hidden = true;
       $('automation-settings').removeAttribute('aria-busy');
       return;
     }
@@ -1329,7 +1346,7 @@
     // Table names come from metadata, read once per table; the logical name shows until then.
     const scopes = (runtime.Registration?.Readiness || []).map((r) => r.Scope);
     if (scopes.some((s) => s !== 'team' && !labels.has(s)))
-      loadLabels(scopes).then(() => ui.runtime() && renderTracking(ui.runtime()));
+      loadLabels(scopes).then(() => ui.runtime() && renderTables(ui.runtime()));
   }
 
   // Every row of a query, page by page as the platform returns them.
@@ -1356,62 +1373,150 @@
       return [];
     }
   }
+  // The tables document management is enabled for, which ＋ Add table offers; their display
+  // names label the Tables card too.
+  async function loadTables() {
+    const context = xrm.Utility.getGlobalContext();
+    let next =
+      context.getClientUrl() +
+      '/api/data/v9.2/EntityDefinitions?$select=LogicalName,DisplayName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,IsDocumentManagementEnabled&$filter=IsDocumentManagementEnabled eq true';
+    try {
+      const rows = [];
+      while (next) {
+        const response = await fetch(next, {
+          credentials: 'same-origin',
+          headers: { Accept: 'application/json', 'OData-Version': '4.0' },
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error?.message || 'Dataverse request failed.');
+        rows.push(...data.value);
+        next = data['@odata.nextLink'] || null;
+      }
+      settings.tables = rows
+        .filter((t) => t.PrimaryNameAttribute)
+        .map((t) => ({
+          name: t.LogicalName,
+          label: t.DisplayName?.UserLocalizedLabel?.Label || t.LogicalName,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label));
+      for (const t of settings.tables) labels.set(t.name, t.label);
+    } catch (error) {
+      settings.tables = [];
+      ui.feedback('settings', "Couldn't load tables: " + (error.message || String(error)), 'error');
+    }
+  }
+  // How many templates each table has, from one read of every template's table. Null when the
+  // read fails: the rows then show no count.
+  async function countTemplates() {
+    try {
+      const counts = new Map();
+      for (const row of await everything('asx_template', '?$select=asx_table'))
+        counts.set(row.asx_table, (counts.get(row.asx_table) || 0) + 1);
+      settings.counts = counts;
+    } catch {
+      settings.counts = null;
+    }
+  }
+
+  const hasWorker = (runtime) => !!runtime.WorkerId && runtime.WorkerId !== EMPTY;
+  function workerName(runtime) {
+    if (!hasWorker(runtime)) return 'Choose an application user';
+    return (
+      settings.workers.find((w) => w.systemuserid === runtime.WorkerId)?.fullname ||
+      'Current run-as user (disabled or not found)'
+    );
+  }
 
   function renderSettings(runtime) {
     const editable = runtime.CanChange !== false;
-    $('settings-readonly').hidden = editable;
-    $('save-settings').hidden = !editable;
     // Fields the admin is editing keep their values when the runtime changes elsewhere; Save
     // reads the current row version and Enabled from the shared runtime, not from the form.
     if (!settings.edited) {
       const worker = $('runtimeWorker');
       worker.replaceChildren(...settings.workers.map((w) => option(w.systemuserid, w.fullname)));
       // A disabled or deleted run-as user stays selectable so saving keeps it.
-      if (
-        runtime.WorkerId &&
-        runtime.WorkerId !== EMPTY &&
-        !settings.workers.some((w) => w.systemuserid === runtime.WorkerId)
-      )
+      if (hasWorker(runtime) && !settings.workers.some((w) => w.systemuserid === runtime.WorkerId))
         worker.append(option(runtime.WorkerId, 'Current run-as user (disabled or not found)'));
-      if (!runtime.WorkerId || runtime.WorkerId === EMPTY)
-        worker.prepend(option('', 'Choose an application user'));
-      worker.value = runtime.WorkerId && runtime.WorkerId !== EMPTY ? runtime.WorkerId : '';
+      if (!hasWorker(runtime)) worker.prepend(option('', 'Choose an application user'));
+      worker.value = hasWorker(runtime) ? runtime.WorkerId : '';
+      const hosts = runtime.SharePointHosts || [];
       $('hosts-list').replaceChildren();
-      for (const host of runtime.SharePointHosts?.length ? runtime.SharePointHosts : [''])
-        addHost(host, editable);
+      if (editable) for (const host of hosts.length ? hosts : ['']) addHost(host, host);
+      else $('hosts-list').append(...hosts.map((host) => el('li', host, 'host')));
       $('record-updates').setAttribute('aria-checked', String(!!runtime.ProcessRecordUpdates));
     }
-    $('runtimeWorker').disabled = !editable;
-    $('add-host').hidden = !editable;
-    $('hosts-list')
-      .querySelectorAll('input, button')
-      .forEach((n) => (n.disabled = !editable));
-    ui.disable($('record-updates'), 'record-updates-reason', editable ? null : ADMIN_ONLY);
-    ui.disable($('stop-tracking'), 'stop-tracking-reason', editable ? null : ADMIN_ONLY);
+    // Read-only: the values as text, and no control that changes anything.
+    $('runtimeWorker').hidden = $('runtimeWorker').disabled = !editable;
+    $('worker-text').hidden = editable;
+    $('worker-text').textContent = workerName(runtime);
+    $('record-updates').hidden = !editable;
+    $('record-updates-text').hidden = editable;
+    $('record-updates-text').textContent = runtime.ProcessRecordUpdates ? 'On' : 'Off';
+    for (const id of ['add-host', 'add-table', 'stop-tracking']) $(id).hidden = !editable;
+    if (!editable) $('table-picker').hidden = true;
     renderSwitch();
-    renderTracking(runtime);
+    renderTables(runtime);
+    markEdited();
     $('automation-settings').removeAttribute('aria-busy');
   }
 
-  function addHost(value, editable) {
+  // A host row. `original` is the saved host the row was drawn for ('' for the empty row of a
+  // profile with none); a row the admin added has none.
+  function addHost(value, original = null) {
     const item = el('li', null, 'host row');
     const field = el('input');
     field.type = 'text';
     field.setAttribute('inputmode', 'url');
     field.setAttribute('spellcheck', 'false');
     field.value = value;
-    field.oninput = () => (settings.edited = true);
+    if (original != null) field.dataset.original = original;
+    field.oninput = markEdited;
     const index = $('hosts-list').querySelectorAll('li').length + 1;
     field.setAttribute('aria-label', 'SharePoint host name ' + index);
-    const remove = button('Remove', () => {
-      settings.edited = true;
-      item.remove();
-      $('add-host').focus();
-    });
+    const remove = button(
+      'Remove',
+      () => {
+        item.remove();
+        markEdited();
+        $('add-host').focus();
+      },
+      'link',
+    );
     remove.setAttribute('aria-label', 'Remove host ' + (value || index));
-    field.disabled = remove.disabled = !editable;
     item.append(field, remove);
     $('hosts-list').append(item);
+  }
+
+  // Changes not saved yet: the run-as user, record updates, and each host row that differs from
+  // the saved host it was drawn for, is new, or is gone. Changed and new rows are tinted.
+  function unsavedCount(runtime) {
+    if (!runtime || runtime.CanChange === false) return 0;
+    let count = 0;
+    if ($('runtimeWorker').value !== (hasWorker(runtime) ? runtime.WorkerId : '')) count++;
+    if (
+      ($('record-updates').getAttribute('aria-checked') === 'true') !==
+      !!runtime.ProcessRecordUpdates
+    )
+      count++;
+    const kept = new Set();
+    for (const field of $('hosts-list').querySelectorAll('input')) {
+      const value = field.value.trim().toLowerCase();
+      const known = 'original' in field.dataset;
+      if (known) kept.add(field.dataset.original);
+      const edited = known ? value !== field.dataset.original : value !== '';
+      field.classList.toggle('is-edited', edited);
+      if (edited) count++;
+    }
+    return count + (runtime.SharePointHosts || []).filter((h) => !kept.has(h)).length;
+  }
+  // The save bar shows while there are unsaved changes, with their count.
+  function markEdited() {
+    const runtime = ui.runtime();
+    const count = unsavedCount(runtime);
+    settings.edited = count > 0;
+    $('settings-footer').hidden = !settings.edited;
+    $('settings-unsaved').textContent =
+      count === 1 ? '1 unsaved change' : count + ' unsaved changes';
   }
 
   async function save() {
@@ -1450,63 +1555,172 @@
     settings.edited = false;
     ui.setRuntime(result);
     ui.feedback('settings', 'Settings saved.');
+    $('settings-title').focus();
   }
 
-  function renderTracking(runtime) {
+  // The enabled tables: the profile's tables and every table change tracking reports on.
+  const enabledTables = (runtime) =>
+    new Set(
+      [
+        ...(runtime?.Tables || []),
+        ...(runtime?.Registration?.Readiness || []).map((r) => r.Scope),
+      ].filter((t) => t && t !== 'team'),
+    );
+  const tableLabel = (scope) => (scope === 'team' ? 'Team access events' : label(scope));
+
+  function renderPicker() {
+    const enabled = enabledTables(ui.runtime());
+    $('enableTable').replaceChildren(
+      option('', 'Choose a table'),
+      ...(settings.tables || [])
+        .filter((t) => !enabled.has(t.name))
+        .map((t) => option(t.name, t.label)),
+    );
+    $('enableTable').value = '';
+  }
+
+  // One row per enabled table, by name, with team access events last: its template count, its
+  // change tracking, and Repair and Remove for an administrator.
+  function renderTables(runtime) {
+    const rows = $('tables-rows');
+    // Never under an open confirmation (as Monitor's lists): removeTable redraws when it closes.
+    settings.tablesStale = !!rows.querySelector('.confirm[role=group]');
+    if (settings.tablesStale) return;
     const registration = runtime.Registration || { Readiness: [] };
     $('tracking-error').hidden = !registration.Error;
     $('tracking-error').textContent = registration.Error || '';
     const editable = runtime.CanChange !== false;
-    $('tracking-rows').replaceChildren(
-      ...(registration.Readiness || []).map((r) => {
-        const [text, repairable] = TRACKING[r.Status] || [r.Status, true];
-        const tr = el('tr');
-        tr.dataset.table = r.Scope;
-        tr.setAttribute('data-focus-row', '');
-        const action = el('td');
-        action.setAttribute('data-actions', '');
-        if (repairable) {
-          const repair = button('Repair', () => {
-            if (ui.blocked(repair)) return undefined;
-            return ui.busy(repair, 'Repairing…', 'settings', async () => {
-              const result = await runtimeApi({
-                Command: 'Register',
-                Table: r.Scope,
-                RowVersion: ui.runtime().RowVersion,
-              });
-              ui.withFocus(() => ui.setRuntime(result));
-            });
-          });
-          repair.dataset.focusKey = 'tracking:' + r.Scope;
-          repair.setAttribute(
-            'aria-label',
-            'Repair ' + (r.Scope === 'team' ? 'team access events' : label(r.Scope)),
-          );
-          action.append(repair);
-          if (!editable) ui.disable(repair, 'tracking-reason-' + r.Scope, ADMIN_ONLY);
-        } else if (r.Status === 'WorkerCannotRead') {
-          const how = el('a', 'How to grant access');
-          how.setAttribute('href', INSTALL_DOCS + '#configure-and-enable');
-          how.setAttribute('target', '_blank');
-          how.setAttribute('rel', 'noopener');
-          action.append(how);
-        }
-        tr.append(
-          cell(el('span', r.Scope === 'team' ? 'Team access events' : label(r.Scope))),
-          cell(el('span', text)),
-          action,
-        );
-        return tr;
-      }),
-    );
+    const status = new Map((registration.Readiness || []).map((r) => [r.Scope, r.Status]));
+    const scopes = [...new Set([...(runtime.Tables || []), ...status.keys()])]
+      .filter(Boolean)
+      .sort(
+        (a, b) => (a === 'team') - (b === 'team') || tableLabel(a).localeCompare(tableLabel(b)),
+      );
+    rows.replaceChildren(...scopes.map((s) => tableRow(s, status.get(s), editable)));
     const pending =
       registration.Pending ??
       (registration.Readiness || []).filter((r) => TRACKING[r.Status]?.[1]).length;
     if (!$('repair-all').dataset.busy) {
-      $('repair-all').hidden = pending < 2;
+      $('repair-all').hidden = pending < 2 || !editable;
       $('repair-all').textContent = 'Repair all (' + pending + ')';
     }
-    ui.disable($('repair-all'), 'repair-all-reason', editable ? null : ADMIN_ONLY);
+  }
+
+  function tableRow(scope, state, editable) {
+    const name = tableLabel(scope);
+    const row = el('div', null, 'card-row tables-grid');
+    row.dataset.table = scope;
+    row.setAttribute('data-focus-row', '');
+    row.setAttribute('role', 'listitem');
+    const about = el('div');
+    about.append(
+      el('span', name, 'table-name'),
+      el(
+        'span',
+        scope === 'team'
+          ? 'Keeps library access in step with team membership'
+          : settings.counts
+            ? plural(settings.counts.get(scope) || 0, 'template', 'templates')
+            : '',
+        'sub',
+      ),
+    );
+    const tracking = el('div', null, 'tracking');
+    const [text, repairable] = state ? TRACKING[state] || [state, true] : [null, false];
+    if (state) tracking.append(ui.status(state === 'Ready' ? 'ok' : 'attention', text));
+    if (state === 'WorkerCannotRead') {
+      const how = el('a', 'How to grant access');
+      how.setAttribute('href', INSTALL_DOCS + '#configure-and-enable');
+      how.setAttribute('target', '_blank');
+      how.setAttribute('rel', 'noopener');
+      tracking.append(how);
+    }
+    const actions = el('div', null, 'row table-actions');
+    actions.setAttribute('data-actions', '');
+    if (editable && repairable) {
+      const repair = button('Repair', () => {
+        if (ui.blocked(repair)) return undefined;
+        return ui.busy(repair, 'Repairing…', 'settings', async () => {
+          const result = await runtimeApi({
+            Command: 'Register',
+            Table: scope,
+            RowVersion: ui.runtime().RowVersion,
+          });
+          ui.withFocus(() => ui.setRuntime(result));
+        });
+      });
+      repair.dataset.focusKey = 'tracking:' + scope;
+      repair.setAttribute(
+        'aria-label',
+        'Repair ' + (scope === 'team' ? 'team access events' : name),
+      );
+      actions.append(repair);
+    }
+    if (editable && scope !== 'team') {
+      const remove = button('Remove', () => removeTable(scope, remove), 'link muted');
+      remove.dataset.focusKey = 'remove:' + scope;
+      remove.setAttribute('aria-label', 'Remove ' + name);
+      actions.append(remove);
+    }
+    row.append(about, tracking, actions);
+    return row;
+  }
+
+  // A table's row takes focus: its first action, else the row itself.
+  function focusTable(table) {
+    const row = $('tables-rows').querySelector('[data-table="' + table + '"]');
+    if (!row) return;
+    const first = row.querySelector('button');
+    if (first) return first.focus();
+    row.tabIndex = -1;
+    return row.focus();
+  }
+
+  async function addTable(name) {
+    const picker = $('enableTable');
+    if (picker.disabled) return;
+    picker.disabled = true;
+    ui.clearFeedback('settings');
+    try {
+      const result = await runtimeApi({ Command: 'AddTable', Table: name });
+      await countTemplates();
+      $('table-picker').hidden = true;
+      ui.setRuntime(result);
+      ui.feedback('settings', label(name) + ' added.');
+      focusTable(name);
+    } catch (error) {
+      ui.feedback('settings', error.message || String(error), 'error');
+    } finally {
+      picker.disabled = false;
+    }
+  }
+
+  async function removeTable(table, control) {
+    if (ui.blocked(control)) return;
+    const place = confirmHost(control.closest('[data-table]'));
+    let ok = false;
+    try {
+      ok = await ui.confirmInline(control, {
+        host: place.host,
+        text:
+          'Stop creating folders for ' +
+          label(table) +
+          '? Queued folder work for this table is cancelled. Templates are kept, and nothing in SharePoint is deleted.',
+        confirm: 'Remove table',
+        keep: 'Keep table',
+        danger: true,
+      });
+    } finally {
+      place.remove();
+      if (settings.tablesStale && ui.runtime()) renderTables(ui.runtime());
+    }
+    if (!ok) return;
+    await ui.busy(control, 'Remove', 'settings', async () => {
+      const result = await runtimeApi({ Command: 'RemoveTable', Table: table });
+      await countTemplates();
+      ui.withFocus(() => ui.setRuntime(result));
+      ui.feedback('settings', label(table) + ' removed. Its templates are kept.');
+    });
   }
 
   // Register repeatedly until nothing is pending or a call makes no progress.
@@ -1551,18 +1765,25 @@
         "?$select=connectionreferencedisplayname,connectionid,connectorid&$filter=startswith(connectionreferencelogicalname,'asx_')",
       );
       $('connection-list').replaceChildren(
-        ...rows.entities.map((r) =>
-          el(
-            'li',
-            r.connectionreferencedisplayname +
-              ' · ' +
-              (r.connectionid ? 'Connected' : 'Not connected'),
-          ),
-        ),
+        ...rows.entities.map((r) => {
+          const item = el('li', null, 'card-row');
+          item.append(
+            el('span', r.connectionreferencedisplayname),
+            ui.status(
+              r.connectionid ? 'ok' : 'attention',
+              r.connectionid ? 'Connected' : 'Not connected',
+            ),
+          );
+          return item;
+        }),
       );
     } catch (error) {
       $('connection-list').replaceChildren(
-        el('li', "Couldn't read the connections: " + (error.message || String(error)), 'error'),
+        el(
+          'li',
+          "Couldn't read the connections: " + (error.message || String(error)),
+          'card-row error',
+        ),
       );
     }
   }

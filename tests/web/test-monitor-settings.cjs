@@ -47,6 +47,8 @@ async function boot({
   summary = {},
   runtime = {},
   workers,
+  // Rows a table read answers with, in place of the defaults below.
+  rows = {},
   handle = () => null,
   getGate = null,
 } = {}) {
@@ -116,8 +118,9 @@ async function boot({
     },
     WebApi: {
       retrieveMultipleRecords: async (table) => ({
-        entities:
-          table === 'systemuser'
+        entities: rows[table]
+          ? rows[table]
+          : table === 'systemuser'
             ? workers || [{ systemuserid: 'worker-1', fullname: 'Documents worker' }]
             : table === 'asx_runtimetable'
               ? [{ asx_logicalname: 'account' }]
@@ -187,7 +190,20 @@ async function boot({
     console,
     navigator: { clipboard: { writeText: async () => {} } },
     crypto: require('node:crypto').webcrypto,
-    fetch: async () => ({ ok: true, json: async () => ({ RolePrivileges: [{}] }) }),
+    // Privilege checks hold every role; the document-enabled tables are account, contact, lead.
+    fetch: async (url) => ({
+      ok: true,
+      json: async () =>
+        String(url).includes('EntityDefinitions')
+          ? {
+              value: ['account', 'contact', 'lead'].map((t) => ({
+                LogicalName: t,
+                DisplayName: { UserLocalizedLabel: { Label: t[0].toUpperCase() + t.slice(1) } },
+                PrimaryNameAttribute: t === 'contact' ? 'fullname' : 'name',
+              })),
+            }
+          : { RolePrivileges: [{}] },
+    }),
     setTimeout,
     clearTimeout,
     // The page's 60-second timers are collected; tick() runs them once, as if a minute passed.
@@ -1048,10 +1064,13 @@ async function boot({
     assert.deepEqual(save.SharePointHosts, ['contoso.sharepoint.com', 'fabrikam.sharepoint.com']);
     assert.equal(save.Enabled, true);
     assert.equal(s.$('fb-settings').textContent, 'Settings saved.');
-    const rows = s.$('tracking-rows').querySelectorAll('tr');
+    const rows = s.$('tables-rows').querySelectorAll('[data-table]');
     assert.match(rows[0].visibleText, /Account.*Some steps missing.*Repair/);
     assert.match(rows[1].visibleText, /Run-as user can't read this table/);
-    assert.equal(rows[1].querySelectorAll('button').length, 0, 'WorkerCannotRead has no Repair');
+    assert.ok(
+      !rows[1].querySelectorAll('button').some((b) => b.textContent === 'Repair'),
+      'WorkerCannotRead has no Repair',
+    );
     await s.press(rows[0].querySelector('button'));
     assert.deepEqual(s.sent.at(-1)[1], { Command: 'Register', Table: 'account', RowVersion: '7' });
     await s.press(s.$('repair-all'));
@@ -1076,11 +1095,6 @@ async function boot({
       s.$('open-connections').getAttribute('href'),
       'https://make.powerautomate.com/environments/env-1/connections',
     );
-    // A non-administrator sees read-only settings.
-    const viewer = await boot({ tab: 'settings', runtime: { CanChange: false } });
-    assert.equal(viewer.$('settings-readonly').hidden, false);
-    assert.equal(viewer.$('save-settings').hidden, true);
-    assert.equal(viewer.$('runtimeWorker').disabled, true);
   }
   {
     // Repair all with no progress stops and says so.
@@ -1132,7 +1146,7 @@ async function boot({
       { Command: 'SetEnabled', Enabled: false, RowVersion: '7' },
     ]);
     assert.equal(s.$('automation-switch-settings').getAttribute('aria-checked'), 'false');
-    assert.equal(s.$('automation-state-settings').textContent, 'Paused');
+    assert.equal(s.$('automation-state-settings').textContent, 'Automation is paused');
     assert.equal(s.$('fb-settings').textContent, '');
     // Turning on gives the Settings form the new row version and keeps its unsaved edits; Save
     // then sends that version and the running state.
@@ -1156,7 +1170,7 @@ async function boot({
   }
   {
     // The Settings switch reports a refused change in the Settings line and keeps its state; a
-    // non-administrator sees the reason.
+    // non-administrator has no switch, only the state as text.
     const stale = await boot({
       tab: 'settings',
       handle: (api, b) =>
@@ -1173,11 +1187,8 @@ async function boot({
     assert.equal(stale.$('automation-switch-settings').getAttribute('aria-checked'), 'true');
     const viewer = await boot({ tab: 'settings', runtime: { CanChange: false } });
     const off = viewer.$('automation-switch-settings');
-    assert.equal(off.getAttribute('aria-disabled'), 'true');
-    assert.equal(
-      viewer.$('automation-reason-settings').textContent,
-      'Only a System Administrator can pause or resume automation.',
-    );
+    assert.equal(off.hidden, true);
+    assert.equal(viewer.$('automation-state-settings').textContent, 'Automation is running');
     await viewer.press(off);
     assert.equal(viewer.sent.filter(([, b]) => b.Command === 'SetEnabled').length, 0);
   }
@@ -1214,6 +1225,174 @@ async function boot({
     });
     assert.equal(refused.$('settings-missing').hidden, false);
     assert.equal(refused.$('automation-settings').hasAttribute('aria-busy'), false);
+  }
+  // Settings as cards -------------------------------------------------------------------------
+  {
+    // Automation card: the switch applies at once through SetEnabled and is not part of Save.
+    const s = await boot({ tab: 'settings' });
+    assert.equal(s.$('automation-state-settings').textContent, 'Automation is running');
+    assert.equal(
+      s.$('help-automation-settings').textContent,
+      "Turning it off pauses folder and access work. Changes keep queueing and run when it's back on.",
+    );
+    await s.press(s.$('automation-switch-settings'));
+    assert.deepEqual(s.sent.filter(([a]) => a === 'asx_RuntimeAdmin').at(-1)[1], {
+      Command: 'SetEnabled',
+      Enabled: false,
+      RowVersion: '7',
+    });
+    assert.equal(s.$('automation-state-settings').textContent, 'Automation is paused');
+    assert.equal(s.$('settings-footer').hidden, true, 'The switch is not an unsaved change');
+  }
+  {
+    // Automation settings: edits show the sticky footer with a count; Discard resets from the
+    // runtime; Save sends the form and hides the footer.
+    const s = await boot({ tab: 'settings' });
+    assert.equal(s.$('settings-footer').hidden, true);
+    assert.equal(
+      s.$('help-record-updates').textContent,
+      'Applies to records changed from now on. To update existing records, re-run their template.',
+    );
+    const host = s.$('hosts-list').querySelector('input');
+    host.value = 'fabrikam.sharepoint.com';
+    host.oninput();
+    assert.equal(s.$('settings-footer').hidden, false);
+    assert.equal(s.$('settings-unsaved').textContent, '1 unsaved change');
+    assert.ok(host.classList.contains('is-edited'));
+    await s.press(s.$('record-updates'));
+    assert.equal(s.$('settings-unsaved').textContent, '2 unsaved changes');
+    await s.press(s.$('settings-discard'));
+    assert.equal(s.$('settings-footer').hidden, true);
+    assert.equal(s.$('hosts-list').querySelector('input').value, 'contoso.sharepoint.com');
+    assert.equal(s.$('record-updates').getAttribute('aria-checked'), 'false');
+    const again = s.$('hosts-list').querySelector('input');
+    again.value = 'fabrikam.sharepoint.com';
+    again.oninput();
+    await s.press(s.$('save-settings'));
+    const saved = s.sent.filter(([a]) => a === 'asx_RuntimeAdmin').at(-1)[1];
+    assert.equal(saved.Command, 'Save');
+    assert.deepEqual([...saved.SharePointHosts], ['fabrikam.sharepoint.com']);
+    assert.equal(s.$('settings-footer').hidden, true);
+    assert.equal(s.$('fb-settings').textContent, 'Settings saved.');
+  }
+  {
+    // Tables card: one row per enabled table with its template count and change tracking, team
+    // access events last; Repair, the access link, and Remove with the existing confirmation.
+    const s = await boot({
+      tab: 'settings',
+      runtime: {
+        Registration: {
+          Readiness: [
+            { Scope: 'contact', Status: 'Outdated' },
+            { Scope: 'account', Status: 'Ready' },
+            { Scope: 'lead', Status: 'WorkerCannotRead' },
+            { Scope: 'team', Status: 'Ready' },
+          ],
+          Pending: 1,
+          Error: null,
+        },
+      },
+      rows: {
+        asx_template: [
+          { asx_table: 'account' },
+          { asx_table: 'account' },
+          { asx_table: 'contact' },
+        ],
+      },
+    });
+    const rows = s.$('tables-rows').querySelectorAll('[data-table]');
+    assert.deepEqual(
+      rows.map((r) => r.dataset.table),
+      ['account', 'contact', 'lead', 'team'],
+    );
+    assert.equal(rows[0].querySelector('.sub').textContent, '2 templates');
+    assert.equal(rows[1].querySelector('.sub').textContent, '1 template');
+    assert.equal(rows[0].querySelector('.status').visibleText, 'Ready');
+    assert.equal(rows[0].querySelector('.dot').dataset.tone, 'ok');
+    assert.equal(rows[1].querySelector('.status').visibleText, 'Out of date');
+    assert.equal(rows[1].querySelector('.dot').dataset.tone, 'attention');
+    assert.ok(rows[1].querySelectorAll('button').some((b) => b.textContent === 'Repair'));
+    assert.equal(rows[2].querySelector('a').textContent, 'How to grant access');
+    assert.equal(rows[3].querySelector('.table-name').textContent, 'Team access events');
+    assert.equal(
+      rows[3].querySelector('.sub').textContent,
+      'Keeps library access in step with team membership',
+    );
+    assert.ok(!rows[3].querySelectorAll('button').some((b) => b.textContent === 'Remove'));
+    assert.equal(s.$('repair-all').hidden, true, 'Repair all needs two or more');
+    const remove = rows[0].querySelectorAll('button').find((b) => b.textContent === 'Remove');
+    await s.press(remove);
+    assert.match(
+      s.document.activeElement.textContent,
+      /^Stop creating folders for .+\? Queued folder work for this table is cancelled\. Templates are kept, and nothing in SharePoint is deleted\.$/,
+    );
+    await s.press(s.document.querySelector('.confirm').querySelectorAll('button')[0]);
+    assert.deepEqual(s.sent.filter(([a]) => a === 'asx_RuntimeAdmin').at(-1)[1], {
+      Command: 'RemoveTable',
+      Table: 'account',
+    });
+    assert.match(s.$('fb-settings').textContent, / removed\. Its templates are kept\.$/);
+  }
+  {
+    // ＋ Add table offers the document-enabled tables not enabled yet, and adds one.
+    const s = await boot({ tab: 'settings' });
+    await s.press(s.$('add-table'));
+    const picker = s.$('enableTable');
+    assert.deepEqual(
+      picker.querySelectorAll('option').map((o) => o.value),
+      ['', 'contact', 'lead'],
+    );
+    picker.value = 'lead';
+    await picker.onchange();
+    await s.document.settle();
+    assert.deepEqual(s.sent.filter(([a]) => a === 'asx_RuntimeAdmin').at(-1)[1], {
+      Command: 'AddTable',
+      Table: 'lead',
+    });
+  }
+  {
+    // Connections: dot and words; Before uninstalling keeps its confirmation.
+    const s = await boot({ tab: 'settings' });
+    assert.equal(s.$('open-connections').textContent, 'Open in Power Automate');
+    const items = s.$('connection-list').querySelectorAll('li');
+    assert.ok(items.every((li) => li.querySelector('.dot')));
+    assert.equal(
+      s.$('help-stop-tracking').textContent,
+      'Stops capturing record and team changes for every table until change tracking is repaired.',
+    );
+  }
+  {
+    // Read-only: values as text, no inputs, switches or actions, never the footer.
+    const s = await boot({ tab: 'settings', runtime: { CanChange: false } });
+    const shown = s
+      .$('settings')
+      .querySelectorAll('input, select, [role=switch]')
+      .filter((n) => !n.closest('[hidden]') && !n.hidden);
+    assert.equal(shown.length, 0);
+    assert.match(s.$('automation-settings').visibleText, /contoso\.sharepoint\.com/);
+    assert.match(s.$('automation-card').visibleText, /Automation is running/);
+    for (const id of ['add-table', 'repair-all', 'stop-tracking', 'add-host'])
+      assert.equal(s.$(id).hidden, true, id);
+    assert.equal(s.$('tables-rows').querySelectorAll('button').length, 0);
+    assert.equal(s.$('settings-footer').hidden, true);
+    assert.equal(s.$('settings-meta').textContent, 'Only System Administrators can change these');
+  }
+  {
+    // The header links to Monitor with the problem count (owner decision 4); none at 0.
+    const s = await boot({ tab: 'settings', summary: { BlockedRecords: 1, TemplateRuns: 2 } });
+    const pill = s.$('settings-problems').querySelector('.problem-pill');
+    assert.equal(pill.hidden, false);
+    assert.equal(pill.textContent, 'Monitor · 1 problem');
+    await s.press(pill);
+    assert.equal(
+      s.sent
+        .filter(([k]) => k === 'navigate')
+        .at(-1)[1]
+        .data.split('-')[0],
+      'monitor',
+    );
+    const quiet = await boot({ tab: 'settings' });
+    assert.equal(quiet.$('settings-problems').querySelector('.problem-pill').hidden, true);
   }
   // Fix round 1 -------------------------------------------------------------------------------
   {
@@ -1380,7 +1559,7 @@ async function boot({
     assert.equal(m.$('fb-advanced').textContent, 'Operation not found.');
   }
   {
-    // A per-table Repair that makes the table Ready leaves focus on the Change tracking heading.
+    // A per-table Repair that makes the table Ready keeps focus in its row: its Remove.
     const ready = (status, pending) => ({
       WorkerId: 'worker-1',
       Enabled: true,
@@ -1398,13 +1577,13 @@ async function boot({
       runtime: { Registration: ready('Missing', 1).Registration },
       handle: (api, b) => (b.Command === 'Register' ? ready('Ready', 0) : null),
     });
-    const repair = s.$('tracking-rows').querySelector('button');
+    const repair = s.$('tables-rows').querySelector('button');
     repair.focus();
     await s.press(repair);
-    assert.equal(s.document.activeElement.id, 'tracking-title');
+    assert.equal(s.document.activeElement.getAttribute('aria-label'), 'Remove Account');
   }
   console.log(
-    'PASS Monitor and Settings: lists on open, names and Details, row actions, Retry now, re-runs, 60-second re-read announcements, recovery choices (lists and Advanced), load errors, Refresh, the automation pill and its Settings link, checklist, Check a record, Advanced, Settings, Repair all, danger zone, the Settings switch and its refusals, runtime shared with the form, no tick off Monitor, a late or refused Get; fix round 1: the tick keeps appended rows and drops removed ones, defers redraws under confirmations, Details and focus; checkboxes only on re-runnable rows with per-row reasons; Show 50 more once, and its errors; capped Refresh text; recent lookup errors; Repair focus and text; one announcement for the switch, one Monitor line for every announcement of a tick. Fake DOM; browser QA separate.',
+    'PASS Monitor and Settings: lists on open, names and Details, row actions, Retry now, re-runs, 60-second re-read announcements, recovery choices (lists and Advanced), load errors, Refresh, the automation pill and its Settings link, checklist, Check a record, Advanced, Settings, Repair all, danger zone, the Settings switch and its refusals, Settings as cards (the automation card, the save bar with its count and Discard, the Tables card with counts, change tracking, Repair, Remove and Add table, Connections, read-only values, the Monitor problem pill), runtime shared with the form, no tick off Monitor, a late or refused Get; fix round 1: the tick keeps appended rows and drops removed ones, defers redraws under confirmations, Details and focus; checkboxes only on re-runnable rows with per-row reasons; Show 50 more once, and its errors; capped Refresh text; recent lookup errors; Repair focus and text; one announcement for the switch, one Monitor line for every announcement of a tick. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

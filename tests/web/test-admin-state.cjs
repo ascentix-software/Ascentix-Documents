@@ -365,9 +365,22 @@ async function boot({
     const t = await boot({ enabled: [], templates: [] });
     const rail = t.$('templateTree');
     assert.match(rail.visibleText, /No tables yet/);
-    assert.ok(t.find(rail, '＋ Add table'), 'Add table sits inside the empty state');
     assert.equal(t.$('template-bar').hidden, true, 'The template bar waits for a table');
     assert.match(t.$('no-template').visibleText, /No template selected/);
+  }
+  {
+    // Tables are managed in Settings: the rail has no Add table, Remove or Enable, and links there.
+    const t = await boot({ enabled: [], templates: [] });
+    assert.equal(t.$('addTable') === null, true, 'No Add table in the rail');
+    assert.equal(t.$('tablePicker') === null, true, 'No table picker in the rail');
+    await t.press(t.$('manage-tables'));
+    assert.equal(
+      t.sent
+        .filter(([k]) => k === 'navigate')
+        .at(-1)[1]
+        .data.split('-')[0],
+      'settings',
+    );
   }
   {
     // Opening a template: the bar and the version chip; no IDs in the panel.
@@ -547,36 +560,6 @@ async function boot({
       last.find(last.$('template-bar').querySelector('.confirm'), 'Delete template'),
     );
     assert.equal(last.document.activeElement.id, 'tables-heading');
-  }
-  {
-    // Tables rail: readiness words, Needs repair links to Settings, Remove table confirms with F-05 text.
-    const paused = await boot({ runtime: { Enabled: false } });
-    assert.match(paused.$('templateTree').visibleText, /Ready · automation paused/);
-    const broken = await boot({
-      runtime: {
-        Registration: {
-          Readiness: [{ Scope: 'account', Status: 'Missing' }],
-          Pending: 1,
-          Error: null,
-        },
-      },
-    });
-    await broken.press(broken.find(broken.$('templateTree'), 'Needs repair'));
-    assert.deepEqual(
-      broken.sent.filter(([k]) => k === 'navigate').at(-1)[1].data,
-      'settings-' + BUILD,
-    );
-    const t = await boot();
-    const remove = t
-      .$('templateTree')
-      .querySelectorAll('button')
-      .find((b) => b.getAttribute('aria-label') === 'Remove Account');
-    await t.press(remove);
-    assert.equal(
-      t.document.activeElement.textContent,
-      'Stop creating folders for Account? Queued folder work for this table is cancelled. Templates are kept, and nothing in SharePoint is deleted.',
-    );
-    assert.ok(t.find(t.$('templateTree'), 'Keep table'));
   }
   {
     // Another template with unsaved edits asks before it discards them.
@@ -1144,27 +1127,6 @@ async function boot({
     );
   }
   {
-    // Fix 5: a runtime result does not wipe an open rail confirmation; the rail redraws after it.
-    const t = await boot();
-    const remove = t
-      .$('templateTree')
-      .querySelectorAll('button')
-      .find((b) => b.getAttribute('aria-label') === 'Remove Account');
-    await t.press(remove);
-    t.window.AsxdUi.setRuntime({
-      WorkerId: 'worker-1',
-      Enabled: false,
-      CanChange: true,
-      RowVersion: '8',
-      Registration: { Readiness: [{ Scope: 'account', Status: 'Ready' }], Error: null },
-    });
-    await t.document.settle();
-    assert.ok(t.find(t.$('templateTree'), 'Keep table'), 'The open confirmation survives');
-    assert.doesNotMatch(t.$('templateTree').visibleText, /automation paused/);
-    await t.press(t.find(t.$('templateTree'), 'Keep table'));
-    assert.match(t.$('templateTree').visibleText, /Ready · automation paused/);
-  }
-  {
     // Fix 6: an unavailable condition field is not shown by its internal name.
     const d = draft();
     d.Destinations[0].Folders[1].Condition = {
@@ -1217,7 +1179,7 @@ async function boot({
     assert.equal(t.looked.length, picks, 'A blocked preview opens no picker');
   }
   console.log(
-    'PASS Folder templates: empty states, version chip, Publish and its reasons, unsaved-changes prompts, menu, Delete and focus after it, Schedule, Version history, rail, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, rail redraws wait for its confirmations, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload. Fake DOM; browser QA separate.',
+    'PASS Folder templates: empty states, version chip, Publish and its reasons, unsaved-changes prompts, menu, Delete and focus after it, Schedule, Version history, the rail and its Manage tables link, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

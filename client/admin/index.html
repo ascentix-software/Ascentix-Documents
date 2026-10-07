@@ -18,12 +18,9 @@
           <aside class="template-nav" aria-labelledby="tables-heading">
             <div class="row between" id="tables-header">
               <h2 id="tables-heading" tabindex="-1">Tables</h2>
-              <button id="addTable" type="button" class="secondary">＋ Add table</button>
-            </div>
-            <div id="tablePicker" hidden>
-              <label>Table to add<select id="enableTable"></select></label>
             </div>
             <div id="templateTree"></div>
+            <button id="manage-tables" type="button" class="link">Manage tables</button>
           </aside>
           <div class="template-main">
             <section id="template-bar" class="table-bar" hidden aria-label="Template">
@@ -525,104 +522,155 @@
       <section id="settings" class="page" aria-labelledby="settings-title" tabindex="-1" hidden>
         <header class="page-header">
           <h1 id="settings-title" tabindex="-1">Settings</h1>
+          <span id="settings-problems" class="problem-host"></span>
+          <p id="settings-meta" class="page-meta">Only System Administrators can change these</p>
         </header>
         <p class="feedback" id="fb-settings"></p>
-        <section
-          id="automation-settings"
-          class="card"
-          aria-labelledby="automation-settings-title"
-          aria-busy="true"
-        >
-          <h2 id="automation-settings-title">Automation settings</h2>
-          <p id="settings-readonly" hidden>
-            Only a System Administrator can change these settings.
-          </p>
-          <p id="settings-missing" role="alert" hidden>
-            No automation settings are installed. Import the Documents solution, then reopen this
-            page.
-          </p>
-          <div class="stack">
-            <label>Run as (application user)<select id="runtimeWorker" disabled></select></label>
-            <fieldset class="hosts">
-              <legend>SharePoint host names</legend>
-              <ul id="hosts-list"></ul>
-              <button id="add-host" type="button" class="secondary">＋ Add host</button>
-            </fieldset>
-            <button
-              id="automation-switch-settings"
-              type="button"
-              role="switch"
-              class="switch"
-              aria-checked="false"
-              aria-labelledby="automation-label-settings"
-              aria-describedby="help-automation-settings"
-            >
-              <span class="switch-track" aria-hidden="true"
-                ><span class="switch-thumb"></span
-              ></span>
-              <span id="automation-label-settings">Automation</span>
-              <span id="automation-state-settings" class="switch-state"></span>
-            </button>
-            <p class="help" id="help-automation-settings">
-              Off pauses folder and access work. Changes keep queueing and run when you turn it back
-              on.
-            </p>
-            <button
-              id="record-updates"
-              type="button"
-              role="switch"
-              class="switch"
-              aria-checked="false"
-              aria-labelledby="record-updates-label"
-              aria-describedby="help-record-updates"
-            >
-              <span class="switch-track" aria-hidden="true"
-                ><span class="switch-thumb"></span
-              ></span>
-              <span id="record-updates-label">Update folders when records change</span>
-            </button>
-            <p class="help" id="help-record-updates">
-              Applies to records changed from now on. To apply templates to existing records, re-run
-              them.
-            </p>
-          </div>
-          <div class="row" data-actions>
-            <button id="save-settings" type="button">Save settings</button>
-          </div>
-        </section>
-        <section id="tracking" class="card" aria-labelledby="tracking-title" data-focus-scope>
-          <h2 id="tracking-title" tabindex="-1" data-focus-heading>Change tracking</h2>
-          <p id="tracking-error" class="error" role="alert" hidden></p>
-          <table>
-            <caption class="sr-only">
-              Change tracking per table
-            </caption>
-            <thead>
-              <tr>
-                <th scope="col">Table</th>
-                <th scope="col">Status</th>
-                <th scope="col">Action</th>
-              </tr>
-            </thead>
-            <tbody id="tracking-rows"></tbody>
-          </table>
-          <div class="row" data-actions>
-            <button id="repair-all" type="button" class="secondary" hidden>Repair all</button>
-          </div>
-        </section>
-        <section class="card" aria-labelledby="connection-title">
-          <h2 id="connection-title">Connection</h2>
-          <ul id="connection-list"></ul>
-          <a id="open-connections" target="_blank" rel="noopener"
-            >Open connections in Power Automate</a
+        <p id="settings-missing" role="alert" hidden>
+          No automation settings are installed. Import the Documents solution, then reopen this
+          page.
+        </p>
+        <div class="page-body one-column">
+          <section
+            id="automation-card"
+            class="section-card"
+            aria-labelledby="automation-card-title"
           >
-        </section>
-        <section id="danger-zone" class="card danger-zone" aria-labelledby="danger-title">
-          <h2 id="danger-title">Before uninstalling</h2>
+            <h2 id="automation-card-title" class="sr-only">Automation</h2>
+            <div class="card-body switch-row">
+              <button
+                id="automation-switch-settings"
+                type="button"
+                role="switch"
+                class="switch"
+                aria-checked="false"
+                aria-labelledby="automation-card-title"
+                aria-describedby="help-automation-settings"
+              >
+                <span class="switch-track" aria-hidden="true"
+                  ><span class="switch-thumb"></span
+                ></span>
+              </button>
+              <div>
+                <p id="automation-state-settings" class="switch-title"></p>
+                <!-- prettier-ignore -->
+                <p class="help" id="help-automation-settings">Turning it off pauses folder and access work. Changes keep queueing and run when it's back on.</p>
+              </div>
+            </div>
+          </section>
+          <section
+            id="automation-settings"
+            class="section-card"
+            aria-labelledby="automation-settings-title"
+            aria-busy="true"
+          >
+            <div class="card-head"><h2 id="automation-settings-title">Automation settings</h2></div>
+            <div class="card-row setting">
+              <div>
+                <span class="label-text" id="worker-label">Run as</span
+                ><span class="sub">Application user</span>
+              </div>
+              <div id="worker-value">
+                <select id="runtimeWorker" aria-labelledby="worker-label" disabled></select>
+                <span id="worker-text" class="value-text" hidden></span>
+              </div>
+            </div>
+            <div class="card-row setting">
+              <div>
+                <span class="label-text" id="hosts-label">SharePoint host names</span
+                ><span class="sub">Sites must be on one of these</span>
+              </div>
+              <div>
+                <ul id="hosts-list" aria-labelledby="hosts-label"></ul>
+                <button id="add-host" type="button" class="link">＋ Add host</button>
+              </div>
+            </div>
+            <div class="card-row setting toggle">
+              <div>
+                <span class="label-text" id="record-updates-label"
+                  >Update folders when records change</span
+                >
+                <!-- prettier-ignore -->
+                <p class="help" id="help-record-updates">Applies to records changed from now on. To update existing records, re-run their template.</p>
+              </div>
+              <div id="record-updates-value">
+                <button
+                  id="record-updates"
+                  type="button"
+                  role="switch"
+                  class="switch"
+                  aria-checked="false"
+                  aria-labelledby="record-updates-label"
+                  aria-describedby="help-record-updates"
+                >
+                  <span class="switch-track" aria-hidden="true"
+                    ><span class="switch-thumb"></span
+                  ></span>
+                </button>
+                <span id="record-updates-text" class="value-text" hidden></span>
+              </div>
+            </div>
+          </section>
+          <section
+            id="tables-card"
+            class="section-card"
+            aria-labelledby="tables-title"
+            data-focus-scope
+          >
+            <div class="card-head">
+              <h2 id="tables-title" tabindex="-1" data-focus-heading>Tables</h2>
+              <span class="muted">Records in these tables get folders</span>
+              <div class="card-actions row" data-actions>
+                <button id="repair-all" type="button" class="secondary" hidden>Repair all</button>
+                <button id="add-table" type="button" class="link">＋ Add table</button>
+              </div>
+            </div>
+            <div id="table-picker" class="card-row" hidden>
+              <label>Table to add<select id="enableTable"></select></label>
+            </div>
+            <p id="tracking-error" class="card-row error" role="alert" hidden></p>
+            <div class="card-row col-head tables-grid" aria-hidden="true">
+              <span>Table</span><span>Change tracking</span><span></span>
+            </div>
+            <div id="tables-rows" role="list" aria-labelledby="tables-title"></div>
+          </section>
+          <section id="connections-card" class="section-card" aria-labelledby="connection-title">
+            <div class="card-head">
+              <h2 id="connection-title">Connections</h2>
+              <a id="open-connections" class="card-action" target="_blank" rel="noopener"
+                >Open in Power Automate</a
+              >
+            </div>
+            <ul id="connection-list" class="card-list"></ul>
+          </section>
+          <section id="danger-zone" class="section-card" aria-labelledby="danger-title">
+            <div class="card-body danger-body">
+              <div>
+                <h2 id="danger-title">Before uninstalling</h2>
+                <!-- prettier-ignore -->
+                <p class="help" id="help-stop-tracking">Stops capturing record and team changes for every table until change tracking is repaired.</p>
+              </div>
+              <div class="row" data-actions>
+                <button
+                  id="stop-tracking"
+                  type="button"
+                  class="danger-outline"
+                  aria-describedby="help-stop-tracking"
+                >
+                  Stop tracking changes
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+        <div id="settings-footer" class="footer-bar" hidden>
+          <span id="settings-unsaved" class="status-text warning"></span>
+          <p class="feedback" id="fb-settings-save"></p>
           <div class="row" data-actions>
-            <button id="stop-tracking" type="button" class="danger">Stop tracking changes</button>
+            <button id="settings-discard" type="button" class="link">Discard</button>
+            <button id="save-settings" type="button" class="primary">Save settings</button>
           </div>
-        </section>
+        </div>
       </section>
     </main>
     <script src="shell.js?v=ui20261006nav1"></script>
