@@ -184,6 +184,11 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
     await page.locator('#new-template').click();
     await page.locator('#editor-pill').filter({ hasText: 'Draft v1' }).waitFor();
     assert.equal(await page.locator('#templateName').isDisabled(), false);
+    assert.equal(
+      await page.locator('#templateName').inputValue(),
+      '',
+      'A new template starts unnamed',
+    );
     assert.match(await page.locator('#destinations').textContent(), /No folders yet/);
     assert.deepEqual(errors, []);
     console.log(

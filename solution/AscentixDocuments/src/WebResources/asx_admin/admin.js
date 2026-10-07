@@ -26,8 +26,10 @@
     // The template the overview shows: its row, the revision it reads, that revision's sources and
     // destinations, its last re-run and the policies of its libraries.
     overview: null,
-    // One GetPolicy per library per page load, shared by every reader.
+    // One GetPolicy per library per page load, shared by every reader, and why the last failed read
+    // of a library failed.
     policyCache: new Map(),
+    policyErrors: new Map(),
     listQuery: '',
     // The overview's Folders groups that are open, by destination key.
     openGroups: new Set(),
@@ -55,8 +57,10 @@
     // Publish is under way: autosave waits for it.
     publishing: false,
     // The published revision the draft is compared with ({ version, sources, sections }), and
-    // what changed since it (changesSince).
+    // what changed since it (changesSince). snapshotFailed: the template has a published
+    // revision that could not be read, which is not the same as never having published.
     publishedSnapshot: null,
+    snapshotFailed: false,
     changes: null,
     // The destination open in step 1, by key.
     expanded: null,
@@ -183,7 +187,7 @@
     status.classList.toggle('is-error', failed);
     if (failed) {
       status.textContent = "Couldn't save · ";
-      const retry = button('Retry', () => autosave(), 'link');
+      const retry = button('Retry', () => autosave(true), 'link');
       retry.setAttribute('aria-label', 'Retry saving ' + templateLabel());
       status.append(retry);
       return;
@@ -289,16 +293,23 @@
     state.saveTimer = setTimeout(autosave, 1500);
   }
   // Saves the draft once edits pause. One save at a time: an edit made while one runs is saved
-  // by one more save after it, with the row version the first one returned.
-  async function autosave() {
+  // by one more save after it, with the row version the first one returned. now: saving is
+  // asked for (leaving, Publish), so a name still being typed counts.
+  async function autosave(now = false) {
     if (state.readOnly || !state.root || state.publishing) return undefined;
     if (state.saving) {
       state.saveAgain = true;
       return state.saving;
     }
     if (!state.unsaved) return undefined;
-    // A new template is saved once it has a name and a destination.
-    if (!state.template && (!$('templateName').value.trim() || !state.sections.length))
+    // A new template is saved once it has a name and a destination, and not while its name is
+    // being typed: the pause counts from leaving the name box.
+    if (
+      !state.template &&
+      (!$('templateName').value.trim() ||
+        !state.sections.length ||
+        (!now && document.activeElement === $('templateName')))
+    )
       return undefined;
     state.invalid = !validate({ focus: false });
     renderStepper();
@@ -348,13 +359,30 @@
     state.saving = saving;
     return saving;
   }
+  // Saves what can be saved now, without waiting for the pause: before another template, ＋ New
+  // or Close replace the editor.
+  async function settleSave() {
+    clearTimeout(state.saveTimer);
+    await state.saving;
+    await autosave(true);
+    await state.saving;
+  }
   // Saves now: Save draft in the unsaved-changes prompt, and Publish. Refuses with the reason
   // when the draft could not be saved.
   async function flushSave() {
-    clearTimeout(state.saveTimer);
-    await state.saving;
-    await autosave();
-    await state.saving;
+    await settleSave();
+    if (state.unsaved && !state.template && !state.readOnly) {
+      // A new template is saved once it has a name and a destination.
+      if (!$('templateName').value.trim()) {
+        $('templateName').focus();
+        throw new Error('Enter a template name of 200 characters or fewer.');
+      }
+      if (!state.sections.length) {
+        goStep(1, false);
+        $('add-destination').focus();
+        throw new Error('Add a destination first.');
+      }
+    }
     if (state.invalid) {
       goStep(2, false);
       validate();
@@ -1041,11 +1069,10 @@
   const DECIMAL = /^[+-]?(\d+(\.\d*)?|\.\d+)$/;
   // Checks every condition at its control. With focus, the first invalid control takes it, or the
   // footer names a problem in a folder that is not open; the autosave checks without focus.
+  // The problems the last check marked: the same ones are not marked, and announced, again.
+  let marked = '';
+  const errorId = (key) => key.replace(/[^\w-]/g, '_') + '-error';
   function validate({ focus = true } = {}) {
-    document.querySelectorAll('.condition-error').forEach((n) => n.remove());
-    document
-      .querySelectorAll('#folderEditor [aria-invalid]')
-      .forEach((n) => n.removeAttribute('aria-invalid'));
     const problems = [];
     const visit = (group, folder, path) => {
       if (!group.Conditions.length && !group.Groups.length)
@@ -1075,13 +1102,24 @@
     for (const section of state.sections)
       for (const folder of section.Folders)
         if (folder.Condition) visit(folder.Condition, folder, '1');
+    // The editor shows one folder at a time; problems in other folders have no control here.
+    const shown = problems.filter(([key]) =>
+      document.querySelector('[data-focus-key="' + key + '"]'),
+    );
+    const signature = JSON.stringify(problems);
+    const still =
+      signature === marked && shown.every(([key]) => document.getElementById(errorId(key)));
+    if (!focus && problems.length && still) return false;
+    marked = signature;
+    document.querySelectorAll('.condition-error').forEach((n) => n.remove());
+    document
+      .querySelectorAll('#folderEditor [aria-invalid]')
+      .forEach((n) => n.removeAttribute('aria-invalid'));
     if (!problems.length) return true;
-    for (const [key, text] of problems) {
-      // The editor shows one folder at a time; problems in other folders have no control here.
+    for (const [key, text] of shown) {
       const control = document.querySelector('[data-focus-key="' + key + '"]');
-      if (!control) continue;
       const error = el('p', text, 'error condition-error');
-      error.id = key.replace(/[^\w-]/g, '_') + '-error';
+      error.id = errorId(key);
       error.setAttribute('role', 'alert');
       control.after(error);
       control.setAttribute('aria-invalid', 'true');
@@ -1153,7 +1191,7 @@
       [...section.Folders, ...(publishedSection(section.Key)?.Folders || [])].map((f) => f.Key),
     );
     const child = {
-      Key: nextKey('folder_', used),
+      Key: freshKey('folder_', used),
       Parent: folder.Key,
       Name: 'New folder',
       Condition: null,
@@ -1545,13 +1583,16 @@
     }
     if (!section.LibraryId) return box;
     box.append(el('div', null, 'skeleton'));
-    policyFor(section.LibraryId).then((policy) =>
+    policyFor(section.LibraryId).then((policy) => {
       box.replaceChildren(
         ...(policy ? listedTeams(policy) : []).map((t) =>
           el('p', t.name + ' · ' + t.access, 'team-line'),
         ),
-      ),
-    );
+      );
+      // A failed read says why in the footer rather than showing no teams.
+      if (!policy && state.policyErrors.has(section.LibraryId))
+        ui.feedback('editor', state.policyErrors.get(section.LibraryId), 'error');
+    });
     return box;
   }
   // A destination not open: its number, name, site and library, its teams, and Edit.
@@ -1746,8 +1787,9 @@
     if (!state.policyCache.has(libraryId)) {
       const read = ui
         .api('asx_SecurityAdmin', { Command: 'GetPolicy', LibraryId: libraryId })
-        .catch(() => {
+        .catch((error) => {
           if (state.policyCache.get(libraryId) === read) state.policyCache.delete(libraryId);
+          state.policyErrors.set(libraryId, error.message || String(error));
           return null;
         });
       state.policyCache.set(libraryId, read);
@@ -1850,6 +1892,15 @@
     while (used.has(prefix + n)) n++;
     return prefix + n;
   }
+  // A new key for the draft. When the published revision could not be read its keys are unknown,
+  // so the key takes a time-and-random part no earlier key can have.
+  function freshKey(prefix, used) {
+    if (!state.snapshotFailed) return nextKey(prefix, used);
+    let key;
+    do key = prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    while (used.has(key));
+    return key;
+  }
   // What changed from snapshot to current ({ sources, sections } each): destinations added,
   // removed, renamed or moved to another library; folders added, removed, renamed, moved or with
   // other conditions. Each list holds the added, then the removed, then the edited, in tree
@@ -1867,7 +1918,10 @@
     const before = new Map(snapshot.sections.map((s) => [s.Key, s]));
     const after = new Set(current.sections.map((s) => s.Key));
     const named = (section, list) => sectionName(section, list.sections.indexOf(section));
-    const stored = (section) => (section.Name && section.Name !== section.Key ? section.Name : '');
+    const stored = (section) => {
+      const name = (section.Name || '').trim();
+      return name && name !== section.Key ? name : '';
+    };
     for (const section of current.sections)
       if (!before.has(section.Key)) {
         changes.destinations.push({
@@ -2258,6 +2312,7 @@
       saveAgain: false,
       edits: 0,
       publishedSnapshot: null,
+      snapshotFailed: false,
       changes: null,
       expanded: null,
       invalid: false,
@@ -2288,6 +2343,8 @@
     render();
   }
   async function closeEditor() {
+    // Edits that can be saved are saved; the question is only for those that cannot.
+    await settleSave();
     if (!(await ui.confirmLeave())) return;
     const id = state.template?.asx_templateid || state.overview?.template.asx_templateid;
     panel?.close(false);
@@ -2336,6 +2393,9 @@
 
   $('publish').onclick = async () => {
     if (ui.blocked($('publish'))) return;
+    // The editor this publish belongs to: once it is closed or replaced, the answers below leave
+    // the one open now alone.
+    const session = state.session;
     // What is published is what is saved: edits not saved yet are saved first.
     try {
       await flushSave();
@@ -2343,6 +2403,7 @@
       ui.feedback('editor', error.message || String(error), 'error');
       return;
     }
+    if (session !== state.session) return;
     // A new template without a name cannot be saved yet.
     if (!state.saved) {
       $('templateName').focus();
@@ -2362,10 +2423,12 @@
       confirm: 'Publish v' + next,
       keep: 'Not now',
     });
-    if (!ok) return;
+    if (!ok || session !== state.session) return;
+    const templateId = state.template.asx_templateid;
     await ui.busy($('publish'), 'Publishing…', 'templates', async () => {
       // Edits made while the confirmation was open.
       await flushSave();
+      if (session !== state.session) return;
       state.publishing = true;
       try {
         const result = JSON.parse(
@@ -2374,6 +2437,17 @@
             RowVersion: state.saved.RowVersion,
           }),
         );
+        if (session !== state.session) {
+          // The editor was closed meanwhile: the list, and the template's overview when it is
+          // the one shown, follow the publish.
+          await loadTemplates();
+          if (
+            state.view === 'overview' &&
+            same(state.overview?.template.asx_templateid, templateId)
+          )
+            await showOverview(templateId);
+          return;
+        }
         // Publishing changes the revision row, so its row version is read back with it; the
         // next save would be refused with the old one. Edits made during the publish stay.
         // The published version is what the draft is compared with from now on.
@@ -2489,10 +2563,10 @@
     (next || $('template-search')).focus();
   }
 
-  // Unsaved edits ask before another template replaces them; true when it may. A save in
-  // flight finishes first.
+  // Edits that can be saved are saved before another template replaces them; the others ask
+  // first. True when it may.
   async function mayDiscard(control, what) {
-    await state.saving;
+    await settleSave();
     if (!state.unsaved || !state.root) return true;
     return railAsk(control, {
       text:
@@ -2539,22 +2613,27 @@
     return loaded;
   }
   // The published revision the draft is compared with: the loaded one when it is the published
-  // one, else read; null without one, or when it cannot be read (no change marks then).
+  // one, else read (once more when the first read fails); null without one. When it cannot be
+  // read, state.snapshotFailed is set, the footer says why, and there are no change marks.
   async function publishedModel() {
     const id = state.template?._asx_publishedrevisionid_value;
     if (!id) return null;
     if (same(id, state.saved?.RevisionId))
       return structuredClone({ version: state.editBase.Version, ...current() });
+    const read = () => api('asx_LoadDraft', { RevisionId: id });
+    let loaded;
     try {
-      const loaded = JSON.parse(await api('asx_LoadDraft', { RevisionId: id }));
-      await Promise.all(loaded.Draft.Sources.map((s) => fields(s.Table).catch(() => null)));
-      return {
-        version: loaded.Version,
-        ...toModel(loaded, (table) => metadata.get(table)?.columns || []),
-      };
-    } catch {
+      loaded = JSON.parse(await read().catch(read));
+    } catch (error) {
+      state.snapshotFailed = true;
+      ui.feedback('editor', error.message || String(error), 'error');
       return null;
     }
+    await Promise.all(loaded.Draft.Sources.map((s) => fields(s.Table).catch(() => null)));
+    return {
+      version: loaded.Version,
+      ...toModel(loaded, (table) => metadata.get(table)?.columns || []),
+    };
   }
   // Each table's fields take about seven metadata requests at once, and Dataverse serves 52
   // concurrent requests per user before it answers 429. Four tables at a time stay well inside
@@ -2613,7 +2692,7 @@
     const root = state.tables.find((t) => t.LogicalName === table);
     if (!root) throw new Error(tableName(table) + ' is not available for document management.');
     state.template = templateId ? await reloadTemplate(templateId) : null;
-    $('templateName').value = state.template?.asx_name || 'New template';
+    $('templateName').value = state.template?.asx_name || '';
     resetSession();
     Object.assign(state, {
       root,
@@ -2823,7 +2902,7 @@
     );
     const library = state.libraries[0];
     const section = {
-      Key: nextKey('destination_', used),
+      Key: freshKey('destination_', used),
       // A new destination is named after its library.
       Name: library.asx_name,
       LibraryId: library.asx_libraryid,
@@ -2848,6 +2927,10 @@
   $('templateName').oninput = () => {
     if (!state.template) dirty();
   };
+  // The pause before saving a new template counts from leaving its name box.
+  $('templateName').addEventListener('blur', () => {
+    if (!state.template && state.unsaved) scheduleSave();
+  });
 
   // Saves the draft. The version follows CreateDraftApi: a Draft is saved in place, anything
   // else starts the next version; a new template starts at v1. It never redraws the editor, so

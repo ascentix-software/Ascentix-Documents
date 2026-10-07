@@ -419,6 +419,15 @@ async function boot({
       }
     },
     step: (n) => press($('step-tab-' + n)),
+    // An edit autosave cannot save: a folder renamed "Dropped" under a condition whose number
+    // the server cannot read.
+    unsaveable: async () => {
+      await press(find($('destinations'), 'General'));
+      await change(labelled($('folderEditor'), 'Folder name'), 'Dropped');
+      await change(labelled($('folderEditor'), 'When should this folder appear?'), 'conditional');
+      await change(labelled($('folderEditor'), 'Field, condition 1'), 'root.revenue');
+      await change(labelled($('folderEditor'), 'Value, condition 1'), '1e5');
+    },
   };
 }
 
@@ -708,11 +717,10 @@ async function boot({
     assert.equal(t.$('template-overview').hidden, false);
     assert.equal(t.$('template-editor').hidden, true);
     assert.equal(t.document.activeElement, t.$('overview-edit'));
-    // Close with unsaved edits asks first, with the page's unsaved-changes prompt; Discard
-    // changes closes, and Edit template opens the saved version again.
+    // Close with edits that cannot be saved asks first, with the page's unsaved-changes prompt;
+    // Discard changes closes, and Edit template opens the saved version again.
     await t.press(t.$('overview-edit'));
-    await t.press(t.find(t.$('destinations'), 'General'));
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Dropped');
+    await t.unsaveable();
     await t.press(t.$('editor-close'));
     assert.match(
       t.$('leavePrompt').visibleText,
@@ -1039,7 +1047,7 @@ async function boot({
     await t.change(picker, 'contact');
     assert.equal(t.$('template-editor').hidden, false, 'A pick after leaving the picker opens');
     assert.equal(t.$('templateName').hidden, false);
-    assert.equal(t.$('templateName').value, 'New template');
+    assert.equal(t.$('templateName').value, '', 'A new template starts without a name');
     assert.equal(t.$('editor-table').textContent, 'Contact ›');
     // Enter opens the table the picker shows.
     const e = await boot({ enabled: ['account', 'contact'] });
@@ -1051,11 +1059,10 @@ async function boot({
     assert.equal(e.$('template-editor').hidden, false);
   }
   {
-    // Fix round 1: ＋ New with unsaved edits in the editor asks first; Keep editing keeps them.
+    // Fix round 1: ＋ New with edits that cannot be saved asks first; Keep editing keeps them.
     const t = await boot();
     await t.open();
-    await t.press(t.find(t.$('destinations'), 'General'));
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Kept');
+    await t.unsaveable();
     await t.press(t.$('new-template'));
     assert.equal(
       t.document.activeElement.textContent,
@@ -1066,7 +1073,7 @@ async function boot({
     assert.equal(t.$('editor-name').textContent, 'Account onboarding');
     await t.press(t.$('new-template'));
     await t.press(t.find(t.$('templates-list'), 'Open a new template'));
-    assert.equal(t.$('templateName').value, 'New template');
+    assert.equal(t.$('templateName').value, '');
     assert.equal(t.$('editor-pill').textContent, 'Draft v1');
     assert.equal(t.$('editor-note').hidden, true, 'A new template has no live version');
     await t.flush();
@@ -1085,7 +1092,7 @@ async function boot({
     await t.change(table, 'contact');
     assert.equal(table.hidden, true);
     assert.equal(t.$('template-editor').hidden, false);
-    assert.equal(t.$('templateName').value, 'New template');
+    assert.equal(t.$('templateName').value, '', 'A new template starts without a name');
     assert.equal(t.$('templateName').hidden, false, 'A new template is named in the heading');
   }
   {
@@ -1298,7 +1305,7 @@ async function boot({
     assert.equal(last.document.activeElement.id, 'template-search');
   }
   {
-    // Another template with unsaved edits asks before it discards them.
+    // Another template with edits that cannot be saved asks before it discards them.
     const t = await boot({
       templates: [
         { asx_templateid: TEMPLATE, asx_name: 'Account onboarding', asx_table: 'account' },
@@ -1306,8 +1313,7 @@ async function boot({
       ],
     });
     await t.open();
-    await t.press(t.find(t.$('destinations'), 'General'));
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Kept');
+    await t.unsaveable();
     const loads = t.sent.filter(([k]) => k === 'asx_LoadDraft').length;
     await t.press(t.row('Contract documents'));
     assert.equal(
@@ -1849,6 +1855,7 @@ async function boot({
       reads: (table) => (failing && table === 'asx_template' ? new Error('Network down.') : null),
     });
     await t.press(t.$('new-template'));
+    await t.change(t.$('templateName'), 'Client onboarding');
     await t.press(t.$('add-destination'));
     failing = true;
     await t.flush();
@@ -2074,6 +2081,14 @@ async function boot({
     assert.equal(t.$('step-tab-2').getAttribute('aria-label'), 'Folders, has errors');
     assert.equal(t.$('step-tab-2').querySelector('.step-dot').hidden, true, 'No dot with an error');
     assert.equal(t.document.activeElement, value, 'Autosave never takes focus');
+    // The same problems are not announced again at the next pause.
+    const alert = t.$('folderEditor').querySelector('[role=alert]');
+    assert.equal(alert.textContent, 'Enter a number');
+    await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files');
+    await t.flush();
+    // assert.ok: a failed equal on two elements would print the whole page.
+    assert.ok(t.$('folderEditor').querySelector('[role=alert]') === alert, 'Not re-inserted');
+    assert.equal(t.$('folderEditor').querySelectorAll('[role=alert]').length, 1);
     // Fixed, the next autosave saves and the error state clears.
     await t.change(value, '100000');
     await t.flush();
@@ -2397,8 +2412,268 @@ async function boot({
     assert.equal(t.$('step-2').hidden, false);
     assert.equal(t.$('step-tab-2').getAttribute('aria-selected'), 'true');
   }
+  {
+    // Fix round 1: a new template starts without a name and is not saved while its name is
+    // typed; the pause counts once the name box is left.
+    const t = await boot({ templates: [] });
+    await t.press(t.$('new-template'));
+    assert.equal(t.$('templateName').value, '');
+    await t.press(t.$('add-destination'));
+    await t.flush();
+    assert.equal(t.last('asx_CreateDraft'), undefined, 'No name, no template');
+    const name = t.$('templateName');
+    name.focus();
+    await t.change(name, 'Client on');
+    await t.flush();
+    assert.equal(t.last('asx_CreateDraft'), undefined, 'Not while the name is typed');
+    await t.change(name, 'Client onboarding');
+    t.document.activeElement = t.document.body;
+    name.dispatchEvent(new FakeEvent('blur'));
+    await t.flush();
+    assert.equal(t.sent.filter(([a]) => a === 'asx_CreateDraft').length, 1);
+    assert.equal(t.last('asx_CreateDraft').Name, 'Client onboarding');
+    // Save draft in the unsaved-changes prompt for a nameless new template stays, and the name
+    // box takes focus.
+    const n = await boot({ templates: [] });
+    await n.press(n.$('new-template'));
+    await n.press(n.$('add-destination'));
+    const going = n.window.AsxdUi.navigate('monitor');
+    await n.document.settle();
+    await n.press(n.find(n.$('leavePrompt'), 'Save draft'));
+    assert.equal(await going, undefined);
+    assert.equal(n.sent.filter(([k]) => k === 'navigate').length, 0, 'The page stays');
+    assert.equal(
+      n.$('fb-templates').textContent,
+      'Enter a template name of 200 characters or fewer.',
+    );
+    assert.equal(n.document.activeElement, n.$('templateName'));
+  }
+  {
+    // Fix round 1: picking another template or Close soon after an edit saves it first, without
+    // asking.
+    const t = await boot({
+      templates: [
+        { asx_templateid: TEMPLATE, asx_name: 'Account onboarding', asx_table: 'account' },
+        { asx_templateid: OTHER, asx_name: 'Contract documents', asx_table: 'account' },
+      ],
+    });
+    await t.open();
+    await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files');
+    await t.press(t.row('Contract documents'));
+    assert.equal(t.last('asx_CreateDraft').Destinations[0].Name, 'Client files');
+    assert.equal(t.$('template-groups').querySelector('.confirm'), null, 'No question');
+    assert.equal(t.$('template-editor').hidden, true);
+    assert.equal(t.$('overview-title').textContent, 'Contract documents');
+    const c = await boot();
+    await c.open();
+    await c.change(c.labelled(c.$('step-1'), 'Name'), 'Client files');
+    await c.press(c.$('editor-close'));
+    assert.equal(c.last('asx_CreateDraft').Destinations[0].Name, 'Client files');
+    assert.equal(c.$('leavePrompt').textContent, '');
+    assert.equal(c.$('template-overview').hidden, false);
+    // ＋ New saves the edit too, and the new template starts clean.
+    const n = await boot({ enabled: ['account'] });
+    await n.open();
+    await n.change(n.labelled(n.$('step-1'), 'Name'), 'Client files');
+    await n.press(n.$('new-template'));
+    assert.equal(n.last('asx_CreateDraft').Destinations[0].Name, 'Client files');
+    assert.equal(n.$('templateName').hidden, false);
+    assert.equal(n.$('editor-pill').textContent, 'Draft v1');
+  }
+  {
+    // Fix round 1: a save still in flight when the admin discards and starts a new template never
+    // reaches the new one: its first save creates a template of its own.
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    let saves = 0;
+    const t = await boot({
+      handle: async (api) => {
+        if (api !== 'asx_CreateDraft') return null;
+        saves++;
+        if (saves === 1) await gate;
+        return null;
+      },
+    });
+    await t.open();
+    await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files');
+    await t.flush();
+    assert.equal(t.$('save-status').textContent, 'Saving…');
+    const leaving = t.window.AsxdUi.navigate('monitor');
+    await t.document.settle();
+    await t.press(t.find(t.$('leavePrompt'), 'Discard changes'));
+    await leaving;
+    await t.press(t.$('new-template'));
+    release();
+    await t.document.settle();
+    await t.flush();
+    assert.equal(t.$('templateName').hidden, false, 'The new template is open');
+    assert.equal(t.$('editor-pill').textContent, 'Draft v1');
+    await t.change(t.$('templateName'), 'Client onboarding');
+    await t.press(t.$('add-destination'));
+    await t.flush();
+    const last = t.last('asx_CreateDraft');
+    assert.deepEqual(
+      [last.TemplateId, last.RevisionId, last.RowVersion, last.Name],
+      [null, null, null, 'Client onboarding'],
+    );
+  }
+  {
+    // Fix round 1: an edit made while Publish runs is kept, and saved next as the next version
+    // with the row version read back after publishing.
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    let published = false;
+    const t = await boot({
+      loaded: { RevisionId: 'rev-2', RowVersion: '4', Status: 'Draft', Version: 2, Draft: draft() },
+      versions: { 'rev-3': 3 },
+      handle: async (api) => {
+        if (api === 'asx_PublishTemplate') {
+          await gate;
+          published = true;
+          return { Status: 'Published', Notices: [] };
+        }
+        if (api === 'asx_LoadDraft' && published)
+          return {
+            RevisionId: 'rev-2',
+            RowVersion: '5',
+            Status: 'Published',
+            Version: 2,
+            Draft: draft(),
+          };
+        if (api === 'asx_CreateDraft')
+          return { TemplateId: TEMPLATE, RevisionId: 'rev-3', RowVersion: '1', Status: 'Draft' };
+        return null;
+      },
+    });
+    await t.open();
+    await t.press(t.$('publish'));
+    await t.press(t.find(t.$('step-3').querySelector('.confirm'), 'Publish v2'));
+    await t.step(2);
+    await t.press(t.find(t.$('destinations'), 'General'));
+    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'During');
+    await t.flush();
+    assert.equal(t.sent.filter(([a]) => a === 'asx_CreateDraft').length, 0, 'Waits for Publish');
+    release();
+    await t.document.settle();
+    assert.equal(t.labelled(t.$('folderEditor'), 'Folder name').value, 'During', 'Kept');
+    await t.flush();
+    const saved = t.last('asx_CreateDraft');
+    assert.deepEqual([saved.RevisionId, saved.RowVersion], ['rev-2', '5']);
+    assert.equal(saved.Destinations[0].Folders[1].Name, 'During');
+    assert.equal(t.$('editor-pill').textContent, 'Draft v3');
+    assert.equal(t.$('step-tab-2').getAttribute('aria-label'), 'Folders, has changes');
+    // Close while Publish runs: its answer leaves the closed editor alone.
+    let let_go;
+    const wait = new Promise((resolve) => (let_go = resolve));
+    const c = await boot({
+      loaded: { RevisionId: 'rev-2', RowVersion: '4', Status: 'Draft', Version: 2, Draft: draft() },
+      handle: async (api) =>
+        api === 'asx_PublishTemplate'
+          ? wait.then(() => ({ Status: 'Published', Notices: [] }))
+          : null,
+    });
+    await c.open();
+    await c.press(c.$('publish'));
+    await c.press(c.find(c.$('step-3').querySelector('.confirm'), 'Publish v2'));
+    await c.press(c.$('editor-close'));
+    assert.equal(c.$('template-overview').hidden, false);
+    let_go();
+    await c.document.settle();
+    assert.equal(c.$('template-editor').hidden, true);
+    assert.equal(
+      c.$('fb-templates').classList.contains('is-error'),
+      false,
+      c.$('fb-templates').textContent,
+    );
+  }
+  {
+    // Fix round 1: the published version is read again once when its read fails; if it still
+    // fails, the footer says why, and new keys cannot collide with the unknown published ones.
+    let failing = false;
+    let tries = 0;
+    const t = await boot({
+      templates: [
+        {
+          asx_templateid: TEMPLATE,
+          asx_name: 'Account onboarding',
+          asx_table: 'account',
+          _asx_publishedrevisionid_value: 'rev-1',
+        },
+      ],
+      rows: (table) =>
+        table === 'asx_revision'
+          ? [
+              {
+                asx_revisionid: 'rev-2',
+                asx_version: 2,
+                asx_status: 'Draft',
+                _asx_templateid_value: TEMPLATE,
+              },
+              {
+                asx_revisionid: 'rev-1',
+                asx_version: 1,
+                asx_status: 'Published',
+                _asx_templateid_value: TEMPLATE,
+              },
+            ]
+          : null,
+      handle: (api, body) => {
+        if (api !== 'asx_LoadDraft') return null;
+        if (body.RevisionId === 'rev-2')
+          return {
+            RevisionId: 'rev-2',
+            RowVersion: '4',
+            Status: 'Draft',
+            Version: 2,
+            Draft: draft(),
+          };
+        if (!failing) return null;
+        tries++;
+        return new Error('The published version could not be read.');
+      },
+    });
+    await t.overview();
+    failing = true;
+    await t.press(t.$('overview-edit'));
+    assert.equal(tries, 2, 'One retry');
+    assert.equal(t.$('fb-editor').textContent, 'The published version could not be read.');
+    await t.press(t.find(t.$('destinations'), '[Account Name]'));
+    await t.press(t.find(t.$('destinations'), '＋ Add folder inside [Account Name]'));
+    await t.press(t.$('add-destination'));
+    await t.flush();
+    const sent = t.last('asx_CreateDraft').Destinations;
+    const folder = sent[0].Folders.at(-1).Key;
+    assert.match(folder, /^folder_[a-z0-9]+$/);
+    assert.doesNotMatch(
+      folder,
+      /^folder_\d{1,3}$/,
+      'Not a small number a published folder may have',
+    );
+    assert.doesNotMatch(sent[1].Key, /^destination_\d{1,3}$/);
+  }
+  {
+    // Fix round 1: a failed policy read says so in the footer, not as an empty team list.
+    const t = await boot({
+      handle: (api, body) =>
+        body?.Command === 'GetPolicy' ? new Error('The policy could not be read.') : null,
+    });
+    await t.open();
+    assert.equal(t.$('step-1').querySelectorAll('.team-line').length, 0);
+    assert.equal(t.$('fb-editor').textContent, 'The policy could not be read.');
+  }
+  {
+    // Fix round 1: a destination name changed only by spaces around it is not a change.
+    const t = await boot();
+    const { changesSince } = t.window.AsxdAdmin;
+    const sections = (Name) => [{ Key: 'general', Name, LibraryId: 'lib-a', Folders: [] }];
+    const changes = changesSince(
+      { sources: [], sections: sections('Client files') },
+      { sources: [], sections: sections(' Client files ') },
+    );
+    assert.equal(changes.destinations.length, 0);
+  }
   console.log(
-    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step. Fake DOM; browser QA separate.',
+    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step; Task 6 fix round 1: a new template unnamed until named and not saved mid-name, saving before switching or closing, a late save answer kept out of a new template, an edit during Publish kept and saved next, a published read retried and its failure, a failed policy read, trimmed destination names, problems not announced twice, and Save draft refusing a nameless template. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);
