@@ -155,27 +155,112 @@
                 class="step-panel"
                 hidden
               >
-                <div id="authorWorkspace" class="editor">
-                  <section
-                    class="pane tree-pane"
-                    aria-labelledby="folders-heading"
-                    data-focus-scope
-                    id="folders-pane"
-                  >
-                    <h2 id="folders-heading" tabindex="-1" data-focus-heading>Folders</h2>
-                    <div id="destinations" class="stack"></div>
-                  </section>
-                  <section
-                    class="pane"
-                    aria-labelledby="folder-settings-heading"
-                    data-focus-scope
-                    id="settings-pane"
-                  >
-                    <h2 id="folder-settings-heading" tabindex="-1" data-focus-heading>
-                      Folder settings
+                <div class="folders-layout">
+                  <div class="tree-side" data-focus-scope id="folders-pane">
+                    <h2 id="folders-heading" class="sr-only" tabindex="-1" data-focus-heading>
+                      Folders
                     </h2>
-                    <div id="folderEditor"></div>
-                  </section>
+                    <div
+                      id="dest-pills"
+                      class="dest-pills"
+                      role="group"
+                      aria-label="Destination"
+                    ></div>
+                    <div class="tree-card">
+                      <div id="folder-tree"></div>
+                      <div id="tree-actions" class="row tree-actions" data-actions>
+                        <button id="add-folder" type="button" class="link">＋ Folder</button>
+                        <button id="add-subfolder" type="button" class="link">＋ Subfolder</button>
+                      </div>
+                    </div>
+                  </div>
+                  <aside
+                    id="folder-panel"
+                    class="folder-panel"
+                    aria-labelledby="folder-title"
+                    data-focus-scope
+                  >
+                    <div class="row between panel-top">
+                      <p id="folder-path" class="muted"></p>
+                      <div class="menu-anchor">
+                        <button
+                          id="folder-menu"
+                          type="button"
+                          class="icon"
+                          aria-haspopup="menu"
+                          aria-expanded="false"
+                          aria-controls="folder-menu-list"
+                        >
+                          ⋯
+                        </button>
+                        <!-- prettier-ignore -->
+                        <ul id="folder-menu-list" class="menu" role="menu" hidden>
+                          <li role="none"><button id="menu-remove-folder" type="button" role="menuitem" tabindex="-1" class="danger">Remove folder</button></li>
+                        </ul>
+                      </div>
+                    </div>
+                    <h2 id="folder-title" tabindex="-1" data-focus-heading></h2>
+                    <div id="folder-body">
+                      <p id="folder-same" class="warning" hidden>
+                        Every record will use this same folder.
+                      </p>
+                      <div class="name-block">
+                        <label for="folder-name">Name</label>
+                        <div class="name-field">
+                          <input
+                            id="folder-name"
+                            data-focus-key="edit:name"
+                            aria-describedby="folder-shows-as"
+                            autocomplete="off"
+                          />
+                          <!-- prettier-ignore -->
+                          <button id="add-field" type="button" class="token-button" aria-haspopup="dialog" aria-expanded="false" aria-controls="field-popover">＋ Field</button>
+                        </div>
+                        <div
+                          id="field-popover"
+                          class="popover"
+                          role="dialog"
+                          aria-label="Insert field"
+                          hidden
+                        >
+                          <input
+                            id="field-search"
+                            type="search"
+                            aria-label="Search fields"
+                            placeholder="Search fields"
+                            aria-controls="field-options"
+                            aria-autocomplete="list"
+                            autocomplete="off"
+                          />
+                          <p id="related-reason" class="reason" hidden></p>
+                          <ul id="field-options" role="listbox" aria-label="Fields"></ul>
+                        </div>
+                        <p id="folder-shows-as" class="shows-as"></p>
+                      </div>
+                      <div class="create-block">
+                        <span id="create-mode-label" class="label-text">Create this folder</span>
+                        <!-- prettier-ignore -->
+                        <div id="create-mode" class="segmented" role="radiogroup" aria-labelledby="create-mode-label">
+                          <button type="button" role="radio" aria-checked="true" data-focus-key="mode:always">Always</button>
+                          <button type="button" role="radio" aria-checked="false" tabindex="-1" data-focus-key="mode:when">Only when…</button>
+                        </div>
+                        <!-- prettier-ignore -->
+                        <p class="help" id="help-include-root" hidden>If these conditions don't match, Documents skips this whole destination for the record. Folders it already created stay.</p>
+                      </div>
+                      <div id="conditions" class="conditions" hidden></div>
+                      <section
+                        id="test-records"
+                        class="test-records"
+                        aria-labelledby="test-records-title"
+                      >
+                        <div class="row between">
+                          <h3 id="test-records-title">Test records</h3>
+                          <button id="add-test-record" type="button" class="link">＋ Add</button>
+                        </div>
+                        <div id="test-record-list"></div>
+                      </section>
+                    </div>
+                  </aside>
                 </div>
               </section>
               <section

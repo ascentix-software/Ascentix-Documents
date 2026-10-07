@@ -189,7 +189,7 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
       '',
       'A new template starts unnamed',
     );
-    assert.match(await page.locator('#destinations').textContent(), /No folders yet/);
+    assert.match(await page.locator('#folder-tree').textContent(), /No folders yet/);
     assert.deepEqual(errors, []);
     console.log(
       'PASS template navigation in Edge: the templates list and overview, Continue Draft into the editor, the steps by keyboard, an added destination saved by itself, Close, ＋ New, light/dark and 1440/1000/800/400 layouts of the overview and the editor. APIs mocked.',

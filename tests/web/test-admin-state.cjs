@@ -1,7 +1,8 @@
 'use strict';
 // Folder templates with a fake DOM and mocked Dataverse: the templates list and the overview,
 // its ⋯ menu, Schedule and Versions panels, Delete, the editor's header, steps, autosave and
-// change tracking, step 1 Destinations, Publish, folders, Insert field, the condition builder, preview of unsaved edits, focus, and
+// change tracking, step 1 Destinations, Publish, step 2 Folders (the tree, the folder panel, ＋ Field,
+// the condition builder and test records), the step 3 preview of unsaved edits, focus, and
 // Re-run for existing records.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -31,6 +32,7 @@ const metadata = {
     attribute('closedate', 'DateTime', 'Close Date'),
     attribute('reviewedon', 'DateTime', 'Reviewed On'),
     attribute('statecode', 'State', 'Status'),
+    attribute('industrycode', 'Picklist', 'Industry'),
     attribute('primarycontactid', 'Lookup', 'Primary Contact'),
     attribute('old_code', 'String', '(Deprecated) Old Code'),
   ],
@@ -95,10 +97,14 @@ async function boot({
   rows = () => null,
   // The page address's #hash: a deep link.
   hash = '',
+  // A single-select lookup's answer (test records), instead of the default record.
+  pick = null,
 } = {}) {
   const document = createDocument(html);
-  // Timers of 100 ms or more (the autosave pause) wait for flush(); shorter ones run as usual.
-  const timers = [];
+  // Timers of 100 ms or more (the autosave and preview pauses) wait for flush(); shorter ones run
+  // as usual. Each waiting timer has its own ID, so clearing an old one never clears a new one.
+  const timers = new Map();
+  let timerId = 0;
   const sent = [];
   const deleted = [];
   const looked = [];
@@ -137,6 +143,7 @@ async function boot({
       }),
       lookupObjects: async (options) => {
         looked.push(options);
+        if (pick && !options.allowMultiSelect) return pick(options);
         if (options.allowMultiSelect && pickMany)
           return Array.from({ length: window.AsxdUi.BOUNDS.previewRecords + 1 }, (_, i) => ({
             id: '{' + String(i).padStart(8, '0') + '-0000-0000-0000-000000000000}',
@@ -278,49 +285,61 @@ async function boot({
           { LogicalName: 'closedate', DateTimeBehavior: { Value: 'DateOnly' } },
           { LogicalName: 'reviewedon', DateTimeBehavior: { Value: 'UserLocal' } },
         ]
-      : url.includes('StateAttributeMetadata')
+      : url.includes('CRM.PicklistAttributeMetadata')
         ? [
             {
-              LogicalName: 'statecode',
+              LogicalName: 'industrycode',
               OptionSet: {
                 Options: [
-                  { Value: 0, Label: { UserLocalizedLabel: { Label: 'Active' } } },
-                  { Value: 1, Label: { UserLocalizedLabel: { Label: 'Inactive' } } },
+                  { Value: 1, Label: { UserLocalizedLabel: { Label: 'Government' } } },
+                  { Value: 2, Label: { UserLocalizedLabel: { Label: 'Retail' } } },
                 ],
               },
             },
           ]
-        : url.includes('LookupAttributeMetadata')
-          ? table === 'account'
-            ? [
-                {
-                  LogicalName: 'primarycontactid',
-                  Targets: ['contact'],
-                  DisplayName: { UserLocalizedLabel: { Label: 'Primary Contact' } },
+        : url.includes('StateAttributeMetadata')
+          ? [
+              {
+                LogicalName: 'statecode',
+                OptionSet: {
+                  Options: [
+                    { Value: 0, Label: { UserLocalizedLabel: { Label: 'Active' } } },
+                    { Value: 1, Label: { UserLocalizedLabel: { Label: 'Inactive' } } },
+                  ],
                 },
-                ...extraLookups,
-              ]
-            : []
-          : url.includes('AttributeMetadata')
-            ? []
-            : url.includes('/Attributes')
-              ? all
-              : [
+              },
+            ]
+          : url.includes('LookupAttributeMetadata')
+            ? table === 'account'
+              ? [
                   {
-                    LogicalName: 'account',
-                    EntitySetName: 'accounts',
-                    PrimaryIdAttribute: 'accountid',
-                    PrimaryNameAttribute: 'name',
-                    DisplayName: { UserLocalizedLabel: { Label: 'Account' } },
+                    LogicalName: 'primarycontactid',
+                    Targets: ['contact'],
+                    DisplayName: { UserLocalizedLabel: { Label: 'Primary Contact' } },
                   },
-                  {
-                    LogicalName: 'contact',
-                    EntitySetName: 'contacts',
-                    PrimaryIdAttribute: 'contactid',
-                    PrimaryNameAttribute: 'fullname',
-                    DisplayName: { UserLocalizedLabel: { Label: 'Contact' } },
-                  },
-                ];
+                  ...extraLookups,
+                ]
+              : []
+            : url.includes('AttributeMetadata')
+              ? []
+              : url.includes('/Attributes')
+                ? all
+                : [
+                    {
+                      LogicalName: 'account',
+                      EntitySetName: 'accounts',
+                      PrimaryIdAttribute: 'accountid',
+                      PrimaryNameAttribute: 'name',
+                      DisplayName: { UserLocalizedLabel: { Label: 'Account' } },
+                    },
+                    {
+                      LogicalName: 'contact',
+                      EntitySetName: 'contacts',
+                      PrimaryIdAttribute: 'contactid',
+                      PrimaryNameAttribute: 'fullname',
+                      DisplayName: { UserLocalizedLabel: { Label: 'Contact' } },
+                    },
+                  ];
     return { ok: true, json: async () => ({ value }) };
   };
   const session = new Map([['asxd.launched', '1']]);
@@ -344,10 +363,14 @@ async function boot({
     navigator: { clipboard: { writeText: async () => {} } },
     crypto: require('node:crypto').webcrypto,
     structuredClone,
-    setTimeout: (fn, ms) => (ms >= 100 ? timers.push(fn) : setTimeout(fn, ms)),
+    setTimeout: (fn, ms) => {
+      if (ms < 100) return setTimeout(fn, ms);
+      timers.set(++timerId, fn);
+      return timerId;
+    },
     clearTimeout: (id) => {
-      if (id > 0 && id <= timers.length) timers[id - 1] = null;
-      else clearTimeout(id);
+      if (timers.has(id)) timers.delete(id);
+      else if (typeof id !== 'number') clearTimeout(id);
     },
     setInterval: () => 0,
     clearInterval: () => {},
@@ -391,6 +414,16 @@ async function boot({
           b.classList.contains('list-row') && b.querySelector('.row-name')?.textContent === name,
       );
   const overview = async (name = 'Account onboarding') => press(row(name));
+  // A step 2 tree row by its folder's shown name (chips read as their labels), and selecting it.
+  const node = (name) =>
+    $('folder-tree')
+      .querySelectorAll('.tree-row')
+      .find(
+        (r) =>
+          !r.classList.contains('is-removed') &&
+          r.querySelector('.node .name')?.visibleText === name,
+      );
+  const select = async (name) => press(node(name).querySelector('.node'));
   const open = async (name = 'Account onboarding') => {
     await overview(name);
     await press($('overview-edit'));
@@ -412,21 +445,33 @@ async function boot({
     last: (api) => sent.filter(([a]) => a === api).at(-1)?.[1],
     // Runs the queued timers, and the ones they queue, until none is left.
     flush: async () => {
-      while (timers.some(Boolean)) {
-        const due = timers.splice(0);
-        for (const fn of due) fn?.();
+      while (timers.size) {
+        const due = [...timers.values()];
+        timers.clear();
+        for (const fn of due) fn();
         await document.settle();
       }
     },
     step: (n) => press($('step-tab-' + n)),
+    // admin.js state, for checks the page does not show.
+    state: () => window.AsxdAdmin.state(),
+    node,
+    select,
+    // Renames a folder in step 2.
+    rename: async (folder, text) => {
+      await select(folder);
+      await change($('folder-name'), text);
+    },
+    // Create this folder: 0 Always, 1 Only when….
+    mode: (n) => press($('create-mode').querySelectorAll('[role=radio]')[n]),
     // An edit autosave cannot save: a folder renamed "Dropped" under a condition whose number
     // the server cannot read.
     unsaveable: async () => {
-      await press(find($('destinations'), 'General'));
-      await change(labelled($('folderEditor'), 'Folder name'), 'Dropped');
-      await change(labelled($('folderEditor'), 'When should this folder appear?'), 'conditional');
-      await change(labelled($('folderEditor'), 'Field, condition 1'), 'root.revenue');
-      await change(labelled($('folderEditor'), 'Value, condition 1'), '1e5');
+      await select('General');
+      await change($('folder-name'), 'Dropped');
+      await press($('create-mode').querySelectorAll('[role=radio]')[1]);
+      await change(labelled($('conditions'), 'Field, condition 1'), 'root.revenue');
+      await change(labelled($('conditions'), 'Value, condition 1'), '1e5');
     },
   };
 }
@@ -463,9 +508,9 @@ async function boot({
     assert.equal(t.$('editor-title').textContent, 'Account onboarding');
     assert.doesNotMatch(t.$('templates').visibleText, GUID);
     assert.doesNotMatch(t.$('templates').visibleText, /rev-1/);
-    assert.match(
-      t.$('destinations').visibleText,
-      /\[Account Name\]/,
+    assert.equal(
+      t.node('Account Name').querySelector('.token').textContent,
+      'Account Name',
       'Tokens read as field labels',
     );
     assert.equal(t.$('publish').getAttribute('aria-disabled'), 'true');
@@ -731,7 +776,7 @@ async function boot({
     assert.equal(t.$('template-overview').hidden, false);
     assert.equal(t.last('asx_CreateDraft'), undefined, 'Discard saves nothing');
     await t.press(t.$('overview-edit'));
-    assert.doesNotMatch(t.$('destinations').visibleText, /Dropped/);
+    assert.doesNotMatch(t.$('folder-tree').visibleText, /Dropped/);
     assert.equal(t.$('editor-pill').textContent, 'Draft v2');
     await t.flush();
     assert.equal(t.last('asx_CreateDraft'), undefined, 'The discarded edit is never saved');
@@ -884,8 +929,9 @@ async function boot({
     assert.equal(t.$('publish').hidden, true);
     assert.equal(t.$('add-destination').hidden, true);
     assert.ok(t.labelled(t.$('step-1'), 'Name').disabled);
-    assert.ok(t.labelled(t.$('folderEditor'), 'Folder name').disabled);
-    assert.equal(t.find(t.$('destinations'), 'General').disabled, false, 'Folders can be opened');
+    assert.ok(t.$('folder-name').disabled);
+    assert.equal(t.node('General').querySelector('.node').disabled, false, 'Folders can be opened');
+    assert.equal(t.$('create-mode').querySelectorAll('[role=radio]')[1].disabled, true);
   }
   {
     // A related record's field reads through its lookup, as a chip; a lookup condition names the
@@ -1099,8 +1145,7 @@ async function boot({
     // An edit dims the preview and enables Publish, which saves it first.
     const t = await boot();
     await t.open();
-    await t.press(t.find(t.$('destinations'), 'General'));
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'General documents');
+    await t.rename('General', 'General documents');
     assert.equal(t.$('editor-pill').textContent, 'Draft v2');
     assert.equal(t.$('preview-stale').hidden, true, 'Nothing previewed yet');
     assert.equal(t.$('publish').hasAttribute('aria-disabled'), false);
@@ -1134,8 +1179,7 @@ async function boot({
     // Publish with an edit not saved yet saves it first, then publishes what was saved.
     const t = await boot();
     await t.open();
-    await t.press(t.find(t.$('destinations'), 'General'));
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Unsaved');
+    await t.rename('General', 'Unsaved');
     await t.step(3);
     await t.press(t.$('publish'));
     assert.equal(t.last('asx_CreateDraft').Destinations[0].Folders[1].Name, 'Unsaved');
@@ -1143,25 +1187,40 @@ async function boot({
     assert.deepEqual(t.last('asx_PublishTemplate'), { RevisionId: 'rev-2', RowVersion: '4' });
   }
   {
-    // Unsaved edits ask before the library link leaves the page too: Save draft saves and then
-    // goes; a page change with Discard changes goes without saving.
+    // The links to Sites & access save the edits first and go without asking; they ask only
+    // when the edits cannot be saved, and Save draft then says why and stays. A page change
+    // with Discard changes goes without saving.
     const t = await boot();
     await t.open();
-    await t.press(t.find(t.$('destinations'), 'General'));
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Renamed');
+    await t.rename('General', 'Renamed');
     await t.press(t.find(t.$('step-1'), 'Change in Sites & access'));
-    assert.match(
-      t.$('leavePrompt').visibleText,
-      /You have unsaved changes to Account onboarding\./,
-    );
-    assert.equal(t.sent.filter(([k]) => k === 'navigate').length, 0, 'Nothing leaves yet');
-    await t.press(t.find(t.$('leavePrompt'), 'Save draft'));
+    assert.equal(t.$('leavePrompt').textContent, '', 'Saved, so nothing to ask');
     assert.equal(t.last('asx_CreateDraft').Destinations[0].Folders[1].Name, 'Renamed');
     assert.equal(t.sent.filter(([k]) => k === 'navigate').at(-1)[1].data, 'access-' + BUILD);
+    // The Library list's setup option saves first too.
+    const l = await boot();
+    await l.open();
+    await l.rename('General', 'Set up');
+    await l.change(l.labelled(l.$('step-1'), 'Library'), '__setup');
+    assert.equal(l.$('leavePrompt').textContent, '');
+    assert.equal(l.last('asx_CreateDraft').Destinations[0].Folders[1].Name, 'Set up');
+    assert.equal(l.sent.filter(([k]) => k === 'navigate').at(-1)[1].data, 'access-' + BUILD);
+    // An edit that cannot be saved asks first.
+    const u = await boot();
+    await u.open();
+    await u.unsaveable();
+    await u.press(u.find(u.$('step-1'), 'Change in Sites & access'));
+    assert.match(
+      u.$('leavePrompt').visibleText,
+      /You have unsaved changes to Account onboarding\./,
+    );
+    assert.equal(u.sent.filter(([k]) => k === 'navigate').length, 0, 'Nothing leaves yet');
+    assert.equal(u.last('asx_CreateDraft'), undefined);
+    await u.press(u.find(u.$('leavePrompt'), 'Discard changes'));
+    assert.equal(u.sent.filter(([k]) => k === 'navigate').at(-1)[1].data, 'access-' + BUILD);
     const d = await boot();
     await d.open();
-    await d.press(d.find(d.$('destinations'), 'General'));
-    await d.change(d.labelled(d.$('folderEditor'), 'Folder name'), 'Dropped');
+    await d.rename('General', 'Dropped');
     d.document.track(d.window.AsxdUi.navigate('settings'));
     await d.document.settle();
     await d.press(d.find(d.$('leavePrompt'), 'Discard changes'));
@@ -1332,38 +1391,63 @@ async function boot({
     assert.equal(t.$('overview-title').textContent, 'Contract documents');
   }
   {
-    // Folders and folder settings: selection keeps focus, readable copy, Remove folder; the
-    // destination's Remove in step 1 keeps its confirmation.
+    // Folders and the folder panel: selection keeps focus, readable copy, the path, Remove folder
+    // in the ⋯ menu; the destination's Remove in step 1 keeps its confirmation.
     const t = await boot();
     await t.open();
-    const node = t.find(t.$('destinations'), 'General');
+    await t.step(2);
+    const node = t.node('General').querySelector('.node');
     node.focus();
     await t.press(node);
-    const again = t.find(t.$('destinations'), 'General');
+    const again = t.node('General').querySelector('.node');
     assert.equal(again.getAttribute('aria-current'), 'true');
-    assert.equal(t.document.activeElement, again, 'Focus stays on the selected node after render');
-    await t.press(t.find(t.$('destinations'), '[Account Name]'));
-    const editor = t.$('folderEditor');
-    const removeFolder = t.find(editor, 'Remove folder');
+    assert.ok(t.document.activeElement === again, 'Focus stays on the selected node after render');
+    assert.equal(t.$('folder-path').textContent, 'Business documents › Account Name ›');
+    assert.equal(t.$('folder-title').textContent, 'General');
+    assert.equal(t.$('folder-menu').getAttribute('aria-label'), 'More actions for General');
+    await t.select('Account Name');
+    assert.equal(t.$('folder-path').textContent, 'Business documents ›');
+    assert.equal(t.$('folder-menu').hidden, true, 'The top folder is removed with its destination');
+    assert.equal(t.$('folder-shows-as').visibleText, 'Shows as: Account Name');
+    assert.ok(t.$('help-folder-access') === null, 'Step 1 says who can open the folders');
+    assert.equal(
+      t.$('help-include-root').textContent,
+      "If these conditions don't match, Documents skips this whole destination for the record. Folders it already created stay.",
+    );
+    assert.equal(t.$('create-mode').getAttribute('aria-describedby'), 'help-include-root');
+    // ＋ Subfolder adds under the selected folder, selects it and focuses its name.
+    await t.press(t.$('add-subfolder'));
+    assert.ok(t.document.activeElement === t.$('folder-name'), 'The new folder name takes focus');
+    assert.equal(t.node('New folder').querySelector('.node').getAttribute('aria-current'), 'true');
+    assert.equal(t.state().sections[0].Folders.at(-1).Parent, 'root');
+    // A folder with folders under it is removed after them.
+    await t.select('General');
+    await t.press(t.$('add-subfolder'));
+    await t.select('General');
+    await t.press(t.$('folder-menu'));
+    const removeFolder = t
+      .$('folder-menu-list')
+      .querySelectorAll('[role=menuitem]')
+      .find((i) => i.textContent === 'Remove folder');
     assert.equal(removeFolder.getAttribute('aria-disabled'), 'true');
     assert.equal(
       t.document.getElementById(removeFolder.getAttribute('aria-describedby')).textContent,
       'Remove its folders first',
     );
-    assert.match(editor.visibleText, /Shows as: \[Account Name\]/);
-    assert.equal(
-      t.$('help-folder-access').textContent,
-      'Everyone with access to General can open this folder. To restrict a folder, use a separate library.',
+    await t.press(removeFolder);
+    assert.ok(t.node('General'), 'Not removed');
+    // Removing a folder selects its parent and focuses its node.
+    await t.select('New folder');
+    await t.press(t.$('folder-menu'));
+    await t.press(
+      t
+        .$('folder-menu-list')
+        .querySelectorAll('[role=menuitem]')
+        .find((i) => i.textContent === 'Remove folder'),
     );
     assert.equal(
-      t.$('help-include-root').textContent,
-      "If these conditions don't match, Documents skips this whole destination for the record. Folders it already created stay.",
-    );
-    await t.press(t.find(t.$('destinations'), '＋ Add folder inside [Account Name]'));
-    assert.match(
       t.document.activeElement.getAttribute('data-focus-key'),
-      /^node:general:/,
-      'A new folder takes focus',
+      'node:general:general_docs',
     );
     await t.press(t.find(t.$('step-1'), 'Remove', 'Remove Business documents'));
     assert.equal(
@@ -1372,49 +1456,63 @@ async function boot({
     );
   }
   {
-    // Insert field: one picker with optgroups, the primary name first, deprecated fields last.
+    // ＋ Field lists this record's fields, then one group per related record: the primary name
+    // first, deprecated fields last; a related field adds its record under an alias.
     const t = await boot();
     await t.open();
-    await t.press(t.find(t.$('destinations'), 'General'));
-    const picker = t.labelled(t.$('folderEditor'), 'Insert field');
-    const groups = picker.querySelectorAll('optgroup').map((g) => g.getAttribute('label'));
-    assert.deepEqual(groups, ['This record', 'Primary Contact → Contact']);
-    assert.equal(picker.value, 'root.name');
-    const own = picker
-      .querySelectorAll('optgroup')[0]
-      .querySelectorAll('option')
-      .map((o) => o.textContent);
+    await t.step(2);
+    await t.select('General');
+    await t.press(t.$('add-field'));
+    const groups = t.$('field-options').querySelectorAll('[role=group]');
+    assert.deepEqual(
+      groups.map((g) => g.getAttribute('aria-label')),
+      ['This record', 'Primary Contact → Contact'],
+    );
+    const own = groups[0]
+      .querySelectorAll('[role=option]')
+      .map((o) => o.querySelector('.label').textContent);
+    assert.equal(own[0], 'Account Name');
     assert.equal(own.at(-1), '(Deprecated) Old Code');
-    await t.change(picker, 'lookup:primarycontactid:contact:fullname');
-    await t.press(t.find(t.$('folderEditor'), 'Insert field'));
-    assert.match(t.labelled(t.$('folderEditor'), 'Folder name').value, /\{lookup_1\.fullname\}$/);
-    assert.match(t.$('destinations').visibleText, /\[Primary Contact › Full Name\]/);
+    assert.deepEqual(
+      groups[0].querySelectorAll('[role=option]').map((o) => o.querySelector('.kind').textContent),
+      ['Text', 'Text', 'Number', 'Date', 'Choice', 'Choice', 'Text'],
+      'The name kinds only, with their type',
+    );
+    await t.press(
+      t
+        .$('field-options')
+        .querySelectorAll('[role=option]')
+        .find((o) => o.dataset.value === 'lookup:primarycontactid:contact:fullname'),
+    );
+    assert.match(t.$('folder-name').value, /\{lookup_1\.fullname\}$/);
+    assert.equal(
+      t.$('folder-tree').querySelectorAll('.token').at(-1).textContent,
+      'Primary Contact › Full Name',
+    );
   }
   {
     // Condition builder: names on every control, typed values, the lookup picker, validation.
     const t = await boot();
     await t.open();
-    await t.press(t.find(t.$('destinations'), 'General'));
-    const editor = t.$('folderEditor');
-    await t.change(t.labelled(editor, 'When should this folder appear?'), 'conditional');
+    await t.select('General');
+    const editor = t.$('conditions');
+    await t.mode(1);
     const field = editor
       .querySelectorAll('select')
       .find((s) => s.getAttribute('aria-label') === 'Field, condition 1');
-    assert.equal(t.document.activeElement, field, 'A new condition focuses its Field');
-    const fieldset = editor.querySelector('fieldset');
-    assert.equal(fieldset.querySelector('legend').textContent, 'Conditions for General');
+    assert.ok(t.document.activeElement === field, 'A new condition focuses its Field');
+    const group = editor.querySelector('.condition-group');
+    assert.equal(group.getAttribute('role'), 'group');
+    assert.equal(group.getAttribute('aria-label'), 'Conditions for General');
     for (const control of editor.querySelectorAll('select, input'))
-      assert.ok(
-        control.getAttribute('aria-label') || control.parentNode.tagName === 'LABEL',
-        'Unnamed control in the condition builder',
-      );
+      assert.ok(control.getAttribute('aria-label'), 'Unnamed control in the condition builder');
     assert.equal(
       t
-        .labelled(editor, 'Match')
+        .labelled(editor, 'Match, Conditions for General')
         .querySelectorAll('option')
         .map((o) => o.textContent)
         .join('|'),
-      'all conditions|any condition',
+      'All|Any',
     );
     const kinds = {
       'root.revenue': ['number', 'decimal'],
@@ -1434,11 +1532,8 @@ async function boot({
       .querySelectorAll('select')
       .find((s) => s.getAttribute('aria-label') === 'Value, condition 1');
     assert.deepEqual(
-      choice
-        .querySelectorAll('option')
-        .map((o) => o.textContent)
-        .slice(1),
-      ['Active', 'Inactive'],
+      choice.querySelectorAll('option').map((o) => o.textContent),
+      ['Another field…', 'Choose a value', 'Active', 'Inactive'],
     );
     await t.change(field, 'root.primarycontactid');
     await t.press(t.find(editor, 'Choose record…'));
@@ -1491,7 +1586,11 @@ async function boot({
     assert.equal(t.sent.filter(([k]) => k === 'asx_CreateDraft').length, 0);
     const alert = editor.querySelector('[role=alert]');
     assert.equal(alert.textContent, 'Add a condition or remove this group');
-    assert.equal(t.document.activeElement.tagName, 'LEGEND');
+    assert.equal(
+      t.document.activeElement.getAttribute('aria-label'),
+      'Match, Group 2 conditions',
+      'A new group focuses its All/Any',
+    );
     await t.press(
       editor
         .querySelectorAll('button')
@@ -1518,8 +1617,10 @@ async function boot({
     });
     d.Destinations[0].Folders[1].Condition = nest(depth);
     await t.open();
-    await t.press(t.find(t.$('destinations'), 'General'));
-    const editor = t.$('folderEditor');
+    await t.select('General');
+    const editor = t.$('conditions');
+    assert.equal(editor.querySelectorAll('fieldset').length, 0, 'No fieldset boxes');
+    assert.equal(editor.querySelectorAll('.condition-group.nested').length, depth - 1);
     const addGroup = (n) =>
       editor
         .querySelectorAll('button')
@@ -1533,9 +1634,13 @@ async function boot({
         " levels deep, because deeper templates can't be sent to Dataverse.",
     );
     assert.equal(addGroup(depth - 1).hasAttribute('aria-disabled'), false);
-    const groups = editor.querySelectorAll('fieldset').length;
+    const groups = editor.querySelectorAll('.condition-group').length;
     await t.press(deepest);
-    assert.equal(editor.querySelectorAll('fieldset').length, groups, 'No group past the bound');
+    assert.equal(
+      editor.querySelectorAll('.condition-group').length,
+      groups,
+      'No group past the bound',
+    );
   }
   {
     // A loaded lookup condition shows the record's name, never its ID.
@@ -1561,26 +1666,29 @@ async function boot({
       loaded: { RevisionId: 'rev-1', RowVersion: '3', Status: 'Published', Version: 1, Draft: d },
     });
     await t.open();
-    await t.press(t.find(t.$('destinations'), 'General'));
-    assert.match(t.$('folderEditor').visibleText, /Jane Smith/);
-    assert.doesNotMatch(t.$('folderEditor').visibleText, GUID);
-    assert.match(
-      t.$('destinations').visibleText,
-      /\(conditional\)/,
-      'The conditional marker has text, not only colour',
+    await t.step(2);
+    await t.select('General');
+    assert.match(t.$('conditions').visibleText, /Jane Smith/);
+    assert.doesNotMatch(t.$('step-2').visibleText, GUID);
+    const rule = t.node('General').querySelector('.rule');
+    assert.equal(rule.textContent, '◆ When Primary Contact is Jane Smith', 'The rule in words');
+    assert.equal(
+      t.node('General').querySelector('.node').getAttribute('aria-describedby'),
+      rule.id,
+      'The node is described by its rule',
     );
   }
   {
     // Preview: picking a record runs it (saved revision); an edit makes it out of date; Refresh previews the edit.
     const t = await boot();
     await t.open();
+    await t.step(3);
     await t.press(t.$('chooseRecord'));
     assert.equal(t.$('preview-record-name').textContent, 'Contoso Ltd');
     assert.deepEqual(t.last('asx_PreviewTemplate'), { RevisionId: 'rev-1', RecordId: RECORD });
     assert.equal(t.$('preview-status').textContent, 'Preview updated: 1 destination, 2 folders.');
     assert.equal(t.$('previewTrees').hasAttribute('aria-live'), false);
-    await t.press(t.find(t.$('destinations'), 'General'));
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Edited');
+    await t.rename('General', 'Edited');
     assert.equal(t.$('preview-stale').hidden, false);
     await t.press(t.$('refreshPreview'));
     const request = t.last('asx_PreviewTemplate');
@@ -1701,8 +1809,7 @@ async function boot({
     await t.press(t.find(t.$('step-3').querySelector('.confirm'), 'Publish v2'));
     assert.equal(t.$('editor-pill').textContent, 'Draft v3');
     assert.equal(t.$('editor-note').textContent, 'v2 stays live until you publish');
-    await t.press(t.find(t.$('destinations'), 'General'));
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'After publish');
+    await t.rename('General', 'After publish');
     await t.flush();
     const after = t.last('asx_CreateDraft');
     assert.deepEqual([after.RevisionId, after.RowVersion], ['rev-2', '5']);
@@ -1731,30 +1838,25 @@ async function boot({
       },
     });
     await t.open();
-    assert.match(
-      t.$('destinations').visibleText,
-      /\[Account Name\]/,
-      'The template renders before its related tables load',
-    );
+    assert.ok(t.node('Account Name'), 'The template renders before its related tables load');
     assert.equal(peak, 4, 'Four related tables load at a time');
-    await t.press(t.find(t.$('destinations'), 'General'));
+    await t.step(2);
+    await t.select('General');
+    await t.press(t.$('add-field'));
     const group = () =>
       t
-        .labelled(t.$('folderEditor'), 'Insert field')
-        .querySelectorAll('optgroup')
-        .find((g) => g.getAttribute('label') === 'Link rel9 → rel9');
-    assert.equal(group().disabled, true);
-    assert.equal(group().querySelectorAll('option')[0].textContent, 'Loading fields…');
+        .$('field-options')
+        .querySelectorAll('[role=group]')
+        .find((g) => g.getAttribute('aria-label') === 'Link rel9 → rel9');
+    assert.equal(group().getAttribute('aria-disabled'), 'true');
+    assert.equal(group().querySelectorAll('[role=option]')[0].textContent, 'Loading fields…');
     release();
     await t.document.settle();
     assert.equal(peak, 4, 'Never more than four');
-    assert.equal(group().disabled, false, 'The picker redraws as tables arrive');
-    assert.equal(
-      group()
-        .querySelectorAll('option')
-        .some((o) => o.textContent === 'Loading fields…'),
-      false,
-    );
+    // The open list follows the tables (these have no fields a name can use, so no group).
+    assert.doesNotMatch(t.$('field-options').textContent, /Loading fields…/);
+    assert.ok(group() === undefined, 'No group for a table without name fields');
+    assert.ok(t.document.activeElement === t.$('field-search'), 'Typing in the search goes on');
     // A table that fails twice (one retry) shows as unavailable, not as missing.
     let attempts = 0;
     const failed = await boot({
@@ -1762,13 +1864,17 @@ async function boot({
         table === 'contact' && url.includes('/Attributes?') && ++attempts > 0,
     });
     await failed.open();
-    await failed.press(failed.find(failed.$('destinations'), 'General'));
+    await failed.select('General');
+    await failed.press(failed.$('add-field'));
     const contact = failed
-      .labelled(failed.$('folderEditor'), 'Insert field')
-      .querySelectorAll('optgroup')
-      .find((g) => g.getAttribute('label') === 'Primary Contact → Contact');
-    assert.equal(contact.disabled, true);
-    assert.equal(contact.querySelectorAll('option')[0].textContent, "Couldn't load these fields");
+      .$('field-options')
+      .querySelectorAll('[role=group]')
+      .find((g) => g.getAttribute('aria-label') === 'Primary Contact → Contact');
+    assert.equal(contact.getAttribute('aria-disabled'), 'true');
+    assert.equal(
+      contact.querySelectorAll('[role=option]')[0].textContent,
+      "Couldn't load these fields",
+    );
     assert.equal(attempts, 2, 'One retry');
   }
   {
@@ -1789,13 +1895,14 @@ async function boot({
       },
     });
     await t.open();
-    await t.press(t.find(t.$('destinations'), 'General'));
+    await t.select('General');
+    await t.mode(1);
     const group = () =>
       t
-        .labelled(t.$('folderEditor'), 'Insert field')
+        .labelled(t.$('conditions'), 'Field, condition 1')
         .querySelectorAll('optgroup')
         .find((g) => g.getAttribute('label') === 'Link rel0 → rel0');
-    const name = t.labelled(t.$('folderEditor'), 'Folder name');
+    const name = t.$('folder-name');
     name.focus();
     release();
     await t.document.settle();
@@ -1838,8 +1945,7 @@ async function boot({
     // Fix 3: a save reads the new version's number. v1 opened while v3 is the latest saves as v4.
     const t = await boot({ versions: { 'rev-2': 4 } });
     await t.open();
-    await t.press(t.find(t.$('destinations'), 'General'));
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'From v1');
+    await t.rename('General', 'From v1');
     await t.flush();
     assert.equal(t.$('editor-pill').textContent, 'Draft v4');
     await t.press(t.$('publish'));
@@ -1866,7 +1972,7 @@ async function boot({
     assert.match(t.$('save-status').textContent, /^Saved /, 'The draft itself was saved');
     assert.equal(t.$('editor-pill').textContent, 'Draft v1');
     failing = false;
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Second save');
+    await t.change(t.$('folder-name'), 'Second save');
     await t.flush();
     const second = t.last('asx_CreateDraft');
     assert.deepEqual(
@@ -1886,17 +1992,17 @@ async function boot({
       loaded: { RevisionId: 'rev-1', RowVersion: '3', Status: 'Published', Version: 1, Draft: d },
     });
     await t.open();
-    await t.press(t.find(t.$('destinations'), 'General'));
-    assert.match(t.$('folderEditor').visibleText, /Unavailable field\. Select a replacement\./);
-    assert.doesNotMatch(t.$('folderEditor').visibleText, /retired_code/);
+    await t.select('General');
+    assert.match(t.$('conditions').visibleText, /Unavailable field\. Select a replacement\./);
+    assert.doesNotMatch(t.$('step-2').visibleText, /retired_code/);
   }
   {
     // Fix 7: a number is sent as typed; one the server cannot read is refused at the control.
     const t = await boot();
     await t.open();
-    await t.press(t.find(t.$('destinations'), 'General'));
-    const editor = t.$('folderEditor');
-    await t.change(t.labelled(editor, 'When should this folder appear?'), 'conditional');
+    await t.select('General');
+    const editor = t.$('conditions');
+    await t.mode(1);
     await t.change(t.labelled(editor, 'Field, condition 1'), 'root.revenue');
     await t.change(t.labelled(editor, 'Value, condition 1'), '1e5');
     await t.flush();
@@ -1975,13 +2081,12 @@ async function boot({
     });
     await t.open();
     await t.step(2);
-    await t.press(t.find(t.$('destinations'), 'General'));
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'One');
+    await t.rename('General', 'One');
     const drafts = () => t.sent.filter(([a]) => a === 'asx_CreateDraft').map(([, b]) => b);
     assert.equal(drafts().length, 0, 'Nothing saves before the pause');
     await t.flush();
     assert.equal(t.$('save-status').textContent, 'Saving…');
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Two');
+    await t.change(t.$('folder-name'), 'Two');
     await t.flush();
     assert.equal(drafts().length, 1, 'One save in flight at a time');
     release();
@@ -2066,13 +2171,10 @@ async function boot({
     const t = await boot();
     await t.open();
     await t.step(2);
-    await t.press(t.find(t.$('destinations'), 'General'));
-    await t.change(
-      t.labelled(t.$('folderEditor'), 'When should this folder appear?'),
-      'conditional',
-    );
-    await t.change(t.labelled(t.$('folderEditor'), 'Field, condition 1'), 'root.revenue');
-    const value = t.labelled(t.$('folderEditor'), 'Value, condition 1');
+    await t.select('General');
+    await t.mode(1);
+    await t.change(t.labelled(t.$('conditions'), 'Field, condition 1'), 'root.revenue');
+    const value = t.labelled(t.$('conditions'), 'Value, condition 1');
     value.focus();
     await t.change(value, '1e5');
     await t.flush();
@@ -2082,13 +2184,13 @@ async function boot({
     assert.equal(t.$('step-tab-2').querySelector('.step-dot').hidden, true, 'No dot with an error');
     assert.equal(t.document.activeElement, value, 'Autosave never takes focus');
     // The same problems are not announced again at the next pause.
-    const alert = t.$('folderEditor').querySelector('[role=alert]');
+    const alert = t.$('conditions').querySelector('[role=alert]');
     assert.equal(alert.textContent, 'Enter a number');
     await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files');
     await t.flush();
     // assert.ok: a failed equal on two elements would print the whole page.
-    assert.ok(t.$('folderEditor').querySelector('[role=alert]') === alert, 'Not re-inserted');
-    assert.equal(t.$('folderEditor').querySelectorAll('[role=alert]').length, 1);
+    assert.ok(t.$('conditions').querySelector('[role=alert]') === alert, 'Not re-inserted');
+    assert.equal(t.$('conditions').querySelectorAll('[role=alert]').length, 1);
     // Fixed, the next autosave saves and the error state clears.
     await t.change(value, '100000');
     await t.flush();
@@ -2251,8 +2353,7 @@ async function boot({
     await t.open();
     assert.equal(t.$('step-tab-2').querySelector('.step-dot').hidden, true);
     await t.step(2);
-    await t.press(t.find(t.$('destinations'), 'General'));
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'General documents');
+    await t.rename('General', 'General documents');
     assert.equal(t.$('step-tab-2').querySelector('.step-dot').hidden, false);
     assert.equal(t.$('step-tab-2').getAttribute('aria-label'), 'Folders, has changes');
     assert.equal(t.$('step-count').textContent, '1 change in this step');
@@ -2280,12 +2381,16 @@ async function boot({
     });
     await published.open();
     await published.step(2);
-    await published.press(published.find(published.$('destinations'), 'Invoices'));
-    await published.press(published.find(published.$('folderEditor'), 'Remove folder'));
-    await published.press(published.find(published.$('destinations'), '[Account Name]'));
+    await published.select('Invoices');
+    await published.press(published.$('folder-menu'));
     await published.press(
-      published.find(published.$('destinations'), '＋ Add folder inside [Account Name]'),
+      published
+        .$('folder-menu-list')
+        .querySelectorAll('[role=menuitem]')
+        .find((i) => i.textContent === 'Remove folder'),
     );
+    await published.select('Account Name');
+    await published.press(published.$('add-subfolder'));
     await published.flush();
     assert.deepEqual(
       published.last('asx_CreateDraft').Destinations[0].Folders.map((x) => x.Key),
@@ -2549,13 +2654,12 @@ async function boot({
     await t.press(t.$('publish'));
     await t.press(t.find(t.$('step-3').querySelector('.confirm'), 'Publish v2'));
     await t.step(2);
-    await t.press(t.find(t.$('destinations'), 'General'));
-    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'During');
+    await t.rename('General', 'During');
     await t.flush();
     assert.equal(t.sent.filter(([a]) => a === 'asx_CreateDraft').length, 0, 'Waits for Publish');
     release();
     await t.document.settle();
-    assert.equal(t.labelled(t.$('folderEditor'), 'Folder name').value, 'During', 'Kept');
+    assert.equal(t.$('folder-name').value, 'During', 'Kept');
     await t.flush();
     const saved = t.last('asx_CreateDraft');
     assert.deepEqual([saved.RevisionId, saved.RowVersion], ['rev-2', '5']);
@@ -2637,8 +2741,8 @@ async function boot({
     await t.press(t.$('overview-edit'));
     assert.equal(tries, 2, 'One retry');
     assert.equal(t.$('fb-editor').textContent, 'The published version could not be read.');
-    await t.press(t.find(t.$('destinations'), '[Account Name]'));
-    await t.press(t.find(t.$('destinations'), '＋ Add folder inside [Account Name]'));
+    await t.select('Account Name');
+    await t.press(t.$('add-subfolder'));
     await t.press(t.$('add-destination'));
     await t.flush();
     const sent = t.last('asx_CreateDraft').Destinations;
@@ -2672,8 +2776,458 @@ async function boot({
     );
     assert.equal(changes.destinations.length, 0);
   }
+  {
+    // The tree: destination pills, rule sentences, New and edited marks, Removed with Undo,
+    // and no drag hint.
+    const published = draft();
+    published.Destinations[0].Folders.push({
+      Key: 'invoices',
+      Parent: 'root',
+      Name: 'Invoices',
+      Condition: null,
+    });
+    const t = await boot({
+      handle: (api, body) =>
+        api === 'asx_LoadDraft'
+          ? body.RevisionId === 'rev-1'
+            ? {
+                RevisionId: 'rev-1',
+                RowVersion: '3',
+                Status: 'Published',
+                Version: 1,
+                Draft: published,
+              }
+            : null
+          : null,
+    });
+    await t.open();
+    await t.step(2);
+    assert.deepEqual(
+      t
+        .$('dest-pills')
+        .querySelectorAll('button')
+        .map((b) => b.textContent),
+      ['Business documents'],
+    );
+    assert.equal(t.node('Account Name').querySelector('.token').textContent, 'Account Name');
+    assert.equal(t.node('General').querySelector('.rule').textContent, 'Always');
+    await t.select('Invoices');
+    await t.press(t.$('folder-menu'));
+    await t.press(
+      t
+        .$('folder-menu-list')
+        .querySelectorAll('[role=menuitem]')
+        .find((i) => i.textContent === 'Remove folder'),
+    );
+    const removed = t.$('folder-tree').querySelector('.tree-row.is-removed');
+    assert.equal(removed.querySelector('.tag').textContent, 'Removed');
+    assert.equal(t.find(removed, 'Undo').dataset.focusKey, 'undo:general:invoices');
+    await t.select('General');
+    await t.press(t.$('add-subfolder'));
+    assert.equal(t.node('New folder').querySelector('.tag').textContent, 'New');
+    await t.press(t.find(t.$('folder-tree').querySelector('.tree-row.is-removed'), 'Undo'));
+    assert.ok(t.node('Invoices'), 'Undo puts the folder back');
+    assert.doesNotMatch(t.$('step-2').visibleText, /Drag folders/);
+  }
+  {
+    // ＋ Folder adds a sibling; with the top folder selected it adds under it (one top folder).
+    const t = await boot();
+    await t.open();
+    await t.step(2);
+    await t.select('Account Name');
+    await t.press(t.$('add-folder'));
+    const added = t.state().sections[0].Folders.at(-1);
+    assert.equal(added.Parent, 'root');
+    assert.equal(added.Key, 'folder_1');
+    // With another folder selected it adds beside it.
+    await t.select('General');
+    await t.press(t.$('add-folder'));
+    assert.equal(t.state().sections[0].Folders.at(-1).Parent, 'root');
+    assert.equal(t.state().sections[0].Folders.at(-1).Key, 'folder_2');
+    // At the folder bound both are off, with one reason.
+    const d = draft();
+    const bound = t.window.AsxdUi.BOUNDS.foldersPerDestination;
+    for (let i = 2; i < bound; i++)
+      d.Destinations[0].Folders.push({
+        Key: 'f' + i,
+        Parent: 'root',
+        Name: 'F' + i,
+        Condition: null,
+      });
+    const full = await boot({
+      loaded: { RevisionId: 'rev-1', RowVersion: '3', Status: 'Published', Version: 1, Draft: d },
+    });
+    await full.open();
+    await full.step(2);
+    assert.equal(full.state().sections[0].Folders.length, bound);
+    for (const id of ['add-folder', 'add-subfolder']) {
+      assert.equal(full.$(id).getAttribute('aria-disabled'), 'true', id);
+      assert.equal(full.$(id).getAttribute('aria-describedby'), 'folder-reason', id);
+    }
+    assert.equal(
+      full.$('folder-reason').textContent,
+      'A destination can have up to ' +
+        bound +
+        " folders, because a record's folders for one destination are kept in one Dataverse row.",
+    );
+    await full.press(full.$('add-folder'));
+    assert.equal(full.state().sections[0].Folders.length, bound, 'Nothing past the bound');
+  }
+  {
+    // ＋ Field: a searchable popover grouped like the field picker, with the type on the right;
+    // choosing a field inserts its token at the caret and replaces a selection; Escape closes only
+    // the popover and returns focus to Name.
+    const t = await boot();
+    await t.open();
+    await t.step(2);
+    await t.select('General');
+    const name = t.$('folder-name');
+    name.value = 'P- files';
+    name.oninput();
+    name.selectionStart = name.selectionEnd = 2;
+    await t.press(t.$('add-field'));
+    assert.equal(t.$('field-popover').hidden, false);
+    assert.equal(t.$('add-field').getAttribute('aria-expanded'), 'true');
+    assert.ok(t.document.activeElement === t.$('field-search'));
+    const groups = t
+      .$('field-options')
+      .querySelectorAll('[role=group]')
+      .map((g) => g.getAttribute('aria-label'));
+    assert.equal(groups[0], 'This record');
+    t.$('field-search').value = 'number';
+    t.$('field-search').oninput();
+    const options = t.$('field-options').querySelectorAll('[role=option]');
+    assert.deepEqual(
+      options.map((o) => o.querySelector('.label').textContent),
+      ['Account Number'],
+    );
+    assert.equal(options[0].querySelector('.kind').textContent, 'Text');
+    await t.press(options[0]);
+    assert.equal(name.value, 'P-{root.accountnumber} files');
+    assert.equal(t.$('field-popover').hidden, true);
+    assert.ok(t.document.activeElement === name);
+    assert.equal(name.selectionStart, 'P-{root.accountnumber}'.length);
+    assert.equal(t.$('folder-shows-as').visibleText, 'Shows as: P-Account Number files');
+    assert.equal(
+      t.node('P-Account Number files').querySelector('.token').textContent,
+      'Account Number',
+    );
+    name.selectionStart = 0;
+    name.selectionEnd = 2;
+    await t.press(t.$('add-field'));
+    t.$('field-search').key('Escape');
+    assert.equal(t.$('field-popover').hidden, true);
+    assert.ok(t.document.activeElement === name);
+    await t.press(t.$('add-field'));
+    t.$('field-search').value = 'account name';
+    t.$('field-search').oninput();
+    t.$('field-search').key('ArrowDown');
+    assert.equal(
+      t.$('field-search').getAttribute('aria-activedescendant'),
+      t.$('field-options').querySelector('[role=option]').id,
+    );
+    t.$('field-search').key('Enter');
+    assert.equal(name.value, '{root.name}{root.accountnumber} files', 'A selection is replaced');
+  }
+  {
+    // Create this folder: Always | Only when…; Only when… seeds one condition; the conditions
+    // read as a sentence with short operator labels; Another field… switches the value control.
+    const t = await boot();
+    await t.open();
+    await t.step(2);
+    await t.select('General');
+    const modes = t.$('create-mode').querySelectorAll('[role=radio]');
+    assert.deepEqual(
+      modes.map((m) => m.textContent),
+      ['Always', 'Only when…'],
+    );
+    await t.press(modes[1]);
+    assert.equal(modes[1].getAttribute('aria-checked'), 'true');
+    const conditions = t.$('conditions');
+    assert.match(conditions.querySelector('.sentence').visibleText, /of these are true$/);
+    assert.equal(conditions.querySelectorAll('fieldset').length, 0, 'No fieldset boxes');
+    const operator = t.labelled(conditions, 'Operator, condition 1');
+    assert.deepEqual(
+      operator.querySelectorAll('option').map((o) => o.textContent),
+      ['is', 'is not', 'is empty', 'has a value', 'contains', "doesn't contain"],
+    );
+    await t.change(t.labelled(conditions, 'Field, condition 1'), 'root.statecode');
+    const value = t.labelled(conditions, 'Value, condition 1');
+    assert.equal(value.querySelectorAll('option')[0].textContent, 'Another field…');
+    await t.change(value, 'value:0');
+    assert.equal(t.node('General').querySelector('.rule').textContent, '◆ When Status is Active');
+    await t.change(t.labelled(conditions, 'Value, condition 1'), '__field');
+    const other = t.labelled(t.$('conditions'), 'Other field, condition 1');
+    assert.equal(other.querySelectorAll('option')[0].textContent, 'A value');
+    await t.press(t.find(t.$('conditions'), '＋ Condition'));
+    assert.match(t.node('General').querySelector('.rule').textContent, /^◆ When .+ \+ 1 more$/);
+    await t.press(modes[0]);
+    assert.equal(t.node('General').querySelector('.rule').textContent, 'Always');
+  }
+  {
+    // A typed value offers Another field… in its ▾ menu; A value switches back. Arrow keys
+    // switch Create this folder and keep focus on it.
+    const t = await boot();
+    await t.open();
+    await t.step(2);
+    await t.select('General');
+    const always = t.$('create-mode').querySelectorAll('[role=radio]')[0];
+    always.focus();
+    always.key('ArrowRight');
+    await t.document.settle();
+    const when = t.$('create-mode').querySelectorAll('[role=radio]')[1];
+    assert.equal(when.getAttribute('aria-checked'), 'true');
+    assert.equal(when.tabIndex, 0);
+    assert.ok(t.document.activeElement === when, 'Focus stays in the radio group');
+    assert.ok(t.state().sections[0].Folders[1].Condition, 'Only when… seeds a condition');
+    const more = t
+      .$('conditions')
+      .querySelectorAll('button')
+      .find((b) => b.getAttribute('aria-label') === 'Value options, condition 1');
+    assert.equal(more.getAttribute('aria-haspopup'), 'menu');
+    await t.press(more);
+    await t.press(
+      t
+        .$('conditions')
+        .querySelectorAll('[role=menuitem]')
+        .find((i) => i.textContent === 'Another field…'),
+    );
+    const other = t.labelled(t.$('conditions'), 'Other field, condition 1');
+    assert.ok(t.document.activeElement === other);
+    assert.equal(
+      t.state().sections[0].Folders[1].Condition.Conditions[0].right,
+      'root.accountnumber',
+    );
+    await t.change(other, '__value');
+    assert.equal(t.state().sections[0].Folders[1].Condition.Conditions[0].right, null);
+    assert.equal(t.labelled(t.$('conditions'), 'Value, condition 1').tagName, 'INPUT');
+    when.key('ArrowLeft');
+    await t.document.settle();
+    assert.equal(t.state().sections[0].Folders[1].Condition, null);
+  }
+  {
+    // Test records: previews of the draft, debounced; Created or Skipped for the selected folder,
+    // with the failing value; a late answer never replaces a newer one.
+    const answers = [];
+    const t = await boot({
+      handle: (api, body) => {
+        if (api !== 'asx_PreviewTemplate') return null;
+        let resolve;
+        const answer = new Promise((r) => (resolve = r));
+        answers.push({ body, resolve });
+        return answer;
+      },
+      reads: (table) =>
+        table === 'account'
+          ? { statecode: 1, 'statecode@OData.Community.Display.V1.FormattedValue': 'Inactive' }
+          : null,
+    });
+    await t.open();
+    await t.step(2);
+    await t.select('General');
+    await t.press(t.$('add-test-record'));
+    assert.equal(answers.length, 1, 'A new test record previews at once');
+    assert.equal(answers[0].body.RevisionId, '');
+    assert.equal(answers[0].body.RecordId, RECORD);
+    assert.ok(answers[0].body.Draft, 'The draft payload, not the saved revision');
+    const plan = (folders) => ({
+      Folders: folders.map((Node) => ({
+        Section: 'general',
+        Node,
+        Name: Node,
+        RelativePath: Node,
+      })),
+      Notices: [],
+    });
+    answers[0].resolve(plan(['root', 'general_docs']));
+    await t.document.settle();
+    // Rows are redrawn on every answer: read the row afresh each time, never a captured node.
+    const record = () => t.$('test-records').querySelector('.test-record');
+    assert.equal(record().querySelector('strong').textContent, 'Contoso Ltd');
+    assert.equal(record().querySelector('.state').textContent, 'Created');
+    await t.press(t.$('create-mode').querySelectorAll('[role=radio]')[1]);
+    await t.change(t.labelled(t.$('conditions'), 'Field, condition 1'), 'root.statecode');
+    await t.change(t.labelled(t.$('conditions'), 'Value, condition 1'), 'value:0');
+    assert.equal(answers.length, 1, 'Edits wait for the pause');
+    await t.flush();
+    assert.equal(answers.length, 2, 'One preview per record after the pause');
+    await t.change(t.labelled(t.$('conditions'), 'Value, condition 1'), 'value:1');
+    await t.flush();
+    assert.equal(record().getAttribute('aria-busy'), 'true');
+    answers[2].resolve(plan(['root']));
+    await t.document.settle();
+    assert.equal(record().querySelector('.state').textContent, 'Skipped');
+    answers[1].resolve(plan(['root', 'general_docs']));
+    await t.document.settle();
+    assert.equal(
+      record().querySelector('.state').textContent,
+      'Skipped',
+      'The older answer is ignored',
+    );
+    assert.equal(record().querySelector('.why').textContent, 'Inactive');
+    assert.equal(record().hasAttribute('aria-busy'), false);
+    // The top folder was created: no failing value there.
+    await t.select('Account Name');
+    assert.equal(record().querySelector('.state').textContent, 'Created');
+    assert.ok(record().querySelector('.why') === null, 'No value shown');
+    // A folder under a skipped folder is skipped because of it: no value of its own.
+    await t.select('General');
+    await t.press(t.$('add-subfolder'));
+    await t.mode(1);
+    await t.change(t.labelled(t.$('conditions'), 'Field, condition 1'), 'root.statecode');
+    assert.equal(record().querySelector('.state').textContent, 'Skipped');
+    assert.ok(record().querySelector('.why') === null, 'No value shown');
+  }
+  {
+    // Test records: at most the preview bound, with its reason; a record is listed once; ✕
+    // removes it; a draft that cannot be previewed marks the rows out of date without a call; a
+    // failed preview says why; another template starts with none.
+    const ids = ['a1', 'a2', 'a3', 'a4', 'a5'].map((n) => '00000000-0000-0000-0000-0000000000' + n);
+    let next = 0;
+    let fail = false;
+    const t = await boot({
+      enabled: ['account', 'contact'],
+      pick: () => [
+        {
+          id: '{' + ids[next].toUpperCase() + '}',
+          name: 'Account ' + (next + 1),
+          entityType: 'account',
+        },
+      ],
+      handle: (api) =>
+        api === 'asx_PreviewTemplate' && fail ? new Error('The record could not be read.') : null,
+    });
+    await t.open();
+    await t.step(2);
+    await t.select('General');
+    const rows = () => t.$('test-records').querySelectorAll('.test-record');
+    await t.press(t.$('add-test-record'));
+    await t.press(t.$('add-test-record'));
+    assert.equal(rows().length, 1, 'Listed once');
+    for (next = 1; next < 5; next++) await t.press(t.$('add-test-record'));
+    assert.equal(rows().length, 5);
+    assert.deepEqual(
+      rows().map((r) => r.querySelector('.state').textContent),
+      ['Created', 'Created', 'Created', 'Created', 'Created'],
+    );
+    const add = t.$('add-test-record');
+    assert.equal(add.getAttribute('aria-disabled'), 'true');
+    assert.equal(
+      t.document.getElementById(add.getAttribute('aria-describedby')).textContent,
+      "Preview covers up to 5 records at a time so it finishes within Dataverse's 2-minute limit.",
+    );
+    const looked = t.looked.length;
+    await t.press(add);
+    assert.equal(t.looked.length, looked, 'No picker at the bound');
+    await t.press(t.find(rows()[4], '✕', 'Remove Account 5 from test records'));
+    assert.equal(rows().length, 4);
+    assert.equal(add.hasAttribute('aria-disabled'), false);
+    const previews = () => t.sent.filter(([a]) => a === 'asx_PreviewTemplate').length;
+    const before = previews();
+    await t.mode(1);
+    await t.change(t.labelled(t.$('conditions'), 'Field, condition 1'), 'root.revenue');
+    await t.change(t.labelled(t.$('conditions'), 'Value, condition 1'), '1e5');
+    await t.flush();
+    assert.equal(previews(), before, 'Nothing is sent that the server would refuse');
+    assert.equal(rows()[0].querySelector('.state').textContent, 'Out of date');
+    fail = true;
+    await t.change(t.labelled(t.$('conditions'), 'Value, condition 1'), '5');
+    await t.flush();
+    assert.equal(previews(), before + 4, 'One preview per record');
+    assert.equal(
+      rows()[0].querySelector('.state').textContent,
+      'Preview failed: The record could not be read.',
+    );
+    await t.press(t.$('new-template'));
+    await t.change(t.$('new-template-table'), 'contact');
+    assert.equal(t.state().testRecords.length, 0);
+  }
+  {
+    // Undo puts a removed folder back with its fields under the draft's own aliases, after its
+    // removed parent; a removed folder's removed child shows under it; edited folders have a dot.
+    const published = draft({
+      Sources: [
+        {
+          Alias: 'root',
+          Table: 'account',
+          Lookup: null,
+          Columns: [{ Name: 'name', Kind: 'Text' }],
+        },
+        {
+          Alias: 'lookup_2',
+          Table: 'contact',
+          Lookup: 'primarycontactid',
+          Columns: [{ Name: 'fullname', Kind: 'Text' }],
+        },
+      ],
+    });
+    published.Destinations[0].Folders.push(
+      { Key: 'contacts', Parent: 'root', Name: '{lookup_2.fullname}', Condition: null },
+      { Key: 'archive', Parent: 'contacts', Name: 'Archive', Condition: null },
+    );
+    const t = await boot({
+      rows: (table) =>
+        table === 'asx_revision'
+          ? [
+              {
+                asx_revisionid: 'rev-2',
+                asx_version: 2,
+                asx_status: 'Draft',
+                _asx_templateid_value: TEMPLATE,
+              },
+              {
+                asx_revisionid: 'rev-1',
+                asx_version: 1,
+                asx_status: 'Published',
+                _asx_templateid_value: TEMPLATE,
+              },
+            ]
+          : null,
+      handle: (api, body) =>
+        api !== 'asx_LoadDraft'
+          ? null
+          : body.RevisionId === 'rev-1'
+            ? {
+                RevisionId: 'rev-1',
+                RowVersion: '3',
+                Status: 'Published',
+                Version: 1,
+                Draft: published,
+              }
+            : { RevisionId: 'rev-2', RowVersion: '4', Status: 'Draft', Version: 2, Draft: draft() },
+    });
+    await t.open();
+    await t.step(2);
+    const removed = t.$('folder-tree').querySelectorAll('.tree-row.is-removed');
+    assert.deepEqual(
+      removed.map((r) => r.querySelector('.name').textContent),
+      ['Primary Contact › Full Name', 'Archive'],
+    );
+    assert.ok(
+      parseInt(removed[1].style.paddingLeft) > parseInt(removed[0].style.paddingLeft),
+      'Under its removed parent',
+    );
+    assert.equal(t.find(removed[1], 'Undo').getAttribute('aria-label'), 'Undo removing Archive');
+    await t.press(t.find(removed[1], 'Undo'));
+    assert.deepEqual(
+      Array.from(t.state().sections[0].Folders.slice(-2), (f) => [f.Key, f.Parent, f.Name]),
+      [
+        ['contacts', 'root', '{lookup_1.fullname}'],
+        ['archive', 'contacts', 'Archive'],
+      ],
+    );
+    assert.equal(t.$('folder-tree').querySelectorAll('.tree-row.is-removed').length, 0);
+    assert.equal(t.document.activeElement.getAttribute('data-focus-key'), 'node:general:archive');
+    await t.flush();
+    assert.deepEqual(
+      t.last('asx_CreateDraft').Sources.map((s) => s.Alias),
+      ['root', 'lookup_1'],
+    );
+    await t.rename('General', 'General files');
+    assert.equal(t.node('General files').querySelector('.edit-dot').textContent, ' (edited)');
+  }
   console.log(
-    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step; Task 6 fix round 1: a new template unnamed until named and not saved mid-name, saving before switching or closing, a late save answer kept out of a new template, an edit during Publish kept and saved next, a published read retried and its failure, a failed policy read, trimmed destination names, problems not announced twice, and Save draft refusing a nameless template. Fake DOM; browser QA separate.',
+    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step; Task 6 fix round 1: a new template unnamed until named and not saved mid-name, saving before switching or closing, a late save answer kept out of a new template, an edit during Publish kept and saved next, a published read retried and its failure, a failed policy read, trimmed destination names, problems not announced twice, and Save draft refusing a nameless template; Task 7: the folder tree with destination pills, rules, New, edited and Removed with Undo (aliases mapped, a removed parent first), ＋ Folder and ＋ Subfolder with their bound, the folder panel and its ⋯ menu, ＋ Field inserting at the caret, Create this folder, the condition sentence with Another field…, debounced test-record previews with Created or Skipped and the failing value, their bound, Out of date and failures, and links to Sites & access that save first. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

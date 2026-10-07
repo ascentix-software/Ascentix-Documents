@@ -121,7 +121,6 @@ const KEPT = [
   'help-stop-tracking',
   'help-publish',
   'help-include-root',
-  'help-folder-access',
   'help-destinations',
 ];
 const helpInHtml = [...html.matchAll(/<p class="help" id="([^"]+)"/g)].map((m) => m[1]);
@@ -132,6 +131,11 @@ assert.deepEqual(
   'Only the kept texts are help',
 );
 assert.doesNotMatch(html + js, /class(Name)?\s*=\s*["']hint|'hint'/, 'No hint class remains');
+assert.doesNotMatch(
+  html + js,
+  /contenteditable|Drag folders/i,
+  'Plain name input; no drag and drop in this release',
+);
 // AsxdUi.help itself builds its node with el('p', text, 'help') (shell.js, Task 1). The pattern
 // skips exactly that expression (negative lookahead), and the two checks after it keep the
 // exemption to that one place: it appears once in all scripts, and it is in shell.js.

@@ -161,6 +161,22 @@ async function check(page, label) {
           await settle(page);
         }
         await check(page, tab + ' ' + scheme);
+        // Folder templates step 2: a folder with a condition, a test record and the ＋ Field
+        // popover open.
+        if (tab === 'templates') {
+          await page.locator('#step-tab-2').click();
+          await page
+            .locator('#folder-tree')
+            .getByRole('button', { name: 'General', exact: true })
+            .click();
+          await page.getByRole('radio', { name: 'Only when…' }).click();
+          await page.locator('#add-test-record').click();
+          await page.locator('#test-records .test-record .state', { hasText: 'Created' }).waitFor();
+          await page.locator('#add-field').click();
+          await page.locator('#field-popover').waitFor();
+          await settle(page);
+          await check(page, 'templates-folders ' + scheme);
+        }
         await context.close();
       }
     // Keyboard flows (spec 5.6).
@@ -215,17 +231,47 @@ async function check(page, label) {
     await templates.keyboard.press('ArrowRight');
     assert.equal(await active(), 'step-tab-2');
     await templates.keyboard.press('Enter');
-    await templates.locator('#destinations').getByRole('button', { name: 'General' }).focus();
+    await templates
+      .locator('#folder-tree')
+      .getByRole('button', { name: 'General', exact: true })
+      .focus();
     await templates.keyboard.press('Enter');
     assert.match(
       await templates.evaluate(() => document.activeElement.getAttribute('data-focus-key')),
       /^node:/,
     );
-    await templates.getByLabel('When should this folder appear?').selectOption('conditional');
+    await templates.getByRole('radio', { name: 'Only when…' }).click();
     assert.equal(
       await templates.evaluate(() => document.activeElement.getAttribute('aria-label')),
       'Field, condition 1',
     );
+    // ＋ Field with the keyboard: Tab from Name, Enter, type, ArrowDown, Enter inserts the field
+    // at the caret and returns to Name.
+    await templates.locator('#folder-name').focus();
+    await templates.keyboard.press('End');
+    await templates.keyboard.press('Tab');
+    assert.equal(await active(), 'add-field');
+    await templates.keyboard.press('Enter');
+    assert.equal(await active(), 'field-search');
+    await templates.keyboard.type('number');
+    await templates.keyboard.press('ArrowDown');
+    await templates.keyboard.press('Enter');
+    assert.equal(await active(), 'folder-name');
+    assert.equal(await templates.locator('#field-popover').isHidden(), true);
+    assert.equal(
+      await templates.locator('#folder-name').inputValue(),
+      'General{root.accountnumber}',
+    );
+    assert.equal(
+      await templates.locator('#folder-shows-as .token').textContent(),
+      'Account Number',
+    );
+    // Escape closes only the popover.
+    await templates.keyboard.press('Tab');
+    await templates.keyboard.press('Enter');
+    await templates.keyboard.press('Escape');
+    assert.equal(await active(), 'folder-name');
+    assert.equal(await templates.locator('#field-popover').isHidden(), true);
     const monitor = await open(context, 'monitor');
     const focused = (attr) =>
       monitor.evaluate((name) => document.activeElement?.getAttribute(name), attr);
@@ -261,7 +307,7 @@ async function check(page, label) {
       });
     }
     console.log(
-      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel and the editor; Sites & access with its access drawer open), computed borders, text and targets, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, Monitor chips, a row menu and its confirmation, the Tools panel), screenshots. Mocked Dataverse.',
+      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel, the editor and step 2 with a condition, a test record and the ＋ Field popover; Sites & access with its access drawer open), computed borders, text and targets, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel), screenshots. Mocked Dataverse.',
     );
   } finally {
     await browser.close();

@@ -1,8 +1,8 @@
 'use strict';
 // Folder templates: the templates list, the read-first overview of a template with its Schedule
-// and Versions panels, and the editor (template bar with its version chip, the folder tree and
-// folder settings, the condition builder, the preview of the current edits), and re-runs for
-// existing records. Text is only ever set with textContent.
+// and Versions panels, and the editor (its header and steps; the destinations; the folder tree
+// with the folder panel, the field picker, the condition builder and test records; the preview of
+// the current edits), and re-runs for existing records. Text is only ever set with textContent.
 (() => {
   const $ = (id) => document.getElementById(id);
   const state = {
@@ -66,6 +66,17 @@
     expanded: null,
     // The last autosave found invalid conditions.
     invalid: false,
+    // Step 2: the destination whose tree is shown (its key), and the Name box's selection when
+    // ＋ Field opened.
+    destination: null,
+    caret: null,
+    // Test records for this editing session ({ id, name, seq, busy }): each one's latest
+    // preview of the draft ({ plan, stale, error }), the record values read to say why a folder
+    // was skipped (by 'id|column'), and the pause before the next previews.
+    testRecords: [],
+    previewByRecord: new Map(),
+    recordValues: new Map(),
+    previewTimer: null,
     run: null,
     runTotal: null,
     batch: null,
@@ -273,8 +284,8 @@
       : n === 2
         ? $('folders-heading')
         : $('preview-heading');
-  // An edit: change tracking, the stepper and footer follow it, the preview dims until refreshed,
-  // and the autosave waits for the pause after it.
+  // An edit: change tracking, the stepper, footer and folder tree follow it, the preview dims
+  // until refreshed, and the autosave and the test-record previews wait for the pause after it.
   function dirty() {
     state.unsaved = true;
     state.edits++;
@@ -285,7 +296,9 @@
     renderStepper();
     renderFooter();
     renderActions();
+    renderTree();
     scheduleSave();
+    schedulePreview();
   }
   function scheduleSave() {
     if (state.readOnly) return;
@@ -552,6 +565,7 @@
         label: (s.Alias === 'root' ? '' : via(s) + ' › ') + c.Label,
         kind: c.Kind,
         options: c.Options,
+        deprecated: deprecated(c),
       })),
     );
   }
@@ -611,11 +625,14 @@
     'A template can use up to ' +
     ui.BOUNDS.relatedRecords +
     ' related records, because Documents tracks each one so it can re-run records when it changes.';
-  // One picker: this record's fields, then one group per related record. The primary name comes
-  // first and deprecated fields last. At the related-record bound, the groups of related records
-  // not used yet are disabled.
-  function fieldSelect(keep) {
-    const picker = el('select');
+  // The draft uses as many related records as it may.
+  const relatedFull = () =>
+    state.sources.filter((s) => s.Alias !== 'root').length >= ui.BOUNDS.relatedRecords;
+  // The fields a picker offers: this record's, then one group per related record. The primary
+  // name comes first and deprecated fields last. At the related-record bound, the groups of
+  // related records not used yet are disabled. A related table still loading, or that failed
+  // twice, is a disabled group with a note: shown, never silently left out.
+  function fieldGroups(keep) {
     const order = (columns, primary) =>
       columns
         .filter(keep)
@@ -624,73 +641,80 @@
             deprecated(a) - deprecated(b) ||
             (a.Name === primary ? -1 : b.Name === primary ? 1 : a.Label.localeCompare(b.Label)),
         );
-    const group = (text, columns, valueOf, disabled = false) => {
-      const g = el('optgroup');
-      g.setAttribute('label', text);
-      g.disabled = disabled;
-      g.append(...columns.map((c) => option(valueOf(c), c.Label)));
-      picker.append(g);
-    };
-    const root = state.sources.find((s) => s.Alias === 'root');
-    group('This record', order(root.columns, state.root.PrimaryNameAttribute), (c) => {
-      return 'root.' + c.Name;
+    const group = (label, columns, valueOf, disabled = false) => ({
+      label,
+      disabled,
+      note: null,
+      fields: columns.map((c) => ({ value: valueOf(c), label: c.Label, kind: c.Kind })),
     });
-    const full = state.sources.filter((s) => s.Alias !== 'root').length >= ui.BOUNDS.relatedRecords;
+    const root = state.sources.find((s) => s.Alias === 'root');
+    const groups = [
+      group(
+        'This record',
+        order(root.columns, state.root.PrimaryNameAttribute),
+        (c) => 'root.' + c.Name,
+      ),
+    ];
+    const full = relatedFull();
     const listed = new Set();
     for (const lookup of state.lookups) {
       const meta = metadata.get(lookup.Table);
+      listed.add(lookup.Lookup + ':' + lookup.Table);
       if (!meta) {
-        // Still loading in the background, or failed twice: shown, never silently left out.
-        const g = el('optgroup');
-        g.setAttribute('label', lookup.Label);
-        g.disabled = true;
-        const note = option(
-          '',
-          state.failedTables.has(lookup.Table) ? "Couldn't load these fields" : 'Loading fields…',
-        );
-        note.disabled = true;
-        g.append(note);
-        picker.append(g);
-        listed.add(lookup.Lookup + ':' + lookup.Table);
+        groups.push({
+          label: lookup.Label,
+          disabled: true,
+          note: state.failedTables.has(lookup.Table)
+            ? "Couldn't load these fields"
+            : 'Loading fields…',
+          fields: [],
+        });
         continue;
       }
       const used = state.sources.some(
         (s) => s.Lookup === lookup.Lookup && s.Table === lookup.Table,
       );
-      listed.add(lookup.Lookup + ':' + lookup.Table);
-      group(
-        lookup.Label,
-        order(meta.columns, tableInfo(lookup.Table)?.PrimaryNameAttribute),
-        (c) => 'lookup:' + lookup.Lookup + ':' + lookup.Table + ':' + c.Name,
-        full && !used,
+      groups.push(
+        group(
+          lookup.Label,
+          order(meta.columns, tableInfo(lookup.Table)?.PrimaryNameAttribute),
+          (c) => 'lookup:' + lookup.Lookup + ':' + lookup.Table + ':' + c.Name,
+          full && !used,
+        ),
       );
     }
     // A related record the draft uses whose lookup is no longer offered keeps its fields.
     for (const source of state.sources)
       if (source.Alias !== 'root' && !listed.has(source.Lookup + ':' + source.Table))
-        group(
-          source.Lookup + ' → ' + tableName(source.Table),
-          order(source.columns, null),
-          (c) => 'lookup:' + source.Lookup + ':' + source.Table + ':' + c.Name,
+        groups.push(
+          group(
+            source.Lookup + ' → ' + tableName(source.Table),
+            order(source.columns, null),
+            (c) => 'lookup:' + source.Lookup + ':' + source.Table + ':' + c.Name,
+          ),
         );
-    return { picker, full };
+    return groups;
   }
-  const NAME_KINDS = ['Text', 'Number', 'Choice', 'DateOnly'];
-  function fieldPicker(into) {
-    const { picker, full } = fieldSelect((c) => NAME_KINDS.includes(c.Kind));
-    picker.setAttribute('aria-label', 'Insert field');
-    keyed(picker, 'edit:insert-field');
-    picker.value = 'root.' + state.root.PrimaryNameAttribute;
-    into.append(picker);
-    if (full) {
-      // The reason names why some groups are off; the picker itself stays usable.
-      const note = el('p', relatedReason(), 'reason');
-      note.id = 'related-reason';
-      picker.setAttribute('aria-describedby', 'related-reason');
-      into.after(note);
+  // The fields as one select with a group per record (the condition builder's Field).
+  function fieldSelect(keep) {
+    const picker = el('select');
+    for (const group of fieldGroups(keep)) {
+      const g = el('optgroup');
+      g.setAttribute('label', group.label);
+      g.disabled = group.disabled;
+      g.append(...group.fields.map((f) => option(f.value, f.label)));
+      if (group.note) {
+        const note = option('', group.note);
+        note.disabled = true;
+        g.append(note);
+      }
+      picker.append(g);
     }
     return picker;
   }
+  const NAME_KINDS = ['Text', 'Number', 'Choice', 'DateOnly'];
+  // A name field's type, as ＋ Field lists it.
+  const KIND_LABEL = { Text: 'Text', Number: 'Number', Choice: 'Choice', DateOnly: 'Date' };
   const operators = (kind) =>
     ['Equal', 'NotEqual', 'IsNull', 'IsNotNull'].concat(
       ['Text', 'MultiChoice'].includes(kind)
@@ -699,18 +723,6 @@
           ? ['Greater', 'GreaterOrEqual', 'Less', 'LessOrEqual']
           : [],
     );
-  const operatorLabel = {
-    Equal: 'equals',
-    NotEqual: 'does not equal',
-    IsNull: 'is empty',
-    IsNotNull: 'has a value',
-    Contains: 'contains',
-    DoesNotContain: 'does not contain',
-    Greater: 'greater than',
-    GreaterOrEqual: 'at least',
-    Less: 'less than',
-    LessOrEqual: 'at most',
-  };
   const unary = (operator) => ['IsNull', 'IsNotNull'].includes(operator);
   // Operators as rule sentences say them: "Status is Active".
   const SHORT = {
@@ -783,48 +795,80 @@
     return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   }
   const lowerFirst = (text) => text.charAt(0).toLowerCase() + text.slice(1);
-  // One condition group as a fieldset. Groups are numbered in reading order, so every name is
-  // unique: "Conditions for General", then "Group 2 conditions", "Group 3 conditions".
+  // A folder name as words, its fields by their labels: "P-Account Number".
+  const nameText = (name, sources = state.sources) =>
+    ui.tokens(name, labelOf(sources)).textContent || 'Unnamed folder';
+  // One condition group: "[All] of these are true", a line per condition, its nested groups as
+  // indented blocks, then ＋ Condition and ＋ Group. Groups are numbered in reading order, so
+  // every name is unique: "Conditions for General", then "Group 2 conditions", "Group 3
+  // conditions". The All/Any select is the group's focus target and where its error shows.
   function conditionGroup(group, folder, path, depth, count) {
     const number = ++count.n;
-    const box = el('fieldset', null, 'condition-group');
-    const legend = el(
-      'legend',
-      depth === 0 ? 'Conditions for ' + readable(folder.Name) : 'Group ' + number + ' conditions',
-    );
-    legend.tabIndex = -1;
-    keyed(legend, 'group:' + folder.Key + ':' + path + ':legend');
-    box.append(legend);
-    const match = select(
-      [
-        { value: 'true', label: 'all conditions' },
-        { value: 'false', label: 'any condition' },
-      ],
-      String(group.All),
-      (v) => (group.All = v === 'true'),
-    );
-    box.append(label('Match', match));
+    const groupName =
+      depth === 0 ? 'Conditions for ' + nameText(folder.Name) : 'Group ' + number + ' conditions';
+    const groupKey = 'group:' + folder.Key + ':' + path;
+    const box = el('div', null, depth === 0 ? 'condition-group' : 'condition-group nested');
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-label', groupName);
+    const match = el('select');
+    match.append(option('true', 'All'), option('false', 'Any'));
+    match.value = String(group.All !== false);
+    match.setAttribute('aria-label', 'Match, ' + groupName);
+    keyed(match, groupKey + ':match');
+    match.onchange = () => {
+      group.All = match.value === 'true';
+      dirty();
+    };
+    const sentence = el('div', null, 'sentence');
+    sentence.append(match, el('span', 'of these are true'));
+    box.append(sentence);
     const name = (n) => 'condition ' + n + (depth === 0 ? '' : ' in group ' + number);
     group.Conditions.forEach((condition, index) =>
       box.append(conditionRow(group, condition, index, folder, path, name)),
     );
-    const groupKey = 'group:' + folder.Key + ':' + path;
-    const add = button('Add condition', () => {
-      group.Conditions.push({ field: firstField(), Operator: 'Equal', Literal: '' });
-      state.focusKey = 'cond:' + folder.Key + ':' + path + '.' + group.Conditions.length + ':field';
-      dirty();
-      render();
+    group.Groups.forEach((child, index) => {
+      const childNumber = count.n + 1;
+      const inner = conditionGroup(child, folder, path + '.' + (index + 1), depth + 1, count);
+      const remove = button(
+        'Remove group',
+        () => {
+          group.Groups.splice(index, 1);
+          state.focusKey = groupKey + ':addgroup';
+          dirty();
+          render();
+        },
+        'link danger',
+      );
+      remove.setAttribute('aria-label', 'Remove group ' + childNumber);
+      keyed(remove, 'group:' + folder.Key + ':' + path + '.' + (index + 1) + ':remove');
+      inner.querySelector('.sentence').append(remove);
+      box.append(inner);
     });
-    add.setAttribute('aria-label', 'Add condition to ' + lowerFirst(legend.textContent));
+    const add = button(
+      '＋ Condition',
+      () => {
+        group.Conditions.push({ field: firstField(), Operator: 'Equal', Literal: '' });
+        state.focusKey =
+          'cond:' + folder.Key + ':' + path + '.' + group.Conditions.length + ':field';
+        dirty();
+        render();
+      },
+      'link',
+    );
+    add.setAttribute('aria-label', 'Add condition to ' + lowerFirst(groupName));
     keyed(add, groupKey + ':add');
-    const nested = button('Add group', () => {
-      if (ui.blocked(nested)) return;
-      group.Groups.push({ All: true, Conditions: [], Groups: [] });
-      state.focusKey = 'group:' + folder.Key + ':' + path + '.' + group.Groups.length + ':legend';
-      dirty();
-      render();
-    });
-    nested.setAttribute('aria-label', 'Add group to ' + lowerFirst(legend.textContent));
+    const nested = button(
+      '＋ Group',
+      () => {
+        if (ui.blocked(nested)) return;
+        group.Groups.push({ All: true, Conditions: [], Groups: [] });
+        state.focusKey = groupKey + '.' + group.Groups.length + ':match';
+        dirty();
+        render();
+      },
+      'link',
+    );
+    nested.setAttribute('aria-label', 'Add group to ' + lowerFirst(groupName));
     keyed(nested, groupKey + ':addgroup');
     const toolbar = el('div', null, 'condition-toolbar row');
     toolbar.append(add, nested);
@@ -838,24 +882,6 @@
           ui.BOUNDS.conditionDepth +
           " levels deep, because deeper templates can't be sent to Dataverse.",
       );
-    group.Groups.forEach((child, index) => {
-      const childNumber = count.n + 1;
-      const inner = conditionGroup(child, folder, path + '.' + (index + 1), depth + 1, count);
-      const remove = button(
-        'Remove group',
-        () => {
-          group.Groups.splice(index, 1);
-          state.focusKey = groupKey + ':addgroup';
-          dirty();
-          render();
-        },
-        'remove',
-      );
-      remove.setAttribute('aria-label', 'Remove group ' + childNumber);
-      keyed(remove, 'group:' + folder.Key + ':' + path + '.' + (index + 1) + ':remove');
-      inner.append(remove);
-      box.append(inner);
-    });
     return box;
   }
   function firstField() {
@@ -863,6 +889,7 @@
     const fields = availableFields();
     return (fields.find((f) => f.value === primary) || fields[0])?.value || primary;
   }
+  // One condition as a line: Field, operator (as rule sentences say it), value, and ✕.
   function conditionRow(group, c, index, folder, path, names) {
     const n = index + 1;
     const name = names(n);
@@ -870,7 +897,7 @@
     const row = el('div', null, 'condition-line');
     const available = availableFields();
     const selected = available.find((f) => f.value === c.field);
-    const { picker: field } = fieldSelect(() => true);
+    const field = fieldSelect(() => true);
     field.value = pickerValue(c.field);
     field.setAttribute('aria-label', 'Field, ' + name);
     keyed(field, key + ':field');
@@ -887,6 +914,43 @@
       render();
     };
     row.append(field);
+    const operator = el('select');
+    operators(selected?.kind).forEach((op) => operator.append(option(op, SHORT[op])));
+    operator.value = c.Operator;
+    operator.setAttribute('aria-label', 'Operator, ' + name);
+    keyed(operator, key + ':operator');
+    operator.onchange = () => {
+      c.Operator = operator.value;
+      if (unary(c.Operator)) c.right = null;
+      state.focusKey = key + ':operator';
+      dirty();
+      render();
+    };
+    row.append(operator);
+    if (unary(c.Operator)) row.append(el('span', null, 'no-value'));
+    else {
+      // Fields of the same kind it can be compared with instead of a typed value, deprecated
+      // ones last.
+      const same = available
+        .filter((f) => f.kind === selected?.kind && f.value !== c.field)
+        .sort((a, b) => a.deprecated - b.deprecated);
+      row.append(valueControl(c, selected, name, key, same));
+    }
+    const remove = button(
+      '✕',
+      () => {
+        group.Conditions.splice(index, 1);
+        state.focusKey = group.Conditions[index]
+          ? key + ':field'
+          : 'group:' + folder.Key + ':' + path + ':add';
+        dirty();
+        render();
+      },
+      'icon danger',
+    );
+    remove.setAttribute('aria-label', 'Remove ' + name);
+    keyed(remove, key + ':remove');
+    row.append(remove);
     if (!selected) {
       // Named by its label when Documents still knows it, never by its internal name.
       const shown = readable('{' + c.field + '}');
@@ -900,89 +964,111 @@
         ),
       );
     }
-    const operator = select(
-      operators(selected?.kind).map((op) => ({ value: op, label: operatorLabel[op] })),
-      c.Operator,
-      (v) => {
-        c.Operator = v;
-        if (unary(v)) c.right = null;
-        state.focusKey = key + ':operator';
-        render();
-      },
-    );
-    operator.setAttribute('aria-label', 'Operator, ' + name);
-    keyed(operator, key + ':operator');
-    row.append(operator);
-    if (!unary(c.Operator)) {
-      const same = available.filter((f) => f.kind === selected?.kind && f.value !== c.field);
-      const compare = select(
-        [
-          { value: 'literal', label: 'a value' },
-          { value: 'field', label: 'another field' },
-        ],
-        c.right ? 'field' : 'literal',
-        (v) => {
-          c.right = v === 'field' ? same[0]?.value || null : null;
-          state.focusKey = key + ':compare';
-          render();
-        },
-      );
-      compare.setAttribute('aria-label', 'Compare to, ' + name);
-      keyed(compare, key + ':compare');
-      row.append(compare);
-      if (c.right) {
-        const other = select(
-          same.map((f) => ({ value: f.value, label: f.label })),
-          c.right,
-          (v) => (c.right = v),
-        );
-        other.setAttribute('aria-label', 'Other field, ' + name);
-        keyed(other, key + ':other');
-        row.append(other);
-      } else row.append(valueControl(c, selected?.kind, selected?.options || [], name, key));
-    }
-    const remove = button(
-      'Remove',
-      () => {
-        group.Conditions.splice(index, 1);
-        state.focusKey = group.Conditions[index]
-          ? key + ':field'
-          : 'group:' + folder.Key + ':' + path + ':add';
-        dirty();
-        render();
-      },
-      'remove',
-    );
-    remove.setAttribute('aria-label', 'Remove ' + name);
-    keyed(remove, key + ':remove');
-    row.append(remove);
     return row;
   }
-  // The value control for a field kind. key is the row's focus-key prefix.
-  function valueControl(condition, kind, options, name, key) {
+  // The value control for a field kind; key is the row's focus-key prefix. Comparing with
+  // another field of the same kind is part of it: "Another field…" heads a Choice or Yes/No
+  // list, and the ▾ menu of the other controls; the other field's list starts with "A value",
+  // which goes back. Without a field of the same kind there is nothing to offer.
+  const FIELD = '__field',
+    VALUE = '__value';
+  function valueControl(condition, selected, name, key, same) {
+    const kind = selected?.kind,
+      options = selected?.options || [];
     const named = (control) => {
       control.setAttribute('aria-label', 'Value, ' + name);
       return keyed(control, key + ':value');
     };
+    const toField = () => {
+      condition.right = same[0]?.value || null;
+      state.focusKey = key + ':other';
+      dirty();
+      render();
+    };
+    const another = same.length ? [{ value: FIELD, label: 'Another field…' }] : [];
+    const list = (items, value, pick) => {
+      const s = el('select');
+      items.forEach((i) => s.append(option(i.value, i.label)));
+      s.value = value;
+      s.onchange = () => {
+        if (s.value === FIELD) return toField();
+        pick(s.value);
+        dirty();
+        return undefined;
+      };
+      return s;
+    };
+    if (condition.right) {
+      const other = list(
+        [
+          { value: VALUE, label: 'A value' },
+          ...same.map((f) => ({ value: f.value, label: f.label })),
+        ],
+        condition.right,
+        (v) => (condition.right = v),
+      );
+      other.onchange = () => {
+        if (other.value === VALUE) {
+          condition.right = null;
+          state.focusKey = key + ':value';
+          dirty();
+          render();
+          return;
+        }
+        condition.right = other.value;
+        dirty();
+      };
+      other.setAttribute('aria-label', 'Other field, ' + name);
+      return keyed(other, key + ':other');
+    }
     if (kind === 'Boolean')
       return named(
-        select(
-          [
-            { value: 'true', label: 'Yes' },
-            { value: 'false', label: 'No' },
-          ],
+        list(
+          [...another, { value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }],
           condition.Literal || 'true',
           (v) => (condition.Literal = v),
         ),
       );
+    // Choice values carry a prefix in the list, so none can be taken for "Another field…".
     if (kind === 'Choice')
       return named(
-        select(
-          [{ value: '', label: 'Choose a value' }, ...options],
-          condition.Literal,
-          (v) => (condition.Literal = v),
+        list(
+          [
+            ...another,
+            { value: '', label: 'Choose a value' },
+            ...options.map((o) => ({ value: 'value:' + o.value, label: o.label })),
+          ],
+          condition.Literal ? 'value:' + condition.Literal : '',
+          (v) => (condition.Literal = v.replace(/^value:/, '')),
         ),
       );
+    const control = typedValue(condition, kind, options, name, key, named);
+    if (!same.length) return control;
+    // The ▾ menu beside a typed value: Another field….
+    const wrap = el('span', null, 'value-control');
+    const more = button('▾', null, 'icon');
+    more.setAttribute('aria-label', 'Value options, ' + name);
+    more.setAttribute('aria-haspopup', 'menu');
+    more.setAttribute('aria-expanded', 'false');
+    keyed(more, key + ':options');
+    const menu = el('ul', null, 'menu');
+    menu.id = 'menu-' + key.replace(/[^\w-]/g, '-');
+    menu.setAttribute('role', 'menu');
+    menu.hidden = true;
+    more.setAttribute('aria-controls', menu.id);
+    const item = button('Another field…', toField, '');
+    item.setAttribute('role', 'menuitem');
+    item.tabIndex = -1;
+    const line = el('li');
+    line.setAttribute('role', 'none');
+    line.append(item);
+    menu.append(line);
+    ui.menu(more, menu);
+    wrap.append(control, more, menu);
+    return wrap;
+  }
+  // A typed value: several choices, a record, a number, a date or text.
+  function typedValue(condition, kind, options, name, key, named) {
     if (kind === 'MultiChoice') {
       const picker = el('select');
       picker.multiple = true;
@@ -1077,7 +1163,7 @@
     const visit = (group, folder, path) => {
       if (!group.Conditions.length && !group.Groups.length)
         problems.push([
-          'group:' + folder.Key + ':' + path + ':legend',
+          'group:' + folder.Key + ':' + path + ':match',
           'Add a condition or remove this group',
         ]);
       group.Conditions.forEach((c, i) => {
@@ -1113,7 +1199,7 @@
     marked = signature;
     document.querySelectorAll('.condition-error').forEach((n) => n.remove());
     document
-      .querySelectorAll('#folderEditor [aria-invalid]')
+      .querySelectorAll('#conditions [aria-invalid]')
       .forEach((n) => n.removeAttribute('aria-invalid'));
     if (!problems.length) return true;
     for (const [key, text] of shown) {
@@ -1137,7 +1223,9 @@
     return false;
   }
   let selectedSection = null,
-    selectedFolder = null;
+    selectedFolder = null,
+    // The folder whose name ＋ Field's open list inserts into.
+    popoverFolder = null;
   function folderIcon() {
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     icon.setAttribute('class', 'folder-icon');
@@ -1184,25 +1272,6 @@
   // The published revision's destination with this key, if it has one.
   const publishedSection = (key) =>
     state.publishedSnapshot?.sections.find((s) => s.Key === key) || null;
-  function addChild(section, folder) {
-    // Keys of the published revision are skipped too: a new folder never takes the key of one
-    // removed since, so the change reads as removed plus added.
-    const used = new Set(
-      [...section.Folders, ...(publishedSection(section.Key)?.Folders || [])].map((f) => f.Key),
-    );
-    const child = {
-      Key: freshKey('folder_', used),
-      Parent: folder.Key,
-      Name: 'New folder',
-      Condition: null,
-    };
-    section.Folders.push(child);
-    selectedSection = section;
-    selectedFolder = child;
-    state.focusKey = nodeKey(section, child);
-    dirty();
-    render();
-  }
   function renderPreview(plan) {
     const trees = $('previewTrees');
     trees.replaceChildren();
@@ -1241,190 +1310,666 @@
       selectedFolder =
         selectedSection.Folders.find((f) => !f.Parent) || selectedSection.Folders[0] || null;
   }
-  function renderFolders() {
-    const list = $('destinations');
-    list.replaceChildren();
-    if (!state.sections.length) list.append(el('p', 'No folders yet', 'empty'));
-    for (const section of state.sections) {
-      const card = el(
-        'section',
-        null,
-        'destination-section' + (section === selectedSection ? ' selected-section' : ''),
-      );
-      card.append(el('h3', destinationName(section), 'section-heading'));
-      const tree = el('div', null, 'tree');
-      for (const [folder, depth] of treeOrder(section)) {
-        const row = el('div', null, 'node-row');
-        row.style.paddingLeft = depth * 16 + 'px';
-        const node = button(
-          readable(folder.Name) || 'Unnamed folder',
+  // Step 2's tree: the destination pills, then the shown destination's folders in tree order,
+  // each with its rule and its New tag or edited dot. A folder removed since the published version
+  // shows after its parent's folders, with Undo.
+  function renderTree() {
+    normalizeSelection();
+    const section = selectedSection;
+    state.destination = section?.Key ?? null;
+    $('dest-pills').replaceChildren(
+      ...state.sections.map((s) => {
+        const pill = button(
+          destinationName(s),
           () => {
-            selectedSection = section;
-            selectedFolder = folder;
+            selectedSection = s;
+            selectedFolder = null;
             ui.withFocus(render);
           },
-          'node',
+          'dest-pill',
         );
-        node.prepend(folderIcon());
-        keyed(node, nodeKey(section, folder));
-        node.dataset.nav = 'true';
-        if (section === selectedSection && folder === selectedFolder)
-          node.setAttribute('aria-current', 'true');
-        row.append(node);
-        if (folder.Condition) {
-          // A labelled marker, not colour only; the hidden text describes the node.
-          const mark = el('span', '◆', 'conditional-mark');
-          mark.setAttribute('aria-hidden', 'true');
-          const text = el('span', ' (conditional)', 'sr-only');
-          text.id = 'conditional-' + section.Key + '-' + folder.Key;
-          node.setAttribute('aria-describedby', text.id);
-          row.append(mark, text);
+        pill.setAttribute('aria-pressed', String(s === section));
+        keyed(pill, 'pill:' + s.Key);
+        pill.dataset.nav = 'true';
+        return pill;
+      }),
+    );
+    $('dest-pills').hidden = !state.sections.length;
+    const host = $('folder-tree');
+    $('tree-actions').hidden = !section || state.readOnly;
+    if (!section) {
+      host.replaceChildren(el('p', 'No folders yet', 'empty'));
+      return;
+    }
+    const removed = state.readOnly
+      ? []
+      : (state.changes?.removed || []).filter((e) => e.destination === section.Key);
+    const rows = [],
+      visited = new Set(),
+      placed = new Set();
+    const removedUnder = (key, depth) => {
+      for (const entry of removed)
+        if (!placed.has(entry) && entry.folder.Parent === key) {
+          placed.add(entry);
+          rows.push(removedRow(section, entry, depth));
+          removedUnder(entry.folder.Key, depth + 1);
         }
-        tree.append(row);
+    };
+    const walk = (folder, depth) => {
+      if (visited.has(folder)) return;
+      visited.add(folder);
+      rows.push(treeRow(section, folder, depth));
+      section.Folders.filter((f) => f.Parent === folder.Key).forEach((f) => walk(f, depth + 1));
+      removedUnder(folder.Key, depth + 1);
+    };
+    section.Folders.filter((f) => !f.Parent).forEach((f) => walk(f, 0));
+    section.Folders.filter((f) => !visited.has(f)).forEach((f) => walk(f, 0));
+    // A removed folder whose parent is in neither tree.
+    for (const entry of removed)
+      if (!placed.has(entry)) {
+        placed.add(entry);
+        rows.push(removedRow(section, entry, 0));
+        removedUnder(entry.folder.Key, 1);
       }
-      card.append(tree);
-      const parent =
-        section === selectedSection ? selectedFolder : section.Folders.find((f) => !f.Parent);
-      if (parent) {
-        const add = button(
-          '＋ Add folder inside ' + (readable(parent.Name) || 'Unnamed folder'),
-          () => {
-            if (!ui.blocked(add)) addChild(section, parent);
-          },
-          'secondary wide',
-        );
-        keyed(add, 'add:' + section.Key);
-        card.append(add);
-        list.append(card);
-        ui.disable(
-          add,
-          'folder-reason-' + section.Key,
-          section.Folders.length >= ui.BOUNDS.foldersPerDestination
-            ? 'A destination can have up to ' +
-                ui.BOUNDS.foldersPerDestination +
-                " folders, because a record's folders for one destination are kept in one Dataverse row."
-            : null,
-        );
-      } else list.append(card);
+    host.replaceChildren(...rows);
+    const reason =
+      section.Folders.length >= ui.BOUNDS.foldersPerDestination
+        ? 'A destination can have up to ' +
+          ui.BOUNDS.foldersPerDestination +
+          " folders, because a record's folders for one destination are kept in one Dataverse row."
+        : null;
+    // One reason for both, after the last of them.
+    ui.disable($('add-subfolder'), 'folder-reason', reason);
+    ui.disable($('add-folder'), 'folder-reason', reason);
+  }
+  const indent = (depth) => 10 + depth * 24 + 'px';
+  function treeRow(section, folder, depth) {
+    const row = el('div', null, 'tree-row');
+    row.setAttribute('data-focus-row', '');
+    row.style.paddingLeft = indent(depth);
+    const node = button(
+      '',
+      () => {
+        selectedSection = section;
+        selectedFolder = folder;
+        ui.withFocus(render);
+      },
+      'node',
+    );
+    keyed(node, nodeKey(section, folder));
+    node.dataset.nav = 'true';
+    if (folder === selectedFolder) {
+      node.setAttribute('aria-current', 'true');
+      row.classList.add('is-selected');
+    }
+    const name = ui.tokens(folder.Name, labelOf(state.sources));
+    if (!folder.Name) name.textContent = 'Unnamed folder';
+    node.append(folderIcon(), name);
+    const mark = state.readOnly ? null : state.changes?.marks.get(section.Key + '/' + folder.Key);
+    if (mark === 'new') node.append(el('span', 'New', 'tag new'));
+    else if (mark === 'edited') {
+      const dot = el('span', null, 'edit-dot');
+      dot.append(el('span', ' (edited)', 'sr-only'));
+      node.append(dot);
+    }
+    // The rule in words, also the node's description.
+    const ruled = ruleText(folder, state.sources);
+    const rule = el('span', ruled.text, ruled.conditional ? 'rule conditional' : 'rule');
+    rule.id = 'rule-' + section.Key + '-' + folder.Key;
+    node.setAttribute('aria-describedby', rule.id);
+    row.append(node, rule);
+    return row;
+  }
+  // A folder of the published version that the draft no longer has: struck through, with Undo.
+  function removedRow(section, entry, depth) {
+    const row = el('div', null, 'tree-row is-removed');
+    row.setAttribute('data-focus-row', '');
+    row.style.paddingLeft = indent(depth);
+    const glyph = el('span', null, 'removed-glyph');
+    glyph.setAttribute('aria-hidden', 'true');
+    const name = ui.tokens(entry.folder.Name, labelOf(state.publishedSnapshot?.sources || []));
+    const text = el('span', null, 'removed-name');
+    text.append(name);
+    const undo = button('Undo', () => undoRemove(section, entry.folder), 'link');
+    undo.setAttribute('aria-label', 'Undo removing ' + (name.textContent || 'Unnamed folder'));
+    keyed(undo, 'undo:' + section.Key + ':' + entry.folder.Key);
+    row.append(glyph, text, el('span', 'Removed', 'tag removed'), undo);
+    return row;
+  }
+  // A field of the published version as the draft names it: its own fields as they are, a
+  // related record's under the draft's alias for it (added when the draft has none yet).
+  function draftField(field) {
+    const id = identity(state.publishedSnapshot?.sources || [], field);
+    if (id.startsWith('root.') || !id.includes(':')) return id;
+    const [source, column] = id.split('.');
+    const [lookup, table] = source.split(':');
+    return resolveField('lookup:' + lookup + ':' + table + ':' + column);
+  }
+  // Puts a removed folder back as it was published, its removed parent first.
+  function undoRemove(section, folder) {
+    let restored;
+    try {
+      restored = restore(section, folder);
+    } catch (error) {
+      ui.feedback('editor', error.message || String(error), 'error');
+      return;
+    }
+    selectedSection = section;
+    selectedFolder = restored;
+    state.focusKey = nodeKey(section, restored);
+    dirty();
+    render();
+  }
+  function restore(section, folder) {
+    const present = section.Folders.find((f) => f.Key === folder.Key);
+    if (present) return present;
+    if (folder.Parent && !section.Folders.some((f) => f.Key === folder.Parent)) {
+      const parent = state.changes?.removed.find(
+        (e) => e.destination === section.Key && e.folder.Key === folder.Parent,
+      );
+      if (parent) restore(section, parent.folder);
+    }
+    const copy = structuredClone(folder);
+    copy.Name = String(copy.Name ?? '').replace(
+      /\{([a-z0-9_]+\.[a-z0-9_]+)\}/gi,
+      (match, field) => '{' + draftField(field) + '}',
+    );
+    const walk = (g) => {
+      for (const c of g.Conditions) {
+        c.field = draftField(c.field);
+        if (c.right) c.right = draftField(c.right);
+      }
+      g.Groups.forEach(walk);
+    };
+    if (copy.Condition) walk(copy.Condition);
+    section.Folders.push(copy);
+    return copy;
+  }
+  // The folder panel: its path, name, ⋯ menu, Name with ＋ Field, Create this folder, its
+  // conditions and the test records. The controls stay in the page; only their contents follow
+  // the selected folder.
+  function renderFolderPanel() {
+    const section = selectedSection,
+      folder = selectedFolder;
+    $('folder-panel').hidden = !folder;
+    if (popoverFolder && popoverFolder !== folder) closeFieldPopover(false);
+    if (!folder) return;
+    const ancestors = [];
+    for (
+      let parent = section.Folders.find((f) => f.Key === folder.Parent), guard = 0;
+      parent && guard < section.Folders.length;
+      parent = section.Folders.find((f) => f.Key === parent.Parent), guard++
+    )
+      ancestors.unshift(nameText(parent.Name));
+    $('folder-path').textContent = [destinationName(section), ...ancestors]
+      .map((part) => part + ' ›')
+      .join(' ');
+    showName(folder);
+    const name = $('folder-name');
+    if (name.value !== folder.Name) name.value = folder.Name;
+    // The top folder is the destination itself; it is removed with its destination.
+    const menu = $('folder-menu');
+    menu.hidden = !folder.Parent;
+    const children = section.Folders.some((f) => f.Parent === folder.Key);
+    ui.disable(
+      $('menu-remove-folder'),
+      'remove-folder-reason',
+      children ? 'Remove its folders first' : null,
+    );
+    segmented(folder);
+    const conditions = $('conditions');
+    conditions.hidden = !folder.Condition;
+    conditions.replaceChildren(
+      ...(folder.Condition ? [conditionGroup(folder.Condition, folder, '1', 0, { n: 0 })] : []),
+    );
+    if (!$('field-popover').hidden) fillFieldOptions();
+    renderTestRecords();
+  }
+  // The parts that show the folder's name: its heading, "Shows as", the ⋯ menu's name and the
+  // warning for a top folder without a field.
+  function showName(folder) {
+    const label = labelOf(state.sources);
+    $('folder-title').replaceChildren(
+      folder.Name ? ui.tokens(folder.Name, label) : 'Unnamed folder',
+    );
+    $('folder-shows-as').replaceChildren('Shows as: ', ui.tokens(folder.Name, label));
+    $('folder-same').hidden = !!folder.Parent || /\{[^}]+\}/.test(folder.Name);
+    $('folder-menu').setAttribute('aria-label', 'More actions for ' + nameText(folder.Name));
+    const group = $('conditions').querySelector('.condition-group');
+    if (group) {
+      const groupName = 'Conditions for ' + nameText(folder.Name);
+      group.setAttribute('aria-label', groupName);
+      group.querySelector('select').setAttribute('aria-label', 'Match, ' + groupName);
     }
   }
-  function renderEditor() {
-    const editor = $('folderEditor');
-    editor.replaceChildren();
-    if (!selectedSection || !selectedFolder) return;
-    const section = selectedSection,
-      folder = selectedFolder,
-      library = libraryFor(section);
-    // The folder's destination; its name, site and library are edited in step 1.
-    editor.append(el('h3', destinationName(section)));
-    // A top folder without a field gives every record the same folder (row 46).
-    const same = el('p', 'Every record will use this same folder.', 'warning');
-    const fixed = () => !folder.Parent && !/\{[^}]+\}/.test(folder.Name);
-    same.hidden = !fixed();
-    const name = el('input');
-    name.value = folder.Name;
-    name.id = 'folder-name';
-    keyed(name, 'edit:name');
-    name.setAttribute('aria-describedby', 'folder-shows-as help-folder-access');
-    const shows = el('p', 'Shows as: ' + readable(folder.Name), 'shows-as');
-    shows.id = 'folder-shows-as';
-    name.oninput = () => {
-      folder.Name = name.value;
-      shows.textContent = 'Shows as: ' + readable(folder.Name);
-      same.hidden = !fixed();
-      const legend = editor.querySelector('legend');
-      if (legend) legend.textContent = 'Conditions for ' + readable(folder.Name);
-      dirty();
-      renderFolders();
+  // Typing a name: the folder, the parts that show it and the tree follow; the box itself is never
+  // redrawn while it is used.
+  function nameChanged() {
+    const folder = selectedFolder;
+    if (!folder) return;
+    folder.Name = $('folder-name').value;
+    showName(folder);
+    dirty();
+  }
+  $('folder-name').oninput = nameChanged;
+  // Adds a folder under the given parent, selects it and moves to its name.
+  function addChild(section, parentKey) {
+    // Keys of the published revision are skipped too: a new folder never takes the key of one
+    // removed since, so the change reads as removed plus added.
+    const used = new Set(
+      [...section.Folders, ...(publishedSection(section.Key)?.Folders || [])].map((f) => f.Key),
+    );
+    const child = {
+      Key: freshKey('folder_', used),
+      Parent: parentKey,
+      Name: 'New folder',
+      Condition: null,
     };
-    name.onchange = name.oninput;
-    editor.append(
-      same,
-      label('Folder name', name),
-      shows,
-      ui.help(
-        'help-folder-access',
-        'Everyone with access to ' +
-          (library?.asx_name || 'this library') +
-          ' can open this folder. To restrict a folder, use a separate library.',
-      ),
+    section.Folders.push(child);
+    selectedSection = section;
+    selectedFolder = child;
+    state.focusKey = 'edit:name';
+    dirty();
+    render();
+  }
+  // ＋ Folder adds beside the selected folder; there is one top folder, so with it selected the
+  // new folder goes under it. ＋ Subfolder adds under the selected folder.
+  $('add-folder').onclick = () => {
+    if (ui.blocked($('add-folder')) || !selectedFolder || state.readOnly) return;
+    addChild(selectedSection, selectedFolder.Parent || selectedFolder.Key);
+  };
+  $('add-subfolder').onclick = () => {
+    if (ui.blocked($('add-subfolder')) || !selectedFolder || state.readOnly) return;
+    addChild(selectedSection, selectedFolder.Key);
+  };
+  ui.menu($('folder-menu'), $('folder-menu-list'));
+  $('menu-remove-folder').onclick = () => {
+    const section = selectedSection,
+      folder = selectedFolder;
+    if (ui.blocked($('menu-remove-folder')) || !folder?.Parent || state.readOnly) return;
+    section.Folders.splice(section.Folders.indexOf(folder), 1);
+    selectedFolder = section.Folders.find((f) => f.Key === folder.Parent) || null;
+    if (selectedFolder) state.focusKey = nodeKey(section, selectedFolder);
+    dirty();
+    render();
+  };
+
+  // ＋ Field: a searchable list of the fields a name can use. It inserts {alias.column} where the
+  // caret was in Name, replacing a selection. The caret is kept when it opens, before the list
+  // takes focus.
+  function openFieldPopover() {
+    const input = $('folder-name');
+    if (ui.blocked($('add-field')) || !selectedFolder) return;
+    const end = input.value.length;
+    state.caret = {
+      start: input.selectionStart ?? end,
+      end: input.selectionEnd ?? input.selectionStart ?? end,
+    };
+    popoverFolder = selectedFolder;
+    $('field-search').value = '';
+    fillFieldOptions();
+    $('field-popover').hidden = false;
+    $('add-field').setAttribute('aria-expanded', 'true');
+    $('field-search').focus();
+  }
+  function closeFieldPopover(focus = true) {
+    popoverFolder = null;
+    if ($('field-popover').hidden) return;
+    $('field-popover').hidden = true;
+    $('add-field').setAttribute('aria-expanded', 'false');
+    $('field-search').removeAttribute('aria-activedescendant');
+    if (focus) $('folder-name').focus();
+  }
+  // The list, filtered by the search text across groups; a group with no match is left out. A
+  // related table still loading or unavailable says so while nothing is searched.
+  function fillFieldOptions() {
+    const search = $('field-search');
+    const query = search.value.trim().toLowerCase();
+    const active = $(search.getAttribute('aria-activedescendant') || '')?.dataset.value;
+    const list = $('field-options');
+    list.replaceChildren();
+    search.removeAttribute('aria-activedescendant');
+    let n = 0;
+    for (const group of fieldGroups((c) => NAME_KINDS.includes(c.Kind))) {
+      const fields = group.fields.filter((f) => f.label.toLowerCase().includes(query));
+      const note = group.note && (!query || group.label.toLowerCase().includes(query));
+      if (!fields.length && !note) continue;
+      const box = el('li', null, 'field-group');
+      box.setAttribute('role', 'group');
+      box.setAttribute('aria-label', group.label);
+      if (group.disabled) box.setAttribute('aria-disabled', 'true');
+      const heading = el('span', group.label, 'group-label');
+      heading.setAttribute('aria-hidden', 'true');
+      box.append(heading);
+      for (const field of fields) {
+        const item = el('li', null, 'field-option');
+        item.id = 'field-opt-' + n++;
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-selected', 'false');
+        item.dataset.value = field.value;
+        if (group.disabled) item.setAttribute('aria-disabled', 'true');
+        item.append(el('span', field.label, 'label'), el('span', KIND_LABEL[field.kind], 'kind'));
+        item.onclick = () => chooseField(item);
+        box.append(item);
+      }
+      if (note) {
+        const item = el('li', group.note, 'field-note');
+        item.id = 'field-opt-' + n++;
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-disabled', 'true');
+        item.setAttribute('aria-selected', 'false');
+        box.append(item);
+      }
+      list.append(box);
+    }
+    // At the related-record bound the reason says why some groups are off.
+    const full = relatedFull();
+    $('related-reason').hidden = !full;
+    $('related-reason').textContent = full ? relatedReason() : '';
+    if (full) search.setAttribute('aria-describedby', 'related-reason');
+    else search.removeAttribute('aria-describedby');
+    const again = [...list.querySelectorAll('[role=option]')].find(
+      (o) => o.dataset.value === active,
     );
-    const tokens = el('div', null, 'row token-row');
-    editor.append(tokens);
-    const picker = fieldPicker(tokens);
-    tokens.append(
-      keyed(
-        button('Insert field', () => {
-          if (!picker.value) return;
-          let field;
-          try {
-            field = resolveField(picker.value);
-          } catch (error) {
-            message(error.message || String(error), true);
-            return;
-          }
-          folder.Name += '{' + field + '}';
-          dirty();
-          ui.withFocus(render);
-        }),
-        'edit:insert',
-      ),
+    if (again) activate(again);
+  }
+  const choosable = () =>
+    [...$('field-options').querySelectorAll('[role=option]')].filter(
+      (o) => o.getAttribute('aria-disabled') !== 'true',
     );
-    const include = select(
-      [
-        { value: 'always', label: 'Always' },
-        { value: 'conditional', label: 'When conditions match' },
-      ],
-      folder.Condition ? 'conditional' : 'always',
-      (v) => {
-        if (v === 'always') {
-          folder.Condition = null;
-          state.focusKey = 'edit:include';
-        } else {
-          folder.Condition = {
+  function activate(item) {
+    for (const o of $('field-options').querySelectorAll('[aria-selected=true]'))
+      o.setAttribute('aria-selected', 'false');
+    item.setAttribute('aria-selected', 'true');
+    $('field-search').setAttribute('aria-activedescendant', item.id);
+    item.scrollIntoView?.({ block: 'nearest' });
+  }
+  function chooseField(item) {
+    if (item.getAttribute('aria-disabled') === 'true') return;
+    let field;
+    try {
+      field = resolveField(item.dataset.value);
+    } catch (error) {
+      ui.feedback('editor', error.message || String(error), 'error');
+      return;
+    }
+    closeFieldPopover(false);
+    insertAtCaret($('folder-name'), '{' + field + '}');
+  }
+  // Puts text where the caret was, replacing what was selected, and leaves the caret after it.
+  function insertAtCaret(input, text) {
+    const v = input.value;
+    const { start, end } = state.caret ?? { start: v.length, end: v.length };
+    input.value = v.slice(0, start) + text + v.slice(end);
+    const at = start + text.length;
+    input.focus();
+    input.setSelectionRange?.(at, at);
+    input.selectionStart = input.selectionEnd = at;
+    state.caret = null;
+    nameChanged();
+  }
+  $('add-field').onclick = () =>
+    $('field-popover').hidden ? openFieldPopover() : closeFieldPopover();
+  $('field-search').oninput = () => fillFieldOptions();
+  $('field-search').addEventListener('keydown', (event) => {
+    const items = choosable();
+    const index = items.findIndex(
+      (o) => o.id === $('field-search').getAttribute('aria-activedescendant'),
+    );
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (!items.length) return;
+      const next =
+        event.key === 'ArrowDown'
+          ? Math.min(index + 1, items.length - 1)
+          : index < 0
+            ? items.length - 1
+            : Math.max(index - 1, 0);
+      activate(items[next]);
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      if (index >= 0) chooseField(items[index]);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      closeFieldPopover();
+    }
+  });
+  // A click in the list keeps focus in the search box; Tab out of the popover or a click outside
+  // it closes it where focus went.
+  $('field-options').addEventListener('mousedown', (event) => event.preventDefault());
+  $('field-popover').addEventListener('focusout', (event) => {
+    const next = event.relatedTarget;
+    if (next && !$('field-popover').contains(next) && next !== $('add-field'))
+      closeFieldPopover(false);
+  });
+  document.addEventListener('click', (event) => {
+    if (
+      !$('field-popover').hidden &&
+      !$('field-popover').contains(event.target) &&
+      !$('add-field').contains(event.target)
+    )
+      closeFieldPopover(false);
+  });
+
+  // Create this folder: Always, or Only when its conditions match. Two radios; arrow keys switch
+  // and choose.
+  const modes = () => $('create-mode').querySelectorAll('[role=radio]');
+  function segmented(folder) {
+    const conditional = !!folder.Condition;
+    modes().forEach((radio, index) => {
+      const on = (index === 1) === conditional;
+      radio.setAttribute('aria-checked', String(on));
+      radio.tabIndex = on ? 0 : -1;
+    });
+    // A top folder's conditions decide the whole destination.
+    $('help-include-root').hidden = !!folder.Parent;
+    if (folder.Parent) $('create-mode').removeAttribute('aria-describedby');
+    else $('create-mode').setAttribute('aria-describedby', 'help-include-root');
+  }
+  // Only when… starts with one condition on the record's name; Always drops the conditions.
+  function setMode(conditional, focusKey) {
+    const folder = selectedFolder;
+    if (!folder || state.readOnly) return;
+    if (conditional !== !!folder.Condition) {
+      folder.Condition = conditional
+        ? {
             All: true,
             Conditions: [{ field: firstField(), Operator: 'Equal', Literal: '' }],
             Groups: [],
-          };
-          state.focusKey = 'cond:' + folder.Key + ':1.1:field';
-        }
-        render();
-      },
+          }
+        : null;
+      dirty();
+    }
+    state.focusKey = focusKey;
+    render();
+  }
+  modes()[0].onclick = () => setMode(false, 'mode:always');
+  modes()[1].onclick = () => setMode(true, 'cond:' + selectedFolder?.Key + ':1.1:field');
+  $('create-mode').addEventListener('keydown', (event) => {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+    if (!step || modes()[0].disabled) return;
+    event.preventDefault();
+    const index = [...modes()].indexOf(document.activeElement);
+    const next = (index + step + 2) % 2;
+    setMode(next === 1, next === 1 ? 'mode:when' : 'mode:always');
+  });
+
+  // Test records: up to the preview bound, each previewed with the draft as it is now. Each row
+  // says whether the selected folder is Created or Skipped for that record.
+  function renderTestRecords() {
+    const folder = selectedFolder,
+      section = selectedSection;
+    $('test-record-list').replaceChildren(
+      ...state.testRecords.map((record) => testRecordRow(record, section, folder)),
     );
-    keyed(include, 'edit:include');
-    editor.append(label('When should this folder appear?', include));
-    if (!folder.Parent) {
-      include.setAttribute('aria-describedby', 'help-include-root');
-      editor.append(
-        ui.help(
-          'help-include-root',
-          "If these conditions don't match, Documents skips this whole destination for the record. Folders it already created stay.",
-        ),
-      );
+    const bound = ui.BOUNDS.previewRecords;
+    ui.disable(
+      $('add-test-record'),
+      'test-record-reason',
+      state.testRecords.length >= bound
+        ? 'Preview covers up to ' +
+            bound +
+            " records at a time so it finishes within Dataverse's 2-minute limit."
+        : null,
+    );
+  }
+  const created = (plan, section, folder) =>
+    !!folder &&
+    (plan?.Folders || []).some((f) => f.Section === section?.Key && f.Node === folder.Key);
+  function testRecordRow(record, section, folder) {
+    const result = state.previewByRecord.get(record.id);
+    const row = el('div', null, 'test-record');
+    row.append(el('strong', record.name));
+    let text = null,
+      kind = 'pending';
+    if (result?.error) [text, kind] = ['Preview failed: ' + result.error, 'failed'];
+    else if (result?.stale) [text, kind] = ['Out of date', 'stale'];
+    else if (result?.plan)
+      [text, kind] = created(result.plan, section, folder)
+        ? ['Created', 'created']
+        : ['Skipped', 'skipped'];
+    row.dataset.state = kind;
+    if (record.busy) row.setAttribute('aria-busy', 'true');
+    if (kind === 'skipped') {
+      const why = skipValue(record, folder);
+      if (why) row.append(el('span', why, 'why'));
     }
-    if (folder.Condition) editor.append(conditionGroup(folder.Condition, folder, '1', 0, { n: 0 }));
-    const actions = el('div', null, 'row wrap folder-actions');
-    actions.setAttribute('data-actions', '');
-    editor.append(actions);
-    const children = section.Folders.some((f) => f.Parent === folder.Key);
-    // The top folder is the destination itself; it is removed with Remove destination.
-    if (folder.Parent || children) {
-      const removeFolder = button('Remove folder', () => {
-        if (ui.blocked(removeFolder)) return;
-        section.Folders.splice(section.Folders.indexOf(folder), 1);
-        selectedFolder = section.Folders.find((f) => f.Key === folder.Parent) || null;
-        if (selectedFolder) state.focusKey = nodeKey(section, selectedFolder);
-        dirty();
-        render();
+    row.append(text === null ? el('span', null, 'skeleton') : el('span', text, 'state'));
+    const remove = button(
+      '✕',
+      () => {
+        const index = state.testRecords.indexOf(record);
+        state.testRecords.splice(index, 1);
+        state.previewByRecord.delete(record.id);
+        const next = state.testRecords[index] || state.testRecords[index - 1];
+        renderTestRecords();
+        (next
+          ? document.querySelector('[data-focus-key="test:' + next.id + '"]')
+          : $('add-test-record')
+        )?.focus();
+      },
+      'icon',
+    );
+    remove.setAttribute('aria-label', 'Remove ' + record.name + ' from test records');
+    keyed(remove, 'test:' + record.id);
+    row.append(remove);
+    return row;
+  }
+  // Why a record skipped the folder: the value of the first field of this record that the
+  // folder's own conditions test, read once per record and field. Nothing for related records'
+  // fields, or when a folder above it was skipped already.
+  function skipValue(record, folder) {
+    const result = state.previewByRecord.get(record.id);
+    const section = selectedSection;
+    if (!folder?.Condition || !result?.plan) return '';
+    const parent = section.Folders.find((f) => f.Key === folder.Parent);
+    if (parent && !created(result.plan, section, parent)) return '';
+    const first = (g) => {
+      for (const c of g.Conditions) if (String(c.field).startsWith('root.')) return c.field;
+      for (const child of g.Groups) {
+        const found = first(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const column = first(folder.Condition)?.slice(5);
+    if (!column) return '';
+    const key = record.id + '|' + column;
+    const values = state.recordValues;
+    if (values.has(key)) return values.get(key) ?? '';
+    values.set(key, null);
+    // A lookup's value is read through its _value property.
+    const attribute = state.sources
+      .find((s) => s.Alias === 'root')
+      ?.columns.find((c) => c.Name === column)?.Targets
+      ? '_' + column + '_value'
+      : column;
+    xrm.WebApi.retrieveRecord(state.root.LogicalName, record.id, '?$select=' + attribute)
+      .then(
+        (row) => {
+          const value =
+            row?.[attribute + '@OData.Community.Display.V1.FormattedValue'] ?? row?.[attribute];
+          values.set(key, value == null ? '' : String(value));
+        },
+        () => values.set(key, ''),
+      )
+      .then(() => {
+        if (values === state.recordValues) renderTestRecords();
       });
-      keyed(removeFolder, 'edit:remove-folder');
-      actions.append(removeFolder);
-      ui.disable(
-        removeFolder,
-        'remove-folder-reason',
-        children ? 'Remove its folders first' : null,
-      );
+    return '';
+  }
+  // Previews the draft for each test record once edits pause.
+  function schedulePreview() {
+    clearTimeout(state.previewTimer);
+    if (!state.testRecords.length || state.readOnly) return;
+    state.previewTimer = setTimeout(() => state.testRecords.forEach(previewRecord), 800);
+  }
+  // One preview of the draft for one record. Only the latest one of a record is kept; a draft the
+  // server would refuse is not sent, and its rows read Out of date.
+  async function previewRecord(record) {
+    if (!state.root) return;
+    const seq = ++record.seq,
+      session = state.session;
+    let request = null;
+    try {
+      if (validate({ focus: false }))
+        request = { RevisionId: '', Draft: payload(), RecordId: record.id };
+    } catch {
+      request = null;
     }
+    if (!request) {
+      state.previewByRecord.set(record.id, {
+        ...state.previewByRecord.get(record.id),
+        stale: true,
+        error: null,
+      });
+      record.busy = false;
+      renderTestRecords();
+      return;
+    }
+    record.busy = true;
+    renderTestRecords();
+    let result;
+    try {
+      const plan = JSON.parse(
+        await api('asx_PreviewTemplate', { Request: JSON.stringify(request) }),
+      );
+      result = { plan, stale: false, error: null };
+    } catch (error) {
+      result = { plan: null, stale: false, error: error.message || String(error) };
+    }
+    if (seq !== record.seq || session !== state.session || !state.testRecords.includes(record))
+      return;
+    state.previewByRecord.set(record.id, result);
+    record.busy = false;
+    renderTestRecords();
+  }
+  $('add-test-record').onclick = async () => {
+    if (ui.blocked($('add-test-record')) || !state.root || state.readOnly) return;
+    const session = state.session,
+      table = state.root.LogicalName;
+    const picked = await xrm.Utility.lookupObjects({
+      entityTypes: [table],
+      defaultEntityType: table,
+      allowMultiSelect: false,
+    });
+    if (!picked?.length || session !== state.session) return;
+    const id = picked[0].id.replace(/[{}]/g, '').toLowerCase();
+    if (
+      state.testRecords.some((r) => r.id === id) ||
+      state.testRecords.length >= ui.BOUNDS.previewRecords
+    )
+      return;
+    const record = { id, name: picked[0].name, seq: 0, busy: false };
+    state.testRecords.push(record);
+    renderTestRecords();
+    previewRecord(record);
+  };
+  // Sites & access, from a link in the editor: edits that can be saved are saved first, so the
+  // page asks only about those that cannot.
+  async function toAccess(link = null) {
+    await settleSave();
+    return ui.navigate('access', link);
   }
   // Step 1: one destination open at a time, with its name, site, library and who can open its
   // folders; the others as one line each.
@@ -1489,7 +2034,6 @@
       section.Name = name.value;
       remove.setAttribute('aria-label', 'Remove ' + destinationName(section));
       dirty();
-      renderFolders();
     };
     name.onchange = name.oninput;
     const sites = state.sites.filter((s) =>
@@ -1521,7 +2065,7 @@
     keyed(libraries, key + ':library');
     const setUp = () => {
       libraries.value = chosen;
-      return ui.navigate('access');
+      return toAccess();
     };
     // Arrow keys move through the list without leaving the page; Enter or a pick with the
     // pointer goes to Sites & access. Leaving the list keeps the library.
@@ -1551,7 +2095,7 @@
     const who = el('div', null, 'who-can-open');
     const change = button(
       'Change in Sites & access',
-      () => ui.navigate('access', { library: section.LibraryId }),
+      () => toAccess({ library: section.LibraryId }),
       'link',
     );
     change.dataset.nav = 'true';
@@ -1633,19 +2177,32 @@
     return row;
   }
   // A version opened read-only: its fields and actions are off; opening a folder or another
-  // destination still works.
+  // destination still works. Step 2's controls stay in the page, so the next render turns them
+  // back on.
+  const editorControls = () => [
+    ...$('destination-list').querySelectorAll('input, select, button'),
+    ...$('step-2').querySelectorAll('input, select, button'),
+  ];
   function lockEditor() {
-    for (const control of [
-      ...$('destination-list').querySelectorAll('input, select, button'),
-      ...$('authorWorkspace').querySelectorAll('input, select, button'),
-    ])
-      if (!control.dataset.nav) control.disabled = true;
+    for (const control of editorControls())
+      if (!control.dataset.nav && !control.disabled) {
+        control.disabled = true;
+        control.dataset.locked = 'true';
+      }
+  }
+  function unlockEditor() {
+    for (const control of editorControls())
+      if (control.dataset.locked) {
+        control.disabled = false;
+        delete control.dataset.locked;
+      }
   }
   function render() {
+    unlockEditor();
     normalizeSelection();
     renderDestinations();
-    renderFolders();
-    renderEditor();
+    renderTree();
+    renderFolderPanel();
     chrome();
     if (state.readOnly) lockEditor();
     if (state.focusKey) {
@@ -2303,6 +2860,7 @@
   // A new editor session: nothing saving, nothing to compare yet, step 1.
   function resetSession() {
     clearTimeout(state.saveTimer);
+    clearTimeout(state.previewTimer);
     state.session++;
     Object.assign(state, {
       saveState: 'idle',
@@ -2666,6 +3224,8 @@
   // moves: out of the field, or back to the invoker when the confirmation closes.
   function refreshPickers() {
     if (!state.root) return;
+    // The open ＋ Field list follows at once: its search box is not redrawn.
+    if (!$('field-popover').hidden) fillFieldOptions();
     const editor = $('template-editor');
     const active = document.activeElement;
     state.pickersStale =
@@ -2706,6 +3266,10 @@
     });
     selectedSection = null;
     selectedFolder = null;
+    // Test records belong to one template's editing session.
+    state.testRecords = [];
+    state.previewByRecord = new Map();
+    state.recordValues = new Map();
     panel?.close(false);
     ui.clearFeedback('templates');
     resetPreview();
@@ -2733,7 +3297,7 @@
     render();
     preload([...new Set(meta.lookups.flatMap((l) => l.Targets))], id);
   }
-  $('go-access').onclick = () => ui.navigate('access');
+  $('go-access').onclick = () => toAccess();
   // Tables are added, removed and repaired in Settings.
   $('manage-tables').onclick = () => ui.navigate('settings');
   // Every row of a paged read.
@@ -3232,6 +3796,8 @@
     },
     changesSince,
     nextKey,
+    // The page's state, for tests.
+    state: () => state,
   };
   // The first template listed, in the list's order.
   function firstListed() {
