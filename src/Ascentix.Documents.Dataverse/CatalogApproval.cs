@@ -1014,8 +1014,11 @@ public sealed class CatalogAdministration
     /// <summary>
     /// Removes a library no Draft or published template revision uses. Unfinished access work is
     /// cancelled with the existing Cancel semantics; folder work stops at its next step (folder
-    /// creates already sent may finish). A library nothing refers to any more is deleted;
-    /// otherwise it is kept, Removed, for history. Nothing in SharePoint is changed.
+    /// creates already sent may finish). The library is kept, Removed, for history: hidden from
+    /// pickers, planning and access sync, and reactivated when it is added again. Only a row
+    /// with no template revision, no access policy and no record folder is deleted; an inheriting
+    /// library's consent, or any access set on it, gives it a policy. Nothing in SharePoint is
+    /// changed.
     /// </summary>
     private CatalogResult RemoveLibrary(Guid id)
     {
@@ -1172,8 +1175,9 @@ public sealed class CatalogAdministration
     }
 
     /// <summary>
-    /// Removes a site that has no libraries left. A site nothing refers to any more is deleted;
-    /// one still referred to by removed libraries or library setup history is kept, Removed.
+    /// Removes a site that has no libraries left. The site is kept, Removed, for history, and
+    /// reactivated when it is added again. Only a site with no libraries, removed ones included,
+    /// and no library setup history is deleted.
     /// </summary>
     private CatalogResult RemoveSite(Guid id)
     {

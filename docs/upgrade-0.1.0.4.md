@@ -20,7 +20,7 @@ Use stage-and-upgrade. A plain update leaves the removed components behind.
 - The Documents Worker role now includes System Jobs read (`prvReadAsyncOperation`). Capture runs as a background job owned by the worker, so the worker needs this privilege.
 - The Documents Worker role now includes organization-level Write on Document Locations (`prvWriteSharePointDocumentLocation`). **Re-point** updates the library's Dataverse document location, which may belong to whoever created it.
 - The Documents Security Administrator role now includes:
-  - organization-level Delete on Sites and Libraries (`prvDeleteasx_site`, `prvDeleteasx_library`), so **Remove** can delete a site or library nothing refers to;
+  - organization-level Delete on Sites and Libraries (`prvDeleteasx_site`, `prvDeleteasx_library`), used by **Remove**;
   - organization-level Write on Operations and Create on Attempts (`prvWriteasx_operation`, `prvCreateasx_attempt`), so **Remove** and **Apply access** can cancel an idle access run;
   - user-level Create and Append on Document Locations (`prvCreateSharePointDocumentLocation`, `prvAppendSharePointDocumentLocation`), so approving an added library can create its document location.
 
@@ -51,6 +51,7 @@ These change what Documents does with existing data. Review them before you upgr
 - The runtime-row guard plug-in is removed. The solution has 57 guard steps.
 - The outbox has a new column, `asx_nextattempt`. It holds the time of the next automatic attempt.
 - Tables are enabled in the Tables panel of the template workspace, not in a fixed list. There is no table-count limit.
+- **Remove** in Sites hides a site or library from Documents: from the pickers, planning and access sync. Documents keeps its catalog row for history, and adding the same site or library again reactivates it. Nothing in SharePoint is changed.
 
 ## After you upgrade
 
