@@ -478,6 +478,26 @@ public sealed class ProblemListTests
     }
 
     [Fact]
+    public void AMissedChangeOfADeletedRecordDoesNotOfferRerun()
+    {
+        var f = Setup();
+        f.Service.Seed(
+            new Entity("asyncoperation", Guid.NewGuid())
+            {
+                ["statuscode"] = new OptionSetValue(31),
+                ["message"] = "Record was deleted.",
+                ["createdon"] = f.Now,
+                ["regardingobjectid"] = new EntityReference("account", Guid.NewGuid()),
+            }
+        );
+        var row = Assert.Single(List(f, "NotCaptured").Problems);
+        Assert.NotNull(row.Record);
+        Assert.Null(row.Record!.Name);
+        Assert.DoesNotContain("Rerun", row.Actions);
+        Assert.Contains("Dismiss", row.Actions);
+    }
+
+    [Fact]
     public void AMissedChangeOffersRerunOnlyForARecordOfATable()
     {
         // RerunRecord refuses a team (the membership and retirement handlers' jobs) and a job

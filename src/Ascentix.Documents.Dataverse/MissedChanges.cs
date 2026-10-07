@@ -99,11 +99,25 @@ public static class MissedChanges
     {
         if (jobId == Guid.Empty)
             throw new EvaluationBlockedException("Choose a missed change to dismiss.");
-        var job = service.Retrieve(
-            "asyncoperation",
-            jobId,
-            new ColumnSet("statuscode", "owningextensionid")
+        // A filtered lookup: a job that is already gone (a double click, or a second operator)
+        // is not a fault, and a fault inside this plug-in transaction could not be caught.
+        var jobs = service.RetrieveMultiple(
+            new QueryExpression("asyncoperation")
+            {
+                ColumnSet = new ColumnSet("statuscode", "owningextensionid"),
+                Criteria =
+                {
+                    Conditions =
+                    {
+                        new ConditionExpression("asyncoperationid", ConditionOperator.Equal, jobId),
+                    },
+                },
+                TopCount = 1,
+            }
         );
+        var job = jobs.Entities.FirstOrDefault();
+        if (job == null)
+            return new WorkerResult { Status = "Dismissed", Key = jobId.ToString("D") };
         var step = job.GetAttributeValue<EntityReference>("owningextensionid");
         string? handler = null;
         if (step != null)

@@ -128,10 +128,16 @@ public sealed class ManageWorkApi : IPlugin
             context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
             var store = new DocumentStore(service);
             LibraryRecovery? recovery = null;
+            string rowVersion = "";
             if (request.Key.StartsWith("librarycreate:", StringComparison.Ordinal))
-                recovery = new LibraryProvisioning(service)
-                    .PickUp(store.Require<LibrarySetup>("asx_operation", request.Key))
-                    .Value.Recovery;
+            {
+                var setup = new LibraryProvisioning(service).PickUp(
+                    store.Require<LibrarySetup>("asx_operation", request.Key)
+                );
+                recovery = setup.Value.Recovery;
+                // The setup row's version, which ResolveSetup requires back.
+                rowVersion = setup.Row.RowVersion;
+            }
             var operation = store.Require<OperationDocument>("asx_operation", request.Key).Value;
             var claim = store
                 .Find<DispatcherDocument>(
@@ -153,6 +159,7 @@ public sealed class ManageWorkApi : IPlugin
                     Token = owns ? claim!.Token : Guid.Empty,
                     LeaseUntilUtc = owns ? claim!.LeaseUntilUtc : (DateTime?)null,
                     Recovery = recovery,
+                    RowVersion = rowVersion,
                 }
             );
             return;

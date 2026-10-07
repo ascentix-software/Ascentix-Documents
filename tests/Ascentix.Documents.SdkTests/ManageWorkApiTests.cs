@@ -263,6 +263,44 @@ public sealed class ManageWorkApiTests
     }
 
     [Fact]
+    public void InspectReturnsTheSetupRowVersionThatResolveSetupNeeds()
+    {
+        var f = new LibraryProvisioningTests.Fixture();
+        var key = f.Lost();
+        f.Run(key);
+        T Api<TRequest, T>(IPlugin api, string name, TRequest request) =>
+            f.Service.Transaction(() =>
+                JsonWire.Read<T>(ApiHarness.Invoke(api, name, f.Service, request, Guid.NewGuid()))
+            );
+        Api<CatalogRequest, CatalogResult>(
+            new CatalogAdminApi(),
+            "asx_CatalogAdmin",
+            new CatalogRequest { Command = "RecheckSetup", Key = key }
+        );
+        f.Run(key);
+        var inspected = Api<WorkerRequest, WorkerResult>(
+            new ManageWorkApi(),
+            "asx_ManageWork",
+            new WorkerRequest { Command = "Inspect", Key = key }
+        );
+        Assert.Equal(f.Worker.Inspect(key).RowVersion, inspected.RowVersion);
+        Assert.NotEqual("", inspected.RowVersion);
+        var resolved = Api<CatalogRequest, CatalogResult>(
+            new CatalogAdminApi(),
+            "asx_CatalogAdmin",
+            new CatalogRequest
+            {
+                Command = "ResolveSetup",
+                Key = key,
+                Choice = "UseLibrary",
+                ListId = f.List,
+                RowVersion = inspected.RowVersion,
+            }
+        );
+        Assert.Equal("Pending", resolved.Status);
+    }
+
+    [Fact]
     public void RecheckSetupAndResolveSetupPassTheGuardedTransport()
     {
         var f = new LibraryProvisioningTests.Fixture();

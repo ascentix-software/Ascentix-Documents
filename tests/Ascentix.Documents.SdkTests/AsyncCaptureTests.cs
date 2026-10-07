@@ -252,6 +252,13 @@ public sealed class AsyncCaptureTests
     }
 
     [Fact]
+    public void DismissOfAJobThatIsAlreadyGoneReturnsDismissedWithoutAFault()
+    {
+        var f = Setup(out _);
+        Assert.Equal("Dismissed", MissedChanges.Dismiss(f.Service, Guid.NewGuid()).Status);
+    }
+
+    [Fact]
     public void DismissDeletesOnlyAFailedDocumentsCaptureJob()
     {
         var f = Setup(out _);

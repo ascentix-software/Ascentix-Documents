@@ -627,8 +627,9 @@ public static class ProblemList
                 return actions.ToArray();
             case "CaptureJob":
                 // RerunRecord queues a record of an enabled table; a team (the membership and
-                // retirement handlers) or a job with no record would always be refused.
-                if (row.Record != null && row.Record.Table != "team")
+                // retirement handlers), a job with no record, or a record that is gone (it has no name)
+                // would always be refused.
+                if (row.Record != null && row.Record.Table != "team" && row.Record.Name != null)
                     actions.Add("Rerun");
                 actions.Add("Dismiss");
                 break;
