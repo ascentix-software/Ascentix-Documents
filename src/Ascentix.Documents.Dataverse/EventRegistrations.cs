@@ -345,34 +345,21 @@ public static class EventRegistrations
         && privileges.TryGetValue(id.Value.ToString(), out var depth)
         && depth == PrivilegeDepth.Global;
 
+    /// <summary>
+    /// The table's Read privilege. A table deleted from the organization is refused without a
+    /// faulting call: RetrieveEntity faults for it, and inside a plug-in that fault would end the
+    /// transaction even when caught, so Get could not show the problem (see TableInfo.Find).
+    /// </summary>
     private static Guid? RequireTable(IOrganizationService service, string table)
     {
-        try
-        {
-            var response = (RetrieveEntityResponse)
-                service.Execute(
-                    new RetrieveEntityRequest
-                    {
-                        LogicalName = table,
-                        EntityFilters = EntityFilters.Entity | EntityFilters.Privileges,
-                    }
-                );
-            return response
-                .EntityMetadata?.Privileges?.FirstOrDefault(p =>
-                    p.PrivilegeType == PrivilegeType.Read
-                )
-                ?.PrivilegeId;
-        }
-        catch (EvaluationBlockedException)
-        {
-            throw;
-        }
-        catch (Exception)
-        {
-            throw new EvaluationBlockedException(
+        var metadata =
+            TableInfo.Find(service, table)
+            ?? throw new EvaluationBlockedException(
                 "Table '" + table + "' does not exist in this environment."
             );
-        }
+        return metadata
+            .Privileges?.FirstOrDefault(p => p.PrivilegeType == PrivilegeType.Read)
+            ?.PrivilegeId;
     }
 
     private static List<ExistingStep> Steps(

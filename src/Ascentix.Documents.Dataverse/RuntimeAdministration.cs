@@ -174,9 +174,9 @@ public static class RuntimeAdministration
 
     /// <summary>
     /// Repairs change tracking (spec 6.6) for the stored worker and record-update setting. With a
-    /// table: every Ready table plus that table (the team scope, which every registration keeps,
-    /// adds none). Without: every Ready table plus the first MaxNewTablesPerSave tables that are
-    /// not, as Save registers them. The worker does not change, so, as in AddTable, nothing waits
+    /// table: that table and every enabled table that has steps, so no other table loses any
+    /// (the team scope, which every registration keeps, adds no table). Without: every Ready
+    /// table plus the first MaxNewTablesPerSave tables that are not, as Save registers them. The worker does not change, so, as in AddTable, nothing waits
     /// for active writers (no RequireIdle).
     /// </summary>
     /// <param name="service">The administrator's organization service.</param>
@@ -208,19 +208,26 @@ public static class RuntimeAdministration
                 throw new EvaluationBlockedException(
                     "The table " + table + " is not enabled in Documents."
                 );
-            var ready = (
-                stored.Registration?.Readiness
-                ?? new System.Collections.Generic.List<TableReadiness>()
-            )
-                .Where(r => r.Status == "Ready" && r.Scope != EventRegistrationPlan.TeamScope)
-                .Select(r => r.Scope);
-            batch = ready
-                .Concat(
-                    table == EventRegistrationPlan.TeamScope
-                        ? Array.Empty<string>()
-                        : new[] { table }
+            // Reconcile removes the steps of every table it is not given, so a one-table repair
+            // gives it every table that may have steps: all but those with none (Pending). When
+            // the readiness could not be read, that is every enabled table; Reconcile then
+            // refuses the problem Inspect reported instead of removing steps.
+            var registration = stored.Registration;
+            var known =
+                registration == null || registration.Error != null
+                    ? null
+                    : registration.Readiness.ToDictionary(
+                        r => r.Scope,
+                        r => r.Status,
+                        StringComparer.Ordinal
+                    );
+            batch = tables
+                .Where(t =>
+                    string.Equals(t, table, StringComparison.Ordinal)
+                    || known == null
+                    || !known.TryGetValue(t, out var status)
+                    || status != "Pending"
                 )
-                .Distinct(StringComparer.Ordinal)
                 .ToArray();
         }
         EventRegistrations.Reconcile(service, stored.WorkerId, batch, stored.ProcessRecordUpdates);

@@ -66,9 +66,12 @@ internal sealed class StepService : IOrganizationService
     {
         if (request is RetrieveEntityRequest entity)
         {
+            // As in Dataverse, the fault ends a transaction even when the caller catches it.
             if (MissingTables.Contains(entity.LogicalName))
-                throw new InvalidOperationException(
-                    "Entity " + entity.LogicalName + " does not exist."
+                throw Memory.Refuse(
+                    new InvalidOperationException(
+                        "Entity " + entity.LogicalName + " does not exist."
+                    )
                 );
             var metadata = new EntityMetadata { LogicalName = entity.LogicalName };
             typeof(EntityMetadata)
@@ -104,6 +107,27 @@ internal sealed class StepService : IOrganizationService
             privileges.Results["RolePrivileges"] = held.ToArray();
             return privileges;
         }
+        if (request is RetrieveMetadataChangesRequest changes)
+        {
+            // A table deleted from the organization is simply absent, as in Dataverse; a table
+            // that exists carries its Read privilege like RetrieveEntity's answer.
+            var condition = changes.Query.Criteria.Conditions.Single();
+            var table = (string)condition.Value;
+            var found = new EntityMetadataCollection();
+            if (!MissingTables.Contains(table))
+            {
+                var metadata = (
+                    (RetrieveMetadataChangesResponse)Memory.Execute(request)
+                ).EntityMetadata.Single();
+                typeof(EntityMetadata)
+                    .GetProperty("Privileges")!
+                    .SetValue(metadata, new[] { ReadPrivilege(table) }, null);
+                found.Add(metadata);
+            }
+            var response = new RetrieveMetadataChangesResponse();
+            response.Results["EntityMetadata"] = found;
+            return response;
+        }
         return Memory.Execute(request);
     }
 
@@ -121,7 +145,9 @@ internal sealed class StepService : IOrganizationService
                 && c.Values.Any(v => v is string s && MissingTables.Contains(s))
             )
         )
-            throw new InvalidOperationException("simulated EntityName conversion fault");
+            throw Memory.Refuse(
+                new InvalidOperationException("simulated EntityName conversion fault")
+            );
         return Memory.RetrieveMultiple(query);
     }
 

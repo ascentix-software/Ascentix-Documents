@@ -29,7 +29,9 @@ public static class TableInfo
                 "LogicalName",
                 "PrimaryIdAttribute",
                 "PrimaryNameAttribute",
-                "DisplayName"
+                "DisplayName",
+                // The table's privileges: EventRegistrations reads its Read privilege.
+                "Privileges"
             ),
         };
         query.Criteria.Conditions.Add(

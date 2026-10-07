@@ -861,4 +861,74 @@ public sealed class RuntimeAdministrationTests
             repaired.Registration!.Readiness.Single(r => r.Scope == "contact").Status
         );
     }
+
+    private static RuntimeRequest InTransaction(Env e, RuntimeRequest request) =>
+        e.Org.S.Memory.Transaction(() =>
+            RuntimeAdministration.Execute(e.Org.S, request, true, e.Admin)
+        );
+
+    [Fact]
+    public void AnEnabledTableDeletedFromTheOrganizationLeavesSettingsOpen()
+    {
+        // Each call runs in a transaction that a caught fault would end, as in the plug-in.
+        var e = new Env(new[] { "account", "cr123_gone" }, new[] { "cr123_gone" });
+        e.Save(e.Get());
+        e.Org.S.MissingTables.Add("cr123_gone");
+        var got = InTransaction(e, new RuntimeRequest());
+        Assert.Contains("cr123_gone", got.Registration!.Error);
+        Assert.True(got.CanChange);
+        var paused = InTransaction(
+            e,
+            new RuntimeRequest
+            {
+                Command = "SetEnabled",
+                Enabled = false,
+                RowVersion = got.RowVersion,
+            }
+        );
+        Assert.False(paused.Enabled);
+        var refused = Assert.Throws<EvaluationBlockedException>(() =>
+            InTransaction(e, new RuntimeRequest { Command = "Register", Table = "account" })
+        );
+        Assert.Contains("cr123_gone", refused.Message);
+        // Removing the deleted table still works, and then everything is ready again.
+        e.Org.S.Memory.Transaction(() => e.Change("RemoveTable", "cr123_gone"));
+        Assert.Null(InTransaction(e, new RuntimeRequest()).Registration!.Error);
+    }
+
+    [Fact]
+    public void RegisteringOneTableKeepsTheStepsOfTablesItCannotSeeWhileAnotherIsDeleted()
+    {
+        var e = new Env(new[] { "account", "contact", "cr123_gone" }, new[] { "cr123_gone" });
+        e.Save(e.Get());
+        int accountSteps = e.StepsFor("account");
+        Assert.True(accountSteps > 0);
+        e.Org.S.MissingTables.Add("cr123_gone");
+        Assert.Throws<EvaluationBlockedException>(() =>
+            InTransaction(e, new RuntimeRequest { Command = "Register", Table = "contact" })
+        );
+        Assert.Equal(accountSteps, e.StepsFor("account"));
+    }
+
+    [Fact]
+    public void RegisteringOneTableRepairsRatherThanRemovesAnotherTablesPartialSteps()
+    {
+        var e = new Env("account", "contact", "lead");
+        e.Save(e.Get());
+        int leadSteps = e.StepsFor("lead");
+        // One of lead's steps was deleted by hand: lead is Missing, not Ready.
+        e.Org.S.Memory.Rows.Remove(
+            e.Org.Steps.First(s => s.GetAttributeValue<string>("name").EndsWith(" lead")).Id
+        );
+        Assert.Equal(
+            "Missing",
+            e.Get().Registration!.Readiness.Single(r => r.Scope == "lead").Status
+        );
+        var repaired = InTransaction(
+            e,
+            new RuntimeRequest { Command = "Register", Table = "contact" }
+        );
+        Assert.Equal(leadSteps, e.StepsFor("lead"));
+        Assert.All(repaired.Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+    }
 }
