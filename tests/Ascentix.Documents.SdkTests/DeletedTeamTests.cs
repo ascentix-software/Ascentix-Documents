@@ -312,4 +312,104 @@ public sealed class DeletedTeamTests
         );
         Assert.Equal(TeamDirectory.DeletedRefusal, refused.Message);
     }
+
+    private const string DeletedDuringRun =
+        "Team was deleted in Dataverse during this run; Documents starts a new run to remove its access, or Apply access now.";
+
+    /// <summary>Drives a queued run to its final readback, just before Complete.</summary>
+    private static WorkerResult ToVerified(Fixture f)
+    {
+        var work = f.Start();
+        for (int i = 0; i < 200 && work.Status != "Verified"; i++)
+        {
+            if (work.Status == "Read")
+                work = f.Observe(work);
+            else if (work.Status == "ReadyToCreate")
+                work = f.Call("PrepareCreate", work);
+            else if (work.Status == "Create")
+            {
+                f.Apply();
+                work = f.Call("CreateResponse", work, status: 200);
+            }
+            else
+                throw new Exception(work.Status + ": " + string.Join(" ", work.Notices));
+        }
+        Assert.Equal("Verified", work.Status);
+        return work;
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void TeamDeletedAfterItsGrantWasConfirmedStopsTheRunWhichANewRunReplaces(bool members)
+    {
+        var f = new Fixture();
+        if (members)
+            f.AddUser();
+        f.Queue("Read");
+        f.Drive();
+        int group = f.GroupOf(f.Team);
+        f.Queue("Contribute");
+        var work = ToVerified(f);
+        Assert.Equal(new[] { f.Contribute.Id }, f.Roles(group));
+        // Deleted after the run confirmed the team's members and grant, before it completes.
+        DeleteTeam(f, seen: false);
+        var stopped = Assert.Throws<Conditions.EvaluationBlockedException>(() =>
+            f.Call("Complete", work)
+        );
+        // A team with no members leaves no membership difference: its remaining grant stops it.
+        Assert.Equal(DeletedDuringRun, stopped.Message);
+        Assert.NotEqual("None", f.Policy().Applied.Single().Access);
+        Assert.Equal("Blocked", f.Call("Fail", work).Status);
+        // The next scheduled refresh replaces the stopped run, which removes the grant.
+        f.Key = Assert.Single(Scan(f).Keys);
+        f.Drive();
+        AssertCleanedUp(f, group);
+    }
+
+    [Fact]
+    public void ALibraryAddedAgainBeforeTheUpgradeHasItsTeamEventsReachItAgain()
+    {
+        var f = new Fixture();
+        f.AddUser();
+        f.Queue("Read");
+        f.Drive();
+        f.Service.Transaction(() =>
+            new CatalogAdministration(f.Service).Execute(
+                new CatalogRequest { Command = "RemoveLibrary", CatalogId = f.Library },
+                true
+            )
+        );
+        // Added again by 0.1.0.4 before this fix: active, but its policy still says Removed and
+        // its team references stay Inactive.
+        f.Service.Rows[f.Library]["statecode"] = new OptionSetValue(0);
+        f.Service.Rows[f.Library]["statuscode"] = new OptionSetValue(1);
+        f.Service.Rows[f.Library]["asx_approved"] = true;
+        Assert.Empty(Scan(f).Keys);
+        Assert.Equal(
+            "Active",
+            f.Store.Require<PolicyTeamReference>(
+                "asx_policyentry",
+                "policyteam:" + f.Library.ToString("N") + ":" + f.Team.ToString("N")
+            ).Value.Status
+        );
+        // A team change now reaches the library again.
+        f.AddPerson("new@example.com", "New");
+        f.Store.Create(
+            "asx_outbox",
+            new OutboxDocument
+            {
+                Key = "team-event:join",
+                SecurityTeamId = f.Team,
+                SecurityPage = 1,
+            }
+        );
+        var planned = f.Service.Transaction(() =>
+            new WorkerCoordinator(f.Service).Execute(
+                new WorkerRequest { Command = "Plan", Key = "team-event:join" },
+                true
+            )
+        );
+        Assert.Single(planned.Keys);
+    }
 }

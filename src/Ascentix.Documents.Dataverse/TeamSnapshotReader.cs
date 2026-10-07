@@ -178,6 +178,14 @@ public static class TeamDirectory
     public const string DeletedRefusal =
         "This team was deleted in Dataverse, so it cannot get library access. Choose another team.";
 
+    /// <summary>
+    /// Why an access run stops when its team was deleted after the run confirmed the team's
+    /// members or grant. The scheduled refresh replaces the stopped run with one that removes
+    /// the grant, and so does the admin's Apply access.
+    /// </summary>
+    public const string DeletedDuringRun =
+        "Team was deleted in Dataverse during this run; Documents starts a new run to remove its access, or Apply access now.";
+
     /// <summary>The status of a deleted team's registration once no library's access refers to it.</summary>
     public const string Finished = "Revoked";
 

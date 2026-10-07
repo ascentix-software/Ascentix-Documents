@@ -1161,7 +1161,12 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     let current = {
       Status: 'Queued',
       RowVersion: '50',
-      Policy: { Desired: entries, Applied: entries, OperationKey: 'policywork:refresh' },
+      // The scheduled refresh already removed the unnamed team's access.
+      Policy: {
+        Desired: entries,
+        Applied: [entries[0], { TeamId: unnamed, Access: 'None' }, entries[2]],
+        OperationKey: 'policywork:refresh',
+      },
       Teams: [
         { TeamId: gone, Name: 'AcceptC Team 1', Deleted: true },
         { TeamId: unnamed, Name: null, Deleted: true },
@@ -1228,7 +1233,12 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     assert.doesNotMatch(fresh['ad-message'].textContent, /not found/);
     const rows = () => fresh['ad-teams'].children.map((r) => r.children[0].textContent);
     assert.equal(rows()[0], 'Deleted team: AcceptC Team 1' + deletedNotice);
-    assert.equal(rows()[1], 'Deleted team: ' + unnamed + deletedNotice);
+    assert.equal(
+      rows()[1],
+      'Deleted team: ' +
+        unnamed +
+        'Its access was removed. Apply access to clear it from this list.',
+    );
     assert.equal(rows()[2], 'Operations');
     assert.deepEqual(teamReads, [], 'No team is read by ID once the policy names it');
     // Its access cannot be chosen: the next Apply removes it.

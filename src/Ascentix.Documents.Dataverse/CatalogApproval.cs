@@ -1306,17 +1306,7 @@ public sealed class CatalogAdministration
         var policy = store.Find<PolicyDocument>("asx_policy", "policy:" + library.ToString("N"));
         if (policy == null)
             return;
-        foreach (var entry in policy.Value.Applied.Where(e => e.Access != "None"))
-        {
-            var reference = store.Find<PolicyTeamReference>(
-                "asx_policyentry",
-                "policyteam:" + library.ToString("N") + ":" + entry.TeamId.ToString("N")
-            );
-            if (reference == null || reference.Value.Status == "Active")
-                continue;
-            reference.Value.Status = "Active";
-            store.Save(reference);
-        }
+        SecurityRefresh.ResumeTeamReferences(store, policy.Value);
         policy.Value.NextReviewUtc = clock();
         store.Save(policy);
     }

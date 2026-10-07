@@ -123,6 +123,8 @@
   // (GetPolicy's Teams marks it); Dataverse can no longer read it by ID.
   const deletedNotice =
     'This team was deleted in Dataverse. Documents removes its access the next time access is applied.';
+  // Once a run removed its access (the scheduled refresh, say), only its row is left.
+  const deletedRemovedNotice = 'Its access was removed. Apply access to clear it from this list.';
   const deletedTeam = (teamId) => state.deleted.get(String(teamId).toLowerCase());
   const deletedPending = (p) => !!p?.entries.some((e) => deletedTeam(e.TeamId) != null);
   // The library's access state, from its policy and queued run as GetPolicy last read them,
@@ -503,7 +505,7 @@
           p.result.Policy?.Applied?.find((a) => a.TeamId === e.TeamId)?.Access || 'None';
         const label = node('td', name);
         if (gone != null) {
-          const notice = node('div', deletedNotice);
+          const notice = node('div', current === 'None' ? deletedRemovedNotice : deletedNotice);
           notice.className = 'ad-issue';
           label.append(notice);
         }

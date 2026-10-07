@@ -1390,6 +1390,7 @@ public sealed class SecurityWorker
                 throw new EvaluationBlockedException("Membership receipt missing.");
             return;
         }
+        bool granted = Granted(teamId);
         if (
             !snapshot.Value.Complete
             || snapshot.Value.Status != "Applied"
@@ -1397,8 +1398,23 @@ public sealed class SecurityWorker
                 != TeamSnapshotReader.Hash(new TeamSnapshotReader(service).Read(teamId))
         )
             throw new EvaluationBlockedException(
-                "Final membership generation changed or is incomplete."
+                granted
+                    ? "Final membership generation changed or is incomplete."
+                    : TeamDirectory.DeletedDuringRun
             );
+        // A team with no members deleted after its grant was confirmed leaves no membership
+        // difference, only its grant: the run stops rather than record no access while the
+        // grant stays, and the next run removes it.
+        if (
+            !granted
+            && store
+                .Find<ManagedGrant>(
+                    "asx_managedgrant",
+                    "grant:" + op.LibraryId.ToString("N") + ":" + teamId.ToString("N")
+                )
+                ?.Value.RoleId > 0
+        )
+            throw new EvaluationBlockedException(TeamDirectory.DeletedDuringRun);
     }
 
     private WorkerResult Prepare(

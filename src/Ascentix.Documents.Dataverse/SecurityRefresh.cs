@@ -241,6 +241,10 @@ public sealed class SecurityRefresh
             // then added again is refreshed again, though its policy still says Removed.
             if (Paused(policy))
                 continue;
+            // A library added again before re-adding resumed its access refresh still has its
+            // team references Inactive; they are reactivated so team events reach it again.
+            if (policy.Value.Status == "Removed")
+                ResumeTeamReferences(store, policy.Value);
             policy = store.Require<PolicyDocument>("asx_policy", pointer.Key);
             if (policy.Value.ApplyPending)
             {
@@ -274,7 +278,8 @@ public sealed class SecurityRefresh
             }
             var catalog = new SecurityCatalog(service, policy.Value.LibraryId);
             bool changed = false,
-                snapshotChanged = false;
+                snapshotChanged = false,
+                deletedGrant = false;
             var operation =
                 policy.Value.OperationKey == null
                     ? null
@@ -289,7 +294,21 @@ public sealed class SecurityRefresh
                 // when its delete event was missed or came while the library was out of
                 // Documents (removed or suspended): the check below then sees it revoked.
                 if (!live.ContainsKey(entry.TeamId))
+                {
                     TeamDirectory.Retire(store, entry.TeamId);
+                    // Documents' grant for it is still recorded on this library, for example
+                    // when the team was deleted after its run confirmed the grant.
+                    deletedGrant |=
+                        store
+                            .Find<ManagedGrant>(
+                                "asx_managedgrant",
+                                "grant:"
+                                    + catalog.LibraryId.ToString("N")
+                                    + ":"
+                                    + entry.TeamId.ToString("N")
+                            )
+                            ?.Value.RoleId > 0;
+                }
                 string hash = TeamSnapshotReader.Hash(
                     new TeamSnapshotReader(service).Read(entry.TeamId)
                 );
@@ -325,13 +344,17 @@ public sealed class SecurityRefresh
             if (operation != null)
             {
                 // Only a proved newer team snapshot may replace idle, unsubmitted work. Unknown/active grants never overlap.
+                // A run stopped because its team was deleted mid-run (TeamDirectory.DeletedDuringRun)
+                // is replaced too, so the new run removes the deleted team's grant.
+                bool replace =
+                    snapshotChanged || deletedGrant && operation.Value.Status == "Blocked";
                 if (
-                    !snapshotChanged
+                    !replace
                     || operation.Value.ExternalSubmitted
                     || (operation.Value.Status != "Pending" && operation.Value.Status != "Blocked")
                 )
                 {
-                    if (snapshotChanged)
+                    if (replace)
                         waiting = true;
                     continue;
                 }
@@ -358,6 +381,26 @@ public sealed class SecurityRefresh
                 queued.Add(result.Policy.OperationKey);
         }
         return queued.ToArray();
+    }
+
+    /// <summary>
+    /// Reactivates the team references of a library's applied access, as the access run that
+    /// applied it left them, so team events schedule the library again after it was removed
+    /// from Documents and added again.
+    /// </summary>
+    public static void ResumeTeamReferences(DocumentStore store, PolicyDocument policy)
+    {
+        foreach (var entry in policy.Applied.Where(e => e.Access != "None"))
+        {
+            var reference = store.Find<PolicyTeamReference>(
+                "asx_policyentry",
+                "policyteam:" + policy.LibraryId.ToString("N") + ":" + entry.TeamId.ToString("N")
+            );
+            if (reference == null || reference.Value.Status == "Active")
+                continue;
+            reference.Value.Status = "Active";
+            store.Save(reference);
+        }
     }
 
     public const string SuspendedNotice =
