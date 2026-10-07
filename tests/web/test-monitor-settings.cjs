@@ -371,6 +371,33 @@ async function boot({
       },
     });
     assert.equal(trs(unscheduled)[0].querySelector('.sub').textContent, 'Attempt 2');
+    // Phone widths lay rows out as cards, so the table says what it is in every browser.
+    assert.equal(table(m).getAttribute('role'), 'table');
+    assert.equal(table(m).querySelector('thead').getAttribute('role'), 'rowgroup');
+    assert.equal(table(m).querySelector('thead tr').getAttribute('role'), 'row');
+    assert.deepEqual(
+      [
+        ...new Set(
+          table(m)
+            .querySelectorAll('th')
+            .map((th) => th.getAttribute('role')),
+        ),
+      ],
+      ['columnheader'],
+    );
+    assert.equal(m.$('problem-rows').getAttribute('role'), 'rowgroup');
+    assert.deepEqual([...new Set(trs(m).map((tr) => tr.getAttribute('role')))], ['row']);
+    assert.deepEqual(
+      [
+        ...new Set(
+          m
+            .$('problem-rows')
+            .querySelectorAll('td')
+            .map((td) => td.getAttribute('role')),
+        ),
+      ],
+      ['cell'],
+    );
   }
   {
     // A filter shows one list; Not captured keeps its checkboxes and Re-run selected (n).
@@ -392,6 +419,7 @@ async function boot({
     assert.equal(m.$('rerun-selected-row').hidden, true);
     await m.press(chip(m, 'Not captured'));
     assert.equal(trs(m).length, 2);
+    assert.equal(table(m).querySelector('.col-select').getAttribute('role'), 'columnheader');
     const boxes = m.$('problem-rows').querySelectorAll('input[type=checkbox]');
     assert.equal(boxes.length, 2);
     boxes[0].checked = true;
@@ -502,6 +530,8 @@ async function boot({
     );
     const confirm = table(m).querySelector('.confirm');
     assert.ok(confirm);
+    assert.equal(confirm.closest('.confirm-row').getAttribute('role'), 'row');
+    assert.equal(confirm.closest('td').getAttribute('role'), 'cell');
     await m.tick();
     assert.equal(table(m).querySelector('.confirm'), confirm, 'Still the same confirmation');
   }

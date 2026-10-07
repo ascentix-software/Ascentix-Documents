@@ -4,7 +4,7 @@
 // page fetches. Rows carry no IDs in visible fields, as the real APIs.
 //
 // Tests adjust it through window.__mock (set by a later init script): policy, siteStatus,
-// setupStatus and recovery; window.__recovery names a library setup's recovery state for
+// setupStatus, recovery and empty (an install with no templates yet); window.__recovery names a library setup's recovery state for
 // Monitor. Every request is recorded in window.__mock.requests. window.__mockIdle() is true
 // once no call has been in flight for a moment, so a test can wait for a tab to finish loading.
 (() => {
@@ -313,18 +313,20 @@
       case 'asx_runtimetable':
         return [{ asx_runtimetableid: id(30), asx_logicalname: 'account' }];
       case 'asx_template':
-        return [template];
+        return mock.empty ? [] : [template];
       case 'asx_revision':
-        return [
-          {
-            asx_revisionid: IDS.revision,
-            asx_version: 1,
-            asx_status: 'Published',
-            _asx_templateid_value: IDS.template,
-            modifiedon: ago(60 * 24 * 4),
-            '_modifiedby_value@OData.Community.Display.V1.FormattedValue': 'Dana Reyes',
-          },
-        ];
+        return mock.empty
+          ? []
+          : [
+              {
+                asx_revisionid: IDS.revision,
+                asx_version: 1,
+                asx_status: 'Published',
+                _asx_templateid_value: IDS.template,
+                modifiedon: ago(60 * 24 * 4),
+                '_modifiedby_value@OData.Community.Display.V1.FormattedValue': 'Dana Reyes',
+              },
+            ];
       // The published revision's destination is on General, so one template uses it.
       case 'asx_destination':
         return [{ _asx_libraryid_value: IDS.library, _asx_revisionid_value: IDS.revision }];

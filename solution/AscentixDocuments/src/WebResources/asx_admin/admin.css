@@ -3320,7 +3320,8 @@ button.danger-outline {
   margin-left: auto;
 }
 
-/* Below 1000px the page area stacks: the templates list becomes a select above the overview,
+/* Below 1000px the page area stacks: the templates list becomes a select above the overview
+   (its heading and ＋ New stay),
    step 2's panel goes under the tree, step 3's cards stack, the Sites & access rail goes above
    its libraries, and side panels and the access drawer take the full width. Page headers drop
    their secondary text first. */
@@ -3333,6 +3334,10 @@ button.danger-outline {
     min-height: 0;
   }
   #templates-list {
+    border-right: 0;
+    padding: 12px 16px 0;
+  }
+  #templates-list > :not(.list-head, #new-template-table) {
     display: none;
   }
   .narrow-only:not([hidden]) {

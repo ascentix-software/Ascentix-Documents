@@ -3900,7 +3900,8 @@
       }),
     );
     picker.value = selectedId() || '';
-    picker.closest('label').hidden = !state.templates.length;
+    // Shown once the list has loaded, even empty: ＋ New stays beside it on narrow screens.
+    picker.closest('label').hidden = !state.loaded;
   }
   $('template-picker').onchange = async () => {
     const picker = $('template-picker');

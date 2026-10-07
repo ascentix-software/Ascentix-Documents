@@ -481,6 +481,7 @@
     if (select && !box) {
       const th = el('th', null, 'col-select');
       th.setAttribute('scope', 'col');
+      th.setAttribute('role', 'columnheader');
       th.append(el('span', 'Select', 'sr-only'));
       head.prepend(th);
     } else if (!select) box?.remove();
@@ -499,7 +500,7 @@
       td.setAttribute('colspan', span);
       td.append(content);
       tr.append(td);
-      return tr;
+      return asRow(tr);
     };
     $('problem-rows').replaceChildren(
       ...(shown.length
@@ -641,6 +642,13 @@
       openInNewWindow: true,
     });
 
+  // A problem table row with explicit roles: phone widths lay rows out as cards, which some
+  // browsers would no longer read as a table.
+  function asRow(tr) {
+    tr.setAttribute('role', 'row');
+    for (const td of tr.children) td.setAttribute('role', 'cell');
+    return tr;
+  }
   // A cell named for its column, so narrow screens can lay a row out as a card.
   const classed = (td, name) => {
     td.className = name;
@@ -680,7 +688,7 @@
       classed(cell(ui.time(row.SinceUtc)), 'since'),
       actionsCell(list, row, tr, status),
     );
-    return tr;
+    return asRow(tr);
   }
   // A record links to its form with "Table · Template" under it; a job shows its title, with
   // its attempt and next try when it is retrying, else its site or kind.
@@ -1023,6 +1031,7 @@
       const host = el('td');
       host.setAttribute('colspan', String(anchor.children.length));
       holder.append(host);
+      if (anchor.getAttribute('role') === 'row') asRow(holder);
       anchor.after(holder);
       return { host, remove: () => holder.remove() };
     }

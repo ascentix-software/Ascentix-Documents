@@ -704,20 +704,23 @@
           aria-labelledby="problem-heading"
         >
           <h2 id="problem-heading" class="sr-only" tabindex="-1" data-focus-heading>Problems</h2>
-          <table id="problem-table">
-            <thead>
-              <tr>
-                <th scope="col" class="col-type">Type</th>
-                <th scope="col">Item</th>
-                <th scope="col">Problem</th>
-                <th scope="col" class="col-since" aria-sort="descending">
+          <!-- Explicit roles: at phone widths the rows are laid out as cards. -->
+          <table id="problem-table" role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th scope="col" class="col-type" role="columnheader">Type</th>
+                <th scope="col" role="columnheader">Item</th>
+                <th scope="col" role="columnheader">Problem</th>
+                <th scope="col" class="col-since" role="columnheader" aria-sort="descending">
                   <!-- prettier-ignore -->
                   <button id="problem-sort" type="button" class="link sort" data-focus-key="sort">Since<span id="problem-sort-arrow" aria-hidden="true"> ▾</span></button>
                 </th>
-                <th scope="col" class="col-actions"><span class="sr-only">Actions</span></th>
+                <th scope="col" class="col-actions" role="columnheader">
+                  <span class="sr-only">Actions</span>
+                </th>
               </tr>
             </thead>
-            <tbody id="problem-rows"></tbody>
+            <tbody id="problem-rows" role="rowgroup"></tbody>
           </table>
           <div class="card-row" data-actions hidden>
             <button id="problem-more" type="button" class="link" hidden></button>

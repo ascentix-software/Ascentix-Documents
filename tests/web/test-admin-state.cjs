@@ -99,6 +99,8 @@ async function boot({
   hash = '',
   // A single-select lookup's answer (test records), instead of the default record.
   pick = null,
+  // A record update's refusal (an Error), or null to accept it.
+  update = () => null,
 } = {}) {
   const document = createDocument(html);
   // Timers of 100 ms or more (the autosave and preview pauses) wait for flush(); shorter ones run
@@ -204,7 +206,11 @@ async function boot({
                       ]
                     : []),
       }),
-      updateRecord: async (table, id, data) => sent.push(['update', table, data]),
+      updateRecord: async (table, id, data) => {
+        sent.push(['update', table, data]);
+        const refused = update(table, id, data);
+        if (refused instanceof Error) throw refused;
+      },
       deleteRecord: async (table, id) => deleted.push([table, id]),
       online: {
         execute: async (request) => {
@@ -3926,6 +3932,49 @@ async function boot({
     // The test record is the same one step 2 shows.
     await t.step(2);
     assert.equal(t.$('test-record-list').querySelectorAll('.test-record').length, 1);
+  }
+  {
+    // A start date the server refuses after the version was published: the overview says so
+    // with the server's reason, the re-run does not start, and Re-run existing records… is
+    // offered.
+    const later = '2027-01-04T08:30:00.000Z';
+    const t = await boot({
+      templates: [
+        {
+          asx_templateid: TEMPLATE,
+          asx_name: 'Account onboarding',
+          asx_table: 'account',
+          _asx_publishedrevisionid_value: 'rev-1',
+          asx_disabled: false,
+          asx_startsutc: later,
+        },
+      ],
+      update: () => new Error('The template could not be updated.'),
+    });
+    await t.open();
+    await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files');
+    await t.step(3);
+    await t.change(t.$('publish-starts'), 'now');
+    assert.equal(t.$('publish-rerun').checked, true);
+    await t.press(t.$('publish'));
+    assert.equal(t.last('asx_PublishTemplate')?.RevisionId, 'rev-2');
+    assert.equal(t.$('template-overview').hidden, false);
+    assert.equal(t.$('fb-templates').getAttribute('role'), 'alert');
+    assert.match(
+      t.$('fb-templates').visibleText,
+      /^Published v2\. The template could not be updated\./,
+    );
+    assert.equal(t.sent.filter(([, b]) => b?.Command === 'StartTemplateRun').length, 0);
+    assert.ok(t.find(t.$('fb-templates'), 'Re-run existing records…'));
+  }
+  {
+    // An install with a table and no templates yet: ＋ New and the Template select stay, so a
+    // narrow screen can start the first template.
+    const t = await boot({ templates: [] });
+    assert.equal(t.$('new-template').hidden, false);
+    assert.equal(t.$('template-picker').closest('label').hidden, false);
+    await t.press(t.$('new-template'));
+    assert.equal(t.$('template-editor').hidden, false);
   }
   console.log(
     'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step; Task 6 fix round 1: a new template unnamed until named and not saved mid-name, saving before switching or closing, a late save answer kept out of a new template, an edit during Publish kept and saved next, a published read retried and its failure, a failed policy read, trimmed destination names, problems not announced twice, and Save draft refusing a nameless template; Task 7: the folder tree with destination pills, rules, New, edited and Removed with Undo (aliases mapped, a removed parent first), ＋ Folder and ＋ Subfolder with their bound, the folder panel and its ⋯ menu, ＋ Field inserting at the caret, Create this folder, the condition sentence with Another field…, debounced test-record previews with Created or Skipped and the failing value, their bound, Out of date and failures, and links to Sites & access that save first; Task 7 fix round 1: conditions kept across Always and back, Undo at the folder bound counting removed parents, and ＋ Subfolder at the folder depth; Task 8: Review and publish (the change list with every kind in words and links to its step, Result for with Choose record…, the consequences with the record count, record updates and the first-publish wording, a published version that could not be read, the re-run box and its role and Later reasons, Starts with a stored start, the paused warning, Publish and re-run ending on the overview, a refused publish, a refused re-run after a publish, edits made during Publish saved or kept) and the narrow-screen Template select. Fake DOM; browser QA separate.',

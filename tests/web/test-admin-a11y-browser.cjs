@@ -347,13 +347,15 @@ async function check(page, label) {
     await access.keyboard.press('Escape');
     assert.equal(await access.locator('#ad-drawer').isHidden(), true);
     assert.match(await access.evaluate(() => document.activeElement.dataset.focusKey), /^library:/);
-    // Below 1000px the page area stacks: the templates list is a select, step 2's panel sits
-    // under the tree, and the access drawer takes the full width.
+    // Below 1000px the page area stacks: the templates list is a select under its heading and
+    // ＋ New, step 2's panel sits under the tree, and the access drawer takes the full width.
     const narrow = await browser.newContext({ viewport: { width: 900, height: 800 } });
     const small = await open(narrow, 'templates');
     await small.locator('#overview-title', { hasText: 'Account onboarding' }).waitFor();
     assert.equal(await small.locator('#template-picker').isVisible(), true);
-    assert.equal(await small.locator('#templates-list').isHidden(), true);
+    assert.equal(await small.locator('#new-template').isVisible(), true);
+    assert.equal(await small.locator('#template-groups').isHidden(), true);
+    assert.equal(await small.locator('#template-search').isHidden(), true);
     await openTemplate(small);
     await small.locator('#step-tab-2').click();
     await small
@@ -371,6 +373,11 @@ async function check(page, label) {
     await sites.getByRole('dialog', { name: 'General' }).waitFor();
     await sites.waitForTimeout(300);
     assert.equal((await sites.locator('#ad-drawer').boundingBox()).width, 900);
+    // An install with no templates yet: ＋ New starts the first one.
+    const empty = await open(narrow, 'templates', 'window.__mock.empty = true');
+    await empty.locator('#new-template').click();
+    await empty.locator('#template-editor').waitFor();
+    assert.equal(await empty.locator('#templateName').isVisible(), true);
     await narrow.close();
     // Every page at 1440, 1000, 800 and 400 in light and dark: nothing scrolls sideways, and
     // a Monitor row's ⋯ menu opens without being cut off.
@@ -393,6 +400,8 @@ async function check(page, label) {
             }
           }
           if (tab === 'monitor') {
+            // The rows laid out as cards still read as a table.
+            if (width === 400) await check(page, 'monitor-400 ' + scheme);
             await page
               .getByRole('button', { name: /^More actions for/ })
               .last()
