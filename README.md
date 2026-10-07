@@ -20,11 +20,12 @@ Ascentix Documents provisions SharePoint folder structures from Dataverse record
 - No table-count limit. Event registration is managed in the application.
 - Temporary failures retry automatically.
 - Admin stops always work.
-- B2B guests and Entra or Microsoft 365 group teams are supported (pending verification).
+- A redesigned admin page: a Folder templates overview with a three-step editor and autosave, one Monitor list, a team access panel in Sites & access, and Settings in one place.
+- Support for B2B guests, Entra and Microsoft 365 group teams, and government clouds is built in. Further testing is ongoing, as these are more complex areas.
 - Re-point and Remove for destinations.
 - Monitor lists blocked jobs and library setups, records waiting for data, and jobs retrying automatically, with **Retry**, **Cancel job** or **Re-run**; a stuck access run has **Retry access run** and **Cancel access run** in Sites & access.
 - Team access can be edited while it is being applied, and customized Read and Contribute permission levels are accepted.
-- SharePoint hosts in every Microsoft cloud, including GCC High, DoD and 21Vianet (pending verification outside the worldwide cloud).
+- SharePoint hosts in every Microsoft cloud, including GCC High, DoD and 21Vianet.
 
 Upgrading from 0.1.0.3? Read the [upgrade notes](docs/upgrade-0.1.0.4.md).
 
@@ -34,7 +35,7 @@ Use a dedicated Dataverse and SharePoint evaluation environment. Follow the [man
 
 The [operations guide](docs/operations.md) covers work recovery, access changes, upgrades, and retention. Read [record-update processing](docs/record-update-processing.md) before enabling update monitoring.
 
-This preview has bounded live validation. Sustained high-volume capacity, advanced recovery, a fresh installation, and uninstall remain unverified. Entra and Microsoft 365 group teams and B2B guest access are pending verification. See the release notes for the remaining limitations.
+This preview has bounded live validation. Sustained high-volume capacity, advanced recovery, a fresh installation, and uninstall remain unverified. Support for B2B guests, Entra and Microsoft 365 group teams, and government clouds is built in, and further testing is ongoing. See the release notes for the remaining limitations.
 
 ## Build from source
 
