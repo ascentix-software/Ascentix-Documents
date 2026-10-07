@@ -360,7 +360,10 @@ public sealed class DeletedTeamTests
         // A team with no members leaves no membership difference: its remaining grant stops it.
         Assert.Equal(DeletedDuringRun, stopped.Message);
         Assert.NotEqual("None", f.Policy().Applied.Single().Access);
-        Assert.Equal("Blocked", f.Call("Fail", work).Status);
+        // The flow reports the thrown text with Fail; the library shows it as the reason.
+        Assert.Equal("Blocked", Fail(f, work, stopped.Message).Status);
+        Assert.Equal(DeletedDuringRun, f.Operation().ErrorCode);
+        Assert.Equal(DeletedDuringRun, GetPolicy(f).RunNotice);
         // The next scheduled refresh replaces the stopped run, which removes the grant.
         f.Key = Assert.Single(Scan(f).Keys);
         f.Drive();
@@ -411,5 +414,154 @@ public sealed class DeletedTeamTests
             )
         );
         Assert.Single(planned.Keys);
+    }
+
+    private const string TurnedOffDuringRun =
+        "Team access was turned off during this run; Documents starts a new run to remove its access, or Apply access now.";
+
+    /// <summary>The flow's failure branch: Fail with the failed action's status, code and message.</summary>
+    private static WorkerResult Fail(Fixture f, WorkerResult work, string error) =>
+        f.Service.Transaction(() =>
+            new SecurityWorker(f.Service).Execute(
+                new WorkerRequest
+                {
+                    Command = "Fail",
+                    Key = f.Key,
+                    RunId = "security/run-1",
+                    Token = work.Token,
+                    // A product check thrown by the worker API: ISV code aborted the operation.
+                    StatusCode = 400,
+                    ErrorCode = "0x80040265",
+                    Error = error,
+                },
+                true
+            )
+        );
+
+    private static WorkerResult Plan(Fixture f, string key) =>
+        f.Service.Transaction(() =>
+            new WorkerCoordinator(f.Service).Execute(
+                new WorkerRequest { Command = "Plan", Key = key },
+                true
+            )
+        );
+
+    [Fact]
+    public void AStaleGrantReceiptOfAGroupCreatedAgainNeverStopsTheRun()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        f.Drive();
+        int old = f.GroupOf(f.Team);
+        // The Documents group was deleted in SharePoint, and another library's run created it
+        // again: this library's receipt still names the old group, which had the grant.
+        var managed = f.Store.Require<ManagedGroup>(
+            "asx_managedgroup",
+            "group:" + f.Site.ToString("N") + ":" + f.Team.ToString("N")
+        );
+        managed.Value.GroupId = 99;
+        f.Store.Save(managed);
+        f.Group = new SiteGroup
+        {
+            Id = 99,
+            Title = f.Group!.Title,
+            Description = f.Group.Description,
+            Type = 8,
+        };
+        f.SetRoles(old);
+        DeleteTeam(f, seen: true);
+        f.Key = Assert.Single(Scan(f).Keys);
+        f.Drive();
+        AssertCleanedUp(f, 99);
+        var receipt = f
+            .Store.Require<ManagedGrant>(
+                "asx_managedgrant",
+                "grant:" + f.Library.ToString("N") + ":" + f.Team.ToString("N")
+            )
+            .Value;
+        Assert.Equal(0, receipt.RoleId);
+        Assert.Equal(99, receipt.GroupId);
+    }
+
+    [Fact]
+    public void ADeleteEventWhileTheRunWaitsReplacesItAsSoonAsItStops()
+    {
+        var f = new Fixture();
+        f.Queue("Read");
+        f.Drive();
+        int group = f.GroupOf(f.Team);
+        var other = AddTeam(f, "Finance");
+        string otherGroup = "group:" + f.Site.ToString("N") + ":" + other.ToString("N");
+        // SharePoint throttles the other team's grant, after the run confirmed this team's.
+        f.Reject = op => op.MutationKind == "GrantAdd" && op.GroupKey == otherGroup ? 429 : null;
+        f.Key = Apply(f, (f.Team, "Contribute"), (other, "Read")).Policy!.OperationKey!;
+        Assert.Equal("RetryWait", f.Drive(expectApplied: false).Status);
+        Assert.Equal(new[] { f.Contribute.Id }, f.Roles(group));
+        DeleteTeam(f, seen: true);
+        f.Store.Create(
+            "asx_outbox",
+            new OutboxDocument
+            {
+                Key = "team-event:delete",
+                SecurityTeamId = f.Team,
+                SecurityPage = 1,
+            }
+        );
+        // The waiting run already confirmed the grant: the event waits for the run to end.
+        Assert.Equal("Pending", Plan(f, "team-event:delete").Status);
+        f.Reject = null;
+        var waiting = f.Store.Require<SecurityOperation>("asx_operation", f.Key);
+        waiting.Value.NextAttemptUtc = DateTime.UtcNow.AddSeconds(-1);
+        f.Store.Save(waiting);
+        var stopped = f.Drive(expectApplied: false);
+        Assert.Equal("Blocked", stopped.Status);
+        Assert.Equal(DeletedDuringRun, f.Operation().ErrorCode);
+        // Read again a minute later, it replaces the stopped run, without the daily review.
+        var planned = Plan(f, "team-event:delete");
+        Assert.Equal("Planned", planned.Status);
+        f.Key = Assert.Single(planned.Keys);
+        f.Drive();
+        AssertCleanedUp(f, group);
+        Assert.Equal(new[] { f.Read.Id }, f.Roles(f.GroupOf(other)));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AccessTurnedOffAfterItsGrantWasConfirmedSaysSoAndANewRunRemovesIt(bool members)
+    {
+        var f = new Fixture();
+        if (members)
+            f.AddUser();
+        f.Queue("Read");
+        f.Drive();
+        int group = f.GroupOf(f.Team);
+        f.Queue("Contribute");
+        var work = ToVerified(f);
+        // The admin turns the team's access off; the team still exists.
+        f.Service.Transaction(() =>
+            f.Admin.Execute(
+                new SecurityRequest
+                {
+                    Command = "RegisterTeam",
+                    TeamId = f.Team,
+                    Enabled = false,
+                    RowVersion = Registration(f, f.Team).Row.RowVersion,
+                },
+                true
+            )
+        );
+        var stopped = Assert.Throws<Conditions.EvaluationBlockedException>(() =>
+            f.Call("Complete", work)
+        );
+        Assert.Equal(TurnedOffDuringRun, stopped.Message);
+        Fail(f, work, stopped.Message);
+        Assert.Equal(TurnedOffDuringRun, GetPolicy(f).RunNotice);
+        f.Key = Assert.Single(Scan(f).Keys);
+        f.Drive();
+        Assert.Empty(f.Roles(group));
+        Assert.Equal("None", f.Policy().Applied.Single().Access);
+        Assert.DoesNotContain(f.Policy().Notices, n => n.Contains("deleted in Dataverse"));
+        Assert.False(Registration(f, f.Team).Value.Enabled);
     }
 }

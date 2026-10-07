@@ -279,7 +279,7 @@ public sealed class SecurityRefresh
             var catalog = new SecurityCatalog(service, policy.Value.LibraryId);
             bool changed = false,
                 snapshotChanged = false,
-                deletedGrant = false;
+                revokedGrant = false;
             var operation =
                 policy.Value.OperationKey == null
                     ? null
@@ -294,21 +294,7 @@ public sealed class SecurityRefresh
                 // when its delete event was missed or came while the library was out of
                 // Documents (removed or suspended): the check below then sees it revoked.
                 if (!live.ContainsKey(entry.TeamId))
-                {
                     TeamDirectory.Retire(store, entry.TeamId);
-                    // Documents' grant for it is still recorded on this library, for example
-                    // when the team was deleted after its run confirmed the grant.
-                    deletedGrant |=
-                        store
-                            .Find<ManagedGrant>(
-                                "asx_managedgrant",
-                                "grant:"
-                                    + catalog.LibraryId.ToString("N")
-                                    + ":"
-                                    + entry.TeamId.ToString("N")
-                            )
-                            ?.Value.RoleId > 0;
-                }
                 string hash = TeamSnapshotReader.Hash(
                     new TeamSnapshotReader(service).Read(entry.TeamId)
                 );
@@ -318,16 +304,29 @@ public sealed class SecurityRefresh
                 );
                 if (group != null && group.Value.MembershipHash != hash)
                     changed = true;
+                bool enabled = store
+                    .Require<TeamRegistration>(
+                        "asx_teamregistration",
+                        "team:" + entry.TeamId.ToString("N")
+                    )
+                    .Value.Enabled;
                 if (
-                    !store
-                        .Require<TeamRegistration>(
-                            "asx_teamregistration",
-                            "team:" + entry.TeamId.ToString("N")
-                        )
-                        .Value.Enabled
+                    !enabled
                     && policy.Value.Applied.Any(a => a.TeamId == entry.TeamId && a.Access != "None")
                 )
                     changed = true;
+                // A team deleted or turned off whose grant on this library is still recorded,
+                // for example because that happened after its run confirmed the grant.
+                if (
+                    !enabled
+                    && SecurityWorker.RecordedRole(
+                        store,
+                        catalog.LibraryId,
+                        catalog.SiteId,
+                        entry.TeamId
+                    ) > 0
+                )
+                    revokedGrant = true;
                 if (operation != null)
                 {
                     var snapshot = store.Find<MembershipDocument>(
@@ -344,17 +343,20 @@ public sealed class SecurityRefresh
             if (operation != null)
             {
                 // Only a proved newer team snapshot may replace idle, unsubmitted work. Unknown/active grants never overlap.
-                // A run stopped because its team was deleted mid-run (TeamDirectory.DeletedDuringRun)
-                // is replaced too, so the new run removes the deleted team's grant.
+                // A run stopped because its team was deleted or turned off mid-run
+                // (TeamDirectory.DeletedDuringRun, TurnedOffDuringRun) is replaced too, so the
+                // new run removes the grant. While that run still works or waits, a team event
+                // waits for it rather than being spent, so the replacement follows within a
+                // dispatch of the run stopping, not at the daily review.
                 bool replace =
-                    snapshotChanged || deletedGrant && operation.Value.Status == "Blocked";
+                    snapshotChanged || revokedGrant && operation.Value.Status == "Blocked";
                 if (
                     !replace
                     || operation.Value.ExternalSubmitted
                     || (operation.Value.Status != "Pending" && operation.Value.Status != "Blocked")
                 )
                 {
-                    if (replace)
+                    if (snapshotChanged || revokedGrant)
                         waiting = true;
                     continue;
                 }

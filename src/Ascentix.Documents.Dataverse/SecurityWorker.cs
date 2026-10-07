@@ -193,7 +193,15 @@ public sealed class SecurityWorker
                     && !(op.Value.ExternalSubmitted && !op.Value.ExternalResponseKnown)
                 )
                     return Wait(op, claim, null, request.StatusCode, request.ErrorCode);
-                return Block(op, claim, "SecurityWorkerFailed");
+                // The failed call's own message, such as why a check stopped the run, is the
+                // reason the library shows.
+                return Block(
+                    op,
+                    claim,
+                    string.IsNullOrWhiteSpace(request.Error)
+                        ? "SecurityWorkerFailed"
+                        : Bounded(request.Error!)
+                );
             default:
                 throw new EvaluationBlockedException("Unsupported security worker command.");
         }
@@ -1129,14 +1137,22 @@ public sealed class SecurityWorker
         // What Documents last applied. A receipt still Pending means Documents' own write may
         // have landed without a confirmed outcome, so a difference is not reported as a hand edit.
         bool known = grant == null || grant.Value.Status == "Applied";
-        int recorded =
-            grant != null && grant.Value.GroupId == group.GroupId ? grant.Value.RoleId : 0;
+        int recorded = RecordedRole(grant?.Value, group);
         int[] expected = recorded == 0 ? Array.Empty<int>() : new[] { recorded };
         if (roles.SequenceEqual(target))
         {
             // Already at the configured level, including a Documents write whose outcome was
             // unknown but landed. Record it and move on.
-            if (grant != null && (recorded != desired || grant.Value.Status != "Applied"))
+            // A receipt of an earlier group (deleted in SharePoint and created again) is stale:
+            // that group's grant went with it, so the receipt is brought to the current group.
+            if (
+                grant != null
+                && (
+                    recorded != desired
+                    || grant.Value.Status != "Applied"
+                    || grant.Value.GroupId != group.GroupId
+                )
+            )
             {
                 grant.Value.RoleId = desired;
                 grant.Value.GroupId = group.GroupId;
@@ -1391,6 +1407,10 @@ public sealed class SecurityWorker
             return;
         }
         bool granted = Granted(teamId);
+        string revoked =
+            TeamDirectory.Find(service, teamId) == null
+                ? TeamDirectory.DeletedDuringRun
+                : TeamDirectory.TurnedOffDuringRun;
         if (
             !snapshot.Value.Complete
             || snapshot.Value.Status != "Applied"
@@ -1398,23 +1418,49 @@ public sealed class SecurityWorker
                 != TeamSnapshotReader.Hash(new TeamSnapshotReader(service).Read(teamId))
         )
             throw new EvaluationBlockedException(
-                granted
-                    ? "Final membership generation changed or is incomplete."
-                    : TeamDirectory.DeletedDuringRun
+                granted ? "Final membership generation changed or is incomplete." : revoked
             );
-        // A team with no members deleted after its grant was confirmed leaves no membership
-        // difference, only its grant: the run stops rather than record no access while the
-        // grant stays, and the next run removes it.
-        if (
-            !granted
-            && store
+        // A team with no members deleted or turned off after its grant was confirmed leaves no
+        // membership difference, only its grant: the run stops rather than record no access
+        // while the grant stays, and the next run removes it.
+        if (!granted && RecordedRole(store, op.LibraryId, op.SiteId, teamId) > 0)
+            throw new EvaluationBlockedException(revoked);
+    }
+
+    /// <summary>
+    /// The role Documents' grant receipt records for the team's current Documents group, or 0.
+    /// A receipt naming another group, one deleted in SharePoint and created again since, is
+    /// stale: that group's grant went with it. The grant reconcile, the end-of-run check and the
+    /// refresh's replace rule all use this.
+    /// </summary>
+    internal static int RecordedRole(ManagedGrant? grant, ManagedGroup? group) =>
+        grant != null && group != null && grant.GroupId == group.GroupId ? grant.RoleId : 0;
+
+    internal static int RecordedRole(
+        DocumentStore store,
+        Guid libraryId,
+        Guid siteId,
+        Guid teamId
+    ) =>
+        RecordedRole(
+            store
                 .Find<ManagedGrant>(
                     "asx_managedgrant",
-                    "grant:" + op.LibraryId.ToString("N") + ":" + teamId.ToString("N")
+                    "grant:" + libraryId.ToString("N") + ":" + teamId.ToString("N")
                 )
-                ?.Value.RoleId > 0
-        )
-            throw new EvaluationBlockedException(TeamDirectory.DeletedDuringRun);
+                ?.Value,
+            store
+                .Find<ManagedGroup>(
+                    "asx_managedgroup",
+                    "group:" + siteId.ToString("N") + ":" + teamId.ToString("N")
+                )
+                ?.Value
+        );
+
+    private static string Bounded(string text)
+    {
+        text = new string(text.Where(c => !char.IsControl(c)).ToArray()).Trim();
+        return text.Length > NoticeLength ? text.Substring(0, NoticeLength) + "..." : text;
     }
 
     private WorkerResult Prepare(

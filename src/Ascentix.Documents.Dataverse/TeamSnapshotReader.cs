@@ -186,6 +186,10 @@ public static class TeamDirectory
     public const string DeletedDuringRun =
         "Team was deleted in Dataverse during this run; Documents starts a new run to remove its access, or Apply access now.";
 
+    /// <summary>The same stop when the admin turned the team's access off during the run.</summary>
+    public const string TurnedOffDuringRun =
+        "Team access was turned off during this run; Documents starts a new run to remove its access, or Apply access now.";
+
     /// <summary>The status of a deleted team's registration once no library's access refers to it.</summary>
     public const string Finished = "Revoked";
 
