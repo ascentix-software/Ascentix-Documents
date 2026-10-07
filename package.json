@@ -6,6 +6,7 @@
     "format:check": "prettier --check \"client/admin/**/*.{js,css,html}\" \"scripts/*.cjs\" \"tests/web/*.cjs\""
   },
   "devDependencies": {
+    "axe-core": "4.14.0",
     "prettier": "3.9.6"
   }
 }

@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { createDocument } = require('./fake-dom.cjs');
+const { createDocument, FakeEvent } = require('./fake-dom.cjs');
 const base = path.resolve(__dirname, '../../client/admin');
 const html = fs.readFileSync(path.join(base, 'index.html'), 'utf8');
 const read = (name) => fs.readFileSync(path.join(base, name), 'utf8');
@@ -1027,6 +1027,74 @@ async function boot({
     assert.equal(attempts, 2, 'One retry');
   }
   {
+    // Task 9 ruling 7: a related table that arrives while the admin types in the editor leaves
+    // the pickers stale; they redraw once focus leaves the field.
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    const t = await boot({
+      extraLookups: [
+        {
+          LogicalName: 'rel0id',
+          Targets: ['rel0'],
+          DisplayName: { UserLocalizedLabel: { Label: 'Link rel0' } },
+        },
+      ],
+      delay: async (table) => {
+        if (table === 'rel0') await gate;
+      },
+    });
+    await t.open();
+    await t.press(t.find(t.$('destinations'), 'General'));
+    const group = () =>
+      t
+        .labelled(t.$('folderEditor'), 'Insert field')
+        .querySelectorAll('optgroup')
+        .find((g) => g.getAttribute('label') === 'Link rel0 → rel0');
+    const name = t.labelled(t.$('folderEditor'), 'Folder name');
+    name.focus();
+    release();
+    await t.document.settle();
+    assert.equal(group().disabled, true, 'No redraw while the admin types');
+    t.document.activeElement = t.document.body;
+    name.dispatchEvent(new FakeEvent('focusout'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await t.document.settle();
+    assert.equal(group().disabled, false, 'The pickers redraw once focus leaves the field');
+  }
+  {
+    // Task 9 ruling 7: switching templates stops the old template's background reads from
+    // taking more tables.
+    const related = Array.from({ length: 10 }, (_, i) => 'rel' + i);
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    const requested = new Set();
+    const t = await boot({
+      enabled: ['account', 'contact'],
+      extraLookups: related.map((table) => ({
+        LogicalName: table + 'id',
+        Targets: [table],
+        DisplayName: { UserLocalizedLabel: { Label: 'Link ' + table } },
+      })),
+      delay: async (table) => {
+        if (!related.includes(table)) return;
+        requested.add(table);
+        await gate;
+      },
+    });
+    await t.open();
+    assert.equal(requested.size, 4);
+    await t.press(
+      t
+        .$('templateTree')
+        .querySelector('[data-table="contact"]')
+        .querySelectorAll('button')
+        .find((b) => b.textContent === '＋ New template'),
+    );
+    release();
+    await t.document.settle();
+    assert.equal(requested.size, 4, 'The old template takes no more tables after a switch');
+  }
+  {
     // Fix 3: a save reads the new version's number. v1 opened while v3 is the latest saves as v4.
     const t = await boot({ versions: { 'rev-2': 4 } });
     await t.open();
@@ -1138,7 +1206,7 @@ async function boot({
     assert.equal(t.looked.length, picks, 'A blocked preview opens no picker');
   }
   console.log(
-    'PASS Folder templates: empty states, version chip, Publish and its reasons, unsaved-changes prompts, menu, Delete and focus after it, Schedule, Version history, rail, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, rail redraws wait for its confirmations, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action. Fake DOM; browser QA separate.',
+    'PASS Folder templates: empty states, version chip, Publish and its reasons, unsaved-changes prompts, menu, Delete and focus after it, Schedule, Version history, rail, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, rail redraws wait for its confirmations, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

@@ -1,23 +1,30 @@
 'use strict';
+// Sites & access (spec 3.2): sites, their libraries, each library's team access, and the setup
+// activity on them. Each area reports in its own feedback line; every command asks in the page,
+// next to what asked (spec 5.2). Text is only ever set with textContent.
 (() => {
   const root = document.getElementById('access'),
     $ = (id) => document.getElementById(id),
+    ui = window.AsxdUi,
     xrm = window.parent?.Xrm || window.Xrm;
   if (!root) return;
   const state = {
     sites: [],
+    sitesLoaded: false,
     libraries: [],
+    librariesLoaded: false,
     teams: new Map(),
     // Teams deleted in Dataverse, by lower-case ID, with their last known name or their ID.
     deleted: new Map(),
     // Team ID to the broader-access warning its group carries.
     warnings: new Map(),
-    // The selection whose warnings are shown: { kind: 'apply' | 'provision', key, warnings }.
-    consent: null,
     policies: new Map(),
     site: null,
     library: null,
     busy: false,
+    // The feedback area of the action that runs: access-site, access-add, access-create,
+    // access-existing or access-library.
+    area: 'access-library',
     polling: false,
     pollPromise: null,
     loaded: false,
@@ -29,10 +36,10 @@
     selectedOperation: null,
     discovery: null,
     progressSignature: null,
+    // The setup cards were not redrawn because a confirmation was open on one of them.
+    progressStale: false,
     completed: new Map(),
     pollFailures: 0,
-    // The site or library command waiting for in-page confirmation: { kind, id, name }.
-    confirm: null,
     // What the last re-point changed, such as "old URL → new URL".
     changes: [],
     // Sites and libraries removed in this page. They leave the lists at once, whatever a list
@@ -41,11 +48,22 @@
     // List IDs, in lower case, of the libraries on the shown discovery page that Documents
     // already has as active rows.
     registered: new Set(),
+    // Add site: the SharePoint sites found, the next page, the search they answer, the one
+    // picked ({ id, name }) and the option the arrow keys are on.
+    native: null,
+    nativeSites: [],
+    nativeNext: null,
+    nativeTerm: '',
+    nativeSearch: 0,
+    nativeActive: -1,
   };
   const noList = '00000000-0000-0000-0000-000000000000';
-  const node = (tag, text) => {
+  const INSTALL_DOCS =
+    'https://github.com/ascentix-software/Ascentix-Documents/blob/main/docs/customer-installation.md';
+  const node = (tag, text, css) => {
     const n = document.createElement(tag);
     if (text != null) n.textContent = text;
+    if (css) n.className = css;
     return n;
   };
   const opt = (value, text) => {
@@ -53,10 +71,25 @@
     o.value = value;
     return o;
   };
+  const control = (text, key, onClick, css) => {
+    const b = node('button', text, css);
+    b.type = 'button';
+    if (key) b.dataset.focusKey = key;
+    b.onclick = onClick;
+    return b;
+  };
+  const focusKey = (key) => document.querySelector('[data-focus-key="' + key + '"]')?.focus();
+  const debounce = (fn, ms) => {
+    let t;
+    return () => {
+      clearTimeout(t);
+      t = setTimeout(fn, ms);
+    };
+  };
   // Owner teams sync their members. An Entra or Microsoft 365 group team is granted through its
-  // group, so it is labelled with its kind. This mirrors the server (TeamPrincipal), with
-  // team.teamtype 2 security group, 3 Microsoft 365 group and membershiptype 1 members,
-  // 2 owners, 3 guests:
+  // group, so it is labelled with its kind (kept text #6). This mirrors the server
+  // (TeamPrincipal), with team.teamtype 2 security group, 3 Microsoft 365 group and
+  // membershiptype 1 members, 2 owners, 3 guests:
   // - teams SharePoint cannot identify are listed disabled with the reason;
   // - teams whose group reaches more people than the team carry a warning the admin confirms.
   const teamLabel = (t) => {
@@ -77,39 +110,28 @@
           : null;
     const scope =
       t.membershiptype === 1
-        ? ', members; guests also get access'
+        ? ' · members + guests'
         : t.membershiptype === 2
           ? security
-            ? ', owners; all members get access'
-            : ', owners'
+            ? ' · all members'
+            : ' · owners'
           : '';
     return { text: t.name + ' (' + kind + scope + ')', reason: null, warning };
   };
-  // Warnings for the chosen teams that still need the admin's confirmation, shown in the page.
-  // A second select of the same button with the same choice confirms them.
+  // The broader-access warnings of the chosen teams, which the admin confirms in the page.
   const warningsFor = (teamIds) => [
     ...new Set(teamIds.map((id) => state.warnings.get(id)).filter(Boolean)),
   ];
-  function confirmed(kind, key, warnings) {
-    if (!warnings.length) return { go: true, ack: false };
-    if (state.consent?.kind === kind && state.consent.key === key) return { go: true, ack: true };
-    state.consent = { kind, key, warnings };
-    return { go: false };
-  }
-  const consent = (kind, key, teamIds) => confirmed(kind, key, warningsFor(teamIds));
   // Shown before an admin adds a library that inherits its site's permissions (the server's
   // CatalogAdministration.InheritanceWarning) and before Apply access stops it again.
   const inheritanceWarning =
     'This library inherits permissions from the site. When you approve it, Documents stops the inheritance, keeps a copy of the current site permissions, and then manages team access on it.';
   const reapplyWarning =
     'This library inherits permissions from the site. When you apply access, Documents stops the inheritance, keeps a copy of the current site permissions, and then manages team access on it.';
-  const inheritsAgain =
-    'This library inherits permissions again. Use Apply access to let Documents stop the inheritance again.';
+  const removalNotice =
+    'Removed teams lose the access Documents gave them. Access given another way, such as sharing links or site membership, is not changed.';
   // Applied while the queued run could not be replaced yet (PolicyDocument.ApplyPending).
-  const pendingNotice =
-    'Your change is saved. It is applied right after the access run in progress, as soon as that run is between steps and SharePoint has answered its last write.';
-  const stoppedPendingNotice =
-    'The access run stopped: Retry or Cancel it, then your change applies.';
+  const pendingNotice = 'Saved · applies after the current run';
   // The last run applied the grants but left team membership unsynced (MembershipIncomplete).
   const incompleteNotice =
     'Needs attention: access is applied, but team membership was not synced. People removed from a team keep access, and people added get none, until this is resolved. See the notices below.';
@@ -119,14 +141,19 @@
   // library inherits permissions again is one of them: it needs attention like any other, and
   // Apply access with the acknowledgement is its remedy.
   const stuckRun = (p) => ['Blocked', 'RetryWait'].includes(p?.result.RunStatus);
-  // A team deleted in Dataverse keeps its row until access is applied, which removes its access
-  // (GetPolicy's Teams marks it); Dataverse can no longer read it by ID.
-  const deletedNotice =
-    'This team was deleted in Dataverse. Documents removes its access the next time access is applied.';
-  // Once a run removed its access (the scheduled refresh, say), only its row is left.
-  const deletedRemovedNotice = 'Its access was removed. Apply access to clear it from this list.';
+  // A team deleted in Dataverse keeps its row while it still has access (GetPolicy's Teams marks
+  // it); Dataverse can no longer read it by ID. The next access run removes its access.
+  const deletedNotice = 'Documents removes its access the next time access is applied.';
   const deletedTeam = (teamId) => state.deleted.get(String(teamId).toLowerCase());
-  const deletedPending = (p) => !!p?.entries.some((e) => deletedTeam(e.TeamId) != null);
+  const appliedAccess = (p, teamId) =>
+    p.result.Policy?.Applied?.find((a) => a.TeamId === teamId)?.Access || 'None';
+  // A row the admin sees: a team with access, or one removed in this page (Undo until Apply).
+  // A team with no access, also a deleted one whose access is already removed, is not listed.
+  const listed = (p, e) =>
+    !!e.removed ||
+    (deletedTeam(e.TeamId) != null ? appliedAccess(p, e.TeamId) !== 'None' : e.Access !== 'None');
+  const deletedPending = (p) =>
+    !!p?.entries.some((e) => deletedTeam(e.TeamId) != null && listed(p, e));
   // The library's access state, from its policy and queued run as GetPolicy last read them,
   // never from the catalog flag the library list was read with, which can be older.
   function accessLabel(p) {
@@ -143,11 +170,9 @@
     if (status === 'Applied') return 'Access applied';
     return 'Access setup pending';
   }
-  const applyKey = (p) => (state.library?.asx_libraryid || '') + JSON.stringify(p?.entries || []);
-  const issue = (text, error = false) => {
-    $('ad-message').textContent = text;
-    $('ad-message').className = error ? 'ad-issue' : 'ad-status';
-  };
+  // Reports in an area's feedback line (fb-<area>); an empty text clears it.
+  const issue = (text, error = false, area = state.area) =>
+    text ? ui.feedback(area, text, error ? 'error' : 'success') : ui.clearFeedback(area);
   const guid = (v) =>
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v || '');
   // A server time ("/Date(ms)/" or ISO) as "YYYY-MM-DD hh:mm UTC".
@@ -156,20 +181,8 @@
     const date = new Date(ms ? Number(ms[1]) : value);
     return isNaN(date) ? String(value) : date.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
   };
-  async function api(name, request) {
-    const input = {
-      Request: JSON.stringify(request),
-      getMetadata: () => ({
-        boundParameter: null,
-        parameterTypes: { Request: { typeName: 'Edm.String', structuralProperty: 1 } },
-        operationType: 0,
-        operationName: name,
-      }),
-    };
-    const response = await xrm.WebApi.online.execute(input);
-    if (!response.ok) throw new Error(await response.text());
-    return JSON.parse((await response.json()).Result);
-  }
+  // A refusal reads as the server's sentence (F-14), never as a raw response body.
+  const api = (name, request) => ui.api(name, request);
   const catalog = (request) => api('asx_CatalogAdmin', request),
     security = (request) => api('asx_SecurityAdmin', request);
   async function page(table, options) {
@@ -181,16 +194,19 @@
       throw new Error('Invalid catalog continuation.');
     return url.search;
   }
-  // Runs one user action after any active poll finishes and renders its result or error.
-  async function action(fn) {
+  // Runs one user action after any active poll finishes and renders its result. An error goes
+  // to the feedback line of the area that acted.
+  async function action(fn, area = 'access-library') {
     if (state.busy) return;
     state.busy = true;
+    state.area = area;
+    ui.clearFeedback(area);
     render();
     try {
       if (state.pollPromise) await state.pollPromise.catch(() => {});
       await fn();
     } catch (e) {
-      issue(e.message || String(e), true);
+      issue(e.message || String(e), true, area);
     } finally {
       state.busy = false;
       render();
@@ -229,6 +245,8 @@
     const queued = ['Pending', 'Queued', 'Busy'].includes(status);
     const captured = ['Verified', 'Captured'].includes(status);
     const retrying = status === 'RetryWait';
+    // Documents is looking SharePoint up for a library create whose answer was lost.
+    const checking = status === 'Reconciling';
 
     let step = 1;
     if (done) {
@@ -247,6 +265,7 @@
     let label = stages[step];
     if (done) label = 'Ready';
     else if (stopped) label = 'Needs attention';
+    else if (checking) label = 'Checking SharePoint…';
     else if (retrying) label = 'Waiting to retry';
     else if (queued) label = 'Waiting for a worker';
     else if (status === 'ExternalUnknown') label = 'Waiting for confirmation';
@@ -258,6 +277,8 @@
       message = result.Issue || 'Setup completed.';
     } else if (stopped) {
       message = result.Issue || 'Setup needs review before it can continue.';
+    } else if (checking) {
+      message = 'Checking SharePoint…';
     } else if (retrying) {
       message =
         'SharePoint is temporarily unavailable or limiting requests. Retrying automatically.';
@@ -282,8 +303,156 @@
     if (o.siteId) return o.siteId !== state.site.asx_siteid;
     return !!o.url && state.site.asx_url !== o.url;
   }
+  // Records a card's new result after one of its actions; the next draw shows it.
+  function settled(o, result) {
+    o.result = result;
+    o.status = result.Status;
+    state.progressSignature = null;
+  }
+  // A confirmation on a card. The cards are not redrawn while it is open, and are once it closes.
+  async function cardAsk(invoker, options) {
+    try {
+      return await ui.confirmInline(invoker, options);
+    } finally {
+      if (state.progressStale) render();
+    }
+  }
+  // Documents' SharePoint check for a setup whose create answer was lost (spec 6.8): its
+  // finding, each ambiguous candidate with the checks it failed, and the choices it offers.
+  function recoveryChoices(card, actions, key, o, recovery) {
+    const resolve = (choice, listId, said) =>
+      action(async () => {
+        settled(
+          o,
+          await catalog({
+            Command: 'ResolveSetup',
+            Key: key,
+            Choice: choice,
+            ...(listId ? { ListId: listId } : {}),
+            RowVersion: o.result.RowVersion,
+          }),
+        );
+        issue(said);
+      }, 'access-site');
+    const named = (b) => {
+      b.setAttribute('aria-label', b.textContent + ' for ' + o.name);
+      return b;
+    };
+    const choices = recovery.Choices || [];
+    if (choices.includes('UseCandidate')) {
+      const list = node('ul', null, 'candidates');
+      for (const c of recovery.Candidates || []) {
+        const item = node('li');
+        const checks = ui.candidateChecks(c);
+        item.append(
+          node('span', c.Title + ' · ' + c.Url + ' · created '),
+          ui.time(c.CreatedUtc),
+          node('span', checks ? ' · ' + checks : ''),
+        );
+        if (c.IsLibrary && c.CatalogEntry !== 'Conflict') {
+          const row = node('span', null, 'ad-row');
+          row.setAttribute('data-actions', '');
+          const use = control('Use this one', 'card:' + key + ':use:' + c.ListId, async () => {
+            const ok = await cardAsk(use, {
+              text:
+                'Use ' +
+                c.Title +
+                ' at ' +
+                c.Url +
+                ' for this setup? Documents stops its permission inheritance if needed and manages its team access.',
+              confirm: 'Use this library',
+              keep: 'Keep looking',
+            });
+            if (ok)
+              await resolve('UseLibrary', c.ListId, 'Using the existing library. Setup continues.');
+          });
+          use.setAttribute('aria-label', 'Use ' + c.Title + ' at ' + c.Url);
+          row.append(use);
+          item.append(row);
+        }
+        list.append(item);
+      }
+      card.append(list);
+    }
+    for (const choice of choices) {
+      if (choice === 'UseLibrary')
+        actions.append(
+          named(
+            control(
+              'Use the library that was created',
+              'card:' + key + ':use',
+              () =>
+                resolve(
+                  'UseLibrary',
+                  recovery.Candidates[0].ListId,
+                  'Using the existing library. Setup continues.',
+                ),
+              'ad-primary',
+            ),
+          ),
+        );
+      else if (choice === 'CreateAgain')
+        actions.append(
+          named(
+            control(
+              'Create it again',
+              'card:' + key + ':create',
+              () => resolve('CreateAgain', null, 'Creating the library again.'),
+              'ad-primary',
+            ),
+          ),
+        );
+      else if (choice === 'CheckAgain')
+        actions.append(
+          named(
+            control('Check again', 'card:' + key + ':check', () =>
+              action(async () => {
+                settled(o, await catalog({ Command: 'RecheckSetup', Key: key }));
+                issue('Checking SharePoint again.');
+              }, 'access-site'),
+            ),
+          ),
+        );
+      else if (choice === 'Cancel') actions.append(cancelSetupButton(key, o));
+    }
+  }
+  function cancelSetupButton(key, o) {
+    const cancel = control(
+      'Cancel setup',
+      'card:' + key + ':cancel',
+      async () => {
+        const ok = await cardAsk(cancel, {
+          text: confirmText({ kind: 'CancelSetup', name: o.name }),
+          confirm: 'Cancel setup',
+          keep: 'Keep setup',
+          danger: true,
+        });
+        if (ok)
+          await action(
+            () => runConfirmed({ kind: 'CancelSetup', id: key, name: o.name }),
+            'access-site',
+          );
+      },
+      'danger',
+    );
+    cancel.setAttribute('aria-label', 'Cancel setup of ' + o.name);
+    return cancel;
+  }
+  function monitorLink(key, o) {
+    const link = control(
+      'Open in Monitor',
+      'card:' + key + ':monitor',
+      () => ui.navigate('monitor', { operation: o.result?.RecoveryKey || key }),
+      'link',
+    );
+    link.setAttribute('aria-label', 'Open ' + o.name + ' in Monitor');
+    return link;
+  }
   function drawProgress() {
     const area = $('ad-provision-progress');
+    // Never under an open confirmation: cardAsk redraws once it closes.
+    state.progressStale = !!area.querySelector('.confirm[role=group]');
+    if (state.progressStale) return;
     area.replaceChildren();
     let loading = false;
     for (const [key, o] of new Map([...state.completed, ...state.operations])) {
@@ -296,15 +465,16 @@
       }
       const p = progressState(o),
         card = node('section'),
-        heading = node('div'),
-        badge = node('span', p.label),
+        heading = node('div', null, 'ad-row ad-between'),
+        badge = node('span', p.label, 'ad-progress-badge'),
         bar = node('progress'),
-        list = node('ol');
+        list = node('ol', null, 'ad-progress-stages'),
+        actions = node('div', null, 'ad-row');
       card.className =
         'ad-progress-card' + (p.stopped ? ' ad-progress-attention' : p.done ? '' : ' is-loading');
       card.setAttribute('style', '--stage-count:' + p.stages.length);
-      heading.className = 'ad-row ad-between';
-      badge.className = 'ad-progress-badge';
+      card.setAttribute('data-focus-row', '');
+      actions.setAttribute('data-actions', '');
       heading.append(node('h3', o.name), badge);
       bar.max = p.stages.length - 1;
       bar.value = p.step;
@@ -313,50 +483,58 @@
         'aria-valuetext',
         p.done ? 'Complete' : p.label + '; stage ' + (p.step + 1) + ' of ' + p.stages.length,
       );
-      list.className = 'ad-progress-stages';
       p.stages.forEach((name, i) => {
-        const item = node('li'),
-          mark = node('span', i < p.step || p.done ? '✓' : String(i + 1));
-        mark.className = 'ad-step-mark';
+        const item = node(
+            'li',
+            null,
+            i < p.step || p.done ? 'is-complete' : i === p.step ? 'is-current' : '',
+          ),
+          mark = node('span', i < p.step || p.done ? '✓' : String(i + 1), 'ad-step-mark');
         mark.setAttribute('aria-hidden', 'true');
-        item.className = i < p.step || p.done ? 'is-complete' : i === p.step ? 'is-current' : '';
         if (i === p.step && !p.done) item.setAttribute('aria-current', 'step');
         item.append(mark, node('span', name));
         list.append(item);
       });
-      const message = node('p', p.message);
-      message.className = p.stopped ? 'ad-issue' : 'ad-muted';
+      const message = node('p', p.message, p.stopped ? 'ad-issue' : 'ad-muted');
       card.append(heading, bar, list, message);
       const observed = o.result?.Observation;
-      if (p.status === 'Blocked' && o.kind === 'LibraryValidation' && observed?.Inherits) {
+      const recovery = o.kind === 'LibrarySetup' ? o.result?.Recovery : null;
+      if (recovery && (p.stopped || p.status === 'Reconciling')) {
+        message.textContent =
+          p.status === 'Reconciling'
+            ? 'Checking SharePoint…'
+            : ui.recoverySentence(o.name, recovery);
+        recoveryChoices(card, actions, key, o, recovery);
+      } else if (p.status === 'Blocked' && o.kind === 'LibraryValidation' && observed?.Inherits) {
         // The card shows the server's refusal, which repeats the warning; this is the consent.
-        const add = node('button', 'Stop inheritance and add');
-        add.onclick = () =>
-          action(async () => {
-            await addLibrary(
-              observed.SiteId,
-              observed.ListId,
-              o.name,
-              observed.WebUrl || o.url,
-              true,
-            );
-            state.operations.delete(key);
-            state.completed.delete(key);
-          });
-        card.append(add);
+        actions.append(
+          control('Stop inheritance and add', 'card:' + key + ':add', () =>
+            action(async () => {
+              await addLibrary(
+                observed.SiteId,
+                observed.ListId,
+                o.name,
+                observed.WebUrl || o.url,
+                true,
+              );
+              state.operations.delete(key);
+              state.completed.delete(key);
+            }, 'access-site'),
+          ),
+        );
       } else if (p.status === 'Blocked' && o.kind === 'Repoint') {
         // Re-point only reads SharePoint; once the cause is fixed it simply reads again. It is
         // never retried in place.
-        if (o.command) {
-          const again = node('button', 'Re-point again');
-          again.onclick = () =>
-            action(async () => {
-              state.operations.delete(key);
-              state.completed.delete(key);
-              await runConfirmed({ kind: o.command, id: o.id, name: o.name });
-            });
-          card.append(again);
-        }
+        if (o.command)
+          actions.append(
+            control('Re-point again', 'card:' + key + ':repoint', () =>
+              action(async () => {
+                state.operations.delete(key);
+                state.completed.delete(key);
+                await runConfirmed({ kind: o.command, id: o.id, name: o.name });
+              }, 'access-site'),
+            ),
+          );
       } else if (
         o.kind === 'LibrarySetup' &&
         ['Blocked', 'RecoveryRequired', 'RetryWait'].includes(p.status)
@@ -364,83 +542,149 @@
         // Through the catalog API, so a Documents Security Administrator needs no Operator
         // role. The server keeps its rules: Retry of a create that may have reached SharePoint
         // is refused with the way out, and Cancel deletes nothing in SharePoint.
-        const retry = node('button', 'Retry');
-        retry.onclick = () =>
+        const retry = control('Retry', 'card:' + key + ':retry', () =>
           action(async () => {
-            const result = await catalog({ Command: 'RetrySetup', Key: key });
-            o.result = result;
-            o.status = result.Status;
-            state.progressSignature = null;
-            issue('Setup queued to run again. It stops again if the cause remains.');
-          });
-        const cancel = node('button', 'Cancel setup');
-        cancel.onclick = () => {
-          state.confirm = { kind: 'CancelSetup', id: key, name: o.name };
-          render();
-        };
-        card.append(retry, cancel);
+            settled(o, await catalog({ Command: 'RetrySetup', Key: key }));
+            issue('Setup queued again.');
+          }, 'access-site'),
+        );
+        retry.setAttribute('aria-label', 'Retry setup of ' + o.name);
+        actions.append(retry, cancelSetupButton(key, o), monitorLink(key, o));
       } else if (p.status === 'Blocked') {
-        const retry = node('button', 'Retry after repair');
-        retry.onclick = () =>
+        const retry = control('Retry', 'card:' + key + ':retry', () =>
           action(async () => {
             await api('asx_ManageWork', { Command: 'Retry', Key: o.result?.RecoveryKey || key });
-            o.result = { Status: 'Pending' };
-            o.status = 'Pending';
-            state.progressSignature = null;
+            settled(o, { Status: 'Pending' });
             issue('Retry queued.');
-          });
-        card.append(retry);
-      } else if (p.stopped)
-        card.append(
-          node('p', 'Open Administration to review the original request before retrying.'),
+          }, 'access-site'),
         );
+        retry.setAttribute('aria-label', 'Retry ' + o.name);
+        actions.append(retry, monitorLink(key, o));
+      } else if (p.stopped) actions.append(monitorLink(key, o));
       if (state.completed.has(key) && !state.operations.has(key)) {
-        const dismiss = node('button', 'Dismiss');
-        dismiss.setAttribute('aria-label', 'Dismiss ' + o.name + ' progress');
-        dismiss.onclick = () => {
+        const dismiss = control('Dismiss', 'card:' + key + ':dismiss', () => {
           state.completed.delete(key);
-          drawProgress();
-        };
-        card.append(dismiss);
+          render();
+        });
+        dismiss.setAttribute('aria-label', 'Dismiss ' + o.name + ' progress');
+        actions.append(dismiss);
       }
+      if (actions.children.length) card.append(actions);
       area.append(card);
     }
-    if (loading) {
-      const wait = node('p', 'Loading…');
-      wait.className = 'ad-muted';
-      area.append(wait);
-    }
-    area.hidden = area.children.length === 0;
+    if (loading) area.append(node('p', 'Loading…', 'ad-muted'));
+    $('ad-activity').hidden = area.children.length === 0;
   }
-  function render() {
+  // A team row (spec 3.2): its access, or Removed · Undo until Apply, and what SharePoint has.
+  function teamRow(p, e, running) {
+    const tr = node('tr'),
+      gone = deletedTeam(e.TeamId),
+      name = gone != null ? 'Deleted team: ' + gone : state.teams.get(e.TeamId) || e.TeamId,
+      key = 'team:' + e.TeamId,
+      label = node('td', name),
+      access = node('td'),
+      act = node('td');
+    tr.setAttribute('data-focus-row', '');
+    if (gone != null) label.append(node('div', deletedNotice, 'ad-issue'));
+    if (e.removed) {
+      tr.className = 'is-removed';
+      const undo = control('Undo', key + ':undo', () => {
+        delete e.removed;
+        render();
+        focusKey(key + ':remove');
+      });
+      undo.setAttribute('aria-label', 'Undo removing ' + name);
+      undo.disabled = state.busy;
+      access.append('Removed · ', undo);
+    } else {
+      const select = node('select');
+      ['Read', 'Contribute'].forEach((level) => select.append(opt(level, level)));
+      // A deleted team's saved access may be one the picker does not offer.
+      if (!['Read', 'Contribute'].includes(e.Access))
+        select.append(opt(e.Access, e.Access === 'None' ? 'No access' : e.Access));
+      select.value = e.Access;
+      select.disabled = state.busy || gone != null;
+      select.setAttribute('aria-label', 'Access for ' + name);
+      select.dataset.focusKey = key + ':access';
+      select.onchange = () => {
+        e.Access = select.value;
+        render();
+      };
+      access.append(select);
+      if (gone == null) {
+        const remove = control('Remove', key + ':remove', () => {
+          e.removed = true;
+          render();
+          focusKey(key + ':undo');
+        });
+        remove.setAttribute('aria-label', 'Remove ' + name);
+        remove.disabled = state.busy;
+        act.append(remove);
+      }
+    }
+    const current = appliedAccess(p, e.TeamId);
+    tr.append(
+      label,
+      access,
+      node(
+        'td',
+        (current === 'None' ? 'No managed access' : current) + (running ? ' · applying' : ''),
+      ),
+      act,
+    );
+    return tr;
+  }
+  // Every redraw keeps focus on the same control, by its data-focus-key (spec 5.2).
+  const render = () => ui.withFocus(draw);
+  function draw() {
+    const term = $('ad-search').value.trim();
     $('ad-sites').replaceChildren();
+    const item = (button) => {
+      const row = node('div');
+      row.setAttribute('data-focus-row', '');
+      row.append(button);
+      $('ad-sites').append(row);
+    };
     state.sites.forEach((s) => {
-      const b = node('button');
-      b.type = 'button';
-      b.className = 'ad-site';
+      const b = control(
+        null,
+        'site:' + s.asx_siteid,
+        () => action(() => selectSite(s), 'access-site'),
+        'ad-site',
+      );
       b.setAttribute('aria-pressed', String(s.asx_siteid === state.site?.asx_siteid));
       b.append(
         node('span', s.asx_name),
         node('small', s.asx_approved ? 'Ready' : 'Needs attention'),
       );
-      b.onclick = () => action(() => selectSite(s));
-      $('ad-sites').append(b);
+      item(b);
     });
+    let checking = 0;
     for (const [key, o] of state.operations) {
       if (o.kind !== 'SiteValidation') continue;
-      const b = node('button', o.name + ' · ' + progressState(o).label);
-      b.className = 'ad-site';
-      b.type = 'button';
-      b.onclick = () => {
-        state.selectedOperation = key;
-        state.site = null;
-        state.library = null;
-        state.libraries = [];
-        render();
-        action(refreshOperations);
-      };
-      $('ad-sites').append(b);
+      checking++;
+      item(
+        control(
+          o.name + ' · ' + progressState(o).label,
+          'site:' + key,
+          () => {
+            state.selectedOperation = key;
+            state.site = null;
+            state.library = null;
+            state.libraries = [];
+            render();
+            action(refreshOperations, 'access-site');
+          },
+          'ad-site',
+        ),
+      );
     }
+    // No sites: "No sites yet" holds ＋ Add site; a search that finds none says so.
+    const empty = state.sitesLoaded && !state.sites.length && !checking;
+    $('ad-sites-empty').hidden = !empty;
+    $('ad-sites-empty-text').textContent = term ? 'No sites match' : 'No sites yet';
+    const home = empty && !term ? $('ad-sites-empty') : $('ad-sites-header');
+    if ($('ad-add-site').parentNode !== home) home.append($('ad-add-site'));
     $('ad-more-activity').hidden = !state.nextActivity;
     $('ad-more-sites').hidden = !state.nextSites;
     $('ad-more-libraries').hidden = !state.nextLibraries;
@@ -450,20 +694,34 @@
         ? 'Ready'
         : 'Needs attention'
       : '';
+    $('ad-site-actions').hidden = !state.site;
     $('ad-site-error').hidden = !state.site || state.site.asx_approved;
-    $('ad-create').disabled = state.busy || !state.site?.asx_approved;
-    $('ad-existing').disabled = state.busy || !state.site?.asx_approved;
+    const ready = !state.busy && !!state.site?.asx_approved;
+    for (const id of ['ad-create', 'ad-existing', 'ad-empty-create', 'ad-empty-existing'])
+      $(id).disabled = !ready;
+    ui.disable(
+      $('ad-remove-site'),
+      'ad-remove-site-reason',
+      state.site && state.libraries.length ? 'Remove its libraries first' : null,
+    );
     $('ad-libraries').replaceChildren();
     state.libraries.forEach((l) => {
       const p = state.policies.get(l.asx_libraryid),
-        b = node('button', l.asx_name + (changed(p) ? ' · Unsaved' : ''));
-      b.type = 'button';
-      b.className = 'ad-library';
+        row = node('div'),
+        b = control(
+          l.asx_name + (changed(p) ? ' · Unsaved' : ''),
+          'library:' + l.asx_libraryid,
+          () => action(() => selectLibrary(l)),
+          'ad-library',
+        );
       b.setAttribute('aria-pressed', String(l.asx_libraryid === state.library?.asx_libraryid));
-      b.onclick = () => action(() => selectLibrary(l));
-      $('ad-libraries').append(b);
+      row.setAttribute('data-focus-row', '');
+      row.append(b);
+      $('ad-libraries').append(row);
     });
-    $('ad-empty').hidden = !state.site || !!state.library || state.libraries.length > 0;
+    $('ad-libraries-pane').hidden = !state.site || !state.libraries.length;
+    $('ad-libraries-empty').hidden =
+      !state.site || !state.librariesLoaded || state.libraries.length > 0;
     $('ad-library-detail').hidden = !state.library;
     const p = policy();
     if (state.library) {
@@ -484,45 +742,12 @@
       pending = !!p?.result.Policy?.ApplyPending,
       incomplete = !!p?.result.Policy?.MembershipIncomplete;
     if (p) {
-      p.entries.forEach((e) => {
-        const tr = node('tr'),
-          cell = node('td'),
-          select = node('select');
-        ['None', 'Read', 'Contribute'].forEach((level) =>
-          select.append(opt(level, level === 'None' ? 'Remove access' : level)),
-        );
-        const gone = deletedTeam(e.TeamId),
-          name = gone != null ? 'Deleted team: ' + gone : state.teams.get(e.TeamId) || e.TeamId;
-        select.value = e.Access;
-        select.disabled = state.busy || gone != null;
-        select.setAttribute('aria-label', name + ' access');
-        select.onchange = () => {
-          e.Access = select.value;
-          render();
-        };
-        cell.append(select);
-        const current =
-          p.result.Policy?.Applied?.find((a) => a.TeamId === e.TeamId)?.Access || 'None';
-        const label = node('td', name);
-        if (gone != null) {
-          const notice = node('div', current === 'None' ? deletedRemovedNotice : deletedNotice);
-          notice.className = 'ad-issue';
-          label.append(notice);
-        }
-        tr.append(
-          label,
-          cell,
-          node(
-            'td',
-            (current === 'None' ? 'No managed access' : current) + (running ? ' · applying' : ''),
-          ),
-        );
-        $('ad-teams').append(tr);
-      });
-      if (!p.entries.length) {
+      const rows = p.entries.filter((e) => listed(p, e));
+      rows.forEach((e) => $('ad-teams').append(teamRow(p, e, running)));
+      if (!rows.length) {
         const tr = node('tr'),
           td = node('td', 'No additional teams.');
-        td.colSpan = 3;
+        td.colSpan = 4;
         tr.append(td);
         $('ad-teams').append(tr);
       }
@@ -535,28 +760,26 @@
       ['Missing', 'NeedsReview', 'Removed'].includes(p?.result.Status) ||
       deletedPending(p);
     $('ad-apply').disabled = state.busy || !p || (!changed(p) && !reapply);
+    $('ad-apply').textContent = inherits(p) ? 'Stop inheritance and apply' : 'Apply access changes';
     $('ad-add-team').disabled = state.busy || !p;
-    // A stopped run comes first: a change waiting behind it applies only after Retry or Cancel.
-    // A run that waits to retry carries on by itself, and the waiting change follows it.
+    // A stopped run comes first, as its own notice; a change waiting behind it applies once the
+    // run is retried or cancelled. A run that waits to retry carries on by itself.
     $('ad-change-status').textContent = !p
       ? 'Loading access…'
       : stuck
-        ? 'Needs attention: ' +
-          (p.result.RunNotice || (inherits(p) ? inheritsAgain : 'the access run stopped.')) +
+        ? (p.result.RunNotice ||
+            (inherits(p)
+              ? 'This library inherits permissions again.'
+              : 'The access run stopped.')) +
           (run === 'RetryWait' && p.result.RunNextAttemptUtc
             ? ' Next check: ' + when(p.result.RunNextAttemptUtc) + '.'
-            : '') +
-          (pending && !changed(p)
-            ? run === 'Blocked'
-              ? ' ' + stoppedPendingNotice
-              : ' ' + pendingNotice
             : '')
         : pending && !changed(p)
           ? pendingNotice
           : running
             ? 'Applying access and syncing members…'
             : inherits(p)
-              ? inheritsAgain
+              ? 'Needs attention'
               : changed(p)
                 ? 'Changes not yet applied.'
                 : ['Missing', 'Removed'].includes(p.result.Status)
@@ -569,7 +792,9 @@
                         ? 'Access and team membership confirmed.'
                         : p.result.Status;
     $('ad-change-status').className =
-      stuck || (incomplete && p?.result.Status === 'Applied' && !running && !changed(p))
+      stuck ||
+      (inherits(p) && !running) ||
+      (incomplete && p?.result.Status === 'Applied' && !running && !changed(p))
         ? 'ad-issue'
         : 'ad-muted';
     $('ad-run-actions').hidden = !stuck;
@@ -579,40 +804,11 @@
     const notices = (p && p.result.Policy?.Notices) || [];
     $('ad-access-notices').replaceChildren(...notices.map((n) => node('li', n)));
     $('ad-access-notices').hidden = !notices.length;
-    // A shown warning belongs to one exact selection; any change asks again.
-    if (state.consent?.kind === 'apply' && state.consent.key !== applyKey(p)) state.consent = null;
-    const confirmApply = state.consent?.kind === 'apply',
-      confirmCreate = state.consent?.kind === 'provision';
-    $('ad-apply').textContent = confirmApply ? 'Confirm and apply' : 'Apply access changes';
-    $('ad-apply-warning').textContent = confirmApply
-      ? state.consent.warnings.join(' ') + ' Select Confirm and apply to continue.'
-      : '';
-    $('ad-apply-warning').hidden = !confirmApply;
-    $('ad-provision').textContent = confirmCreate ? 'Confirm and create' : 'Create library';
-    $('ad-provision-warning').textContent = confirmCreate
-      ? state.consent.warnings.join(' ') + ' Select Confirm and create to continue.'
-      : '';
-    $('ad-provision-warning').hidden = !confirmCreate;
-    // Site and library commands ask in the page, like Remove in the Tables panel.
-    const c = state.confirm;
-    $('ad-confirm').hidden = !c;
-    $('ad-confirm-text').textContent = c ? confirmText(c) : '';
-    $('ad-confirm-go').textContent = c ? confirmLabel(c) : 'Confirm';
-    $('ad-confirm-cancel').textContent = c?.kind.startsWith('Cancel') ? 'Keep it' : 'Cancel';
     $('ad-changes').replaceChildren(...state.changes.map((t) => node('li', t)));
     $('ad-changes').hidden = !state.changes.length;
-    $('ad-repoint-site').disabled = state.busy || !state.site;
-    $('ad-repoint-library').disabled = state.busy || !state.library;
-    $('ad-remove-site').disabled = state.busy || !state.site;
-    $('ad-remove-library').disabled = state.busy || !state.library;
-    [
-      'ad-validate',
-      'ad-provision',
-      'ad-stage-team',
-      'ad-add-site',
-      'ad-more-sites',
-      'ad-more-libraries',
-    ].forEach((id) => ($(id).disabled = state.busy));
+    ['ad-validate', 'ad-provision', 'ad-stage-team', 'ad-more-sites', 'ad-more-libraries'].forEach(
+      (id) => ($(id).disabled = state.busy),
+    );
     drawProgress();
   }
   function confirmText(c) {
@@ -636,11 +832,7 @@
           ' from Documents? Templates can no longer use it, and its unfinished folder and access work is cancelled. Nothing in SharePoint is deleted or changed: the library, its folders, its permissions and the Documents groups stay as they are.'
         );
       case 'RemoveSite':
-        return (
-          'Remove ' +
-          c.name +
-          ' from Documents? Nothing in SharePoint is deleted or changed. Remove its libraries first.'
-        );
+        return 'Remove ' + c.name + ' from Documents? Nothing in SharePoint is deleted or changed.';
       case 'CancelAccessRun':
         return (
           'Cancel the access run for ' +
@@ -666,9 +858,29 @@
       CancelAccessRun: 'Cancel access run',
       CancelSetup: 'Cancel setup',
     })[c.kind];
+  const keepLabel = (c) =>
+    ({
+      RepointSite: 'Keep current address',
+      RepointLibrary: 'Keep current address',
+      RemoveLibrary: 'Keep library',
+      RemoveSite: 'Keep site',
+      CancelAccessRun: 'Keep access run',
+      CancelSetup: 'Keep setup',
+    })[c.kind];
+  // Asks in the page under what invoked it (the ⋯ button of the site or library, or the button
+  // itself), then runs the command; its result or refusal goes to that area's feedback line.
+  async function command(c, invoker, area) {
+    if (state.busy) return;
+    const ok = await ui.confirmInline(invoker, {
+      text: confirmText(c),
+      confirm: confirmLabel(c),
+      keep: keepLabel(c),
+      danger: !c.kind.startsWith('Repoint'),
+    });
+    if (ok) await action(() => runConfirmed(c), area);
+  }
   // Runs a confirmed site or library command.
   async function runConfirmed(c) {
-    state.confirm = null;
     state.changes = [];
     if (c.kind === 'CancelAccessRun') {
       const result = await security({
@@ -693,10 +905,7 @@
       if (result.Status === 'Cancelled') {
         state.operations.delete(c.id);
         state.completed.delete(c.id);
-      } else if (o) {
-        o.result = result;
-        o.status = result.Status;
-      }
+      } else if (o) settled(o, result);
       issue('The setup of ' + c.name + ' was cancelled.');
       return;
     }
@@ -714,7 +923,8 @@
         await loadSites();
       } else await libraries();
       await window.AsxdAdmin?.refreshCatalog();
-      issue(c.name + ' was removed from Documents.');
+      // The library section is gone with the library, so the site's line reports it.
+      issue(c.name + ' was removed from Documents.', false, 'access-site');
       return;
     }
     const result = await catalog({
@@ -746,6 +956,7 @@
       (s) => !state.removed.has(s.asx_siteid),
     );
     state.nextSites = result.nextLink || null;
+    state.sitesLoaded = true;
     render();
   }
   async function libraries(append = false) {
@@ -760,6 +971,7 @@
       (l) => !state.removed.has(l.asx_libraryid),
     );
     state.nextLibraries = result.nextLink || null;
+    state.librariesLoaded = true;
     if (state.library)
       state.library =
         state.libraries.find((l) => l.asx_libraryid === state.library.asx_libraryid) ||
@@ -770,8 +982,11 @@
     state.selectedOperation = null;
     state.site = s;
     state.library = null;
+    state.librariesLoaded = false;
     ['ad-library-form', 'ad-team-form', 'ad-existing-form'].forEach((id) => ($(id).hidden = true));
-    issue('');
+    ['access-library', 'access-create', 'access-existing'].forEach((area) =>
+      ui.clearFeedback(area),
+    );
     await libraries();
     if (state.libraries.length) await selectLibrary(state.libraries[0]);
   }
@@ -899,6 +1114,12 @@
     }
     return found;
   }
+  // Tracks an operation's card. One found again after a reload is unread until its first read.
+  function track(key, o) {
+    state.progressSignature = null;
+    state.completed.delete(key);
+    state.operations.set(key, o);
+  }
   async function discoverActivity(append = false) {
     const rows = await page(
       'asx_operation',
@@ -910,7 +1131,7 @@
     // refreshOperations), so a blocked re-point still offers "Re-point again" after a reload.
     // Until that read its card shows neither a message nor an action.
     for (const r of rows.entities)
-      state.operations.set(r.asx_workkey, {
+      track(r.asx_workkey, {
         name: r.asx_displayname,
         url: r.asx_workkind === 'Repoint' ? undefined : r.asx_siteurl,
         kind: r.asx_workkind,
@@ -924,14 +1145,15 @@
       const p = state.policies.get(l.asx_libraryid);
       return p?.result.Policy?.OperationKey && !changed(p);
     });
-  // Reads tracked setup operations and refreshes catalogs after confirmed completion.
+  // Reads tracked setup operations and refreshes catalogs after confirmed completion. What
+  // they report goes to the site's feedback line, which is always shown.
   async function refreshOperations() {
     const observations = [];
     for (const [key, o] of state.operations) {
       if (elsewhere(key, o)) continue;
       observations.push([key, o, await catalog({ Command: 'Inspect', Key: key })]);
     }
-    for (const [key, o, result] of observations) {
+    for (const [, o, result] of observations) {
       o.result = result;
       o.status = result.Status;
       const probe = result.Observation;
@@ -989,7 +1211,7 @@
         if (site) state.site = site;
         if (state.site) await libraries();
         await window.AsxdAdmin?.refreshCatalog();
-        issue(o.name + ' re-pointed.');
+        issue(o.name + ' re-pointed.', false, 'access-site');
         continue;
       }
       if (['Ready', 'Approved', 'Applied'].includes(result.Status)) {
@@ -1002,7 +1224,11 @@
         } else if (state.site) await libraries();
         await window.AsxdAdmin?.refreshCatalog();
         state.operations.delete(key);
-        issue(result.Issue ? o.name + ': ' + result.Issue : o.name + ' is ready.');
+        issue(
+          result.Issue ? o.name + ': ' + result.Issue : o.name + ' is ready.',
+          false,
+          'access-site',
+        );
       }
     }
     for (const l of state.libraries) {
@@ -1026,7 +1252,7 @@
       // and reports it.
       render();
       await refreshOperations().catch(() => {});
-    }).finally(() => {
+    }, 'access-site').finally(() => {
       state.startPromise = null;
     });
     return state.startPromise;
@@ -1054,76 +1280,186 @@
         await selectSite(s);
         if (!state.libraries.some((v) => v.asx_libraryid === id)) state.libraries.push(l);
         await selectLibrary(l);
-      });
+      }, 'access-site');
+    },
+    // Tracks a setup or other operation as a card and reads it at once (as a reload finds one).
+    trackOperation: async (key, name, kind) => {
+      track(key, { name, kind, url: state.site?.asx_url });
+      await refreshOperations();
     },
   };
   // The shell starts this tab when it is the one shown, then opens the library a link names.
-  window.AsxdUi.onTab('access', async () => {
+  ui.onTab('access', async () => {
     await start();
-    const link = window.AsxdUi.deeplink();
+    const link = ui.deeplink();
     if (link?.library) await window.AsxdSites.selectLibrary(link.library);
   });
+  ui.menu($('ad-site-menu'), $('ad-site-menu-list'));
+  ui.menu($('ad-library-menu'), $('ad-library-menu-list'));
   $('ad-more-activity').onclick = () =>
     action(async () => {
       await discoverActivity(true);
       await refreshOperations();
-    });
-  $('ad-search').onchange = () => action(() => loadSites());
-  $('ad-more-sites').onclick = () => action(() => loadSites(true));
-  $('ad-more-libraries').onclick = () => action(() => libraries(true));
-  $('ad-add-site').onclick = () =>
-    action(async () => {
-      const result = await page(
+    }, 'access-site');
+  $('ad-search').oninput = debounce(() => action(() => loadSites(), 'access-site'), 300);
+  $('ad-more-sites').onclick = () => action(() => loadSites(true), 'access-site');
+  $('ad-more-libraries').onclick = () => action(() => libraries(true), 'access-site');
+
+  // Add site: a combobox that searches the SharePoint sites of Dataverse document management
+  // as the admin types (300 ms after the last key), 20 at a time.
+  async function searchNative(append = false) {
+    const term = $('ad-native-search').value.trim();
+    const search = ++state.nativeSearch;
+    try {
+      const result = await xrm.WebApi.retrieveMultipleRecords(
         'sharepointsite',
-        '?$select=sharepointsiteid,name,absoluteurl&$filter=statecode eq 0&$orderby=name',
+        append
+          ? nextOptions(state.nativeNext)
+          : '?$select=sharepointsiteid,name,absoluteurl&$filter=statecode eq 0' +
+              (term ? " and contains(name,'" + term.replace(/'/g, "''") + "')" : '') +
+              '&$orderby=name',
+        20,
       );
-      $('ad-native').replaceChildren(opt('', 'Select a registered site'));
-      result.entities.forEach((s) =>
-        $('ad-native').append(opt(s.sharepointsiteid, s.name || s.absoluteurl)),
+      // An older search answering late does not replace a newer one.
+      if (search !== state.nativeSearch) return;
+      state.nativeSites = append ? state.nativeSites.concat(result.entities) : result.entities;
+      state.nativeNext = result.nextLink || null;
+      state.nativeTerm = term;
+      drawNative();
+    } catch (e) {
+      issue(e.message || String(e), true, 'access-add');
+    }
+  }
+  function drawNative() {
+    const list = $('ad-native-list'),
+      box = $('ad-native-search');
+    list.replaceChildren();
+    state.nativeActive = -1;
+    box.removeAttribute('aria-activedescendant');
+    list.hidden = false;
+    if (!state.nativeSites.length) {
+      // A sentence, not options: the list is no listbox while it holds no sites.
+      list.removeAttribute('role');
+      box.setAttribute('aria-expanded', 'false');
+      const empty = node(
+        'li',
+        state.nativeTerm
+          ? 'No sites match.'
+          : 'No SharePoint sites are set up in Dataverse document management yet. ',
+        'ad-native-empty',
       );
-      $('ad-site-form').hidden = false;
-      $('ad-site-progress').textContent = result.nextLink
-        ? 'Showing the first 50 sites. Search by name to narrow the list.'
-        : '';
+      if (!state.nativeTerm) {
+        const how = node('a', 'How to set one up');
+        how.setAttribute('href', INSTALL_DOCS + '#configure-and-enable');
+        how.setAttribute('target', '_blank');
+        how.setAttribute('rel', 'noopener');
+        empty.append(how);
+      }
+      list.append(empty);
+      return;
+    }
+    list.setAttribute('role', 'listbox');
+    box.setAttribute('aria-expanded', 'true');
+    state.nativeSites.forEach((s, n) => {
+      const option = node('li', s.name || s.absoluteurl);
+      option.id = 'ad-native-' + n;
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-selected', 'false');
+      option.onclick = () => pickNative(n);
+      list.append(option);
     });
-  $('ad-native-search').onchange = () =>
-    action(async () => {
-      const term = $('ad-native-search').value.replace(/'/g, "''");
-      const result = await page(
-        'sharepointsite',
-        "?$select=sharepointsiteid,name,absoluteurl&$filter=statecode eq 0 and contains(name,'" +
-          term +
-          "')&$orderby=name",
+    if (state.nativeNext) {
+      const more = node('li', 'Show more sites', 'ad-native-more');
+      more.id = 'ad-native-more';
+      more.setAttribute('role', 'option');
+      more.setAttribute('aria-selected', 'false');
+      more.onclick = () => searchNative(true);
+      list.append(more);
+    }
+  }
+  function pickNative(n) {
+    const s = state.nativeSites[n];
+    state.native = { id: s.sharepointsiteid, name: s.name || s.absoluteurl };
+    closeNative();
+    $('ad-native-search').value = state.native.name;
+    $('ad-native-search').focus();
+  }
+  function closeNative() {
+    $('ad-native-list').hidden = true;
+    $('ad-native-search').setAttribute('aria-expanded', 'false');
+    $('ad-native-search').removeAttribute('aria-activedescendant');
+    state.nativeActive = -1;
+  }
+  function activateNative(index) {
+    const options = $('ad-native-list').querySelectorAll('[role=option]');
+    options.forEach((o, i) => o.setAttribute('aria-selected', String(i === index)));
+    state.nativeActive = index;
+    $('ad-native-search').setAttribute('aria-activedescendant', options[index].id);
+    options[index].scrollIntoView?.({ block: 'nearest' });
+  }
+  const searchSoon = debounce(() => searchNative(), 300);
+  $('ad-native-search').oninput = () => {
+    // Typing changes the pick: Add and check site needs a site chosen from the list again.
+    state.native = null;
+    searchSoon();
+  };
+  // Down moves into the list, Up and Down move in it, Enter picks, Escape clears.
+  $('ad-native-search').addEventListener('keydown', (event) => {
+    const options = $('ad-native-list').querySelectorAll('[role=option]');
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (!options.length || $('ad-native-list').hidden) return;
+      event.preventDefault();
+      const step = event.key === 'ArrowDown' ? 1 : options.length - 1;
+      activateNative(
+        state.nativeActive < 0
+          ? event.key === 'ArrowDown'
+            ? 0
+            : options.length - 1
+          : (state.nativeActive + step) % options.length,
       );
-      $('ad-native').replaceChildren(opt('', 'Select a registered site'));
-      result.entities.forEach((s) =>
-        $('ad-native').append(opt(s.sharepointsiteid, s.name || s.absoluteurl)),
-      );
-    });
+    } else if (event.key === 'Enter') {
+      if (state.nativeActive < 0) return;
+      event.preventDefault();
+      options[state.nativeActive].onclick();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      $('ad-native-search').value = '';
+      state.native = null;
+      closeNative();
+    }
+  });
+  $('ad-add-site').onclick = () => {
+    $('ad-site-form').hidden = false;
+    state.native = null;
+    $('ad-native-search').value = '';
+    ui.clearFeedback('access-add');
+    $('ad-native-search').focus();
+    return searchNative();
+  };
   $('ad-cancel-site').onclick = () => {
     $('ad-site-form').hidden = true;
+    closeNative();
+    $('ad-add-site').focus();
   };
   $('ad-validate').onclick = () =>
     action(async () => {
-      const id = $('ad-native').value;
-      if (!guid(id)) throw new Error('Select a registered site.');
-      const name = Array.from($('ad-native').options).find((o) => o.value === id).textContent;
+      const pick = state.native;
+      if (!pick) throw new Error('Choose a SharePoint site from the list.');
       const result = await catalog({
         Command: 'AddSite',
-        NativeSiteId: id,
-        Name: name,
+        NativeSiteId: pick.id,
+        Name: pick.name,
         RequestId: crypto.randomUUID(),
       });
-      state.progressSignature = null;
-      state.completed.delete(result.Key);
-      state.operations.set(result.Key, { name, kind: 'SiteValidation' });
+      track(result.Key, { name: pick.name, kind: 'SiteValidation' });
       state.selectedOperation = result.Key;
       state.site = null;
       state.library = null;
       state.libraries = [];
       $('ad-site-form').hidden = true;
-      issue('Site validation queued.');
-    });
+      closeNative();
+      issue('Checking ' + pick.name + '.', false, 'access-site');
+    }, 'access-add');
   $('ad-recheck').onclick = () =>
     action(async () => {
       if (!state.site?._asx_nativeid_value)
@@ -1134,14 +1470,12 @@
         Name: state.site.asx_name,
         RequestId: crypto.randomUUID(),
       });
-      state.progressSignature = null;
-      state.completed.delete(result.Key);
-      state.operations.set(result.Key, {
+      track(result.Key, {
         name: state.site.asx_name,
         kind: 'SiteValidation',
         url: state.site.asx_url,
       });
-    });
+    }, 'access-site');
   // Adds an existing library; breakInheritance carries the admin's consent for an inheriting one.
   async function addLibrary(siteId, listId, name, url, breakInheritance) {
     const result = await catalog({
@@ -1152,46 +1486,39 @@
       RequestId: crypto.randomUUID(),
       ...(breakInheritance ? { BreakInheritance: true } : {}),
     });
-    state.consent = null;
-    state.progressSignature = null;
-    state.completed.delete(result.Key);
-    state.operations.set(result.Key, { name, kind: 'LibraryValidation', url });
+    track(result.Key, { name, kind: 'LibraryValidation', url });
     $('ad-existing-form').hidden = true;
-    issue('Validating ' + name + ' and setting up navigation.');
+    issue('Checking ' + name + ' and setting up its navigation.', false, 'access-site');
+  }
+  // An inheriting library is added only after the admin confirms, in the page, that Documents
+  // stops the inheritance.
+  async function addExisting(d, l, invoker) {
+    const inheriting = l.HasUniqueRoleAssignments === false;
+    if (
+      inheriting &&
+      !(await ui.confirmInline(invoker, {
+        text: inheritanceWarning,
+        confirm: 'Stop inheritance and add',
+        keep: 'Not now',
+      }))
+    )
+      return;
+    await action(
+      () => addLibrary(d.Observation.SiteId, l.Id, l.Title, d.Observation.WebUrl, inheriting),
+      'access-existing',
+    );
   }
   function showDiscovery() {
     const d = state.discovery;
     $('ad-existing-form').hidden = false;
     $('ad-existing-choices').replaceChildren();
-    const asking = state.consent?.kind === 'inherit' ? state.consent : null;
-    $('ad-existing-warning').textContent = asking
-      ? asking.warnings.join(' ') + ' Select Confirm and add to continue.'
-      : '';
-    $('ad-existing-warning').hidden = !asking;
     // A library Documents already has is not offered again, also after a rename in SharePoint:
     // it is matched by list ID. A removed one is offered; adding it again reactivates it.
     const offered = d.Observation.Libraries.filter(
       (l) => !state.registered.has(String(l.Id).toLowerCase()),
     );
     for (const l of offered) {
-      const confirming = asking?.key === l.Id,
-        b = node('button', (confirming ? 'Confirm and add ' : 'Add ') + l.Title);
-      b.type = 'button';
-      b.onclick = () =>
-        action(async () => {
-          // A library that inherits the site's permissions is added only after the admin
-          // confirms the warning shown in the page.
-          const agreed = confirmed(
-            'inherit',
-            l.Id,
-            l.HasUniqueRoleAssignments === false ? [inheritanceWarning] : [],
-          );
-          if (!agreed.go) {
-            showDiscovery();
-            return;
-          }
-          await addLibrary(d.Observation.SiteId, l.Id, l.Title, d.Observation.WebUrl, agreed.ack);
-        });
+      const b = control('Add ' + l.Title, null, () => addExisting(d, l, b));
       $('ad-existing-choices').append(b);
     }
     if (!offered.length)
@@ -1199,8 +1526,8 @@
         node(
           'p',
           d.Observation.Libraries.length
-            ? 'Every document library on this page is already in Documents.'
-            : 'No document libraries found on this page.',
+            ? 'All libraries on this site are already added'
+            : 'No document libraries on this site',
         ),
       );
     $('ad-existing-more').hidden = !d.Observation.NextLibraries;
@@ -1212,15 +1539,13 @@
         SiteId: state.site.asx_siteid,
         RequestId: crypto.randomUUID(),
       });
-      state.progressSignature = null;
-      state.completed.delete(result.Key);
-      state.operations.set(result.Key, {
+      track(result.Key, {
         name: 'Existing libraries',
         kind: 'LibraryDiscovery',
         url: state.site.asx_url,
       });
-      issue('Finding document libraries…');
-    });
+      issue('Finding document libraries…', false, 'access-site');
+    }, 'access-site');
   $('ad-existing-more').onclick = () =>
     action(async () => {
       const d = state.discovery;
@@ -1229,90 +1554,109 @@
         Key: d.Key,
         RowVersion: d.RowVersion,
       });
-      state.progressSignature = null;
-      state.completed.delete(result.Key);
-      state.operations.set(result.Key, {
+      track(result.Key, {
         name: 'Existing libraries',
         kind: 'LibraryDiscovery',
         url: d.Observation.WebUrl,
       });
       $('ad-existing-form').hidden = true;
-      issue('Loading the next library page…');
-    });
+      issue('Loading more libraries…', false, 'access-site');
+    }, 'access-existing');
   $('ad-existing-cancel').onclick = () => {
     $('ad-existing-form').hidden = true;
-    if (state.consent?.kind === 'inherit') state.consent = null;
+    $('ad-existing').focus();
   };
   $('ad-create').onclick = () => {
     $('ad-library-form').hidden = false;
     $('ad-library-name').value = '';
-    state.consent = null;
-    render();
+    ui.clearFeedback('access-create');
+    $('ad-library-name').focus();
   };
   $('ad-cancel-library').onclick = () => {
     $('ad-library-form').hidden = true;
-    state.consent = null;
-    render();
+    $('ad-create').focus();
   };
-  $('ad-provision').onclick = () =>
-    action(async () => {
-      const name = $('ad-library-name').value.trim();
-      if (!name) throw new Error('Enter a library name.');
-      const team = $('ad-initial-team').value,
-        access = $('ad-initial-access').value;
-      const agreed = consent(
-        'provision',
-        JSON.stringify([state.site.asx_siteid, name, team, access]),
-        team ? [team] : [],
-      );
-      if (!agreed.go) return;
+  $('ad-empty-create').onclick = () => $('ad-create').onclick();
+  $('ad-empty-existing').onclick = () => $('ad-existing').onclick();
+  // Create library asks first when its team's group reaches more people than the team.
+  $('ad-provision').onclick = async () => {
+    const name = $('ad-library-name').value.trim();
+    if (!name) {
+      issue('Enter a library name.', true, 'access-create');
+      $('ad-library-name').focus();
+      return;
+    }
+    const team = $('ad-initial-team').value,
+      access = $('ad-initial-access').value,
+      warnings = warningsFor(team ? [team] : []);
+    if (
+      warnings.length &&
+      !(await ui.confirmInline($('ad-provision'), {
+        text: warnings.join(' '),
+        confirm: 'Create library',
+        keep: 'Not now',
+      }))
+    )
+      return;
+    await action(async () => {
       const result = await catalog({
         Command: 'CreateLibrary',
         SiteId: state.site.asx_siteid,
         Name: name,
         Entries: team ? [{ TeamId: team, Access: access }] : [],
         RequestId: crypto.randomUUID(),
-        ...(agreed.ack ? { AcknowledgeBroaderAccess: true } : {}),
+        ...(warnings.length ? { AcknowledgeBroaderAccess: true } : {}),
       });
-      state.consent = null;
-      state.progressSignature = null;
-      state.completed.delete(result.Key);
-      state.operations.set(result.Key, { name, kind: 'LibrarySetup', url: state.site.asx_url });
+      track(result.Key, { name, kind: 'LibrarySetup', url: state.site.asx_url });
       $('ad-library-form').hidden = true;
-      issue('Creating ' + name + '. Access and navigation setup follow automatically.');
-    });
+      // The form closes, so the site's line reports it.
+      issue('Creating ' + name + '.', false, 'access-site');
+    }, 'access-create');
+  };
   $('ad-add-team').onclick = () => {
     $('ad-team-form').hidden = false;
+    $('ad-team-choice').focus();
   };
   $('ad-cancel-team').onclick = () => {
     $('ad-team-form').hidden = true;
+    $('ad-add-team').focus();
   };
   $('ad-stage-team').onclick = () => {
     const p = policy(),
       id = $('ad-team-choice').value;
     if (!p || !guid(id)) {
-      issue('Select a team.', true);
+      issue('Select a team.', true, 'access-library');
       return;
     }
     const existing = p.entries.find((e) => e.TeamId === id);
-    if (existing) existing.Access = $('ad-team-access').value;
-    else p.entries.push({ TeamId: id, Access: $('ad-team-access').value });
+    if (existing) {
+      existing.Access = $('ad-team-access').value;
+      delete existing.removed;
+    } else p.entries.push({ TeamId: id, Access: $('ad-team-access').value });
     $('ad-team-form').hidden = true;
     render();
   };
-  $('ad-apply').onclick = () =>
-    action(async () => {
-      const p = policy();
-      if (!p) throw new Error('Select a library.');
-      const broader = warningsFor(
-          p.entries.filter((e) => e.Access !== 'None').map((e) => e.TeamId),
-        ),
-        agreed = confirmed(
-          'apply',
-          applyKey(p),
-          broader.concat(inherits(p) ? [reapplyWarning] : []),
-        );
-      if (!agreed.go) return;
+  // Apply access asks first when a chosen team's group reaches more people, when it stops the
+  // library's inheritance, or when teams are removed; then it sends the access as shown.
+  $('ad-apply').onclick = async () => {
+    const p = policy();
+    if (!p) return;
+    const removals = p.entries.some((e) => e.removed),
+      broader = warningsFor(
+        p.entries.filter((e) => !e.removed && e.Access !== 'None').map((e) => e.TeamId),
+      ),
+      inheriting = inherits(p),
+      warnings = broader.concat(inheriting ? [reapplyWarning] : []);
+    if (
+      (warnings.length || removals) &&
+      !(await ui.confirmInline($('ad-apply'), {
+        text: warnings.concat(removals ? [removalNotice] : []).join(' '),
+        confirm: 'Apply access',
+        keep: 'Not now',
+      }))
+    )
+      return;
+    await action(async () => {
       const latest = await security({
         Command: 'GetPolicy',
         LibraryId: state.library.asx_libraryid,
@@ -1328,26 +1672,29 @@
           'Library access changed since you opened it. Reload the page and review the current access before applying.',
         );
       // A queued run is replaced by this apply; one a flow holds, or one whose SharePoint write
-      // is unanswered, finishes first and the change is applied right after it.
+      // is unanswered, finishes first and the change is applied right after it. A removed team
+      // is sent with no access.
       const result = await security({
         Command: 'ApplyPolicy',
         LibraryId: state.library.asx_libraryid,
         RowVersion: latest.RowVersion || null,
-        Entries: p.entries,
-        ...(agreed.ack && broader.length ? { AcknowledgeBroaderAccess: true } : {}),
-        ...(agreed.ack && inherits(p) ? { BreakInheritance: true } : {}),
+        Entries: p.entries.map((e) => ({
+          TeamId: e.TeamId,
+          Access: e.removed ? 'None' : e.Access,
+        })),
+        ...(broader.length ? { AcknowledgeBroaderAccess: true } : {}),
+        ...(inheriting ? { BreakInheritance: true } : {}),
       });
-      state.consent = null;
       p.result = result;
       // As saved: deleted teams are left out.
-      p.entries = (result.Policy?.Desired || p.entries).map((e) => ({ ...e }));
+      p.entries = (result.Policy?.Desired || p.entries).map((e) => ({
+        TeamId: e.TeamId,
+        Access: e.removed ? 'None' : e.Access,
+      }));
       p.saved = JSON.stringify(p.entries);
-      issue(
-        result.Policy?.ApplyPending
-          ? pendingNotice
-          : 'Access submitted. Team membership syncing is onboarded automatically.',
-      );
-    });
+      issue('Access submitted.');
+    }, 'access-library');
+  };
   $('ad-run-retry').onclick = () =>
     action(async () => {
       const p = policy(),
@@ -1359,56 +1706,54 @@
         OperationKey: key,
       });
       issue('Access run queued to run again. It stops again if the cause remains.');
-    });
+    }, 'access-library');
   $('ad-run-cancel').onclick = () => {
     const key = policy()?.result.Policy?.OperationKey;
     if (!key || !state.library) return;
-    state.confirm = {
-      kind: 'CancelAccessRun',
-      id: state.library.asx_libraryid,
-      key,
-      name: state.library.asx_name,
-    };
-    render();
+    command(
+      {
+        kind: 'CancelAccessRun',
+        id: state.library.asx_libraryid,
+        key,
+        name: state.library.asx_name,
+      },
+      $('ad-run-cancel'),
+      'access-library',
+    );
   };
+  // Menu items start their command and return at once: the command waits for the admin's answer.
   $('ad-repoint-site').onclick = () => {
     if (!state.site) return;
-    state.confirm = { kind: 'RepointSite', id: state.site.asx_siteid, name: state.site.asx_name };
-    render();
+    command(
+      { kind: 'RepointSite', id: state.site.asx_siteid, name: state.site.asx_name },
+      $('ad-site-menu'),
+      'access-site',
+    );
+  };
+  $('ad-remove-site').onclick = () => {
+    if (!state.site || ui.blocked($('ad-remove-site'))) return;
+    command(
+      { kind: 'RemoveSite', id: state.site.asx_siteid, name: state.site.asx_name },
+      $('ad-site-menu'),
+      'access-site',
+    );
   };
   $('ad-repoint-library').onclick = () => {
     if (!state.library) return;
-    state.confirm = {
-      kind: 'RepointLibrary',
-      id: state.library.asx_libraryid,
-      name: state.library.asx_name,
-    };
-    render();
-  };
-  $('ad-remove-site').onclick = () => {
-    if (!state.site) return;
-    state.confirm = { kind: 'RemoveSite', id: state.site.asx_siteid, name: state.site.asx_name };
-    render();
+    command(
+      { kind: 'RepointLibrary', id: state.library.asx_libraryid, name: state.library.asx_name },
+      $('ad-library-menu'),
+      'access-library',
+    );
   };
   $('ad-remove-library').onclick = () => {
     if (!state.library) return;
-    state.confirm = {
-      kind: 'RemoveLibrary',
-      id: state.library.asx_libraryid,
-      name: state.library.asx_name,
-    };
-    render();
+    command(
+      { kind: 'RemoveLibrary', id: state.library.asx_libraryid, name: state.library.asx_name },
+      $('ad-library-menu'),
+      'access-library',
+    );
   };
-  $('ad-confirm-cancel').onclick = () => {
-    state.confirm = null;
-    render();
-  };
-  $('ad-confirm-go').onclick = () =>
-    action(async () => {
-      if (state.confirm) await runConfirmed(state.confirm);
-    });
-  $('ad-manage-connection').onclick = () =>
-    xrm.Navigation.openUrl('https://make.powerautomate.com/');
   // Refreshes visible setup and policy status, preserving staged local access edits.
   async function poll() {
     try {

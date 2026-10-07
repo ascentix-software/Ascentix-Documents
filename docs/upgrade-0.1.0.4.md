@@ -1,6 +1,6 @@
 # Upgrade to 0.1.0.4
 
-Version 0.1.0.4 moves event capture into the application. Documents now registers and verifies its own event steps from Runtime administration. Read this page before you upgrade from 0.1.0.3.
+Version 0.1.0.4 moves event capture into the application. Documents now registers and verifies its own event steps from Settings. Read this page before you upgrade from 0.1.0.3.
 
 Requires a System Administrator for step 4.
 
@@ -9,10 +9,10 @@ Requires a System Administrator for step 4.
 1. Let the work queue drain with the runtime on. Then turn the runtime off and turn both flows off. A paused runtime does not drain the queue.
 2. Import 0.1.0.4 managed with `--stage-and-upgrade`. This removes the old packaged event steps.
 3. Publish all customizations (Power Apps › Solutions › Publish all customizations), then reload the Documents admin page. The import's `--publish-changes` does not always refresh the admin page's scripts: until everything is published, the app can keep serving the previous version.
-4. As a System Administrator, open Runtime administration. Check the table list and click **Save**. Every table should show Ready.
+4. As a System Administrator, open **Settings**. Check the change-tracking table and click **Repair all**. Every table should show Ready.
 5. Check the solution layers of both flows (**Dispatch durable work** and **Provision requested record**). If either has an active unmanaged layer, for example because it was edited in the environment, remove that active customization. Otherwise it stays on top of the upgraded flow and hides its retries, failure handling and write guard.
 6. Turn the flows and runtime back on.
-7. Records saved between steps 2 and 4 have no event. Replan them (filter by modified date).
+7. Records saved between steps 2 and 4 have no event. Re-run them (filter by modified date).
 
 Use stage-and-upgrade. A plain update leaves the removed components behind.
 
@@ -54,17 +54,17 @@ These change what Documents does with existing data. Review them before you upgr
 - The Documents Security Administrator role no longer has write access to the runtime settings row. Runtime changes stay System Administrator only.
 - The runtime-row guard plug-in is removed. The solution has 57 guard steps.
 - The outbox has a new column, `asx_nextattempt`. It holds the time of the next automatic attempt.
-- Tables are enabled in the Tables panel of the template workspace, not in a fixed list. There is no table-count limit.
+- Tables are enabled in Folder templates › Tables, not in a fixed list. There is no table-count limit.
 - The admin app's left navigation now lists Folder templates, Sites & access, Monitor and Settings. Runtime is now Settings; Operations is now Monitor.
 - **Remove** hides a site or library from Documents: it leaves the pickers, planning and access sync, and its unfinished work is cancelled. If anything refers to it, Documents keeps its catalog row for history. For a library that means template revisions, access settings (including the inheritance confirmation) or record folders. For a site it means libraries or library setups. Otherwise the row is deleted. Either way nothing in SharePoint changes, and adding it again works: a kept row is reactivated, and a deleted one is created again.
 
 ## After you upgrade
 
-- Open Runtime administration and click **Save**, even if the table list looks right. This registers the event steps.
-- Records that were Blocked before the upgrade can be retried from **Blocked records**.
+- Open **Settings** and check Change tracking: repair every table that does not show Ready, with **Repair all** (or **Repair** on its row). This registers the event steps.
+- Records that were Blocked before the upgrade can be retried from Monitor › **Blocked records**.
 - Folder jobs queued before the upgrade carry on by themselves.
-- The flow-details page can show a notice about dispatcher concurrency. This is expected. See the [operations guide](operations.md#runtime-and-pausing).
+- The flow-details page can show a notice about dispatcher concurrency. This is expected. See the [operations guide](operations.md#automation-and-pausing).
 
 ## Uninstalling
 
-Event steps created by the application are not part of the managed solution. Before you uninstall, click **Remove all event registrations** in Runtime administration. See the [operations guide](operations.md). Uninstall has not been verified in this release.
+Event steps created by the application are not part of the managed solution. Before you uninstall, use **Settings › Before uninstalling › Stop tracking changes**. See the [operations guide](operations.md). Uninstall has not been verified in this release.

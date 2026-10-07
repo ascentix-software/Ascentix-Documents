@@ -1,44 +1,63 @@
-// Real workspace handlers with an isolated DOM/API contract; no live SharePoint calls.
+'use strict';
+// Sites & access on the fake DOM with the real shell (shell.js, then sites-access.js) and mocked
+// Dataverse APIs; no live SharePoint calls.
 const fs = require('fs'),
   vm = require('vm'),
   assert = require('assert/strict'),
   path = require('path');
-class Node {
-  constructor(tag) {
-    this.tagName = tag;
-    this.children = [];
-    this.value = '';
-    this.hidden = false;
-    this.attrs = {};
-    this._text = '';
-  }
-  set textContent(v) {
-    this._text = String(v);
-    this.children = [];
-  }
-  get textContent() {
-    return this._text + this.children.map((c) => c.textContent).join('');
-  }
-  append(...n) {
-    this.children.push(...n);
-  }
-  replaceChildren(...n) {
-    this._text = '';
-    this.children = n;
-  }
-  setAttribute(k, v) {
-    this.attrs[k] = v;
-  }
-  get options() {
-    return this.children;
-  }
-}
+const { createDocument } = require('./fake-dom.cjs');
 const base = path.resolve(__dirname, '../../client/admin'),
-  html = fs.readFileSync(path.join(base, 'index.html'), 'utf8'),
-  nodes = {};
-for (const m of html.matchAll(/<([a-z]+)[^>]*\bid="([^"]+)"[^>]*>/g)) nodes[m[2]] = new Node(m[1]);
-nodes.access.hidden = true;
+  html = fs.readFileSync(path.join(base, 'index.html'), 'utf8');
+const read = (name) => fs.readFileSync(path.join(base, name), 'utf8');
 const id = (n) => String(n).padStart(8, '0') + '-0000-0000-0000-000000000000';
+
+// Loads the page the way the app does: the shell, then this tab's script, on the access tab.
+function boot(xrm, { timers, uuid, refreshCatalog = async () => {} }) {
+  const document = createDocument(html);
+  const session = new Map([['asxd.launched', '1']]);
+  const window = {
+    parent: { Xrm: xrm },
+    location: { search: '?data=access-ui20261006nav1', hash: '' },
+    sessionStorage: {
+      getItem: (k) => session.get(k) ?? null,
+      setItem: (k, v) => session.set(k, v),
+      removeItem: (k) => session.delete(k),
+    },
+    AsxdAdmin: { refreshCatalog },
+  };
+  const context = vm.createContext({
+    window,
+    document,
+    URL,
+    crypto: { randomUUID: () => uuid },
+    setTimeout: (fn) => timers.push(fn),
+    Intl,
+    URLSearchParams,
+    navigator: {},
+    console,
+    clearTimeout: () => {},
+    setInterval: () => 0,
+    clearInterval: () => {},
+  });
+  for (const name of ['shell.js', 'sites-access.js']) vm.runInContext(read(name), context);
+  const nodes = new Proxy({}, { get: (_, key) => document.getElementById(key) });
+  const press = async (node) => {
+    node.click();
+    await document.settle();
+  };
+  // The button with this text inside the open confirmation of a container.
+  const confirmIn = (container, label) =>
+    container
+      .querySelector('.confirm')
+      .querySelectorAll('button')
+      .find((b) => b.textContent === label);
+  const menuItem = (menu, label) =>
+    nodes[menu].querySelectorAll('button').find((b) => b.textContent === label);
+  return { document, window, nodes, press, confirmIn, menuItem };
+}
+// A JSON error as Dataverse sends a refusal.
+const refused = (message) => ({ ok: false, json: async () => ({ error: { message } }) });
+
 const site = {
     asx_siteid: id(1),
     asx_name: 'Delivery',
@@ -57,7 +76,11 @@ let removalRefusal = null;
 // The refusal RetrySetup answers with, or null to retry.
 let retrySetupRefusal = null;
 const libraryQueries = [],
-  siteQueries = [];
+  siteQueries = [],
+  nativeQueries = [],
+  navigations = [];
+// The SharePoint sites Dataverse document management has.
+let nativeSites = [{ sharepointsiteid: id(2), name: 'Delivery' }];
 const requests = [],
   // The API each request went to, in the same order as requests.
   apis = [],
@@ -133,12 +156,13 @@ let policy = { Status: 'Applied', RowVersion: '1', Policy: { Desired: [], Applie
   refresh = 0;
 const xrm = {
   Utility: { getGlobalContext: () => ({ getClientUrl: () => 'https://example.test' }) },
-  Navigation: { openUrl: () => {} },
+  Navigation: { openUrl: () => {}, navigateTo: async (page) => navigations.push(page) },
   WebApi: {
     retrieveMultipleRecords: async (table, options) => {
       if (table === 'team') teamQueries.push(options);
       if (table === 'asx_library') libraryQueries.push(options);
       if (table === 'asx_site') siteQueries.push(options);
+      if (table === 'sharepointsite') nativeQueries.push(options);
       if (table === 'asx_library' && /asx_listid eq/.test(options))
         return {
           entities: registeredLists
@@ -154,7 +178,7 @@ const xrm = {
               : table === 'team'
                 ? teams
                 : table === 'sharepointsite'
-                  ? [{ sharepointsiteid: id(2), name: 'Delivery' }]
+                  ? nativeSites
                   : [],
       };
     },
@@ -173,8 +197,7 @@ const xrm = {
         apis.push(req.getMetadata().operationName);
         if (command.Command === 'Inspect' && inspectFails)
           throw new Error('Temporary status request failure');
-        if (command.Command === 'RemoveLibrary' && removalRefusal)
-          return { ok: false, text: async () => removalRefusal };
+        if (command.Command === 'RemoveLibrary' && removalRefusal) return refused(removalRefusal);
         if (command.Command.startsWith('Remove'))
           return {
             ok: true,
@@ -186,7 +209,7 @@ const xrm = {
             }),
           };
         if (command.Command === 'RetrySetup' && retrySetupRefusal)
-          return { ok: false, text: async () => retrySetupRefusal };
+          return refused(retrySetupRefusal);
         let result;
         if (command.Command === 'GetPolicy') result = policy;
         else if (command.Command === 'RetryAccessRun')
@@ -250,24 +273,29 @@ const xrm = {
     },
   },
 };
-const window = {
-  Xrm: xrm,
-  AsxdUi: { onTab: () => {}, deeplink: () => null, activeTab: () => 'access', feedback: () => {} },
-  AsxdAdmin: {
-    refreshCatalog: async () => {
-      refresh++;
-    },
+const page = boot(xrm, {
+  timers,
+  uuid: id(9),
+  refreshCatalog: async () => {
+    refresh++;
   },
-};
-vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), {
-  window,
-  document: { getElementById: (id) => nodes[id], createElement: (t) => new Node(t) },
-  URL,
-  crypto: { randomUUID: () => id(9) },
-  setTimeout: (fn) => timers.push(fn),
 });
+const { document, window, nodes, press, confirmIn, menuItem } = page;
+// Makes the page track a setup the way a reload finds one; trackOperation reads it at once.
+async function trackSetup(key, name) {
+  await window.AsxdSites.trackOperation(key, name, 'LibrarySetup');
+  await document.settle();
+}
+const teamRows = () => nodes['ad-teams'].querySelectorAll('tr');
+const rowButton = (row, text) => row.querySelectorAll('button').find((b) => b.textContent === text);
+const stage = (team, access) => {
+  nodes['ad-add-team'].onclick();
+  nodes['ad-team-choice'].value = team;
+  nodes['ad-team-access'].value = access;
+  nodes['ad-stage-team'].onclick();
+};
 (async () => {
-  await window.AsxdSites.open();
+  await document.fire('DOMContentLoaded');
   assert.equal(nodes['ad-site-title'].textContent, 'Delivery');
   assert.equal(nodes['ad-library-title'].textContent, 'General');
   const teamQuery = decodeURIComponent(teamQueries[0]);
@@ -275,14 +303,14 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   assert.match(teamQuery, /isdefault eq false/);
   assert.doesNotMatch(teamQuery, /teamtype eq 1/, 'Access teams stay out of the picker');
   for (const picker of ['ad-team-choice', 'ad-initial-team']) {
-    const options = nodes[picker].children.slice(1),
+    const options = nodes[picker].options.slice(1),
       byId = (n) => options.find((o) => o.value === id(n));
     assert.equal(options.length, teams.length, picker + ' lists every eligible team');
     assert.equal(byId(4).textContent, 'Operations');
     assert.equal(byId(4).disabled, false);
     assert.equal(byId(5).textContent, 'Finance (Entra group)');
     assert.equal(byId(5).disabled, false);
-    assert.equal(byId(6).textContent, 'Project X (Microsoft 365 group, owners)');
+    assert.equal(byId(6).textContent, 'Project X (Microsoft 365 group · owners)');
     assert.equal(byId(6).disabled, false);
     assert.equal(byId(7).disabled, true, 'A guests-only team cannot be chosen');
     assert.match(
@@ -293,32 +321,24 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     assert.match(byId(10).textContent, /no Microsoft Entra group object ID/);
     // Teams whose group reaches more people than the team are labelled and need consent.
     assert.equal(byId(11).disabled, false);
-    assert.equal(
-      byId(11).textContent,
-      'Finance owners (Entra group, owners; all members get access)',
-    );
+    assert.equal(byId(11).textContent, 'Finance owners (Entra group · all members)');
     assert.equal(byId(12).disabled, false);
-    assert.equal(
-      byId(12).textContent,
-      'Project Y (Microsoft 365 group, members; guests also get access)',
-    );
+    assert.equal(byId(12).textContent, 'Project Y (Microsoft 365 group · members + guests)');
   }
-  nodes['ad-add-team'].onclick();
-  nodes['ad-team-choice'].value = id(4);
-  nodes['ad-team-access'].value = 'Read';
-  nodes['ad-stage-team'].onclick();
+  stage(id(4), 'Read');
   assert.equal(
     requests.filter((r) => r.Command === 'ApplyPolicy').length,
     0,
     'Staging does not onboard syncing',
   );
   assert.equal(nodes['ad-apply'].disabled, false);
-  await nodes['ad-apply'].onclick();
+  await press(nodes['ad-apply']);
   const applied = requests.find((r) => r.Command === 'ApplyPolicy');
   assert.equal(applied.LibraryId, id(3));
   assert.equal(applied.Entries[0].TeamId, id(4));
   assert.equal(applied.ReadRole, undefined, 'Role definitions stay server-owned');
   assert.equal(nodes['ad-apply'].disabled, true);
+  assert.equal(nodes['fb-access-library'].textContent, 'Access submitted.');
   policy = {
     Status: 'Applied',
     RowVersion: '3',
@@ -328,7 +348,6 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     "Team 'Operations': Integration App was not added to the library group because it is an application user.",
     '<b>SharePoint did not add ghost@example.com</b>',
   ];
-  nodes.access.hidden = false;
   await timers.shift()();
   assert.match(nodes['ad-change-status'].textContent, /confirmed/);
   assert.equal(nodes['ad-access-notices'].hidden, false, 'Access notices are shown');
@@ -341,15 +360,20 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   );
   delete policy.Policy.Notices;
   assert(refresh > 0);
-  const select = nodes['ad-teams'].children[0].children[1].children[0];
-  select.value = 'None';
-  select.onchange();
+  // Remove on the row, then Apply: the removal is confirmed in the page and sent as None.
+  await press(rowButton(teamRows()[0], 'Remove'));
   policy = {
     Status: 'Applied',
     RowVersion: '4',
     Policy: { Desired: applied.Entries, Applied: applied.Entries },
   };
-  await nodes['ad-apply'].onclick();
+  await press(nodes['ad-apply']);
+  assert.equal(
+    requests.filter((r) => r.Command === 'ApplyPolicy').length,
+    1,
+    'Nothing is applied before the admin confirms the removal',
+  );
+  await press(confirmIn(nodes['ad-access'], 'Apply access'));
   const removal = requests.filter((r) => r.Command === 'ApplyPolicy').at(-1);
   assert.equal(
     removal.RowVersion,
@@ -363,22 +387,23 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     Policy: { Desired: removal.Entries, Applied: removal.Entries },
   };
   await timers.shift()();
-  const edit = nodes['ad-teams'].children[0].children[1].children[0];
-  edit.value = 'Read';
-  edit.onchange();
+  // A team with no access is not listed; adding it again gives it access.
+  assert.doesNotMatch(nodes['ad-teams'].visibleText, /Operations/);
+  stage(id(4), 'Read');
   const beforeConflict = requests.filter((r) => r.Command === 'ApplyPolicy').length;
   policy = {
     Status: 'Applied',
     RowVersion: '6',
     Policy: { Desired: [{ TeamId: id(4), Access: 'Contribute' }], Applied: [] },
   };
-  await nodes['ad-apply'].onclick();
+  await press(nodes['ad-apply']);
   assert.equal(
     requests.filter((r) => r.Command === 'ApplyPolicy').length,
     beforeConflict,
     'Do not overwrite another administrator access change',
   );
-  assert.match(nodes['ad-message'].textContent, /changed.*reload/i);
+  assert.match(nodes['fb-access-library'].textContent, /changed.*reload/i);
+  assert.equal(nodes['fb-access-library'].className, 'feedback is-error');
   policy = {
     Status: 'Applied',
     RowVersion: '7',
@@ -387,32 +412,29 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   await timers.shift()();
   // While a run is in progress the teams stay editable and Apply is sent: the change waits for
   // the run and is applied right after it.
-  assert.equal(nodes['ad-teams'].children[0].children[1].children[0].disabled, false);
+  assert.equal(teamRows()[0].querySelector('select').disabled, false);
   assert.equal(nodes['ad-add-team'].disabled, false);
-  await nodes['ad-apply'].onclick();
+  await press(nodes['ad-apply']);
   assert.equal(
     requests.filter((r) => r.Command === 'ApplyPolicy').length,
     beforeConflict + 1,
     'An apply during a run is sent and waits for that run',
   );
-  assert.match(nodes['ad-message'].textContent, /applied right after the access run in progress/);
-  assert.match(nodes['ad-change-status'].textContent, /applied right after the access run/);
-  policy = {
-    Status: 'Applied',
-    RowVersion: '8',
-    Policy: { Desired: removal.Entries, Applied: removal.Entries },
-  };
-  await nodes['ad-apply'].onclick();
+  assert.equal(nodes['fb-access-library'].textContent, 'Access submitted.');
+  assert.equal(nodes['ad-change-status'].textContent, 'Saved · applies after the current run');
   policy = {
     Status: 'Applied',
     RowVersion: '9',
     Policy: { Desired: [{ TeamId: id(4), Access: 'Read' }], Applied: [] },
   };
   await timers.shift()();
-  await nodes['ad-add-site'].onclick();
-  nodes['ad-native'].value = id(2);
-  await nodes['ad-validate'].onclick();
+  // Add site: pick a SharePoint site in the combobox, then add and check it.
+  await press(nodes['ad-add-site']);
+  await press(nodes['ad-native-list'].querySelectorAll('[role=option]')[0]);
+  assert.equal(nodes['ad-native-search'].value, 'Delivery');
+  await press(nodes['ad-validate']);
   assert.equal(requests.find((r) => r.Command === 'AddSite').NativeSiteId, id(2));
+  assert.equal(requests.find((r) => r.Command === 'AddSite').Name, 'Delivery');
   await timers.shift()();
   assert.match(nodes['ad-provision-progress'].textContent, /Finishing setup/);
   const verifiedBox = nodes['ad-provision-progress'].children[0];
@@ -431,6 +453,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   await timers.shift()();
   assert.match(nodes['ad-provision-progress'].textContent, /Needs attention/);
   assert.match(nodes['ad-provision-progress'].textContent, /Reconcile the original run/);
+  assert.doesNotMatch(nodes['ad-provision-progress'].textContent, /Open Administration/);
   operationStatus = 'RetryWait';
   inspectIssue = 'TransientReadFailure';
   await timers.shift()();
@@ -452,7 +475,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   assert.equal(nodes['ad-poll-status'].hidden, true);
   operationStatus = 'Approved';
   await timers.shift()();
-  assert.match(nodes['ad-message'].textContent, /ready/);
+  assert.match(nodes['fb-access-site'].textContent, /ready/);
   assert.match(nodes['ad-provision-progress'].textContent, /Setup completed/);
   const readySite = nodes['ad-sites'].children[0],
     readyRequests = requests.length;
@@ -463,10 +486,11 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   nodes['ad-library-name'].value = 'Projects';
   nodes['ad-initial-team'].value = id(4);
   nodes['ad-initial-access'].value = 'Contribute';
-  await nodes['ad-provision'].onclick();
+  await press(nodes['ad-provision']);
   const created = requests.find((r) => r.Command === 'CreateLibrary');
   assert.equal(created.SiteId, id(1));
   assert.equal(created.Entries[0].Access, 'Contribute');
+  assert.equal(nodes['fb-access-site'].textContent, 'Creating Projects.');
   await window.AsxdSites.selectLibrary(id(3));
   assert.equal(nodes['ad-library-title'].textContent, 'General');
   // A library already in Documents is not offered again, also after a rename in SharePoint:
@@ -477,7 +501,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     { Id: id(28), Title: 'Removed earlier' },
   ];
   registeredLists = [id(27).toUpperCase()];
-  await nodes['ad-existing'].onclick();
+  await press(nodes['ad-existing']);
   await timers.shift()();
   assert.equal(nodes['ad-existing-form'].hidden, false);
   assert.equal(nodes['ad-existing-more'].hidden, false);
@@ -486,7 +510,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     ['Add Archive', 'Add Removed earlier'],
   );
   assert.match(libraryQueries.at(-1), /statecode eq 0 and \(asx_listid eq '00000008-.*' or /);
-  await nodes['ad-existing-choices'].children[0].onclick();
+  await press(nodes['ad-existing-choices'].children[0]);
   const existing = requests.find((r) => r.Command === 'AddLibrary');
   assert.equal(existing.ListId, id(8));
   assert.equal(existing.NativeParentId, undefined, 'Native navigation is automatic');
@@ -508,27 +532,22 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   policy = { Status: 'Applied', RowVersion: '20', Policy: { Desired: [], Applied: [] } };
   await window.AsxdSites.selectLibrary(id(13));
   assert.equal(nodes['ad-library-title'].textContent, 'Contracts');
-  assert.equal(nodes['ad-apply-warning'].hidden, true);
-  nodes['ad-add-team'].onclick();
-  nodes['ad-team-choice'].value = id(11);
-  nodes['ad-team-access'].value = 'Read';
-  nodes['ad-stage-team'].onclick();
+  stage(id(11), 'Read');
   const applies = () => requests.filter((r) => r.Command === 'ApplyPolicy').length;
   const beforeConsent = applies();
-  await nodes['ad-apply'].onclick();
+  await press(nodes['ad-apply']);
   assert.equal(applies(), beforeConsent, 'Nothing is applied before the admin confirms');
-  assert.equal(nodes['ad-apply-warning'].hidden, false);
   assert.match(
-    nodes['ad-apply-warning'].textContent,
+    document.activeElement.textContent,
     /All members of the group will have access to this library, not only its owners\./,
   );
-  assert.match(nodes['ad-apply'].textContent, /Confirm and apply/);
-  await nodes['ad-apply'].onclick();
+  assert.equal(nodes['ad-apply'].textContent.includes('Confirm and apply'), false);
+  await press(confirmIn(nodes['ad-access'], 'Apply access'));
   const consented = requests.filter((r) => r.Command === 'ApplyPolicy').at(-1);
   assert.equal(applies(), beforeConsent + 1);
   assert.equal(consented.AcknowledgeBroaderAccess, true);
   assert.equal(consented.Entries[0].TeamId, id(11));
-  assert.equal(nodes['ad-apply-warning'].hidden, true);
+  assert.equal(nodes['ad-access'].querySelector('.confirm'), null);
   assert.match(nodes['ad-apply'].textContent, /Apply access changes/);
   // The same for a new library's initial team.
   nodes['ad-create'].onclick();
@@ -537,23 +556,21 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   nodes['ad-initial-access'].value = 'Read';
   const creates = () => requests.filter((r) => r.Command === 'CreateLibrary').length;
   const beforeCreate = creates();
-  await nodes['ad-provision'].onclick();
+  await press(nodes['ad-provision']);
   assert.equal(creates(), beforeCreate, 'No library is created before the admin confirms');
-  assert.equal(nodes['ad-provision-warning'].hidden, false);
   assert.equal(
-    nodes['ad-provision-warning'].textContent,
-    "The group's guests will also have access to this library. Select Confirm and create to continue.",
+    document.activeElement.textContent,
+    "The group's guests will also have access to this library.",
   );
-  await nodes['ad-provision'].onclick();
+  await press(confirmIn(nodes['ad-library-form'], 'Create library'));
   const createdWithConsent = requests.filter((r) => r.Command === 'CreateLibrary').at(-1);
   assert.equal(creates(), beforeCreate + 1);
   assert.equal(createdWithConsent.AcknowledgeBroaderAccess, true);
-  assert.equal(nodes['ad-provision-warning'].hidden, true);
   // An owner team needs no consent.
   nodes['ad-create'].onclick();
   nodes['ad-library-name'].value = 'Ledger';
   nodes['ad-initial-team'].value = id(4);
-  await nodes['ad-provision'].onclick();
+  await press(nodes['ad-provision']);
   assert.equal(creates(), beforeCreate + 2);
   assert.equal(
     requests.filter((r) => r.Command === 'CreateLibrary').at(-1).AcknowledgeBroaderAccess,
@@ -564,19 +581,15 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   const warning =
     'This library inherits permissions from the site. When you approve it, Documents stops the inheritance, keeps a copy of the current site permissions, and then manages team access on it.';
   discovered = [{ Id: id(14), Title: 'Shared', HasUniqueRoleAssignments: false }];
-  await nodes['ad-existing'].onclick();
+  await press(nodes['ad-existing']);
   await timers.shift()();
   const adds = () => requests.filter((r) => r.Command === 'AddLibrary');
   const beforeAdd = adds().length;
-  await nodes['ad-existing-choices'].children[0].onclick();
+  assert.equal(nodes['ad-existing-choices'].children[0].textContent, 'Add Shared');
+  await press(nodes['ad-existing-choices'].children[0]);
   assert.equal(adds().length, beforeAdd, 'Nothing is added before the admin confirms');
-  assert.equal(nodes['ad-existing-warning'].hidden, false);
-  assert.equal(
-    nodes['ad-existing-warning'].textContent,
-    warning + ' Select Confirm and add to continue.',
-  );
-  assert.equal(nodes['ad-existing-choices'].children[0].textContent, 'Confirm and add Shared');
-  await nodes['ad-existing-choices'].children[0].onclick();
+  assert.equal(document.activeElement.textContent, warning);
+  await press(confirmIn(nodes['ad-existing-form'], 'Stop inheritance and add'));
   assert.equal(adds().length, beforeAdd + 1);
   assert.equal(adds().at(-1).ListId, id(14));
   assert.equal(adds().at(-1).BreakInheritance, true);
@@ -591,10 +604,10 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   assert.match(nodes['ad-provision-progress'].textContent, /keeps a copy of the current site/);
   const stop = find(
     nodes['ad-provision-progress'],
-    (n) => n.textContent === 'Stop inheritance and add',
+    (n) => n.tagName === 'BUTTON' && n.textContent === 'Stop inheritance and add',
   );
   assert(stop, 'The blocked card offers to stop the inheritance');
-  await stop.onclick();
+  await press(stop);
   assert.equal(adds().length, beforeAdd + 2);
   assert.equal(adds().at(-1).BreakInheritance, true);
   assert.equal(adds().at(-1).ListId, id(14));
@@ -621,43 +634,44 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   lib2.asx_name = 'Reset';
   lib2.asx_policyapplied = false;
   await window.AsxdSites.selectLibrary(id(13));
-  assert.equal(nodes['ad-change-status'].textContent, 'Needs attention: ' + inheritsAgain);
+  assert.equal(nodes['ad-change-status'].textContent, inheritsAgain);
   assert.equal(nodes['ad-change-status'].className, 'ad-issue');
   assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
   assert.equal(nodes['ad-run-actions'].hidden, false, 'The stopped run offers Retry and Cancel');
   assert.equal(nodes['ad-run-retry'].disabled, false);
   assert.equal(nodes['ad-run-cancel'].disabled, false);
   assert.equal(nodes['ad-apply'].disabled, false, 'Apply access is offered for the reset library');
+  assert.equal(nodes['ad-apply'].textContent, 'Stop inheritance and apply');
   lib2.asx_policyapplied = true;
   const beforeReapply = applies();
-  await nodes['ad-apply'].onclick();
+  await press(nodes['ad-apply']);
   assert.equal(applies(), beforeReapply, 'Nothing is applied before the admin confirms');
   assert.match(
-    nodes['ad-apply-warning'].textContent,
+    document.activeElement.textContent,
     /When you apply access, Documents stops the inheritance, keeps a copy of the current site permissions/,
   );
-  await nodes['ad-apply'].onclick();
+  await press(confirmIn(nodes['ad-access'], 'Apply access'));
   const reapplied = requests.filter((r) => r.Command === 'ApplyPolicy').at(-1);
   assert.equal(applies(), beforeReapply + 1);
   assert.equal(reapplied.BreakInheritance, true);
   assert.equal(reapplied.AcknowledgeBroaderAccess, undefined);
-  // Re-point asks in the page, then shows what changed as text.
+  // Re-point asks in the page, under the library's header, then shows what changed as text.
   const repoints = () => requests.filter((r) => r.Command === 'RepointLibrary');
-  assert.equal(nodes['ad-confirm'].hidden, true);
-  nodes['ad-repoint-library'].onclick();
+  await nodes['ad-library-menu'].onclick();
+  await press(menuItem('ad-library-menu-list', 'Re-point library'));
   assert.equal(repoints().length, 0, 'Nothing is re-pointed before the admin confirms');
-  assert.equal(nodes['ad-confirm'].hidden, false);
   assert.match(
-    nodes['ad-confirm-text'].textContent,
+    document.activeElement.textContent,
     /Re-point Reset: .*Nothing in SharePoint changes/,
   );
-  nodes['ad-confirm-cancel'].onclick();
-  assert.equal(nodes['ad-confirm'].hidden, true);
-  nodes['ad-repoint-library'].onclick();
-  await nodes['ad-confirm-go'].onclick();
+  await press(confirmIn(nodes['ad-library-detail'], 'Keep current address'));
+  assert.equal(nodes['ad-library-detail'].querySelector('.confirm'), null);
+  assert.equal(document.activeElement, nodes['ad-library-menu'], 'Keep returns to the ⋯ button');
+  await nodes['ad-library-menu'].onclick();
+  await press(menuItem('ad-library-menu-list', 'Re-point library'));
+  await press(confirmIn(nodes['ad-library-detail'], 'Re-point'));
   assert.equal(repoints().length, 1);
   assert.equal(repoints()[0].CatalogId, id(19));
-  assert.equal(nodes['ad-confirm'].hidden, true);
   inspectByKey['catalogprobe:test'] = {
     Status: 'Approved',
     Key: 'catalogprobe:test',
@@ -668,7 +682,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     },
   };
   await timers.shift()();
-  assert.match(nodes['ad-message'].textContent, /Reset re-pointed/);
+  assert.match(nodes['fb-access-site'].textContent, /Reset re-pointed/);
   assert.equal(nodes['ad-changes'].hidden, false);
   assert.equal(
     nodes['ad-changes'].children[0].textContent,
@@ -676,9 +690,10 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     'Changes are text, never markup',
   );
   // A library that no longer exists is reported on its card.
-  nodes['ad-repoint-site'].onclick();
-  assert.match(nodes['ad-confirm-text'].textContent, /Re-point Delivery: .*SharePoint site record/);
-  await nodes['ad-confirm-go'].onclick();
+  await nodes['ad-site-menu'].onclick();
+  await press(menuItem('ad-site-menu-list', 'Re-point site'));
+  assert.match(document.activeElement.textContent, /Re-point Delivery: .*SharePoint site record/);
+  await press(confirmIn(nodes['ad-site-header'], 'Re-point'));
   assert.equal(requests.at(-1).Command, 'RepointSite');
   assert.equal(requests.at(-1).CatalogId, id(1));
   inspectByKey['catalogprobe:test'] = {
@@ -689,42 +704,44 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   await timers.shift()();
   assert.match(nodes['ad-provision-progress'].textContent, /no longer exists on the site/);
   assert(
-    !find(nodes['ad-provision-progress'], (n) => n.textContent === 'Retry after repair'),
+    !find(
+      nodes['ad-provision-progress'],
+      (n) => n.tagName === 'BUTTON' && n.textContent === 'Retry',
+    ),
     'A blocked re-point is not retried in place',
   );
-  const again = find(nodes['ad-provision-progress'], (n) => n.textContent === 'Re-point again');
+  const again = find(
+    nodes['ad-provision-progress'],
+    (n) => n.tagName === 'BUTTON' && n.textContent === 'Re-point again',
+  );
   assert(again, 'A blocked re-point offers to re-point again');
   const beforeAgain = requests.filter((r) => r.Command === 'RepointSite').length;
   delete inspectByKey['catalogprobe:test'];
-  await again.onclick();
+  await press(again);
   const repointedAgain = requests.filter((r) => r.Command === 'RepointSite');
   assert.equal(repointedAgain.length, beforeAgain + 1);
   assert.equal(repointedAgain.at(-1).CatalogId, id(1));
   assert(!requests.some((r) => r.Command === 'Retry' && r.Key === 'catalogprobe:test'));
   // Remove asks in the page; a refusal lists the templates that use the library.
   const removes = () => requests.filter((r) => r.Command === 'RemoveLibrary');
-  nodes['ad-remove-library'].onclick();
+  await nodes['ad-library-menu'].onclick();
+  await press(menuItem('ad-library-menu-list', 'Remove library'));
   assert.equal(removes().length, 0, 'Nothing is removed before the admin confirms');
-  assert.match(nodes['ad-confirm-text'].textContent, /Nothing in SharePoint is deleted or changed/);
-  assert.equal(nodes['ad-confirm-go'].textContent, 'Remove library');
+  assert.match(document.activeElement.textContent, /Nothing in SharePoint is deleted or changed/);
   removalRefusal = "Used by template 'Accounts' (published). Change the template first.";
-  await nodes['ad-confirm-go'].onclick();
+  await press(confirmIn(nodes['ad-library-detail'], 'Remove library'));
   assert.equal(removes().length, 1);
   assert.equal(removes()[0].CatalogId, id(19));
-  assert.match(nodes['ad-message'].textContent, /Used by template 'Accounts' \(published\)/);
-  assert.equal(nodes['ad-message'].className, 'ad-issue');
+  assert.equal(nodes['fb-access-library'].textContent, removalRefusal);
+  assert.equal(nodes['fb-access-library'].className, 'feedback is-error');
   removalRefusal = null;
-  nodes['ad-remove-library'].onclick();
-  await nodes['ad-confirm-go'].onclick();
+  await nodes['ad-library-menu'].onclick();
+  await press(menuItem('ad-library-menu-list', 'Remove library'));
+  await press(confirmIn(nodes['ad-library-detail'], 'Remove library'));
   assert.equal(removes().length, 2);
-  assert.match(nodes['ad-message'].textContent, /Reset was removed from Documents/);
+  assert.match(nodes['fb-access-site'].textContent, /Reset was removed from Documents/);
   assert.match(nodes['ad-changes'].textContent, /Nothing was deleted or changed in SharePoint/);
   assert.match(libraryQueries.at(-1), /statecode eq 0/, 'Removed libraries are hidden');
-  nodes['ad-remove-site'].onclick();
-  assert.equal(nodes['ad-confirm-go'].textContent, 'Remove site');
-  await nodes['ad-confirm-go'].onclick();
-  assert.equal(requests.at(-1).Command, 'RemoveSite');
-  assert.equal(requests.at(-1).CatalogId, id(1));
   assert.match(siteQueries.at(-1), /statecode eq 0/, 'Removed sites are hidden');
   {
     // An access run that stopped or waits shows its notice on the library, with Retry and
@@ -744,15 +761,12 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     lib2.asx_libraryid = id(20);
     lib2.asx_name = 'Stuck';
     await window.AsxdSites.selectLibrary(id(13));
-    assert.equal(
-      nodes['ad-change-status'].textContent,
-      'Needs attention: SharePoint refused the write (HTTP 403).',
-    );
+    assert.equal(nodes['ad-change-status'].textContent, 'SharePoint refused the write (HTTP 403).');
     assert.equal(nodes['ad-change-status'].className, 'ad-issue');
     assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
     assert.equal(nodes['ad-run-actions'].hidden, false);
     assert.equal(nodes['ad-add-team'].disabled, false, 'A stopped run does not lock the teams');
-    await nodes['ad-run-retry'].onclick();
+    await press(nodes['ad-run-retry']);
     assert.deepEqual(requests.at(-1), {
       Command: 'RetryAccessRun',
       LibraryId: id(20),
@@ -776,24 +790,25 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     await timers.shift()();
     assert.equal(
       nodes['ad-change-status'].textContent,
-      'Needs attention: Waiting to retry after a temporary error (HTTP 503); attempt 4. Next check: 2026-10-05 18:30 UTC.',
+      'Waiting to retry after a temporary error (HTTP 503); attempt 4. Next check: 2026-10-05 18:30 UTC.',
     );
     assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
     const cancels = () => requests.filter((r) => r.Command === 'CancelAccessRun');
-    nodes['ad-run-cancel'].onclick();
+    await press(nodes['ad-run-cancel']);
     assert.equal(cancels().length, 0, 'Nothing is cancelled before the admin confirms');
-    assert.equal(nodes['ad-confirm'].hidden, false);
     assert.match(
-      nodes['ad-confirm-text'].textContent,
+      document.activeElement.textContent,
       /^Cancel the access run for Stuck\? .*nothing is undone or deleted/,
     );
-    assert.equal(nodes['ad-confirm-go'].textContent, 'Cancel access run');
-    assert.equal(nodes['ad-confirm-cancel'].textContent, 'Keep it');
-    await nodes['ad-confirm-go'].onclick();
+    assert(confirmIn(nodes['ad-access'], 'Keep access run'));
+    await press(confirmIn(nodes['ad-access'], 'Cancel access run'));
     assert.deepEqual(cancels(), [
       { Command: 'CancelAccessRun', LibraryId: id(20), OperationKey: 'policywork:stuck' },
     ]);
-    assert.match(nodes['ad-message'].textContent, /Nothing in SharePoint was undone or deleted/);
+    assert.match(
+      nodes['fb-access-library'].textContent,
+      /Nothing in SharePoint was undone or deleted/,
+    );
     assert.equal(
       nodes['ad-change-status'].textContent,
       'The access run was cancelled. Apply access to run it again.',
@@ -802,22 +817,19 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     assert.equal(nodes['ad-apply'].disabled, false, 'Apply access starts a new run');
     // Apply access replaces a stopped run with the admin's newer access.
     policy = stuck;
-    const team = nodes['ad-teams'].children[0].children[1].children[0];
+    const team = teamRows()[0].querySelector('select');
     team.value = 'Contribute';
     team.onchange();
     const before = requests.filter((r) => r.Command === 'ApplyPolicy').length;
-    await nodes['ad-apply'].onclick();
+    await press(nodes['ad-apply']);
     const replaced = requests.filter((r) => r.Command === 'ApplyPolicy');
     assert.equal(replaced.length, before + 1, 'A stopped run does not refuse Apply');
     assert.equal(replaced.at(-1).Entries[0].Access, 'Contribute');
-    // A change waiting behind a stopped run says the run must be retried or cancelled first.
+    // A change waiting behind a stopped run: the status is the run's notice, with no tail.
     policy = { ...stuck, Policy: { ...stuck.Policy, ApplyPending: true } };
     lib2.asx_libraryid = id(21); // a library not loaded yet, so its access is read
     await window.AsxdSites.selectLibrary(id(13));
-    assert.equal(
-      nodes['ad-change-status'].textContent,
-      'Needs attention: SharePoint refused the write (HTTP 403). The access run stopped: Retry or Cancel it, then your change applies.',
-    );
+    assert.equal(nodes['ad-change-status'].textContent, 'SharePoint refused the write (HTTP 403).');
     assert.equal(nodes['ad-change-status'].className, 'ad-issue');
     assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
     assert.equal(nodes['ad-run-actions'].hidden, false);
@@ -886,7 +898,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     nodes['ad-create'].onclick();
     nodes['ad-library-name'].value = 'Stalled';
     nodes['ad-initial-team'].value = '';
-    await nodes['ad-provision'].onclick();
+    await press(nodes['ad-provision']);
     inspectByKey['librarycreate:test'] = {
       Status: 'RecoveryRequired',
       Key: 'librarycreate:test',
@@ -894,33 +906,32 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     };
     await timers.shift()();
     const area = nodes['ad-provision-progress'],
-      named = (text) => find(area, (n) => n.textContent === text);
+      named = (text) => find(area, (n) => n.tagName === 'BUTTON' && n.textContent === text);
     assert.match(area.textContent, /Stalled.*Needs attention/);
     assert.match(area.textContent, /answer was lost/);
     retrySetupRefusal =
       'The library create may have reached SharePoint and its answer was lost. Recover it with the original create response from the flow run, or Cancel the setup.';
-    await named('Retry').onclick();
+    await press(named('Retry'));
     assert.deepEqual(requests.at(-1), { Command: 'RetrySetup', Key: 'librarycreate:test' });
     assert.equal(apis.at(-1), 'asx_CatalogAdmin');
-    assert.match(nodes['ad-message'].textContent, /original create response/);
-    assert.equal(nodes['ad-message'].className, 'ad-issue');
+    assert.equal(nodes['fb-access-site'].textContent, retrySetupRefusal);
+    assert.equal(nodes['fb-access-site'].className, 'feedback is-error');
     retrySetupRefusal = null;
-    await named('Retry').onclick();
+    await press(named('Retry'));
     assert.equal(apis.at(-1), 'asx_CatalogAdmin');
-    assert.match(nodes['ad-message'].textContent, /queued to run again/);
+    assert.equal(nodes['fb-access-site'].textContent, 'Setup queued again.');
     await timers.shift()();
-    named('Cancel setup').onclick();
+    await press(named('Cancel setup'));
     assert.equal(
       requests.filter((r) => r.Command === 'CancelSetup').length,
       0,
       'Nothing is cancelled before the admin confirms',
     );
     assert.match(
-      nodes['ad-confirm-text'].textContent,
+      document.activeElement.textContent,
       /^Cancel the setup of Stalled\? Nothing in SharePoint is deleted\./,
     );
-    assert.equal(nodes['ad-confirm-go'].textContent, 'Cancel setup');
-    await nodes['ad-confirm-go'].onclick();
+    await press(confirmIn(area, 'Cancel setup'));
     assert.deepEqual(requests.at(-1), { Command: 'CancelSetup', Key: 'librarycreate:test' });
     assert.equal(apis.at(-1), 'asx_CatalogAdmin');
     assert.doesNotMatch(area.textContent, /Stalled/, 'A cancelled setup leaves the list');
@@ -934,22 +945,22 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     nodes['ad-create'].onclick();
     nodes['ad-library-name'].value = 'Unsynced';
     nodes['ad-initial-team'].value = '';
-    await nodes['ad-provision'].onclick();
+    await press(nodes['ad-provision']);
     inspectByKey['librarycreate:test'] = {
       Status: 'Ready',
       Key: 'librarycreate:test',
       Issue: 'Library created. Its first access run was cancelled; apply access on the library.',
     };
     await timers.shift()();
-    // Each card ends with Dismiss; the Unsynced card is the text from its name to that.
-    const card = /Unsynced(?:(?!Dismiss)[^])*Dismiss/.exec(
-      nodes['ad-provision-progress'].textContent,
-    );
+    const card = nodes['ad-provision-progress']
+      .querySelectorAll('section')
+      .find((c) => /Unsynced/.test(c.textContent));
     assert(card, 'The finished setup stays listed');
-    assert.match(card[0], /first access run was cancelled; apply access/);
-    assert.doesNotMatch(card[0], /Setup completed/);
+    assert.match(card.textContent, /first access run was cancelled; apply access/);
+    assert.doesNotMatch(card.textContent, /Setup completed/);
+    assert(rowButton(card, 'Dismiss'));
     assert.match(
-      nodes['ad-message'].textContent,
+      nodes['fb-access-site'].textContent,
       /Unsynced: Library created. Its first access run/,
     );
     delete inspectByKey['librarycreate:test'];
@@ -959,8 +970,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     // activity, and its command and ID come from its probe, so "Re-point again" still works.
     // Until a card is read it shows "Loading…", never the generic message or action. Cards of
     // a library that was removed or deleted are not shown at all.
-    const fresh = {},
-      later = [],
+    const later = [],
       sent = [],
       activity = [],
       lists = [],
@@ -971,8 +981,6 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     let release,
       inspecting = false;
     const gate = new Promise((resolve) => (release = resolve));
-    for (const m of html.matchAll(/<([a-z]+)[^>]*\bid="([^"]+)"[^>]*>/g))
-      fresh[m[2]] = new Node(m[1]);
     const inspected = {
       'catalogprobe:repoint:removed': {
         Status: 'Blocked',
@@ -985,115 +993,101 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
         CatalogId: id(32),
       },
     };
-    const reloaded = {
-      Xrm: {
-        Utility: xrm.Utility,
-        Navigation: xrm.Navigation,
-        WebApi: {
-          retrieveMultipleRecords: async (table, options) => {
-            if (table === 'asx_operation') {
-              activity.push(options);
-              return {
-                entities: [
-                  {
-                    asx_workkey: 'catalogprobe:repoint:old',
-                    asx_workkind: 'Repoint',
-                    asx_displayname: 'General',
-                    asx_siteurl: 'https://example.sharepoint.com/sites/moved',
-                    asx_status: 'Blocked',
-                  },
-                  {
-                    asx_workkey: 'catalogprobe:repoint:removed',
-                    asx_workkind: 'Repoint',
-                    asx_displayname: 'AcceptC Chrome 1',
-                    asx_siteurl: 'https://example.sharepoint.com/sites/moved',
-                    asx_status: 'Blocked',
-                  },
-                  {
-                    asx_workkey: 'librarycreate:deleted',
-                    asx_workkind: 'LibrarySetup',
-                    asx_displayname: 'Deleted later',
-                    asx_siteurl: 'https://example.sharepoint.com/sites/moved',
-                    asx_status: 'RecoveryRequired',
-                  },
-                ],
-              };
-            }
-            const by = /(asx_libraryid|asx_siteid) eq ([0-9a-f-]{36})/.exec(options);
-            if (by) {
-              checks.push(options);
-              return {
-                entities: active.has(by[2]) && /statecode eq 0/.test(options) ? [{}] : [],
-              };
-            }
-            if (table === 'asx_library') lists.push(options);
-            // The list reads answer as they did before the Remove, like a read that does not
-            // reflect it yet.
+    const reloadedXrm = {
+      Utility: xrm.Utility,
+      Navigation: xrm.Navigation,
+      WebApi: {
+        retrieveMultipleRecords: async (table, options) => {
+          if (table === 'asx_operation') {
+            activity.push(options);
             return {
-              entities: table === 'asx_site' ? [moved] : table === 'asx_library' ? [lib] : [],
+              entities: [
+                {
+                  asx_workkey: 'catalogprobe:repoint:old',
+                  asx_workkind: 'Repoint',
+                  asx_displayname: 'General',
+                  asx_siteurl: 'https://example.sharepoint.com/sites/moved',
+                  asx_status: 'Blocked',
+                },
+                {
+                  asx_workkey: 'catalogprobe:repoint:removed',
+                  asx_workkind: 'Repoint',
+                  asx_displayname: 'AcceptC Chrome 1',
+                  asx_siteurl: 'https://example.sharepoint.com/sites/moved',
+                  asx_status: 'Blocked',
+                },
+                {
+                  asx_workkey: 'librarycreate:deleted',
+                  asx_workkind: 'LibrarySetup',
+                  asx_displayname: 'Deleted later',
+                  asx_siteurl: 'https://example.sharepoint.com/sites/moved',
+                  asx_status: 'RecoveryRequired',
+                },
+              ],
             };
-          },
-          retrieveRecord: xrm.WebApi.retrieveRecord,
-          online: {
-            execute: async (req) => {
-              const command = JSON.parse(req.Request);
-              sent.push(command);
-              if (command.Command === 'Inspect') {
-                inspecting = true;
-                await gate;
-              }
-              const result =
-                command.Command === 'Inspect'
-                  ? {
-                      Key: command.Key,
-                      ...(inspected[command.Key] || {
-                        Status: 'Blocked',
-                        Issue:
-                          'This library no longer exists on the site. Remove it, or register the new library.',
-                        Observation: {
-                          Repoint: true,
-                          CatalogId: id(3),
-                          SiteId: id(1),
-                          ListId: id(21),
-                        },
-                      }),
-                    }
-                  : command.Command === 'GetPolicy'
-                    ? { Status: 'Applied', RowVersion: '1', Policy: { Desired: [], Applied: [] } }
-                    : command.Command.startsWith('Remove')
-                      ? { Status: 'Removed', CatalogId: command.CatalogId, Notices: [] }
-                      : { Status: 'Pending', Key: 'catalogprobe:repoint:again' };
-              if (command.Command.startsWith('Remove')) active.delete(command.CatalogId);
-              return { ok: true, json: async () => ({ Result: JSON.stringify(result) }) };
-            },
+          }
+          const by = /(asx_libraryid|asx_siteid) eq ([0-9a-f-]{36})/.exec(options);
+          if (by) {
+            checks.push(options);
+            return {
+              entities: active.has(by[2]) && /statecode eq 0/.test(options) ? [{}] : [],
+            };
+          }
+          if (table === 'asx_library') lists.push(options);
+          // The list reads answer as they did before the Remove, like a read that does not
+          // reflect it yet.
+          return {
+            entities: table === 'asx_site' ? [moved] : table === 'asx_library' ? [lib] : [],
+          };
+        },
+        retrieveRecord: xrm.WebApi.retrieveRecord,
+        online: {
+          execute: async (req) => {
+            const command = JSON.parse(req.Request);
+            sent.push(command);
+            if (command.Command === 'Inspect') {
+              inspecting = true;
+              await gate;
+            }
+            const result =
+              command.Command === 'Inspect'
+                ? {
+                    Key: command.Key,
+                    ...(inspected[command.Key] || {
+                      Status: 'Blocked',
+                      Issue:
+                        'This library no longer exists on the site. Remove it, or register the new library.',
+                      Observation: {
+                        Repoint: true,
+                        CatalogId: id(3),
+                        SiteId: id(1),
+                        ListId: id(21),
+                      },
+                    }),
+                  }
+                : command.Command === 'GetPolicy'
+                  ? { Status: 'Applied', RowVersion: '1', Policy: { Desired: [], Applied: [] } }
+                  : command.Command.startsWith('Remove')
+                    ? { Status: 'Removed', CatalogId: command.CatalogId, Notices: [] }
+                    : { Status: 'Pending', Key: 'catalogprobe:repoint:again' };
+            if (command.Command.startsWith('Remove')) active.delete(command.CatalogId);
+            return { ok: true, json: async () => ({ Result: JSON.stringify(result) }) };
           },
         },
       },
-      AsxdAdmin: { refreshCatalog: async () => {} },
-      AsxdUi: {
-        onTab: () => {},
-        deeplink: () => null,
-        activeTab: () => 'access',
-        feedback: () => {},
-      },
     };
-    vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), {
-      window: reloaded,
-      document: { getElementById: (key) => fresh[key], createElement: (t) => new Node(t) },
-      URL,
-      crypto: { randomUUID: () => id(22) },
-      setTimeout: (fn) => later.push(fn),
-    });
-    const card = fresh['ad-provision-progress'],
-      opening = reloaded.AsxdSites.open();
-    for (let i = 0; i < 50 && !inspecting; i++) await new Promise((r) => setImmediate(r));
+    const reloaded = boot(reloadedXrm, { timers: later, uuid: id(22) });
+    const fresh = reloaded.nodes,
+      card = fresh['ad-provision-progress'];
+    await reloaded.document.fire('DOMContentLoaded');
+    assert(inspecting, 'The cards found again are being read');
     // Before the first read: no generic message or action, and nothing of the removed ones.
-    assert.doesNotMatch(card.textContent, /Setup needs review|Retry after repair/);
+    assert.doesNotMatch(card.textContent, /Setup needs review|Retry/);
     assert.doesNotMatch(card.textContent, /Needs attention/);
     assert.doesNotMatch(card.textContent, /AcceptC Chrome 1|Deleted later/);
     assert.match(card.textContent, /Loading…/);
     release();
-    await opening;
+    await reloaded.document.settle();
     assert.match(activity[0], /asx_workkind eq 'Repoint'/);
     // Read at once after the load, not at the first poll.
     assert.match(card.textContent, /General.*no longer exists on the site/);
@@ -1107,10 +1101,10 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
       'Cards of a removed or deleted library are not shown',
     );
     assert.equal(card.children.length, 1);
-    const again = find(card, (n) => n.textContent === 'Re-point again');
+    const again = find(card, (n) => n.tagName === 'BUTTON' && n.textContent === 'Re-point again');
     assert(again, 'A blocked re-point found after a reload offers to re-point again');
-    assert(!find(card, (n) => n.textContent === 'Retry after repair'));
-    await again.onclick();
+    assert(!find(card, (n) => n.tagName === 'BUTTON' && n.textContent === 'Retry'));
+    await reloaded.press(again);
     assert.deepEqual(
       sent.filter((c) => c.Command === 'RepointLibrary').map((c) => c.CatalogId),
       [id(3)],
@@ -1121,22 +1115,26 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     const listed = () => fresh['ad-libraries'].children.map((c) => c.textContent);
     assert.deepEqual(listed(), ['General']);
     const before = lists.length;
-    fresh['ad-remove-library'].onclick();
-    await fresh['ad-confirm-go'].onclick();
+    await fresh['ad-library-menu'].onclick();
+    await reloaded.press(reloaded.menuItem('ad-library-menu-list', 'Remove library'));
+    await reloaded.press(reloaded.confirmIn(fresh['ad-library-detail'], 'Remove library'));
     assert.deepEqual(sent.at(-1), { Command: 'RemoveLibrary', CatalogId: id(3) });
-    assert.match(fresh['ad-message'].textContent, /General was removed from Documents/);
+    assert.match(fresh['fb-access-site'].textContent, /General was removed from Documents/);
     assert(lists.length > before, 'The library list is read again after Remove');
     assert.deepEqual(listed(), [], 'The removed library is no longer listed');
     assert.equal(fresh['ad-library-detail'].hidden, true);
     assert.doesNotMatch(card.textContent, /General/, 'Its re-point card goes with it');
-    assert.equal(card.hidden, true);
+    assert.equal(fresh['ad-activity'].hidden, true);
     // A link to it does not bring it back.
-    await reloaded.AsxdSites.selectLibrary(id(3));
-    assert.match(fresh['ad-message'].textContent, /This library was removed from Documents/);
+    await reloaded.window.AsxdSites.selectLibrary(id(3));
+    assert.match(fresh['fb-access-site'].textContent, /This library was removed from Documents/);
     assert.deepEqual(listed(), []);
-    // Remove site: the site leaves the list the same way.
-    fresh['ad-remove-site'].onclick();
-    await fresh['ad-confirm-go'].onclick();
+    // Remove site, now that it has no libraries: the site leaves the list the same way.
+    await fresh['ad-site-menu'].onclick();
+    const removeSite = reloaded.menuItem('ad-site-menu-list', 'Remove site');
+    assert.equal(removeSite.getAttribute('aria-disabled'), null);
+    await reloaded.press(removeSite);
+    await reloaded.press(reloaded.confirmIn(fresh['ad-site-header'], 'Remove site'));
     assert.deepEqual(sent.at(-1), { Command: 'RemoveSite', CatalogId: id(1) });
     assert.deepEqual(
       fresh['ad-sites'].children.map((c) => c.textContent),
@@ -1148,18 +1146,13 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   {
     // A team deleted in Dataverse while it has access to the library: Dataverse no longer has
     // the team, so reading it by ID fails. The library shows it as a deleted team by its last
-    // known name, or its ID when none is known, with what happens next; status polling goes on;
-    // and Apply access is enabled, sends the change and succeeds.
-    const fresh = {},
-      later = [],
+    // known name, with what happens next; one whose access is already removed is not listed;
+    // status polling goes on; and Apply access is enabled, sends the change and succeeds.
+    const later = [],
       sent = [],
       teamReads = [],
       gone = id(40),
-      unnamed = id(41),
-      deletedNotice =
-        'This team was deleted in Dataverse. Documents removes its access the next time access is applied.';
-    for (const m of html.matchAll(/<([a-z]+)[^>]*\bid="([^"]+)"[^>]*>/g))
-      fresh[m[2]] = new Node(m[1]);
+      unnamed = id(41);
     const entries = [
       { TeamId: gone, Access: 'Read' },
       { TeamId: unnamed, Access: 'Contribute' },
@@ -1180,103 +1173,345 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
         { TeamId: id(4), Name: 'Operations', Deleted: false },
       ],
     };
-    const deletedWindow = {
-      Xrm: {
-        Utility: xrm.Utility,
-        Navigation: xrm.Navigation,
-        WebApi: {
-          retrieveMultipleRecords: async (table) => ({
-            entities:
-              table === 'asx_site'
-                ? [site]
-                : table === 'asx_library'
-                  ? [lib]
-                  : table === 'team'
-                    ? [teams[0]]
-                    : [],
-          }),
-          retrieveRecord: async (table, key) => {
-            if (table === 'team') {
-              teamReads.push(key);
-              if (key === gone || key === unnamed)
-                throw new Error('The requested record was not found.');
-            }
-            return xrm.WebApi.retrieveRecord(table, key);
-          },
-          online: {
-            execute: async (req) => {
-              const command = JSON.parse(req.Request);
-              sent.push(command);
-              let result = { Status: 'Pending', Key: 'catalogprobe:none' };
-              if (command.Command === 'GetPolicy') result = current;
-              else if (command.Command === 'ApplyPolicy')
-                // The server leaves deleted teams out and queues the removal of their access.
-                result = current = {
-                  Status: 'Queued',
-                  RowVersion: '51',
-                  Policy: {
-                    Desired: command.Entries.filter((e) => e.TeamId === id(4)),
-                    Applied: entries,
-                    OperationKey: 'policywork:apply',
-                  },
-                  Teams: current.Teams,
-                };
-              return { ok: true, json: async () => ({ Result: JSON.stringify(result) }) };
-            },
+    const deletedXrm = {
+      Utility: xrm.Utility,
+      Navigation: xrm.Navigation,
+      WebApi: {
+        retrieveMultipleRecords: async (table) => ({
+          entities:
+            table === 'asx_site'
+              ? [site]
+              : table === 'asx_library'
+                ? [lib]
+                : table === 'team'
+                  ? [teams[0]]
+                  : [],
+        }),
+        retrieveRecord: async (table, key) => {
+          if (table === 'team') {
+            teamReads.push(key);
+            if (key === gone || key === unnamed)
+              throw new Error('The requested record was not found.');
+          }
+          return xrm.WebApi.retrieveRecord(table, key);
+        },
+        online: {
+          execute: async (req) => {
+            const command = JSON.parse(req.Request);
+            sent.push(command);
+            let result = { Status: 'Pending', Key: 'catalogprobe:none' };
+            if (command.Command === 'GetPolicy') result = current;
+            else if (command.Command === 'ApplyPolicy')
+              // The server leaves deleted teams out and queues the removal of their access.
+              result = current = {
+                Status: 'Queued',
+                RowVersion: '51',
+                Policy: {
+                  Desired: command.Entries.filter((e) => e.TeamId === id(4)),
+                  Applied: entries,
+                  OperationKey: 'policywork:apply',
+                },
+                Teams: current.Teams,
+              };
+            return { ok: true, json: async () => ({ Result: JSON.stringify(result) }) };
           },
         },
       },
-      AsxdAdmin: { refreshCatalog: async () => {} },
-      AsxdUi: {
-        onTab: () => {},
-        deeplink: () => null,
-        activeTab: () => 'access',
-        feedback: () => {},
-      },
     };
-    vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), {
-      window: deletedWindow,
-      document: { getElementById: (key) => fresh[key], createElement: (t) => new Node(t) },
-      URL,
-      crypto: { randomUUID: () => id(42) },
-      setTimeout: (fn) => later.push(fn),
-    });
-    fresh.access.hidden = false;
-    await deletedWindow.AsxdSites.open();
-    assert.doesNotMatch(fresh['ad-message'].textContent, /not found/);
-    const rows = () => fresh['ad-teams'].children.map((r) => r.children[0].textContent);
-    assert.equal(rows()[0], 'Deleted team: AcceptC Team 1' + deletedNotice);
-    assert.equal(
-      rows()[1],
-      'Deleted team: ' +
-        unnamed +
-        'Its access was removed. Apply access to clear it from this list.',
-    );
-    assert.equal(rows()[2], 'Operations');
+    const deleted = boot(deletedXrm, { timers: later, uuid: id(42) });
+    const fresh = deleted.nodes;
+    await deleted.document.fire('DOMContentLoaded');
+    assert.doesNotMatch(fresh['fb-access-library'].textContent, /not found/);
+    const rows = () =>
+      fresh['ad-teams'].querySelectorAll('tr').map((r) => r.querySelector('td').textContent);
+    assert.deepEqual(rows(), [
+      'Deleted team: AcceptC Team 1' +
+        'Documents removes its access the next time access is applied.',
+      'Operations',
+    ]);
+    assert.doesNotMatch(fresh['ad-teams'].visibleText, /Apply access to clear it/);
     assert.deepEqual(teamReads, [], 'No team is read by ID once the policy names it');
     // Its access cannot be chosen: the next Apply removes it.
-    assert.equal(fresh['ad-teams'].children[0].children[1].children[0].disabled, true);
+    assert.equal(fresh['ad-teams'].querySelector('select').disabled, true);
     // Polling the queued run keeps working.
     for (let i = 0; i < 4; i++) await later.shift()();
     assert.equal(fresh['ad-poll-status'].hidden, true);
     assert.doesNotMatch(fresh['ad-poll-status'].textContent, /Status updates are unavailable/);
     // Apply is enabled with no other change, and succeeds.
     assert.equal(fresh['ad-apply'].disabled, false);
-    await fresh['ad-apply'].onclick();
+    await deleted.press(fresh['ad-apply']);
     const apply = sent.find((c) => c.Command === 'ApplyPolicy');
     assert(apply, 'Apply access sends the change');
-    assert.doesNotMatch(fresh['ad-message'].textContent, /not found|changed since you opened/);
-    assert.match(fresh['ad-message'].textContent, /Access submitted/);
+    assert.doesNotMatch(fresh['fb-access-library'].textContent, /not found|changed since/);
+    assert.equal(fresh['fb-access-library'].textContent, 'Access submitted.');
     assert.deepEqual(rows(), ['Operations'], 'The deleted teams leave the list once applied');
     // The next Apply sees the list it shows.
-    fresh['ad-teams'].children[0].children[1].children[0].value = 'Contribute';
-    fresh['ad-teams'].children[0].children[1].children[0].onchange();
-    await fresh['ad-apply'].onclick();
-    assert.match(fresh['ad-message'].textContent, /Access submitted/);
+    const access = fresh['ad-teams'].querySelector('select');
+    access.value = 'Contribute';
+    access.onchange();
+    await deleted.press(fresh['ad-apply']);
+    assert.equal(fresh['fb-access-library'].textContent, 'Access submitted.');
     assert.equal(sent.filter((c) => c.Command === 'ApplyPolicy').length, 2);
   }
+  // The blocks below run on the first page again, on a library named General with Operations.
+  policy = {
+    Status: 'Applied',
+    RowVersion: '60',
+    Policy: {
+      Desired: [{ TeamId: id(4), Access: 'Read' }],
+      Applied: [{ TeamId: id(4), Access: 'Read' }],
+    },
+  };
+  lib2.asx_libraryid = id(50);
+  lib2.asx_name = 'General';
+  await window.AsxdSites.selectLibrary(id(13));
+  {
+    // F-14: a refusal shows the server's sentence, not a raw body, at the form that failed.
+    removalRefusal = 'Remove is refused: templates use this library: Account onboarding.';
+    await nodes['ad-library-menu'].onclick();
+    await nodes['ad-library-menu-list']
+      .querySelectorAll('button')
+      .find((b) => b.textContent === 'Remove library')
+      .onclick();
+    await document.settle();
+    const box = nodes['ad-library-detail'].querySelector('.confirm');
+    assert(box, 'The confirmation renders inside the library section (F-12)');
+    assert.equal(
+      document.activeElement.textContent.startsWith('Remove General from Documents?'),
+      true,
+    );
+    box
+      .querySelectorAll('button')
+      .find((b) => b.textContent === 'Remove library')
+      .click();
+    await document.settle();
+    assert.equal(
+      nodes['fb-access-library'].textContent,
+      'Remove is refused: templates use this library: Account onboarding.',
+    );
+    assert.doesNotMatch(nodes['fb-access-library'].textContent, /\{|error/);
+    removalRefusal = null;
+  }
+  {
+    // F-21: Remove on a team row strikes it through with Undo; Apply with removals says what changes.
+    const row = nodes['ad-teams'].querySelectorAll('tr')[0];
+    assert.deepEqual(
+      row.querySelector('select').options.map((o) => o.value),
+      ['Read', 'Contribute'],
+    );
+    assert.equal(row.querySelector('select').getAttribute('aria-label'), 'Access for Operations');
+    // Focus keys (spec 5.2): each team-row control has a stable key, and a re-render keeps focus by it.
+    const accessKey = row.querySelector('select').dataset.focusKey;
+    assert.match(accessKey, /^team:[^:]+:access$/);
+    const team = accessKey.replace(/:access$/, '');
+    const removeButton = row.querySelectorAll('button').find((b) => b.textContent === 'Remove');
+    assert.equal(removeButton.dataset.focusKey, team + ':remove');
+    assert.equal(
+      nodes['ad-teams'].closest('[data-focus-scope]') !== null,
+      true,
+      'The team table is a focus scope',
+    );
+    removeButton.focus();
+    removeButton.click();
+    await document.settle();
+    const removed = nodes['ad-teams'].querySelectorAll('tr')[0];
+    assert.match(removed.visibleText, /Removed · Undo/);
+    assert(removed.classList.contains('is-removed'));
+    assert.equal(
+      document.activeElement.dataset.focusKey,
+      team + ':undo',
+      'Remove moves focus to Undo',
+    );
+    removed
+      .querySelectorAll('button')
+      .find((b) => b.textContent === 'Undo')
+      .click();
+    await document.settle();
+    assert.doesNotMatch(nodes['ad-teams'].visibleText, /Removed/);
+    assert.equal(
+      document.activeElement.dataset.focusKey,
+      team + ':remove',
+      'Undo moves focus back to Remove',
+    );
+    nodes['ad-teams']
+      .querySelectorAll('tr')[0]
+      .querySelectorAll('button')
+      .find((b) => b.textContent === 'Remove')
+      .click();
+    await document.settle();
+    nodes['ad-apply'].click();
+    await document.settle();
+    assert.match(
+      document.activeElement.textContent,
+      /Removed teams lose the access Documents gave them\. Access given another way, such as sharing links or site membership, is not changed\./,
+    );
+    nodes['ad-access']
+      .querySelector('.confirm')
+      .querySelectorAll('button')
+      .find((b) => b.textContent === 'Apply access')
+      .click();
+    await document.settle();
+    assert.equal(
+      requests.filter((r) => r.Command === 'ApplyPolicy').at(-1).Entries[0].Access,
+      'None',
+    );
+    assert.equal(nodes['fb-access-library'].textContent, 'Access submitted.');
+  }
+  {
+    // F-33: consent uses the shared confirmation; the old "Confirm and apply" relabel is gone.
+    assert.equal(nodes['ad-apply'].textContent.includes('Confirm and apply'), false);
+    assert.doesNotMatch(html, /Confirm and (apply|create)/);
+  }
+  {
+    // Remove site waits for its libraries, with the reason; the site actions live in a menu.
+    await nodes['ad-site-menu'].onclick();
+    const remove = nodes['ad-site-menu-list']
+      .querySelectorAll('button')
+      .find((b) => b.textContent === 'Remove site');
+    assert.equal(remove.getAttribute('aria-disabled'), 'true');
+    assert.equal(
+      document.getElementById(remove.getAttribute('aria-describedby')).textContent,
+      'Remove its libraries first',
+    );
+  }
+  {
+    // The Add site combobox searches as you type, after 300 ms, and offers more pages.
+    nodes['ad-add-site'].click();
+    await document.settle();
+    const box = nodes['ad-native-search'];
+    assert.equal(box.getAttribute('role'), 'combobox');
+    assert.equal(box.getAttribute('aria-autocomplete'), 'list');
+    box.value = 'Deliv';
+    box.oninput();
+    // The debounce timer is the newest one queued.
+    await timers.pop()();
+    await document.settle();
+    assert.match(nativeQueries.at(-1), /contains\(name,'Deliv'\)/);
+    assert.equal(
+      nodes['ad-native-list'].querySelectorAll('[role=option]')[0].textContent,
+      'Delivery',
+    );
+    // No SharePoint sites in Dataverse: the empty result says how to set one up.
+    nativeSites = [];
+    box.value = '';
+    box.oninput();
+    await timers.pop()();
+    await document.settle();
+    assert.match(
+      nodes['ad-native-list'].visibleText,
+      /No SharePoint sites are set up in Dataverse document management yet\./,
+    );
+    assert.ok(nodes['ad-native-list'].querySelector('a'), 'How to set one up');
+  }
+  {
+    // A setup whose create is unknown shows Documents' SharePoint check and its choices.
+    inspectByKey['librarycreate:lost'] = {
+      Key: 'librarycreate:lost',
+      Status: 'RecoveryRequired',
+      RowVersion: 'rv-9',
+      Recovery: {
+        State: 'Found',
+        Candidates: [
+          {
+            ListId: id(30),
+            Title: 'Projects',
+            Url: '/sites/delivery/Projects',
+            CreatedUtc: '2026-10-06T17:41:02Z',
+            IsLibrary: true,
+            TitleMatches: true,
+            UrlMatches: true,
+            CreatedAfterRequest: true,
+            CatalogEntry: 'None',
+          },
+        ],
+        Choices: ['UseLibrary', 'CheckAgain', 'Cancel'],
+      },
+    };
+    await trackSetup('librarycreate:lost', 'Projects');
+    const card = nodes['ad-provision-progress']
+      .querySelectorAll('section')
+      .find((c) => /Projects/.test(c.textContent));
+    assert.match(
+      card.visibleText,
+      /SharePoint has a library Projects at \/sites\/delivery\/Projects, created .*\. It matches this request\./,
+    );
+    card
+      .querySelectorAll('button')
+      .find((b) => b.textContent === 'Use the library that was created')
+      .click();
+    await document.settle();
+    assert.deepEqual(
+      [apis.at(-1), requests.at(-1)],
+      [
+        'asx_CatalogAdmin',
+        {
+          Command: 'ResolveSetup',
+          Key: 'librarycreate:lost',
+          Choice: 'UseLibrary',
+          ListId: id(30),
+          RowVersion: 'rv-9',
+        },
+      ],
+    );
+    assert.equal(
+      nodes['fb-access-site'].textContent,
+      'Using the existing library. Setup continues.',
+    );
+    card
+      .querySelectorAll('button')
+      .find((b) => b.textContent === 'Check again')
+      .click();
+    await document.settle();
+    assert.deepEqual([apis.at(-1), requests.at(-1).Command], ['asx_CatalogAdmin', 'RecheckSetup']);
+    assert.equal(nodes['fb-access-site'].textContent, 'Checking SharePoint again.');
+    // Another blocked setup links to Monitor instead of "Open Administration".
+    inspectByKey['librarycreate:blocked'] = {
+      Key: 'librarycreate:blocked',
+      Status: 'Blocked',
+      Issue: 'SharePoint refused the create.',
+    };
+    await trackSetup('librarycreate:blocked', 'Archive');
+    const blocked = nodes['ad-provision-progress']
+      .querySelectorAll('section')
+      .find((c) => /Archive/.test(c.textContent));
+    assert.ok(blocked.querySelectorAll('button').find((b) => b.textContent === 'Retry'));
+    blocked
+      .querySelectorAll('button')
+      .find((b) => b.textContent === 'Open in Monitor')
+      .click();
+    await document.settle();
+    assert.equal(navigations.at(-1).data, 'monitor-ui20261006nav1');
+    assert.doesNotMatch(nodes['ad-provision-progress'].visibleText, /Open Administration/);
+  }
+  {
+    // A deleted team whose access is already removed is cleared on the next policy read.
+    policy = {
+      Status: 'Applied',
+      RowVersion: '20',
+      Policy: { Desired: [{ TeamId: id(4), Access: 'Read' }], Applied: [] },
+      Teams: [{ TeamId: id(4), Deleted: true, Name: 'Operations' }],
+    };
+    await timers.shift()();
+    assert.doesNotMatch(nodes['ad-teams'].visibleText, /Operations/);
+    assert.doesNotMatch(nodes['ad-access'].visibleText, /Apply access to clear it/);
+  }
+  {
+    // No shared-connection section on this tab; no hint paragraphs.
+    assert.equal(nodes['ad-manage-connection'], null);
+    assert.doesNotMatch(
+      nodes.access.visibleText,
+      /Shared connection|Site owners retain administrative access|Adding a library validates access/,
+    );
+    // Team labels (kept text #6).
+    const labels = nodes['ad-team-choice'].options.map((o) => o.textContent);
+    assert(labels.includes('Finance (Entra group)'));
+    assert(labels.includes('Project Y (Microsoft 365 group · members + guests)'));
+    assert(labels.includes('Finance owners (Entra group · all members)'));
+    assert(labels.includes('Project X (Microsoft 365 group · owners)'));
+    assert(labels.includes('Operations'));
+  }
   console.log(
-    'PASS Sites & access handlers: staging versus apply, automatic onboarding request, initial library teams, completion polling, stuck access runs (also the inheritance stop) and library setups with Retry and Cancel, the access label from the policy and its run, discovery matched by list ID, re-point found again after a reload with no generic flash, removed destinations hidden at once and after a reload, deleted Dataverse teams shown by name with polling and Apply still working, and author deep link. Mocked APIs; connected acceptance pending.',
+    'PASS Sites & access on the shell: staging versus apply, removals with Undo and their confirmation, consent in the page, server refusals at the form that failed, the Add site combobox, site and library menus with focus keys, library setups with Documents’ SharePoint check and Open in Monitor, stuck access runs (also the inheritance stop), the access label from the policy and its run, discovery matched by list ID, re-point found again after a reload, removed destinations hidden at once and after a reload, and deleted Dataverse teams. Mocked APIs; connected acceptance pending.',
   );
 })().catch((e) => {
   console.error(e);

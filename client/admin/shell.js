@@ -217,6 +217,86 @@
       ],
     });
 
+  // A "⋯" menu (spec 5.6): Enter, Space or Down opens and focuses the first item; Up and Down
+  // move; Escape closes and returns focus to the trigger. Choosing an item closes it, and so
+  // does a click anywhere else. A busy trigger (AsxdUi.busy) does not open.
+  function menu(trigger, list) {
+    const items = () => [...list.querySelectorAll('[role=menuitem]')].filter((i) => !i.hidden);
+    const open = () => {
+      list.hidden = false;
+      trigger.setAttribute('aria-expanded', 'true');
+      items()[0]?.focus();
+    };
+    const close = (focus = true) => {
+      list.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+      if (focus) trigger.focus();
+    };
+    trigger.onclick = () => {
+      if (trigger.dataset.busy) return;
+      if (list.hidden) open();
+      else close();
+    };
+    trigger.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowDown' || trigger.dataset.busy) return;
+      event.preventDefault();
+      open();
+    });
+    list.addEventListener('keydown', (event) => {
+      const all = items();
+      const index = all.indexOf(document.activeElement);
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        all[(index + (event.key === 'ArrowDown' ? 1 : all.length - 1)) % all.length].focus();
+      }
+    });
+    list.addEventListener('click', () => close(false));
+    document.addEventListener('click', (event) => {
+      if (!list.hidden && !trigger.contains(event.target) && !list.contains(event.target))
+        close(false);
+    });
+  }
+
+  // What Documents' SharePoint check found for a library setup whose create answer was lost
+  // (spec 6.8), as one sentence for Monitor and Sites & access.
+  function recoverySentence(name, recovery) {
+    const found = recovery.Candidates?.[0];
+    switch (recovery.State) {
+      case 'Checking':
+        return 'Checking SharePoint for ' + name + '…';
+      case 'Found': {
+        const when = time(found.CreatedUtc).textContent;
+        return (
+          'SharePoint has a library ' +
+          found.Title +
+          ' at ' +
+          found.Url +
+          ', created ' +
+          when +
+          '. It matches this request.'
+        );
+      }
+      case 'NotFound':
+        return 'SharePoint has no library named ' + name + ". The creation didn't happen.";
+      default:
+        return recovery.Reason;
+    }
+  }
+  // The checks an ambiguous candidate failed: "different name, different address", or "".
+  const candidateChecks = (c) =>
+    [
+      c.TitleMatches ? null : 'different name',
+      c.UrlMatches ? null : 'different address',
+      c.IsLibrary ? null : 'not a document library',
+      c.CreatedAfterRequest ? null : 'there before the request',
+      c.CatalogEntry === 'Conflict' ? 'another catalog entry' : null,
+    ]
+      .filter(Boolean)
+      .join(', ');
+
   // Re-renders without losing focus (spec 5.2): the element with the same data-focus-key gets
   // focus back; if it is gone, the row that took its place, else its list or pane heading.
   function withFocus(fn) {
@@ -622,6 +702,9 @@
     ask,
     confirmInline,
     withFocus,
+    menu,
+    recoverySentence,
+    candidateChecks,
     time,
     details,
     busy,

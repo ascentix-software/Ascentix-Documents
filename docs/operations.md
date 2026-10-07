@@ -6,9 +6,9 @@ Keep runtime and flows disabled during installation. Follow the [installation pr
 
 Install and read back own component identities, active keys, plugin messages/step identity, roles and connection references. Assign the six roles only to reviewed identities; give the worker Read and Append To for its configured business tables. Prepare approved libraries, native navigation, unique permission boundaries and the optional writable AsxdWorkKey text column. Configure an exact worker, source tables and SharePoint-site allowlist. Obtain fresh GET-only catalog captures and separately review library policy. Verify connector ownership and read-only exact-site requests before enabling the serialized dispatcher.
 
-## Runtime and pausing
+## Automation and pausing
 
-Turning the runtime off pauses processing. Events keep queueing while it is off, so nothing is lost. Turning it back on resumes the queue.
+Turning automation off (the **Automation** switch in Monitor or in Settings › Automation settings) pauses processing. Events keep queueing while it is off, so nothing is lost. Turning it back on resumes the queue.
 
 Pause and resume take effect at once, even while work is running. Pause and resume are System Administrator only. A flow run that is driving a job when you pause makes no new SharePoint call: it ends at its next SharePoint request and shows as Succeeded. The job stays queued and continues after resume, once its 5-minute claim lapses. Pause never drops an answer: a SharePoint write already sent when you pause has its answer recorded, and a job that only needs to record a verified result completes. A library create sent just before a pause therefore continues after resume and does not need recovery.
 
@@ -16,17 +16,24 @@ Capture of record and team events runs as background jobs, so a save is never bl
 
 The flow-details page shows a notice about dispatcher concurrency (trigger concurrency throttling). It is expected. The dispatcher runs one at a time on purpose, and the notice means a poll was skipped. No action is needed.
 
-Run **Remove all event registrations** (Unregister) in Runtime administration before you uninstall. See [Upgrade, rollback and decommission](#upgrade-rollback-and-decommission).
+Before you uninstall, use **Settings › Before uninstalling › Stop tracking changes**. See [Upgrade, rollback and decommission](#upgrade-rollback-and-decommission).
 
 **System Customizer is an administrator role for Documents.** Dataverse gives System Customizer full access to new custom tables, so a System Customizer can edit the runtime settings row directly, including the worker identity. Assign System Customizer only to people you would make System Administrator.
 
-## Recovery and retries
+## Monitor and retries
 
-Runtime administration has three recovery lists.
+Monitor opens with every list loaded. Each list shows names and local times; IDs are under **Details**.
 
-- **Failed capture jobs** lists record or team events whose background job failed. Fix the cause, select the records, and click **Replan selected records**. Replan asks Documents to evaluate the records again. The list finds the jobs through the Documents event handlers, so it works however many tables are enabled.
-- **Blocked records** lists outbox rows that were blocked. Each has **Retry**. A record blocked for a reason that still holds blocks again. Records blocked before the 0.1.0.4 upgrade can be retried here. Its **Waiting** section lists records with folders that wait (see [Folder names](#folder-names)), each with its notice and **Replan**.
-- **Blocked jobs** lists blocked operations and library setups in `RecoveryRequired`. Each has **Retry** and **Cancel**. Cancel asks in the page first and never undoes or deletes anything in SharePoint. A library setup whose create may have reached SharePoint shows what Documents found when it looked SharePoint up, and the choices for it (see [Blocked or ambiguous operation](#blocked-or-ambiguous-operation)). Its **Waiting to retry** section lists jobs waiting after a temporary error, those that have waited longest first, with their notice and next attempt.
+- **Template re-runs** shows background re-runs started from Folder templates › Re-run for existing records, with progress, an estimated finish once a page of records is done, and who started each. A re-run queues one page of 19 records at a time and only after the previous page is planned, so record changes and other work go first: expect about 1,100 records an hour when nothing else is queued. Totals read "about N" until the run ends, because they come from Dataverse's daily row count. **Pause** stops it after the page in progress; **Resume** continues; **Cancel re-run** skips the records not yet planned. Folder work already queued continues, and nothing in SharePoint is undone.
+- **Changes not captured** lists record or team events whose background job failed. **Re-run** queues the record for every published, active template of its table; **Re-run selected** does it for the checked rows; **Dismiss** removes the failed job. The count and the list show the background jobs the person using Monitor can read: with user-level read on System Jobs, only their own. Monitor users need organization-level read on System Jobs to see every missed change.
+- **Blocked records** lists records whose planning stopped, with **Retry**. A record blocked for a reason that still holds blocks again.
+- **Waiting for record data** lists records with folders that wait for a value or a shorter path (see [Folder names](#folder-names)), with **Re-run** and **Open record**.
+- **Blocked jobs** lists folder, access and library jobs that stopped, each with what stopped it and how to fix it, and **Retry** and **Cancel job**. Cancel asks in the page first and never undoes or deletes anything in SharePoint. A library setup whose create may have reached SharePoint shows what Documents found in SharePoint and its choices (see [Blocked or ambiguous operation](#blocked-or-ambiguous-operation)).
+- **Retrying automatically** lists jobs waiting after a temporary error, with their next attempt. There is no attempt cap; **Retry now** runs one at once.
+
+Counts above 5,000 show as 5,000+.
+
+**Check a record** shows what Documents did for one record and template, and re-runs it with the published template. **Advanced** lists recent operations and looks one up by its ID.
 
 Temporary failures wait and retry on their own. There is no attempt cap. A waiting job shows a notice and the time of its next attempt. **Cancel** stops a waiting job.
 
@@ -37,17 +44,20 @@ Unknown outcomes are handled by type. Reads retry. For folder and access writes,
 Suspend, approve, and queue or apply access always work while folder jobs run. Writes that were already submitted finish.
 
 - **Suspend** holds the library's folder jobs, its queued access run and, for a site, its library setups. Each one waits with a notice and resumes by itself once the library and its site are approved again. The exception is a library setup whose create may already have reached SharePoint: Documents looks it up in SharePoint and offers the choices that fit (see below). Approving again is refused only while the access run has a write whose result is not known yet. The daily access refresh and team events skip a suspended library with a notice on its access policy; other libraries are not affected.
-- **Removing a table** from the Tables panel cancels its unsent folder jobs and its queued records, with a notice. Nothing in SharePoint is deleted. Enable the table again and replan the records to plan them.
-- A library setup interrupted before its create was permitted (for example by a pause) reads SharePoint again and continues by itself. **Retry** and **Cancel** also work on a setup in `RecoveryRequired`. A create that may have reached SharePoint is looked up instead of retried; setups saved before 0.1.0.4 count as possibly sent. **Cancel** never deletes anything; creating the same library again starts over with fresh reads. In Sites, a setup card that needs attention (`RecoveryRequired`, blocked or waiting) has **Retry** and **Cancel setup**; a Documents Security Administrator can use them without the Operator role.
+- **Removing a table** from Folder templates › Tables cancels its unsent folder jobs and its queued records, with a notice. Nothing in SharePoint is deleted. Enable the table again and re-run the records to plan them.
+- A library setup interrupted before its create was permitted (for example by a pause) reads SharePoint again and continues by itself. **Retry** and **Cancel** also work on a setup in `RecoveryRequired`. A create that may have reached SharePoint is looked up instead of retried; setups saved before 0.1.0.4 count as possibly sent. **Cancel** never deletes anything; creating the same library again starts over with fresh reads. In Sites & access, a setup card that needs attention (`RecoveryRequired`, blocked or waiting) has **Retry**, **Cancel setup** and **Open in Monitor**; a Documents Security Administrator can use Retry and Cancel setup without the Operator role. A setup whose create may have reached SharePoint shows Documents' SharePoint check and its choices instead, as in Monitor.
 
-- **Add existing library** does not offer a library Documents already has. It matches by the SharePoint list ID, so a library renamed in SharePoint is not offered again under its new name; use **Re-point** to follow the rename.
-- **Re-point** follows a library that was renamed, or a site that moved within the same tenant. If the site URL changes, first update the SharePoint host in Runtime administration and the Dataverse SharePoint site record. Re-point names exactly what to change. Existing folders keep working.
-- **Remove** hides a site or library from Documents: it leaves the pickers, planning and access sync, and its unfinished work is cancelled. If anything refers to it, Documents keeps its catalog row for history. For a library that means template revisions, access settings (including the inheritance confirmation) or record folders. For a site it means libraries or library setups. Otherwise the row is deleted. Either way nothing in SharePoint changes, and adding it again works: a kept row is reactivated, and a deleted one is created again. A destination that a Draft or Published template uses is refused, and the refusal lists the templates. Remove a site's libraries before the site.
+- **Add existing library** checks Documents' access to the library and creates its navigation entry. A library that inherits the site's permissions is added only after you confirm, in the page, that Documents stops the inheritance. It does not offer a library Documents already has. It matches by the SharePoint list ID, so a library renamed in SharePoint is not offered again under its new name; use **Re-point** to follow the rename.
+- **Re-point** follows a library that was renamed, or a site that moved within the same tenant. If the site URL changes, first update the SharePoint host in Settings › Automation settings and the Dataverse SharePoint site record. Re-point names exactly what to change. Existing folders keep working.
+- **Remove** hides a site or library from Documents: it leaves the pickers, planning and access sync, and its unfinished work is cancelled. If anything refers to it, Documents keeps its catalog row for history. For a library that means template revisions, access settings (including the inheritance confirmation) or record folders. For a site it means libraries or library setups. Otherwise the row is deleted. Either way nothing in SharePoint changes, and adding it again works: a kept row is reactivated, and a deleted one is created again. A destination that a Draft or Published template uses is refused, and the refusal lists the templates. Remove a site's libraries before the site: **Remove site** stays unavailable, with that reason, while the site has libraries. Re-point and Remove are in the **⋯** menu of the site or the library, and ask in the page before they run.
 
 ## Access management
 
 Documents manages only its own SharePoint groups and their grants on the library. Sharing links, Limited Access, and people or groups added by hand are left alone.
 
+- Site owners keep their administrative access; only the teams you choose get access to the library.
+- Team access applies to every folder in the library. To restrict a folder, use a separate library.
+- **Remove** on a team row strikes it through, with **Undo**, until you apply. Removed teams lose the access Documents gave them. Access given another way, such as sharing links or site membership, is not changed.
 - A hand edit to the permission level of a Documents group is reverted, with a notice. A Documents group deleted by hand is recreated.
 - A team member that SharePoint rejects is skipped with a notice and retried on every scheduled refresh. A 401 or 403 Blocks the job, because it means a permission was lost.
 - A library whose access run stopped or waits shows **Needs attention** with the run's notice, and **Retry access run** and **Cancel access run**. Cancel undoes nothing in SharePoint. A change applied while the run is stopped waits for it: Retry or Cancel the run, then the change applies.
@@ -66,11 +76,15 @@ Documents manages only its own SharePoint groups and their grants on the library
 
 - Characters SharePoint forbids are replaced with "-". Trailing dots and spaces are trimmed. Reserved names get "_".
 - "Forms" is reserved only at the library root.
-- A folder whose full path, from the site root and including the library, is longer than 300 characters is created with a notice: SharePoint allows 400 characters including file names, so files inside need short names. A folder whose path would pass 400 characters waits, with the folders below it, and the rest of the record is planned. Shorten the record's value or the template's folder names, then replan the record.
-- A folder Documents already created or found, and every parent folder, is read by its ID, so its path never appears in the request. A new folder's path and a new library's name are sent in the query string of the request, not in its URL path: the HTTP connector refuses a URL path longer than its `maxUrlLength` setting. The query string itself is limited to 2,048 characters, and an escaped character can take up to 9 (most non-Latin letters do), so a folder whose escaped path would pass that limit waits with a notice, like a path over 400 characters, and a library name that would pass it is refused when you create the library. If the connector still refuses a request for its URL length, the job is Blocked with `RequestUrlTooLong` (a library setup or catalog check shows the same reason in words). SharePoint did not receive the request. Shorten the record's value or the template's folder names, then replan the record.
-- A blank naming value makes that folder, and the folders below it, wait. The record is listed under **Waiting** in Blocked records until a later plan includes the folder. With record updates on, filling in a field of the record itself creates the folder at the record's next update. With record updates off, or for a field of a related record, fill in the field and then **Replan** the record. The notice says which applies.
-- If sibling folders get the same name, the first one (by order) is kept and the rest wait, listed the same way, until a change to the record makes the names differ and the record is updated or replanned.
+- A folder whose full path, from the site root and including the library, is longer than 300 characters is created with a notice: SharePoint allows 400 characters including file names, so files inside need short names. A folder whose path would pass 400 characters waits, with the folders below it, and the rest of the record is planned. Shorten the record's value or the template's folder names, then re-run the record.
+- A folder Documents already created or found, and every parent folder, is read by its ID, so its path never appears in the request. A new folder's path and a new library's name are sent in the query string of the request, not in its URL path: the HTTP connector refuses a URL path longer than its `maxUrlLength` setting. The query string itself is limited to 2,048 characters, and an escaped character can take up to 9 (most non-Latin letters do), so a folder whose escaped path would pass that limit waits with a notice, like a path over 400 characters, and a library name that would pass it is refused when you create the library. If the connector still refuses a request for its URL length, the job is Blocked with `RequestUrlTooLong` (a library setup or catalog check shows the same reason in words). SharePoint did not receive the request. Shorten the record's value or the template's folder names, then re-run the record.
+- A blank naming value makes that folder, and the folders below it, wait. The record is listed in Monitor under **Waiting for record data** until a later plan includes the folder. With record updates on, filling in a field of the record itself creates the folder at the record's next update. With record updates off, or for a field of a related record, fill in the field and then **Re-run** the record. The notice says which applies.
+- If sibling folders get the same name, the first one (by order) is kept and the rest wait, listed the same way, until a change to the record makes the names differ and the record is updated or re-run.
 - **Risk:** Documents does not follow a record's folder if it is renamed or deleted in SharePoint. Document locations point at the old folder. Do not rename or delete record folders in SharePoint.
+
+**Path limits.** SharePoint refuses a folder whose decoded path, file names included, is longer than 400 characters, so such a folder waits with a notice like 'needs a shorter path: 404 characters; the limit is 400'. The HTTP connector refuses a request whose query string passes 2,048 characters; Documents reads folders by their path in the query string, so a path that would pass it waits the same way.
+
+**Preview and folder creation.** Preview evaluates names and conditions with your access; existing folders and name collisions are found when the folder is created.
 
 ## Limits and pacing
 
@@ -80,7 +94,7 @@ Documents manages only its own SharePoint groups and their grants on the library
 - There is no limit on the number of SharePoint hosts. Hosts can be on any Microsoft SharePoint Online domain: `sharepoint.com` (worldwide and GCC), `sharepoint.us` (GCC High), `sharepoint-mil.us` or `dps.mil` (DoD), and `sharepoint.cn` (21Vianet). The list is stored in one column of 5,000 characters, about 190 typical hosts; a longer list is refused with that reason. Every call also needs an active SharePoint site record with the exact address.
 - The daily access review reviews every library that is due, oldest first, for up to one minute per dispatcher run (half of Dataverse's 2-minute limit for one custom API call). Libraries left over are reviewed on the next run, a minute later.
 - Removing a site or library reads every template destination and library that refers to it, however many there are.
-- Templates can use lookup columns from tables that are not enabled. Changes to those related records do not update folders until the main record changes or is replanned.
+- Templates can use lookup columns from tables that are not enabled. Changes to those related records do not update folders until the main record changes or is re-run.
 - Field-secured columns are refused as naming sources, because folder names are not secured.
 - The worker must be an application user.
 
@@ -99,7 +113,7 @@ A write whose answer was lost is never sent again blindly:
 
   If you added the created library as an existing library meanwhile, using it adopts that catalog entry; access you set there is kept, and with none the setup's own access is applied. A setup interrupted before its create was permitted, for example by a pause, reads SharePoint again and continues by itself. Documents never creates a library twice.
 
-Cancellation stops idle work and work that is waiting to retry. Preserve all observed physical IDs/nonces and partial grant receipts. Batch replan requires a fresh impact review if source or publication changed. A deletion tombstone keeps documents and prevents new work; completed physical work can retain a decommission-review binding without creating native navigation to a deleted record.
+Cancellation stops idle work and work that is waiting to retry. Preserve all observed physical IDs/nonces and partial grant receipts. Re-running records from a preview (Re-run these records) requires a fresh impact review if source or publication changed. A deletion tombstone keeps documents and prevents new work; completed physical work can retain a decommission-review binding without creating native navigation to a deleted record.
 
 ## Membership and access changes
 
@@ -115,4 +129,16 @@ Drain the writer and pending unknown requests before changing runtime or connect
 
 Preserve durable state, source provenance, the stable local assembly signing identity, and environment backups. Do not roll the solution back while an external writer is active or restore stale claims as permission to issue new calls. Keep flows disabled during solution import and configuration changes. To upgrade from 0.1.0.3, follow the [0.1.0.4 upgrade notes](upgrade-0.1.0.4.md). Verify all guards/keys before resuming. Verify retained configuration, connections, roles, and document identities after an upgrade.
 
-Uninstall is not a cleanup command. First, in Runtime administration, click **Remove all event registrations**. Event steps created by the application are not part of the managed solution, and uninstall does not remove them. Uninstall is not verified in this release. Then explicitly revoke managed access while site approval and credentials remain available; verify residual access; export and retain binding/group/grant/attempt evidence. Remove platform components only through a separately reviewed decommission plan. Uninstall does not automatically delete SharePoint documents, libraries, groups, or historical bindings.
+Uninstall is not a cleanup command. First, use **Settings › Before uninstalling › Stop tracking changes**. Event steps created by the application are not part of the managed solution, and uninstall does not remove them. Uninstall is not verified in this release. Then explicitly revoke managed access while site approval and credentials remain available; verify residual access; export and retain binding/group/grant/attempt evidence. Remove platform components only through a separately reviewed decommission plan. Uninstall does not automatically delete SharePoint documents, libraries, groups, or historical bindings.
+
+## Terms
+
+| Term | Meaning |
+|---|---|
+| Automation | The runtime that runs folder and access work. |
+| Change tracking | The event steps that capture record and team changes. |
+| Re-run | Plan a record again with the published template. |
+| Template re-run | A background re-run of every record of a template's table. |
+| Missed change | An event whose capture job failed. |
+| Destination | A library a template creates folders in. |
+| Check SharePoint | Documents' read-only lookup of a library creation whose answer was lost. |

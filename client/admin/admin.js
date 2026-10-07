@@ -36,6 +36,7 @@
     failedTables: new Set(),
     // Which template open the background preload belongs to.
     preloadId: 0,
+    pickersStale: false,
     // A rail redraw waits for the rail's open confirmation.
     railStale: false,
   };
@@ -1309,49 +1310,13 @@
     return rows.entities[0]?.asx_revisionid;
   }
 
-  // The ⋯ menu (spec 5.6): Enter, Space or Down opens; Up and Down move; Escape closes.
-  const menuItems = () =>
-    [...$('template-menu-list').querySelectorAll('[role=menuitem]')].filter((i) => !i.hidden);
-  function openMenu() {
-    $('template-menu-list').hidden = false;
-    $('template-menu').setAttribute('aria-expanded', 'true');
-    menuItems()[0]?.focus();
-  }
-  function closeMenu() {
-    $('template-menu-list').hidden = true;
-    $('template-menu').setAttribute('aria-expanded', 'false');
-    $('template-menu').focus();
-  }
-  $('template-menu').onclick = () => {
-    if ($('template-menu').dataset.busy) return;
-    if ($('template-menu-list').hidden) openMenu();
-    else closeMenu();
-  };
-  $('template-menu').addEventListener('keydown', (event) => {
-    if (event.key !== 'ArrowDown') return;
-    event.preventDefault();
-    openMenu();
-  });
-  $('template-menu-list').addEventListener('keydown', (event) => {
-    const items = menuItems();
-    const index = items.indexOf(document.activeElement);
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeMenu();
-    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      items[(index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
-    }
-  });
-  const fromMenu = (fn) => () => {
-    $('template-menu-list').hidden = true;
-    $('template-menu').setAttribute('aria-expanded', 'false');
-    return fn();
-  };
-  $('menu-history').onclick = fromMenu(() => task(openHistory));
-  $('menu-schedule').onclick = fromMenu(openSchedule);
-  $('menu-rerun').onclick = fromMenu(openRerun);
-  $('menu-delete').onclick = fromMenu(deleteTemplate);
+  // The ⋯ menu (spec 5.6): keyboard, focus and closing come from AsxdUi.menu; choosing an item
+  // closes it.
+  ui.menu($('template-menu'), $('template-menu-list'));
+  $('menu-history').onclick = () => task(openHistory);
+  $('menu-schedule').onclick = openSchedule;
+  $('menu-rerun').onclick = openRerun;
+  $('menu-delete').onclick = deleteTemplate;
   // One panel under the template bar at a time; Close returns to the ⋯ button.
   const PANELS = ['history-panel', 'schedule-panel', 'rerun-panel'];
   function showPanel(id) {
@@ -1573,8 +1538,9 @@
   async function preload(tables, id) {
     const queue = tables.filter((t) => !metadata.has(t));
     queue.forEach((t) => state.failedTables.delete(t));
+    // A worker stops taking tables once another template opens (a newer preload id).
     const worker = async () => {
-      while (queue.length) {
+      while (queue.length && id === state.preloadId) {
         const table = queue.shift();
         try {
           await fields(table);
@@ -1592,18 +1558,22 @@
     await Promise.all(Array.from({ length: Math.min(PRELOAD_TABLES, queue.length) }, worker));
   }
   // Redraws the pickers as related tables arrive, unless the admin is typing in the editor or
-  // answering a confirmation there; the next render picks the fields up then.
+  // answering a confirmation there. A skipped redraw marks them stale, and it runs once focus
+  // moves: out of the field, or back to the invoker when the confirmation closes.
   function refreshPickers() {
     if (!state.root) return;
     const editor = $('folderEditor');
     const active = document.activeElement;
-    if (
-      editor.querySelector('.confirm[role=group]') ||
-      (editor.contains(active) && active.tagName === 'INPUT')
-    )
-      return;
-    ui.withFocus(render);
+    state.pickersStale =
+      !!editor.querySelector('.confirm[role=group]') ||
+      (editor.contains(active) && active.tagName === 'INPUT');
+    if (!state.pickersStale) ui.withFocus(render);
   }
+  // After the focus change settles: during focusout, focus has not reached its next element yet.
+  for (const type of ['focusout', 'focusin'])
+    $('folderEditor').addEventListener(type, () => {
+      if (state.pickersStale) setTimeout(refreshPickers, 0);
+    });
   function resetPreview() {
     state.previewRecord = null;
     state.previewed = false;

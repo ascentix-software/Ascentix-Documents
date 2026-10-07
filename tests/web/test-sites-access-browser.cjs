@@ -1,3 +1,7 @@
+'use strict';
+// Sites & access in headless Edge on the real page (index.html, CSS and every script) with the
+// mocked Dataverse of mock-xrm.js: a deleted team, staging and Apply, existing libraries,
+// library creation, Add site, the Remove library confirmation, at 1440/800/400 in light and dark.
 const fs = require('fs'),
   path = require('path'),
   assert = require('assert/strict');
@@ -5,129 +9,66 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
 const root = path.resolve(__dirname, '../../client/admin');
 const evidence =
   process.env.ASXD_BROWSER_EVIDENCE_DIR || path.resolve(__dirname, '../../artifacts/browser');
+const types = {
+  '.html': 'text/html',
+  '.js': 'text/javascript',
+  '.css': 'text/css',
+  '.svg': 'image/svg+xml',
+};
 fs.mkdirSync(evidence, { recursive: true });
+
+// As test-admin-a11y-browser.cjs: the page from client/admin, mock-xrm.js before it loads.
+const settle = (page) =>
+  page.waitForFunction(() => {
+    const panel = document.querySelector('[role=tabpanel]:not([hidden])');
+    return !!panel && !panel.querySelector('[aria-busy=true]') && window.__mockIdle?.();
+  });
+async function open(context, tab, extra = '') {
+  const page = await context.newPage();
+  page.errors = [];
+  page.on('pageerror', (e) => page.errors.push(e.message));
+  await page.route('https://asxd.test/**', (route) => {
+    const file = path.join(root, new URL(route.request().url()).pathname.replace(/^\//, ''));
+    route.fulfill({
+      status: 200,
+      contentType: types[path.extname(file)] || 'text/plain',
+      body: fs.readFileSync(file),
+    });
+  });
+  await page.addInitScript({ path: path.join(__dirname, 'mock-xrm.js') });
+  await page.addInitScript(() => sessionStorage.setItem('asxd.launched', '1'));
+  if (extra) await page.addInitScript(extra);
+  await page.goto('https://asxd.test/index.html?data=' + tab + '-ui20261006nav1');
+  await settle(page);
+  return page;
+}
+
 (async () => {
   const browser = await chromium.launch({ headless: true, channel: 'msedge' });
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-    const errors = [];
-    page.on('pageerror', (e) => errors.push(e.message));
-    await page.route('**/*', (route) => route.abort());
-    await page.setContent(
-      fs
-        .readFileSync(path.join(root, 'index.html'), 'utf8')
-        .replace(/<script[^>]*src=[^>]*><\/script>/g, '')
-        .replace(/<link[^>]+>/g, ''),
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    // A team deleted in Dataverse still has access to the library; Apply removes it.
+    const page = await open(
+      context,
+      'access',
+      `(() => {
+        const deleted = { TeamId: '00000040-0000-4000-8000-000000000000', Access: 'Read' };
+        window.__mock.policy = {
+          Status: 'Applied',
+          RowVersion: '1',
+          Policy: { Desired: [deleted], Applied: [deleted] },
+          Teams: [{ TeamId: deleted.TeamId, Name: 'AcceptC Team 1', Deleted: true }],
+        };
+      })()`,
     );
-    await page.addStyleTag({ content: fs.readFileSync(path.join(root, 'admin.css'), 'utf8') });
-    await page.evaluate(() => {
-      const id = (n) => String(n).padStart(8, '0') + '-0000-0000-0000-000000000000';
-      // setContent has no secure origin; provide only the UUID capability normally supplied by HTTPS Dataverse.
-      crypto.randomUUID = () => id(Math.floor(Math.random() * 10000000));
-      const site = {
-        asx_siteid: id(1),
-        asx_name: 'Delivery',
-        asx_approved: true,
-        asx_url: 'https://example.sharepoint.com/sites/delivery',
-        _asx_nativeid_value: id(2),
-      };
-      const lib = {
-        asx_libraryid: id(3),
-        asx_name: 'General',
-        _asx_siteid_value: id(1),
-        asx_approved: true,
-        asx_policyapplied: true,
-      };
-      window.testRequests = [];
-      // A team deleted in Dataverse still has access to the library; Apply removes it.
-      const deleted = { TeamId: id(40), Access: 'Read' };
-      window.testPolicy = {
-        Status: 'Applied',
-        RowVersion: '1',
-        Policy: { Desired: [deleted], Applied: [deleted] },
-        Teams: [{ TeamId: id(40), Name: 'AcceptC Team 1', Deleted: true }],
-      };
-      window.Xrm = {
-        Utility: { getGlobalContext: () => ({ getClientUrl: () => 'https://example.test' }) },
-        Navigation: { openUrl: () => {} },
-        WebApi: {
-          retrieveMultipleRecords: async (table) => ({
-            entities:
-              table === 'asx_site'
-                ? [site]
-                : table === 'asx_library'
-                  ? [lib]
-                  : table === 'team'
-                    ? [{ teamid: id(4), name: 'Operations' }]
-                    : table === 'sharepointsite'
-                      ? [{ sharepointsiteid: id(2), name: 'Delivery' }]
-                      : [],
-          }),
-          retrieveRecord: async (table) =>
-            table === 'asx_site' ? site : table === 'asx_library' ? lib : { name: 'Operations' },
-          online: {
-            execute: async (req) => {
-              const c = JSON.parse(req.Request);
-              window.testRequests.push(c);
-              let result = {
-                Status: 'Pending',
-                Key:
-                  c.Command === 'CreateLibrary'
-                    ? 'librarycreate:test'
-                    : c.Command === 'AddSite'
-                      ? 'siteprobe:test'
-                      : 'catalogprobe:test',
-              };
-              if (c.Command === 'GetPolicy') result = window.testPolicy;
-              if (c.Command === 'ApplyPolicy')
-                // The server leaves deleted teams out.
-                result = window.testPolicy = {
-                  Status: 'Queued',
-                  RowVersion: '2',
-                  Policy: {
-                    Desired: c.Entries.filter((e) => e.TeamId !== id(40)),
-                    Applied: [],
-                    OperationKey: 'policywork:test',
-                  },
-                };
-              if (c.Command === 'Inspect' && c.Key === 'siteprobe:test')
-                result = { Status: window.testSiteStatus || 'Inspecting' };
-              else if (c.Command === 'Inspect' && c.Key === 'librarycreate:test')
-                result = { Status: window.testSetupStatus || 'ExternalUnknown' };
-              else if (c.Command === 'Inspect')
-                result = {
-                  Status: 'Discovered',
-                  Key: c.Key,
-                  RowVersion: '3',
-                  Observation: {
-                    SiteId: id(1),
-                    WebUrl: site.asx_url,
-                    Libraries: [{ Id: id(8), Title: 'Archive' }],
-                  },
-                };
-              return { ok: true, json: async () => ({ Result: JSON.stringify(result) }) };
-            },
-          },
-        },
-      };
-      window.fetch = async () => ({ ok: true, json: async () => ({ value: [] }) });
-    });
-    for (const name of ['shell.js', 'admin.js', 'sites-access.js'])
-      await page.addScriptTag({ content: fs.readFileSync(path.join(root, name), 'utf8') });
-    // The shell opens the tab the link names, as the app's Sites & access menu entry does.
-    await page.evaluate(() => {
-      location.hash = 'access';
-      document.dispatchEvent(new Event('DOMContentLoaded'));
-    });
+    const requests = (command) =>
+      page.evaluate((c) => window.__mock.requests.filter((r) => r.Command === c), command);
     await page.getByRole('heading', { name: 'General', exact: true }).waitFor();
     // The deleted team is shown as one, with what happens next, and Apply is enabled for it.
     const deletedRow = page.locator('#ad-teams tr').first();
     await deletedRow.getByText('Deleted team: AcceptC Team 1').waitFor();
     await deletedRow
-      .getByText(
-        'This team was deleted in Dataverse. Documents removes its access the next time access is applied.',
-        { exact: true },
-      )
+      .getByText('Documents removes its access the next time access is applied.', { exact: true })
       .waitFor();
     assert.equal(await deletedRow.locator('select').isDisabled(), true);
     assert.equal(await page.locator('#ad-apply').isDisabled(), false);
@@ -144,14 +85,13 @@ fs.mkdirSync(evidence, { recursive: true });
       });
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
+    const operations = await page.evaluate(() => window.__mock.ids.operations);
     await page.locator('#ad-add-team').click();
-    await page.locator('#ad-team-choice').selectOption('00000004-0000-0000-0000-000000000000');
+    await page.locator('#ad-team-choice').selectOption(operations);
     await page.locator('#ad-stage-team').click();
-    assert.equal(
-      await page.evaluate(() => testRequests.filter((x) => x.Command === 'ApplyPolicy').length),
-      0,
-    );
+    assert.equal((await requests('ApplyPolicy')).length, 0);
     await page.locator('#ad-apply').click();
+    await page.getByText('Access submitted.', { exact: true }).waitFor();
     assert.equal(await page.locator('#ad-apply').isDisabled(), true);
     // Applied: the deleted team's row is gone and nothing failed.
     assert.equal(await page.getByText('Deleted team: AcceptC Team 1').count(), 0);
@@ -160,56 +100,31 @@ fs.mkdirSync(evidence, { recursive: true });
       0,
     );
     await page.evaluate(() => {
-      testPolicy = {
+      const desired = window.__mock.policy.Policy.Desired;
+      window.__mock.policy = {
         Status: 'Applied',
         RowVersion: '3',
-        Policy: { Desired: testPolicy.Policy.Desired, Applied: testPolicy.Policy.Desired },
+        Policy: { Desired: desired, Applied: desired },
       };
     });
-    await page.getByText('Access and team membership confirmed.', { exact: true }).waitFor();
+    await page
+      .getByText('Access and team membership confirmed.', { exact: true })
+      .waitFor({ timeout: 12000 });
     await page.locator('#ad-existing').click();
-    try {
-      await page
-        .getByRole('button', { name: 'Add Archive', exact: true })
-        .waitFor({ timeout: 12000 });
-    } catch (e) {
-      console.log(
-        await page.evaluate(() => ({
-          requests: testRequests,
-          message: document.getElementById('ad-message').textContent,
-          progress: document.getElementById('ad-provision-progress').textContent,
-          form: document.getElementById('ad-existing-form').outerHTML,
-        })),
-      );
-      throw e;
-    }
+    await page
+      .getByRole('button', { name: 'Add Archive', exact: true })
+      .waitFor({ timeout: 12000 });
     await page.getByRole('button', { name: 'Add Archive', exact: true }).click();
-    assert.equal(
-      await page.evaluate(
-        () => testRequests.find((x) => x.Command === 'AddLibrary').NativeParentId,
-      ),
-      undefined,
-    );
+    await page.getByText('Checking Archive and setting up its navigation.').waitFor();
+    assert.equal((await requests('AddLibrary'))[0].NativeParentId, undefined);
     await page.locator('#ad-create').click();
     await page.locator('#ad-library-name').fill('Projects');
-    await page.locator('#ad-initial-team').selectOption('00000004-0000-0000-0000-000000000000');
+    await page.locator('#ad-initial-team').selectOption(operations);
     await page.locator('#ad-provision').click();
-    assert.equal(
-      await page.evaluate(
-        () => testRequests.find((x) => x.Command === 'CreateLibrary').Entries.length,
-      ),
-      1,
-    );
+    await page.getByText('Creating Projects.', { exact: true }).waitFor();
+    assert.equal((await requests('CreateLibrary'))[0].Entries.length, 1);
     await page.getByText('Waiting for confirmation', { exact: true }).waitFor({ timeout: 12000 });
-    assert.equal(
-      await page
-        .getByText(
-          'The original request must be reconciled in Administration before setup can continue.',
-          { exact: true },
-        )
-        .count(),
-      0,
-    );
+    assert.equal(await page.getByText('Open Administration', { exact: false }).count(), 0);
     assert.equal(
       await page.getByRole('progressbar', { name: 'Projects setup progress' }).count(),
       1,
@@ -238,20 +153,22 @@ fs.mkdirSync(evidence, { recursive: true });
             };
           }),
         );
-        for (const a of alignment) {
+        for (const a of alignment)
           assert(
             a.start < 1 && a.end < 1 && a.fill < 1,
             'Stage/bar alignment ' + JSON.stringify(a),
           );
-        }
         await page.screenshot({
           path: path.join(evidence, `runtime-${width}-${scheme}.png`),
           fullPage: true,
         });
       }
+    await page.emulateMedia({ colorScheme: 'light' });
+    await page.setViewportSize({ width: 1440, height: 1000 });
     assert.notEqual(
       await page
         .locator('.is-loading .is-current .ad-step-mark')
+        .first()
         .evaluate((el) => getComputedStyle(el).animationName),
       'none',
     );
@@ -259,29 +176,51 @@ fs.mkdirSync(evidence, { recursive: true });
     assert.equal(
       await page
         .locator('.is-loading .is-current .ad-step-mark')
+        .first()
         .evaluate((el) => getComputedStyle(el).animationName),
       'none',
     );
+    // Remove library: the confirmation renders below the library's ⋯ button, takes focus, and
+    // Escape returns focus to the ⋯ button.
+    const libraryMenu = page.locator('#ad-library-menu');
+    await libraryMenu.click();
+    await page.getByRole('menuitem', { name: 'Remove library' }).click();
+    const box = await page.locator('#ad-library-detail .confirm').boundingBox();
+    const button = await libraryMenu.boundingBox();
+    assert(box.y > button.y + button.height, 'The confirmation is below the ⋯ button');
+    assert.match(
+      await page.evaluate(
+        () => document.activeElement.className + ' ' + document.activeElement.textContent,
+      ),
+      /^confirm-text Remove General from Documents\?/,
+    );
+    await page.screenshot({ path: path.join(evidence, 'remove-library-confirm.png') });
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'ad-library-menu');
+    assert.equal(await page.locator('#ad-library-detail .confirm').count(), 0);
+    assert.equal((await requests('RemoveLibrary')).length, 0);
+    // Add site: type in the combobox, pick with the keyboard, then add and check the site.
     await page.locator('#ad-add-site').click();
-    await page.locator('#ad-native').selectOption('00000002-0000-0000-0000-000000000000');
+    const combo = page.getByRole('combobox', { name: 'SharePoint site' });
+    await combo.fill('Deliv');
+    await page.getByRole('option', { name: 'Delivery' }).waitFor();
+    await combo.press('ArrowDown');
+    assert.equal(await combo.getAttribute('aria-activedescendant'), 'ad-native-0');
+    await combo.press('Enter');
+    assert.equal(await combo.inputValue(), 'Delivery');
     await page.locator('#ad-validate').click();
     const siteProgress = page.getByRole('progressbar', { name: 'Delivery setup progress' });
     await siteProgress.waitFor();
     assert.equal(await siteProgress.getAttribute('max'), '3');
-    await page.evaluate(() => {
-      testSiteStatus = 'Captured';
-    });
+    await page.evaluate(() => (window.__mock.siteStatus = 'Captured'));
     await page.getByText('Finishing setup', { exact: true }).waitFor({ timeout: 12000 });
     assert.equal(await siteProgress.getAttribute('value'), '2');
-    await page.evaluate(() => {
-      testSiteStatus = 'Approved';
-    });
+    await page.evaluate(() => (window.__mock.siteStatus = 'Approved'));
     await page.getByText('Delivery is ready.', { exact: true }).waitFor({ timeout: 12000 });
     assert.equal(await siteProgress.getAttribute('value'), '3');
-    assert.equal(await page.locator('#ad-team-search,#ad-initial-team-search').count(), 0);
-    assert.deepEqual(errors, []);
+    assert.deepEqual(page.errors, []);
     console.log(
-      'PASS actual admin HTML, CSS and both scripts in headless Edge: a deleted Dataverse team shown and removed by Apply, team staging/apply/poll, existing-library discovery/add, library creation; 1440/800/400 light and dark; no page errors or horizontal overflow. All Dataverse APIs mocked; no live calls.',
+      'PASS Sites & access in headless Edge on the real page: a deleted Dataverse team shown and removed by Apply, team staging/apply/poll, existing-library discovery/add, library creation, the Remove library confirmation under its ⋯ button with focus and Escape, Add site by keyboard; 1440/800/400 light and dark; no page errors or horizontal overflow. Mocked Dataverse (mock-xrm.js).',
     );
   } finally {
     await browser.close();

@@ -84,8 +84,52 @@ for (const [, name, value] of bounds.matchAll(/public const int (\w+) = (\d+);/g
   assert(client, 'AsxdUi.BOUNDS lacks ' + key);
   assert.equal(client[1], value, 'AsxdUi.BOUNDS.' + key + ' differs from Bounds.' + name);
 }
+// Helper-text budget (spec 4.3, 4.4, decision D9): exactly these elements have class "help".
+const KEPT = [
+  'help-automation-monitor',
+  'help-automation-settings',
+  'help-record-updates',
+  'help-publish',
+  'help-include-root',
+  'help-folder-access',
+];
+const helpInHtml = [...html.matchAll(/<p class="help" id="([^"]+)"/g)].map((m) => m[1]);
+const helpInJs = [...js.matchAll(/\bhelp\(\s*'([^']+)'/g)].map((m) => m[1]);
+assert.deepEqual(
+  [...helpInHtml, ...helpInJs].sort(),
+  [...KEPT].sort(),
+  'Only the kept texts are help',
+);
+assert.doesNotMatch(html + js, /class(Name)?\s*=\s*["']hint|'hint'/, 'No hint class remains');
+// AsxdUi.help itself builds its node with el('p', text, 'help') (shell.js, Task 1). The pattern
+// skips exactly that expression (negative lookahead), and the two checks after it keep the
+// exemption to that one place: it appears once in all scripts, and it is in shell.js.
+const HELPER = "el('p', text, 'help')";
+assert.doesNotMatch(
+  js,
+  /el\((?!'p', text, 'help'\))[^)]*,\s*'help'\)|className\s*=\s*'help'/,
+  'help elements come only from AsxdUi.help',
+);
+assert.equal(js.split(HELPER).length - 1, 1, 'Only AsxdUi.help uses ' + HELPER);
+assert(read('client/admin/shell.js').includes(HELPER), 'AsxdUi.help is defined in shell.js');
+for (const [, text] of html.matchAll(/placeholder="([^"]*)"/g))
+  assert(text.split(/\s+/).length <= 4, 'Placeholder longer than 4 words: ' + text);
+assert.doesNotMatch(
+  html,
+  /<(input|select|textarea|button)[^>]*\stitle=/,
+  'No title tooltips on controls',
+);
+assert.doesNotMatch(js, /\.title\s*=/, 'No title tooltips set from script');
+for (const removed of [
+  'recoveryRun',
+  'recoveryToken',
+  'recoveryEvidence',
+  'recoveryResponse',
+  'asx_RecoverWorker',
+])
+  assert(!html.includes(removed) && !js.includes(removed), removed);
 console.log(
   'PASS admin static contract: ' +
     ids.length +
-    ' unique IDs, tabs, no banner, sitemap and build. Visual/connected QA NOT RUN.',
+    ' unique IDs, tabs, no banner, sitemap and build, the helper-text budget. Visual/connected QA NOT RUN.',
 );

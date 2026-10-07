@@ -317,7 +317,7 @@
     for (const row of monitor.lists.get('BlockedJobs')?.rows || []) {
       const was = before.get(row.Key)?.Recovery?.State;
       if (was === 'Checking' && row.Recovery && row.Recovery.State !== 'Checking')
-        ui.feedback('list-BlockedJobs', recoverySentence(row.Title, row.Recovery));
+        ui.feedback('list-BlockedJobs', ui.recoverySentence(row.Title, row.Recovery));
     }
   }
   // The watch's re-read of a list's first page, with no skeleton. The fresh page replaces the
@@ -649,7 +649,7 @@
     const td = el('td');
     const recovery = row.Recovery;
     if (recovery && row.Kind === 'LibrarySetup') {
-      td.append(el('p', recoverySentence(row.Title, recovery)));
+      td.append(el('p', ui.recoverySentence(row.Title, recovery)));
       if (recovery.State === 'Ambiguous') td.append(candidates(row));
       td.append(status);
       return td;
@@ -660,47 +660,17 @@
     return td;
   }
 
-  function recoverySentence(name, recovery) {
-    const found = recovery.Candidates?.[0];
-    switch (recovery.State) {
-      case 'Checking':
-        return 'Checking SharePoint for ' + name + '…';
-      case 'Found': {
-        const when = ui.time(found.CreatedUtc).textContent;
-        return (
-          'SharePoint has a library ' +
-          found.Title +
-          ' at ' +
-          found.Url +
-          ', created ' +
-          when +
-          '. It matches this request.'
-        );
-      }
-      case 'NotFound':
-        return 'SharePoint has no library named ' + name + ". The creation didn't happen.";
-      default:
-        return recovery.Reason;
-    }
-  }
-
   // An ambiguous finding lists each candidate with the checks it failed and its own Use this one.
   // `list` is the area whose feedback line reports the choice: the Blocked jobs list or Advanced.
   function candidates(row, list = 'BlockedJobs') {
     const items = el('ul', null, 'candidates');
     for (const c of row.Recovery.Candidates) {
-      const failed = [
-        c.TitleMatches ? null : 'different name',
-        c.UrlMatches ? null : 'different address',
-        c.IsLibrary ? null : 'not a document library',
-        c.CreatedAfterRequest ? null : 'there before the request',
-        c.CatalogEntry === 'Conflict' ? 'another catalog entry' : null,
-      ].filter(Boolean);
+      const failed = ui.candidateChecks(c);
       const item = el('li');
       item.append(
         el('span', c.Title + ' · ' + c.Url + ' · created '),
         ui.time(c.CreatedUtc),
-        el('span', failed.length ? ' · ' + failed.join(', ') : ''),
+        el('span', failed ? ' · ' + failed : ''),
       );
       if (row.Actions.includes('UseCandidate') && c.IsLibrary && c.CatalogEntry !== 'Conflict')
         rowButton(item, list, row, 'UseCandidate', 'Use this one', 'secondary', null, null, c);
@@ -1204,7 +1174,7 @@
       // A library setup with a SharePoint finding offers the same recovery choices as its
       // Blocked jobs row (spec 3.3 Advanced): Use the library, Use this one, Create it again,
       // Check again, Cancel setup.
-      fields.append(el('dd', recoverySentence(key, result.Recovery)));
+      fields.append(el('dd', ui.recoverySentence(key, result.Recovery)));
       row.Actions = result.Recovery.Choices || [];
       for (const action of row.Actions) {
         if (action === 'UseCandidate') continue;
