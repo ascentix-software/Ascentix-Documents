@@ -327,6 +327,34 @@ public sealed class DraftSaveTests
     }
 
     [Fact]
+    public void FoldersNestUpToTheFolderDepthBound()
+    {
+        var f = new DurableWorkerTests.Fixture(seedBinding: false);
+        f.SeedTemplate();
+        var draft = new DraftReader(f.Service).Read(f.RevisionId).Draft;
+        var destination = draft.Destinations[0];
+        var top = destination.Folders.Single(x => x.Parent == null);
+        FolderDto[] Chain(int levels) =>
+            new[] { top }
+                .Concat(
+                    Enumerable
+                        .Range(1, levels - 1)
+                        .Select(i => new FolderDto
+                        {
+                            Key = "level" + i,
+                            Parent = i == 1 ? top.Key : "level" + (i - 1),
+                            Name = "L" + i,
+                        })
+                )
+                .ToArray();
+        destination.Folders = Chain(Ascentix.Documents.Domain.Bounds.FolderDepth);
+        DraftTemplate.Build(f.Service, draft);
+        destination.Folders = Chain(Ascentix.Documents.Domain.Bounds.FolderDepth + 1);
+        var refused = Assert.ThrowsAny<Exception>(() => DraftTemplate.Build(f.Service, draft));
+        Assert.Equal("Folder cycle/depth exceeds bounds.", refused.Message);
+    }
+
+    [Fact]
     public void ConditionsAreBoundedByTheRowsOneSaveWritesNotByAHundred()
     {
         var f = new DurableWorkerTests.Fixture(seedBinding: false);

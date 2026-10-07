@@ -267,6 +267,14 @@ public static class Bounds
     public const int FoldersPerDestination = 100;
 
     /// <summary>
+    /// Levels of folders in one destination, its top folder included. TemplateValidator walks
+    /// each folder up to the top folder and refuses a longer chain as "Folder cycle/depth
+    /// exceeds bounds."; the same walk stops a cycle. Nothing else measured binds it: the value
+    /// in use before the trace stays.
+    /// </summary>
+    public const int FolderDepth = 10;
+
+    /// <summary>
     /// Configuration rows one draft save writes (sources, destinations, folders, condition groups
     /// and conditions), all inside one CreateDraft call, which Dataverse stops after 2 minutes.
     /// It replaces the separate caps of 100 condition groups and 100 conditions per template:
@@ -392,7 +400,7 @@ public static class TemplateValidator
                 var cursor = node;
                 while (true)
                 {
-                    if (!seen.Add(cursor.Key) || seen.Count > 10)
+                    if (!seen.Add(cursor.Key) || seen.Count > Bounds.FolderDepth)
                         throw new EvaluationBlockedException("Folder cycle/depth exceeds bounds.");
                     if (cursor.ParentKey == null)
                         break;

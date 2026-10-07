@@ -3001,9 +3001,76 @@ async function boot({
     await t.change(other, '__value');
     assert.equal(t.state().sections[0].Folders[1].Condition.Conditions[0].right, null);
     assert.equal(t.labelled(t.$('conditions'), 'Value, condition 1').tagName, 'INPUT');
+    // Always and back by the arrow keys: the conditions come back, never lost to a key press.
+    await t.change(t.labelled(t.$('conditions'), 'Value, condition 1'), 'Contoso');
+    await t.press(t.find(t.$('conditions'), '＋ Condition'));
+    await t.flush();
     when.key('ArrowLeft');
     await t.document.settle();
     assert.equal(t.state().sections[0].Folders[1].Condition, null);
+    assert.equal(always.getAttribute('aria-checked'), 'true');
+    always.key('ArrowRight');
+    await t.document.settle();
+    const back = t.state().sections[0].Folders[1].Condition;
+    assert.deepEqual(
+      Array.from(back.Conditions, (c) => [c.field, c.Literal]),
+      [
+        ['root.name', 'Contoso'],
+        ['root.name', ''],
+      ],
+      'The conditions return as they were',
+    );
+    await t.flush();
+    const saved = t.last('asx_CreateDraft').Destinations[0].Folders[1].Condition;
+    assert.deepEqual(
+      saved.Conditions.map((c) => c.Literal),
+      ['Contoso', ''],
+      'The next save carries them',
+    );
+    // A click on Always and on Only when… brings them back too.
+    await t.mode(0);
+    await t.mode(1);
+    assert.equal(t.state().sections[0].Folders[1].Condition.Conditions[0].Literal, 'Contoso');
+  }
+  {
+    // ＋ Subfolder stops at the folder depth the server takes, with the reason; ＋ Folder beside
+    // the deepest folder still works.
+    const d = draft();
+    const depth = 10;
+    d.Destinations[0].Folders = [
+      { Key: 'root', Parent: null, Name: '{root.name}', Condition: null },
+      ...Array.from({ length: depth - 1 }, (_, i) => ({
+        Key: 'l' + (i + 1),
+        Parent: i ? 'l' + i : 'root',
+        Name: 'Level ' + (i + 2),
+        Condition: null,
+      })),
+    ];
+    const t = await boot({
+      loaded: { RevisionId: 'rev-1', RowVersion: '3', Status: 'Published', Version: 1, Draft: d },
+    });
+    assert.equal(t.window.AsxdUi.BOUNDS.folderDepth, depth);
+    await t.open();
+    await t.step(2);
+    await t.select('Level ' + depth);
+    const sub = t.$('add-subfolder');
+    assert.equal(sub.getAttribute('aria-disabled'), 'true');
+    assert.equal(
+      t.document.getElementById(sub.getAttribute('aria-describedby')).textContent,
+      'Folders can be nested up to ' + depth + ' levels deep.',
+    );
+    assert.equal(t.$('add-folder').hasAttribute('aria-disabled'), false);
+    await t.press(sub);
+    assert.equal(t.state().sections[0].Folders.length, depth, 'Nothing past the depth');
+    await t.select('Level ' + (depth - 1));
+    assert.equal(t.$('add-subfolder').hasAttribute('aria-disabled'), false);
+    await t.press(t.$('add-subfolder'));
+    assert.equal(t.state().sections[0].Folders.length, depth + 1);
+    assert.equal(
+      t.$('add-subfolder').getAttribute('aria-disabled'),
+      'true',
+      'The new one is as deep',
+    );
   }
   {
     // Test records: previews of the draft, debounced; Created or Skipped for the selected folder,
@@ -3226,8 +3293,87 @@ async function boot({
     await t.rename('General', 'General files');
     assert.equal(t.node('General files').querySelector('.edit-dot').textContent, ' (edited)');
   }
+  {
+    // Undo stops at the folder bound, counting the removed parent it puts back first.
+    const bound = 100;
+    const published = draft();
+    published.Destinations[0].Folders.push(
+      { Key: 'contacts', Parent: 'root', Name: 'Contacts', Condition: null },
+      { Key: 'archive', Parent: 'contacts', Name: 'Archive', Condition: null },
+    );
+    const current = draft();
+    for (let i = 2; i < bound - 1; i++)
+      current.Destinations[0].Folders.push({
+        Key: 'f' + i,
+        Parent: 'root',
+        Name: 'F' + i,
+        Condition: null,
+      });
+    const t = await boot({
+      rows: (table) =>
+        table === 'asx_revision'
+          ? [
+              {
+                asx_revisionid: 'rev-2',
+                asx_version: 2,
+                asx_status: 'Draft',
+                _asx_templateid_value: TEMPLATE,
+              },
+              {
+                asx_revisionid: 'rev-1',
+                asx_version: 1,
+                asx_status: 'Published',
+                _asx_templateid_value: TEMPLATE,
+              },
+            ]
+          : null,
+      handle: (api, body) =>
+        api !== 'asx_LoadDraft'
+          ? null
+          : body.RevisionId === 'rev-1'
+            ? {
+                RevisionId: 'rev-1',
+                RowVersion: '3',
+                Status: 'Published',
+                Version: 1,
+                Draft: published,
+              }
+            : {
+                RevisionId: 'rev-2',
+                RowVersion: '4',
+                Status: 'Draft',
+                Version: 2,
+                Draft: current,
+              },
+    });
+    assert.equal(t.window.AsxdUi.BOUNDS.foldersPerDestination, bound);
+    await t.open();
+    await t.step(2);
+    assert.equal(t.state().sections[0].Folders.length, bound - 1);
+    const undo = (name) =>
+      t
+        .$('folder-tree')
+        .querySelectorAll('button')
+        .find((b) => b.getAttribute('aria-label') === 'Undo removing ' + name);
+    // Archive needs Contacts back too: two folders where one fits.
+    assert.equal(undo('Archive').getAttribute('aria-disabled'), 'true');
+    assert.equal(
+      t.document.getElementById(undo('Archive').getAttribute('aria-describedby')).textContent,
+      'A destination can have up to ' +
+        bound +
+        " folders, because a record's folders for one destination are kept in one Dataverse row.",
+    );
+    await t.press(undo('Archive'));
+    assert.equal(t.state().sections[0].Folders.length, bound - 1, 'Nothing past the bound');
+    assert.equal(undo('Contacts').hasAttribute('aria-disabled'), false);
+    await t.press(undo('Contacts'));
+    assert.equal(t.state().sections[0].Folders.length, bound);
+    assert.equal(undo('Archive').getAttribute('aria-disabled'), 'true');
+    assert.equal(undo('Archive').getAttribute('aria-describedby'), 'folder-reason');
+    assert.equal(t.$('add-folder').getAttribute('aria-describedby'), 'folder-reason');
+  }
   console.log(
-    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step; Task 6 fix round 1: a new template unnamed until named and not saved mid-name, saving before switching or closing, a late save answer kept out of a new template, an edit during Publish kept and saved next, a published read retried and its failure, a failed policy read, trimmed destination names, problems not announced twice, and Save draft refusing a nameless template; Task 7: the folder tree with destination pills, rules, New, edited and Removed with Undo (aliases mapped, a removed parent first), ＋ Folder and ＋ Subfolder with their bound, the folder panel and its ⋯ menu, ＋ Field inserting at the caret, Create this folder, the condition sentence with Another field…, debounced test-record previews with Created or Skipped and the failing value, their bound, Out of date and failures, and links to Sites & access that save first. Fake DOM; browser QA separate.',
+    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step; Task 6 fix round 1: a new template unnamed until named and not saved mid-name, saving before switching or closing, a late save answer kept out of a new template, an edit during Publish kept and saved next, a published read retried and its failure, a failed policy read, trimmed destination names, problems not announced twice, and Save draft refusing a nameless template; Task 7: the folder tree with destination pills, rules, New, edited and Removed with Undo (aliases mapped, a removed parent first), ＋ Folder and ＋ Subfolder with their bound, the folder panel and its ⋯ menu, ＋ Field inserting at the caret, Create this folder, the condition sentence with Another field…, debounced test-record previews with Created or Skipped and the failing value, their bound, Out of date and failures, and links to Sites & access that save first; Task 7 fix round 1: conditions kept across Always and back, Undo at the folder bound counting removed parents, and ＋ Subfolder at the folder depth. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

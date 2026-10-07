@@ -1373,14 +1373,47 @@
       }
     host.replaceChildren(...rows);
     const reason =
-      section.Folders.length >= ui.BOUNDS.foldersPerDestination
-        ? 'A destination can have up to ' +
-          ui.BOUNDS.foldersPerDestination +
-          " folders, because a record's folders for one destination are kept in one Dataverse row."
+      section.Folders.length >= ui.BOUNDS.foldersPerDestination ? FOLDER_REASON() : null;
+    // A folder at the deepest level takes no folder under it.
+    const deep =
+      selectedFolder && levels(section, selectedFolder) >= ui.BOUNDS.folderDepth
+        ? 'Folders can be nested up to ' + ui.BOUNDS.folderDepth + ' levels deep.'
         : null;
-    // One reason for both, after the last of them.
+    // One reason for both, after the last of them; the depth reason only when that is the one.
+    ui.disable($('add-subfolder'), 'folder-depth-reason', null);
     ui.disable($('add-subfolder'), 'folder-reason', reason);
     ui.disable($('add-folder'), 'folder-reason', reason);
+    if (deep && !reason) ui.disable($('add-subfolder'), 'folder-depth-reason', deep);
+    // An Undo that would put back more folders than fit says why, with the same reason.
+    for (const undo of host.querySelectorAll('[data-over]'))
+      ui.disable(undo, 'folder-reason', FOLDER_REASON());
+  }
+  const FOLDER_REASON = () =>
+    'A destination can have up to ' +
+    ui.BOUNDS.foldersPerDestination +
+    " folders, because a record's folders for one destination are kept in one Dataverse row.";
+  // A folder's level: 1 for the top folder, 2 under it, and so on.
+  function levels(section, folder) {
+    let n = 1;
+    for (
+      let parent = section.Folders.find((f) => f.Key === folder.Parent);
+      parent && n <= section.Folders.length;
+      parent = section.Folders.find((f) => f.Key === parent.Parent)
+    )
+      n++;
+    return n;
+  }
+  // The folders Undo puts back: the folder, and each removed parent it needs first.
+  function restoreCount(section, folder) {
+    let n = 0;
+    for (let at = folder; at && n <= section.Folders.length + 1; n++) {
+      if (!at.Parent || section.Folders.some((f) => f.Key === at.Parent)) return n + 1;
+      const key = at.Parent;
+      at = state.changes?.removed.find(
+        (e) => e.destination === section.Key && e.folder.Key === key,
+      )?.folder;
+    }
+    return n;
   }
   const indent = (depth) => 10 + depth * 24 + 'px';
   function treeRow(section, folder, depth) {
@@ -1430,9 +1463,20 @@
     const name = ui.tokens(entry.folder.Name, labelOf(state.publishedSnapshot?.sources || []));
     const text = el('span', null, 'removed-name');
     text.append(name);
-    const undo = button('Undo', () => undoRemove(section, entry.folder), 'link');
+    const undo = button(
+      'Undo',
+      () => {
+        if (!ui.blocked(undo)) undoRemove(section, entry.folder);
+      },
+      'link',
+    );
     undo.setAttribute('aria-label', 'Undo removing ' + (name.textContent || 'Unnamed folder'));
     keyed(undo, 'undo:' + section.Key + ':' + entry.folder.Key);
+    if (
+      section.Folders.length + restoreCount(section, entry.folder) >
+      ui.BOUNDS.foldersPerDestination
+    )
+      undo.dataset.over = 'true';
     row.append(glyph, text, el('span', 'Removed', 'tag removed'), undo);
     return row;
   }
@@ -1766,18 +1810,25 @@
     if (folder.Parent) $('create-mode').removeAttribute('aria-describedby');
     else $('create-mode').setAttribute('aria-describedby', 'help-include-root');
   }
-  // Only when… starts with one condition on the record's name; Always drops the conditions.
+  // The conditions a folder had when Always was chosen, for this editing session: Only when…
+  // brings them back, so a key press on the radios never loses them.
+  const lastCondition = new WeakMap();
+  // Only when… brings back the folder's last conditions, else starts with one condition on the
+  // record's name; Always sets them aside.
   function setMode(conditional, focusKey) {
     const folder = selectedFolder;
     if (!folder || state.readOnly) return;
     if (conditional !== !!folder.Condition) {
-      folder.Condition = conditional
-        ? {
-            All: true,
-            Conditions: [{ field: firstField(), Operator: 'Equal', Literal: '' }],
-            Groups: [],
-          }
-        : null;
+      if (conditional)
+        folder.Condition = lastCondition.get(folder) || {
+          All: true,
+          Conditions: [{ field: firstField(), Operator: 'Equal', Literal: '' }],
+          Groups: [],
+        };
+      else {
+        lastCondition.set(folder, folder.Condition);
+        folder.Condition = null;
+      }
       dirty();
     }
     state.focusKey = focusKey;
