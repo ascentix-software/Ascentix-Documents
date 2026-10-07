@@ -519,7 +519,8 @@ public static class ProblemList
         }
         else if (work.SecurityTeamId != Guid.Empty)
         {
-            outbox.Kind = "AccessRun";
+            // A team-membership refresh stays an outbox row (Kind RecordPlan): Retry sends
+            // RetryOutbox and there is no Cancel. Only its label says what it is.
             outbox.KindLabel = "Library access";
             outbox.Record = names.Record("team", work.SecurityTeamId);
         }
@@ -625,7 +626,10 @@ public static class ProblemList
                     actions.Add("CancelRun");
                 return actions.ToArray();
             case "CaptureJob":
-                actions.Add("Rerun");
+                // RerunRecord queues a record of an enabled table; a team (the membership and
+                // retirement handlers) or a job with no record would always be refused.
+                if (row.Record != null && row.Record.Table != "team")
+                    actions.Add("Rerun");
                 actions.Add("Dismiss");
                 break;
             case "RecordPlan":

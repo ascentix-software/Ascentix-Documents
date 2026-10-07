@@ -453,6 +453,62 @@ public sealed class ProblemListTests
     }
 
     [Fact]
+    public void ABlockedTeamRefreshIsAnOutboxRowRetriedAsOne()
+    {
+        // A team-membership refresh is an outbox row: Retry sends RetryOutbox (Kind RecordPlan),
+        // and there is no Cancel, which only operations have.
+        var f = Setup();
+        var team = Guid.NewGuid();
+        f.Service.Seed(new Entity("team", team) { ["name"] = "Sales" });
+        f.Store.Create(
+            "asx_outbox",
+            new OutboxDocument
+            {
+                Key = "team-event:" + Guid.NewGuid().ToString("N") + ":" + team.ToString("N"),
+                Status = "Blocked",
+                SecurityTeamId = team,
+                Notices = new[] { WorkerCoordinator.PlanningFailedNotice },
+            }
+        );
+        var row = Assert.Single(List(f, "BlockedRecords").Problems);
+        Assert.Equal("RecordPlan", row.Kind);
+        Assert.Equal("Library access", row.KindLabel);
+        Assert.Equal("Sales · Library access", row.Title);
+        Assert.Equal(new[] { "Retry", "OpenRecord" }, row.Actions);
+    }
+
+    [Fact]
+    public void AMissedChangeOffersRerunOnlyForARecordOfATable()
+    {
+        // RerunRecord refuses a team (the membership and retirement handlers' jobs) and a job
+        // with no record, so neither offers it.
+        var f = Setup();
+        var team = Guid.NewGuid();
+        f.Service.Seed(new Entity("team", team) { ["name"] = "Sales" });
+        f.Service.Seed(
+            new Entity("asyncoperation", Guid.NewGuid())
+            {
+                ["statuscode"] = new OptionSetValue(31),
+                ["message"] = "Team membership failed.",
+                ["createdon"] = f.Now,
+                ["regardingobjectid"] = new EntityReference("team", team),
+            }
+        );
+        f.Service.Seed(
+            new Entity("asyncoperation", Guid.NewGuid())
+            {
+                ["statuscode"] = new OptionSetValue(31),
+                ["message"] = "No record.",
+                ["createdon"] = f.Now.AddMinutes(-1),
+            }
+        );
+        var rows = List(f, "NotCaptured").Problems;
+        Assert.Equal(2, rows.Length);
+        Assert.Equal(new[] { "Dismiss", "OpenRecord" }, rows.Single(r => r.Record != null).Actions);
+        Assert.Equal(new[] { "Dismiss" }, rows.Single(r => r.Record == null).Actions);
+    }
+
+    [Fact]
     public void RetryingJobsShowTheCauseAndTheNextAttempt()
     {
         var f = Setup();
