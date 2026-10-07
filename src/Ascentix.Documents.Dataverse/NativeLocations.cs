@@ -140,6 +140,7 @@ public sealed class NativeLocations
         var query = new QueryExpression("sharepointdocumentlocation")
         {
             ColumnSet = new ColumnSet(
+                "name",
                 "relativeurl",
                 "parentsiteorlocation",
                 "regardingobjectid",
@@ -151,6 +152,8 @@ public sealed class NativeLocations
         query.Criteria.AddCondition("sharepointdocumentlocationid", ConditionOperator.Equal, id);
         var rows = service.RetrieveMultiple(query).Entities;
         var marker = "AscentixDocuments:" + DocumentStore.Hash(binding.Key);
+        // The record's Documents tab lists the location by name, so it reads as the root folder.
+        var name = binding.Candidate.Split('/').Last();
         if (rows.Count > 1)
             throw new EvaluationBlockedException("Ambiguous native location.");
         if (rows.Count == 1)
@@ -170,12 +173,26 @@ public sealed class NativeLocations
                 throw new EvaluationBlockedException(
                     "Managed native location differs; refusing reassignment."
                 );
+            // Earlier versions named the location "Documents <destination key>". Such a name
+            // takes the folder's; a name an admin chose is kept.
+            if (row.GetAttributeValue<string>("name") == "Documents " + binding.Section)
+                service.Execute(
+                    new UpdateRequest
+                    {
+                        Target = new Entity("sharepointdocumentlocation", row.Id)
+                        {
+                            RowVersion = row.RowVersion,
+                            ["name"] = name,
+                        },
+                        ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+                    }
+                );
             return row.Id;
         }
         service.Create(
             new Entity("sharepointdocumentlocation", id)
             {
-                ["name"] = "Documents " + binding.Section,
+                ["name"] = name,
                 ["description"] = marker,
                 ["relativeurl"] = binding.Candidate,
                 ["parentsiteorlocation"] = new EntityReference(

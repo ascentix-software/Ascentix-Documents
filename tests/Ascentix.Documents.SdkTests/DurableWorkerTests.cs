@@ -50,6 +50,49 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
+    public void NativeLocationIsNamedAfterTheRootFolder()
+    {
+        var fixture = new Fixture();
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        var row = fixture.Service.Rows[completed.LocationId];
+        Assert.Equal(fixture.Binding.Candidate, row.GetAttributeValue<string>("name"));
+    }
+
+    [Fact]
+    public void AnOlderNativeLocationTakesTheFolderNameButAnAdminRenameStays()
+    {
+        var fixture = new Fixture();
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        var binding = JsonWire.Read<FolderStep>(JsonWire.Write(fixture.Binding));
+        binding.PhysicalId = completed.PhysicalId;
+        binding.PhysicalPath = "/sites/proto/General/" + binding.Candidate;
+        void CompleteAgain() =>
+            new NativeLocations(fixture.Service).Complete(
+                binding,
+                fixture.NativeParent,
+                fixture.EntryUrl,
+                fixture.NativeSite
+            );
+        // A location created by an earlier version carries the old generated name.
+        string Name() =>
+            fixture.Service.Rows[completed.LocationId].GetAttributeValue<string>("name");
+        fixture.Service.Rows[completed.LocationId]["name"] = "Documents " + binding.Section;
+        CompleteAgain();
+        Assert.Equal(binding.Candidate, Name());
+        fixture.Service.Rows[completed.LocationId]["name"] = "Client folder";
+        CompleteAgain();
+        Assert.Equal("Client folder", Name());
+    }
+
+    [Fact]
     public void NativeLocationAndCompletionRollbackTogetherOnCasConflict()
     {
         var fixture = new Fixture();
