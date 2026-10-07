@@ -47,8 +47,10 @@ async function boot({
   summary = {},
   runtime = {},
   workers,
-  // Rows a table read answers with, in place of the defaults below.
+  // Rows a table read answers with, in place of the defaults below; an Error refuses the read.
   rows = {},
+  // Privileges the caller lacks.
+  missing = [],
   handle = () => null,
   getGate = null,
 } = {}) {
@@ -117,31 +119,37 @@ async function boot({
       }),
     },
     WebApi: {
-      retrieveMultipleRecords: async (table) => ({
-        entities: rows[table]
-          ? rows[table]
-          : table === 'systemuser'
-            ? workers || [{ systemuserid: 'worker-1', fullname: 'Documents worker' }]
-            : table === 'asx_runtimetable'
-              ? [{ asx_logicalname: 'account' }]
-              : table === 'asx_template'
-                ? [
-                    {
-                      asx_templateid: '11111111-2222-3333-4444-555555555555',
-                      asx_name: 'Account documents',
-                      asx_table: 'account',
-                      _asx_publishedrevisionid_value: 'rev-1',
-                    },
-                  ]
-                : table === 'connectionreference'
+      retrieveMultipleRecords: async (table) => {
+        if (rows[table] instanceof Error) throw rows[table];
+        return {
+          entities: rows[table]
+            ? rows[table]
+            : table === 'systemuser'
+              ? workers || [{ systemuserid: 'worker-1', fullname: 'Documents worker' }]
+              : table === 'asx_runtimetable'
+                ? [{ asx_logicalname: 'account' }]
+                : table === 'asx_template'
                   ? [
-                      { connectionreferencedisplayname: 'Documents HTTP', connectionid: 'c-1' },
-                      { connectionreferencedisplayname: 'Documents Dataverse', connectionid: null },
+                      {
+                        asx_templateid: '11111111-2222-3333-4444-555555555555',
+                        asx_name: 'Account documents',
+                        asx_table: 'account',
+                        _asx_publishedrevisionid_value: 'rev-1',
+                      },
                     ]
-                  : table === 'asx_library'
-                    ? [{ asx_libraryid: 'lib-1' }]
-                    : [],
-      }),
+                  : table === 'connectionreference'
+                    ? [
+                        { connectionreferencedisplayname: 'Documents HTTP', connectionid: 'c-1' },
+                        {
+                          connectionreferencedisplayname: 'Documents Dataverse',
+                          connectionid: null,
+                        },
+                      ]
+                    : table === 'asx_library'
+                      ? [{ asx_libraryid: 'lib-1' }]
+                      : [],
+        };
+      },
       online: {
         execute: async (request) => {
           const api = request.getMetadata().operationName;
@@ -202,7 +210,7 @@ async function boot({
                 PrimaryNameAttribute: t === 'contact' ? 'fullname' : 'name',
               })),
             }
-          : { RolePrivileges: [{}] },
+          : { RolePrivileges: missing.some((p) => String(url).includes(p)) ? [] : [{}] },
     }),
     setTimeout,
     clearTimeout,
@@ -230,6 +238,7 @@ async function boot({
     buttons,
     press,
     tick,
+    window,
     commands: () => sent.map(([, b]) => b.Command),
   };
 }
@@ -1344,7 +1353,7 @@ async function boot({
     );
     picker.value = 'lead';
     await picker.onchange();
-    await s.document.settle();
+    await s.press(s.$('add-chosen-table'));
     assert.deepEqual(s.sent.filter(([a]) => a === 'asx_RuntimeAdmin').at(-1)[1], {
       Command: 'AddTable',
       Table: 'lead',
@@ -1393,6 +1402,145 @@ async function boot({
     );
     const quiet = await boot({ tab: 'settings' });
     assert.equal(quiet.$('settings-problems').querySelector('.problem-pill').hidden, true);
+  }
+  // Settings fix round 1 ----------------------------------------------------------------------
+  {
+    // A non-administrator: the runtime Get is refused and the System Administrator privilege is
+    // missing. No missing-settings alert; automation reads from the Default runtime row and shows
+    // as text; no inputs or switches; a refused connections read hides that card quietly.
+    const s = await boot({
+      tab: 'settings',
+      missing: ['prvWriteasx_runtime'],
+      rows: {
+        asx_runtime: [{ asx_enabled: true, asx_processrecordupdates: false }],
+        connectionreference: new Error('Principal user is missing prvReadconnectionreference.'),
+      },
+      handle: (api, b) =>
+        b.Command === 'Get' ? new Error('Principal user is missing prvWriteasx_runtime.') : null,
+    });
+    assert.equal(s.$('settings-missing').hidden, true, 'No missing-settings alert');
+    assert.equal(s.$('automation-card').hidden, false);
+    assert.equal(s.$('automation-state-settings').textContent, 'Automation is running');
+    assert.equal(s.$('automation-switch-settings').hidden, true);
+    const shown = s
+      .$('settings')
+      .querySelectorAll('input, select, [role=switch]')
+      .filter((n) => !n.closest('[hidden]') && !n.hidden);
+    assert.equal(shown.length, 0);
+    assert.equal(s.$('settings-meta').textContent, 'Only System Administrators can change these');
+    assert.equal(s.$('settings-footer').hidden, true);
+    assert.equal(s.$('connections-card').hidden, true);
+    assert.doesNotMatch(s.$('settings').visibleText, /Couldn't read the connections/);
+    // No Default row to read: the automation card hides too.
+    const none = await boot({
+      tab: 'settings',
+      missing: ['prvWriteasx_runtime'],
+      handle: (api, b) => (b.Command === 'Get' ? new Error('Refused.') : null),
+    });
+    assert.equal(none.$('automation-card').hidden, true);
+    assert.equal(none.$('settings-missing').hidden, true);
+  }
+  {
+    // ＋ Add table: arrowing through the tables only chooses one; Add adds it. Add stays disabled
+    // until a table is chosen, and a refused AddTable resets the choice.
+    let refuse = true;
+    const s = await boot({
+      tab: 'settings',
+      handle: (api, b) =>
+        b.Command === 'AddTable' && refuse ? new Error('The run-as user cannot read Lead.') : null,
+    });
+    const adds = () => s.sent.filter(([, b]) => b.Command === 'AddTable').length;
+    await s.press(s.$('add-table'));
+    const picker = s.$('enableTable');
+    const add = s.$('add-chosen-table');
+    assert.equal(add.textContent.trim(), 'Add');
+    assert.equal(add.getAttribute('aria-disabled'), 'true');
+    await s.press(add);
+    assert.equal(adds(), 0, 'Add does nothing with no table chosen');
+    picker.value = 'lead';
+    await picker.onchange();
+    await s.document.settle();
+    assert.equal(adds(), 0, 'Choosing a table does not add it');
+    assert.equal(add.hasAttribute('aria-disabled'), false);
+    await s.press(add);
+    assert.equal(adds(), 1);
+    assert.equal(s.$('fb-settings').textContent, 'The run-as user cannot read Lead.');
+    assert.equal(picker.value, '', 'A refused AddTable resets the choice');
+    assert.equal(add.getAttribute('aria-disabled'), 'true');
+    refuse = false;
+    picker.value = 'contact';
+    await picker.onchange();
+    await s.press(add);
+    assert.deepEqual(s.sent.filter(([, b]) => b.Command === 'AddTable').at(-1)[1], {
+      Command: 'AddTable',
+      Table: 'contact',
+    });
+    assert.equal(s.$('fb-settings').textContent, 'Contact added.');
+  }
+  {
+    // Removing the first of two hosts is one unsaved change.
+    const s = await boot({
+      tab: 'settings',
+      runtime: { SharePointHosts: ['contoso.sharepoint.com', 'fabrikam.sharepoint.com'] },
+    });
+    await s.press(s.$('hosts-list').querySelectorAll('button')[0]);
+    assert.equal(s.$('settings-footer').hidden, false);
+    assert.equal(s.$('settings-unsaved').textContent, '1 unsaved change');
+  }
+  {
+    // A runtime change while a Remove table confirmation is open keeps the confirmation; the
+    // Tables card redraws once it closes.
+    const s = await boot({ tab: 'settings' });
+    const remove = s
+      .$('tables-rows')
+      .querySelectorAll('button')
+      .find((b) => b.textContent === 'Remove');
+    await s.press(remove);
+    s.window.AsxdUi.setRuntime({
+      WorkerId: 'worker-1',
+      Enabled: true,
+      CanChange: true,
+      RowVersion: '8',
+      SharePointHosts: ['contoso.sharepoint.com'],
+      ProcessRecordUpdates: false,
+      Tables: ['account'],
+      Registration: {
+        Readiness: [
+          { Scope: 'account', Status: 'Outdated' },
+          { Scope: 'team', Status: 'Ready' },
+        ],
+        Pending: 1,
+        Error: null,
+      },
+    });
+    await s.document.settle();
+    const keep = () =>
+      s
+        .$('tables-rows')
+        .querySelectorAll('button')
+        .find((b) => b.textContent === 'Keep table');
+    assert.ok(keep(), 'The open confirmation survives');
+    assert.match(s.$('tables-rows').visibleText, /Account.*Ready/);
+    await s.press(keep());
+    assert.match(s.$('tables-rows').visibleText, /Account.*Out of date/);
+  }
+  {
+    // Discard clears a refused save's message in the save bar.
+    const s = await boot({
+      tab: 'settings',
+      handle: (api, b) =>
+        b.Command === 'Save' ? new Error('Automation settings changed. Reopen the page.') : null,
+    });
+    const host = s.$('hosts-list').querySelector('input');
+    host.value = 'fabrikam.sharepoint.com';
+    host.oninput();
+    await s.press(s.$('save-settings'));
+    assert.equal(
+      s.$('fb-settings-save').textContent,
+      'Automation settings changed. Reopen the page.',
+    );
+    await s.press(s.$('settings-discard'));
+    assert.equal(s.$('fb-settings-save').textContent, '');
   }
   // Fix round 1 -------------------------------------------------------------------------------
   {
@@ -1583,7 +1731,7 @@ async function boot({
     assert.equal(s.document.activeElement.getAttribute('aria-label'), 'Remove Account');
   }
   console.log(
-    'PASS Monitor and Settings: lists on open, names and Details, row actions, Retry now, re-runs, 60-second re-read announcements, recovery choices (lists and Advanced), load errors, Refresh, the automation pill and its Settings link, checklist, Check a record, Advanced, Settings, Repair all, danger zone, the Settings switch and its refusals, Settings as cards (the automation card, the save bar with its count and Discard, the Tables card with counts, change tracking, Repair, Remove and Add table, Connections, read-only values, the Monitor problem pill), runtime shared with the form, no tick off Monitor, a late or refused Get; fix round 1: the tick keeps appended rows and drops removed ones, defers redraws under confirmations, Details and focus; checkboxes only on re-runnable rows with per-row reasons; Show 50 more once, and its errors; capped Refresh text; recent lookup errors; Repair focus and text; one announcement for the switch, one Monitor line for every announcement of a tick. Fake DOM; browser QA separate.',
+    'PASS Monitor and Settings: lists on open, names and Details, row actions, Retry now, re-runs, 60-second re-read announcements, recovery choices (lists and Advanced), load errors, Refresh, the automation pill and its Settings link, checklist, Check a record, Advanced, Settings, Repair all, danger zone, the Settings switch and its refusals, Settings as cards (the automation card, the save bar with its count and Discard, the Tables card with counts, change tracking, Repair, Remove and Add table, Connections, read-only values, the Monitor problem pill; fix round 1: the read-only page for a non-administrator from the Default runtime row, Add table by its Add button and a refused add, removing a host, a runtime change under a Remove confirmation, Discard clears the save bar message), runtime shared with the form, no tick off Monitor, a late or refused Get; fix round 1: the tick keeps appended rows and drops removed ones, defers redraws under confirmations, Details and focus; checkboxes only on re-runnable rows with per-row reasons; Show 50 more once, and its errors; capped Refresh text; recent lookup errors; Repair focus and text; one announcement for the switch, one Monitor line for every announcement of a tick. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

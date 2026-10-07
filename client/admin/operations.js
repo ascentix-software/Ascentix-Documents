@@ -12,6 +12,7 @@
   const runtimeApi = (request) => ui.api('asx_RuntimeAdmin', request);
   const EMPTY = '00000000-0000-0000-0000-000000000000';
   const OPERATOR = 'prvCreateasx_operatorcommand';
+  const ADMIN = 'prvWriteasx_runtime';
   const LISTS = [
     {
       id: 'TemplateRuns',
@@ -1265,7 +1266,8 @@
 
   // The page starts before the shell's runtime Get may be back: the form stays busy until it
   // is, then follows every runtime change (the switch, Save, Repair, a table added or removed).
-  // A refused Get shows the missing-settings alert.
+  // A refused Get shows a System Administrator the missing-settings alert; anyone else sees
+  // whether automation runs, as text.
   async function openSettings() {
     ui.problemPill($('settings-problems'));
     $('automation-settings').setAttribute('aria-busy', 'true');
@@ -1289,6 +1291,7 @@
     $('settings-discard').onclick = () => {
       if (!ui.runtime()) return;
       settings.edited = false;
+      ui.clearFeedback('settings-save');
       renderSettings(ui.runtime());
       markEdited();
       $('settings-title').focus();
@@ -1298,8 +1301,13 @@
       $('table-picker').hidden = !$('table-picker').hidden;
       if (!$('table-picker').hidden) $('enableTable').focus();
     };
-    $('enableTable').onchange = () =>
-      $('enableTable').value ? addTable($('enableTable').value) : undefined;
+    // Choosing a table only enables Add: arrow keys on a closed select fire change.
+    $('enableTable').onchange = chooseTable;
+    $('add-chosen-table').onclick = () => {
+      const name = $('enableTable').value;
+      if (ui.blocked($('add-chosen-table')) || !name) return undefined;
+      return addTable(name);
+    };
     // Once Repair all ends, the button shows what is still pending, not its progress text.
     $('repair-all').onclick = async () => {
       if (ui.blocked($('repair-all'))) return;
@@ -1328,25 +1336,38 @@
       ui.runtimeReady(),
     ]);
     ui.onRuntime(showSettings);
-    showSettings(ui.runtime());
+    await showSettings(ui.runtime());
     const link = ui.deeplink();
     if (link?.table) focusTable(link.table);
   }
 
   function showSettings(runtime) {
-    $('settings-missing').hidden = !!runtime;
+    $('settings-missing').hidden = !!runtime || !ui.can(ADMIN);
     for (const id of ['automation-card', 'automation-settings', 'tables-card', 'danger-zone'])
       $(id).hidden = !runtime;
     if (!runtime) {
       $('settings-footer').hidden = true;
       $('automation-settings').removeAttribute('aria-busy');
-      return;
+      return ui.can(ADMIN) ? undefined : showAutomationText();
     }
     renderSettings(runtime);
     // Table names come from metadata, read once per table; the logical name shows until then.
     const scopes = (runtime.Registration?.Readiness || []).map((r) => r.Scope);
     if (scopes.some((s) => s !== 'team' && !labels.has(s)))
       loadLabels(scopes).then(() => ui.runtime() && renderTables(ui.runtime()));
+  }
+
+  // Only a System Administrator can read the profile. Anyone else sees whether automation runs,
+  // as text, from the Default runtime row; with no row to read the card stays hidden.
+  async function showAutomationText() {
+    const state = await ui.automation();
+    if (ui.runtime()) return;
+    $('automation-switch-settings').hidden = true;
+    $('automation-card').hidden = !state;
+    if (state)
+      $('automation-state-settings').textContent = state.Enabled
+        ? 'Automation is running'
+        : 'Automation is paused';
   }
 
   // Every row of a query, page by page as the platform returns them.
@@ -1577,6 +1598,12 @@
         .map((t) => option(t.name, t.label)),
     );
     $('enableTable').value = '';
+    chooseTable();
+  }
+  // Add is available once a table is chosen.
+  function chooseTable() {
+    if ($('enableTable').value) $('add-chosen-table').removeAttribute('aria-disabled');
+    else $('add-chosen-table').setAttribute('aria-disabled', 'true');
   }
 
   // One row per enabled table, by name, with team access events last: its template count, its
@@ -1676,23 +1703,23 @@
     return row.focus();
   }
 
+  // A refused add clears the choice, so Add waits for the next one.
   async function addTable(name) {
     const picker = $('enableTable');
-    if (picker.disabled) return;
+    let added = false;
     picker.disabled = true;
-    ui.clearFeedback('settings');
-    try {
+    await ui.busy($('add-chosen-table'), 'Add', 'settings', async () => {
       const result = await runtimeApi({ Command: 'AddTable', Table: name });
       await countTemplates();
       $('table-picker').hidden = true;
       ui.setRuntime(result);
       ui.feedback('settings', label(name) + ' added.');
-      focusTable(name);
-    } catch (error) {
-      ui.feedback('settings', error.message || String(error), 'error');
-    } finally {
-      picker.disabled = false;
-    }
+      added = true;
+    });
+    picker.disabled = false;
+    if (added) return focusTable(name);
+    picker.value = '';
+    return chooseTable();
   }
 
   async function removeTable(table, control) {
@@ -1778,6 +1805,11 @@
         }),
       );
     } catch (error) {
+      // A caller who cannot read the connections does not see the card at all.
+      if (!ui.can(ADMIN)) {
+        $('connections-card').hidden = true;
+        return;
+      }
       $('connection-list').replaceChildren(
         el(
           'li',

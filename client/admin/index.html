@@ -625,8 +625,11 @@
                 <button id="add-table" type="button" class="link">＋ Add table</button>
               </div>
             </div>
-            <div id="table-picker" class="card-row" hidden>
+            <div id="table-picker" class="card-row row" data-actions hidden>
               <label>Table to add<select id="enableTable"></select></label>
+              <button id="add-chosen-table" type="button" class="secondary" aria-disabled="true">
+                Add
+              </button>
             </div>
             <p id="tracking-error" class="card-row error" role="alert" hidden></p>
             <div class="card-row col-head tables-grid" aria-hidden="true">

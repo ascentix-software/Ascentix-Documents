@@ -2241,6 +2241,14 @@ input.is-edited {
 .card-head .card-action {
   margin-left: auto;
 }
+#table-picker {
+  align-items: flex-end;
+}
+#table-picker select {
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 500;
+}
 #table-picker label {
   max-width: 360px;
   margin: 0;
