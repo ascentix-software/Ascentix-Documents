@@ -22,10 +22,10 @@
   };
   const metadata = new Map();
   const xrm = window.parent?.Xrm || window.Xrm;
-  const message = (text, error = false) => {
-    $('status').textContent = text;
-    $('status').className = error ? 'error' : '';
-  };
+  const ui = window.AsxdUi;
+  // Results of an action show in the feedback line of the tab that ran it (spec 2.5).
+  const message = (text, error = false) =>
+    ui.feedback(ui.activeTab(), text, error ? 'error' : 'success');
   const el = (tag, text, css) => {
     const node = document.createElement(tag);
     if (text != null) node.textContent = text;
@@ -72,7 +72,7 @@
       state.busy || !state.root || !state.enabledTables.includes(state.root.LogicalName);
     $('templateName').disabled = state.busy || !state.root || !!state.template;
     $('revisionControls').hidden = !state.root;
-    $('templateActions').hidden = !state.root || $('author-view').hidden;
+    $('templateActions').hidden = !state.root;
     $('authorWorkspace').hidden = !state.root;
     $('tablePrompt').hidden = !!state.root;
     $('maintenanceContext').textContent = state.root
@@ -451,27 +451,6 @@
   const siteName = (library) =>
     state.sites.find((s) => s.asx_siteid === library?._asx_siteid_value)?.asx_name ||
     'Unavailable site';
-  function showView(view) {
-    const target = ['access', 'administration', 'runtime', 'operations'].includes(view)
-      ? view
-      : 'author';
-    const admin = ['administration', 'runtime', 'operations'].includes(target);
-    $('author-view').hidden = target !== 'author';
-    $('templateActions').hidden = target !== 'author' || !state.root;
-    for (const id of ['access', 'runtime', 'operations', 'recordTools']) {
-      const panel = $(id);
-      panel.classList.add('admin-panel');
-      panel.hidden =
-        id === 'runtime' || id === 'operations' || id === 'recordTools' ? !admin : id !== target;
-      if (!panel.hidden) panel.open = true;
-    }
-    if (target === 'access') window.AsxdSites?.open();
-    document.querySelectorAll('[data-view]').forEach((tab) => {
-      const active = tab.dataset.view === (admin ? 'administration' : target);
-      tab.classList.toggle('active', active);
-      tab.setAttribute('aria-pressed', String(active));
-    });
-  }
   function destinationName(section) {
     return section.Name && section.Name !== section.Key
       ? section.Name
@@ -685,8 +664,7 @@
       button(
         'View this library’s team access →',
         () => {
-          showView('access');
-          window.AsxdSites?.selectLibrary(section.LibraryId);
+          ui.navigate('access', { library: section.LibraryId });
         },
         'quiet small',
       ),
@@ -1031,12 +1009,17 @@
   $('deleteTemplate').onclick = () =>
     task(async () => {
       if (!state.template) throw new Error('Select a saved template first.');
-      const answer = await xrm.Navigation.openConfirmDialog({
-        title: 'Delete template?',
-        text: 'This deletes the template and all its revisions. No new work will start. Existing SharePoint folders, documents and access remain unchanged. A request already sent to SharePoint may finish.',
-        confirmButtonLabel: 'Delete template',
+      const name = state.template.asx_name || 'this template';
+      const ok = await ui.confirmInline($('deleteTemplate'), {
+        text:
+          'Delete ' +
+          name +
+          ' and all its versions? No new folder work starts for it. Folders, documents and access in SharePoint stay as they are. Work already sent to SharePoint may still finish.',
+        confirm: 'Delete template',
+        keep: 'Keep template',
+        danger: true,
       });
-      if (!answer.confirmed) return;
+      if (!ok) return;
       await xrm.WebApi.deleteRecord('asx_template', state.template.asx_templateid);
       state.saved = null;
       state.editBase = null;
@@ -2123,54 +2106,46 @@
       controls();
     },
   };
-  document
-    .querySelectorAll('[data-view]')
-    .forEach((tab) => (tab.onclick = () => showView(tab.dataset.view)));
-  window.addEventListener('hashchange', () => showView(location.hash.slice(1)));
-  showView(location.hash.slice(1));
-  render();
-  if (!xrm?.WebApi || !xrm?.Utility) {
-    message(
-      'Open this admin page inside its Dataverse app to connect. No simulated records or changes are active.',
-      true,
-    );
-    $('table').replaceChildren(option('', 'Dataverse connection required'));
-    return;
-  }
-  task(async () => {
-    state.tables = (
-      await all(
-        'EntityDefinitions?$select=LogicalName,DisplayName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,IsDocumentManagementEnabled&$filter=IsDocumentManagementEnabled eq true',
-      )
-    )
-      .filter((t) => t.PrimaryNameAttribute)
-      .sort((a, b) => display(a).localeCompare(display(b)));
-    $('table').replaceChildren(option('', 'Select a business table'));
-    state.tables.forEach((t) => $('table').append(option(t.LogicalName, display(t))));
-    $('table').disabled = false;
-    const catalog = await xrm.WebApi.retrieveMultipleRecords(
-      'asx_library',
-      '?$select=asx_libraryid,asx_name,_asx_siteid_value,asx_entryurl&$filter=asx_approved eq true',
-    );
-    if (catalog.nextLink)
-      throw new Error('Approved library catalog exceeded the current completeness bound.');
-    state.libraries = catalog.entities;
-    const sites = await xrm.WebApi.retrieveMultipleRecords(
-      'asx_site',
-      '?$select=asx_siteid,asx_name&$filter=asx_approved eq true',
-    );
-    if (sites.nextLink) throw new Error('Approved site catalog is incomplete.');
-    state.sites = sites.entities;
-    await loadEnabledTables();
-    await loadTemplates();
-    try {
-      setReadiness(await runtimeCommand({ Command: 'Get' }));
-    } catch {
-      state.readiness = null; // Not permitted for this user: show no badge.
-    }
-    renderEnablePicker();
-    renderTemplateTree();
+  async function start() {
     render();
-    message('Connected. Select a document-enabled table to start a new draft.');
-  });
+    if (!xrm?.WebApi || !xrm?.Utility) return;
+    await task(async () => {
+      state.tables = (
+        await all(
+          'EntityDefinitions?$select=LogicalName,DisplayName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,IsDocumentManagementEnabled&$filter=IsDocumentManagementEnabled eq true',
+        )
+      )
+        .filter((t) => t.PrimaryNameAttribute)
+        .sort((a, b) => display(a).localeCompare(display(b)));
+      $('table').replaceChildren(option('', 'Select a business table'));
+      state.tables.forEach((t) => $('table').append(option(t.LogicalName, display(t))));
+      $('table').disabled = false;
+      const catalog = await xrm.WebApi.retrieveMultipleRecords(
+        'asx_library',
+        '?$select=asx_libraryid,asx_name,_asx_siteid_value,asx_entryurl&$filter=asx_approved eq true',
+      );
+      if (catalog.nextLink)
+        throw new Error('Approved library catalog exceeded the current completeness bound.');
+      state.libraries = catalog.entities;
+      const sites = await xrm.WebApi.retrieveMultipleRecords(
+        'asx_site',
+        '?$select=asx_siteid,asx_name&$filter=asx_approved eq true',
+      );
+      if (sites.nextLink) throw new Error('Approved site catalog is incomplete.');
+      state.sites = sites.entities;
+      await loadEnabledTables();
+      await loadTemplates();
+      try {
+        setReadiness(await runtimeCommand({ Command: 'Get' }));
+      } catch {
+        state.readiness = null; // Not permitted for this user: show no badge.
+      }
+      renderEnablePicker();
+      renderTemplateTree();
+      render();
+    });
+  }
+  ui.onTab('templates', start);
+  ui.onTab('monitor', start);
+  ui.onTab('settings', start);
 })();

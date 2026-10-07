@@ -1057,6 +1057,12 @@
       });
     },
   };
+  // The shell starts this tab when it is the one shown, then opens the library a link names.
+  window.AsxdUi.onTab('access', async () => {
+    await start();
+    const link = window.AsxdUi.deeplink();
+    if (link?.library) await window.AsxdSites.selectLibrary(link.library);
+  });
   $('ad-more-activity').onclick = () =>
     action(async () => {
       await discoverActivity(true);
@@ -1436,6 +1442,5 @@
     }
   }
   render();
-  if (!root.hidden) start();
   setTimeout(poll, 5000);
 })();

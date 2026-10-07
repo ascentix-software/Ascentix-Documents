@@ -112,11 +112,13 @@ fs.mkdirSync(evidence, { recursive: true });
       };
       window.fetch = async () => ({ ok: true, json: async () => ({ value: [] }) });
     });
-    await page.addScriptTag({ content: fs.readFileSync(path.join(root, 'admin.js'), 'utf8') });
-    await page.addScriptTag({
-      content: fs.readFileSync(path.join(root, 'sites-access.js'), 'utf8'),
+    for (const name of ['shell.js', 'admin.js', 'sites-access.js'])
+      await page.addScriptTag({ content: fs.readFileSync(path.join(root, name), 'utf8') });
+    // The shell opens the tab the link names, as the app's Sites & access menu entry does.
+    await page.evaluate(() => {
+      location.hash = 'access';
+      document.dispatchEvent(new Event('DOMContentLoaded'));
     });
-    await page.locator('[data-view="access"]').click();
     await page.getByRole('heading', { name: 'General', exact: true }).waitFor();
     // The deleted team is shown as one, with what happens next, and Apply is enabled for it.
     const deletedRow = page.locator('#ad-teams tr').first();

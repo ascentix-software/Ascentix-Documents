@@ -100,7 +100,16 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
         }),
       });
     });
-    await page.addScriptTag({ content: fs.readFileSync(path.join(root, 'admin.js'), 'utf8') });
+    for (const name of ['shell.js', 'admin.js'])
+      await page.addScriptTag({ content: fs.readFileSync(path.join(root, name), 'utf8') });
+    await page.evaluate(() => {
+      try {
+        sessionStorage.setItem('asxd.launched', '1');
+      } catch {
+        // about:blank may refuse storage; the shell then treats the load as already launched.
+      }
+      document.dispatchEvent(new Event('DOMContentLoaded'));
+    });
     await page.locator('#templateTree summary').click();
     await page.getByRole('button', { name: 'Contract documents', exact: true }).click();
     await page

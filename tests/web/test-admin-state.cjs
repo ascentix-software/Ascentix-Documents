@@ -52,11 +52,6 @@ const base = path.resolve(__dirname, '../../client/admin'),
   html = fs.readFileSync(path.join(base, 'index.html'), 'utf8'),
   nodes = {};
 for (const m of html.matchAll(/<([a-z]+)[^>]*\bid="([^"]+)"[^>]*>/g)) nodes[m[2]] = new Node(m[1]);
-const tabs = ['author', 'access', 'administration'].map((view) => {
-  const n = new Node('button');
-  n.dataset.view = view;
-  return n;
-});
 const document = {
   getElementById: (id) => nodes[id],
   createElement: (t) => new Node(t),
@@ -65,7 +60,7 @@ const document = {
     n.namespaceURI = ns;
     return n;
   },
-  querySelectorAll: () => tabs,
+  querySelectorAll: () => [],
 };
 const requests = [],
   table = {
@@ -181,7 +176,24 @@ const fetch = async (url) => ({
             : [table, contact, lead],
   }),
 });
-const win = { parent: { Xrm: xrm }, addEventListener: () => {} };
+let active = 'templates';
+const feedback = {},
+  inits = {},
+  navigations = [];
+const ui = {
+  BUILD: 'ui20261006nav1',
+  activeTab: () => active,
+  onTab: (tab, init) => (inits[tab] = init),
+  feedback: (area, text, kind = 'success') => (feedback[area] = { text, kind }),
+  clearFeedback: (area) => delete feedback[area],
+  // A copy: objects made inside the vm context have its Object prototype, which deepEqual refuses.
+  navigate: async (tab, link) => navigations.push([tab, link && { ...link }]),
+  deeplink: () => null,
+  can: () => true,
+};
+// What the tab running the action said last, as its feedback line shows it.
+const said = () => feedback[active]?.text ?? '';
+const win = { parent: { Xrm: xrm }, addEventListener: () => {}, AsxdUi: ui };
 vm.runInNewContext(fs.readFileSync(path.join(base, 'admin.js'), 'utf8'), {
   document,
   window: win,
@@ -203,7 +215,7 @@ async function change(n, value) {
   await n.onchange();
 }
 (async () => {
-  await new Promise(setImmediate);
+  await inits.templates();
   await win.AsxdAdmin.refreshCatalog();
   assert.equal(libraryQueries.length, 2, 'Initial load and refresh both read the library catalog');
   for (const query of libraryQueries) {
@@ -235,6 +247,9 @@ async function change(n, value) {
     ['', 'lib-b'],
     'Library choices follow selected site',
   );
+  // The library link opens Sites & access through the shell, naming the library.
+  find('View this library’s team access →', 'BUTTON').onclick();
+  assert.deepEqual(navigations, [['access', { library: 'lib-b' }]]);
   await change(control('Readable folder name'), 'Sensitive root');
   descendants(nodes.destinations)
     .find((n) => n.tagName === 'BUTTON' && n.textContent === '＋ Add child folder')
@@ -287,16 +302,6 @@ async function change(n, value) {
   assert.match(nodes.previewTrees.textContent, /Resolved account/);
   assert.match(nodes.previewTrees.textContent, /is waiting for 'root\.code' to have a value/);
   assert(!nodes.previewTrees.textContent.includes('BindingKey'));
-  tabs[2].onclick();
-  assert.equal(nodes.templateActions.hidden, true);
-  assert.equal(nodes.recordTools.hidden, false);
-  tabs[0].onclick();
-  assert.equal(nodes.recordTools.hidden, true);
-  tabs[1].onclick();
-  assert.equal(nodes['author-view'].hidden, true);
-  assert.equal(nodes.access.hidden, false);
-  assert.equal(nodes.runtime.hidden, true);
-  tabs[0].onclick();
   await change(control('Readable folder name'), 'Changed again');
   assert.match(nodes.previewTrees.textContent, /Draft changed/);
   assert.equal(nodes.preview.disabled, true, 'Editing invalidates saved preview');
@@ -323,7 +328,7 @@ async function change(n, value) {
   assert.equal(repeated.RowVersion, '1', 'Dirty edits preserve the draft concurrency token');
   const before = requests.length;
   await nodes.loadRuntime.onclick();
-  assert.match(nodes.status.textContent, /No runtime profile is installed/);
+  assert.match(said(), /No runtime profile is installed/);
   assert.equal(requests.length, before, 'Prerequisite errors must not submit product APIs');
   await change(nodes.table, '');
   assert.equal(nodes.record.disabled, true);
@@ -390,9 +395,9 @@ async function change(n, value) {
           }
         : load(req);
     await nodes.publish.onclick();
-    assert.match(nodes.status.textContent, /Revision published/);
-    assert(nodes.status.textContent.includes(notice), 'The template editor shows publish notices');
-    assert.equal(nodes.status.className, '', 'A publish notice is not an error');
+    assert.match(said(), /Revision published/);
+    assert(said().includes(notice), 'The template editor shows publish notices');
+    assert.equal(feedback.templates.kind, 'success', 'A publish notice is not an error');
     xrm.WebApi.online.execute = load;
     loadedIds.splice(1); // Publishing reloads the revision; later checks count explicit loads only.
   }
@@ -407,6 +412,30 @@ async function change(n, value) {
   );
   await secondTemplate.onclick();
   assert.equal(nodes.templateName.value, 'Sales documents');
+  {
+    // Delete template asks in the page (no platform dialog); Keep template deletes nothing.
+    const asked = [];
+    const deleted = [];
+    xrm.WebApi.deleteRecord = async (table, id) => deleted.push([table, id]);
+    ui.confirmInline = async (invoker, options) => {
+      asked.push([invoker, options]);
+      return false;
+    };
+    await nodes.deleteTemplate.onclick();
+    assert.equal(asked.length, 1, 'Delete template confirms in the page');
+    assert.equal(asked[0][0], nodes.deleteTemplate);
+    // The mocked retrieveRecord answers with Account onboarding for any template.
+    assert.match(
+      asked[0][1].text,
+      /^Delete Account onboarding and all its versions\? .*SharePoint stay as they are/,
+    );
+    assert.equal(asked[0][1].confirm, 'Delete template');
+    assert.equal(asked[0][1].keep, 'Keep template');
+    assert.equal(asked[0][1].danger, true);
+    assert.deepEqual(deleted, [], 'Keep template deletes nothing');
+    delete xrm.WebApi.deleteRecord;
+    delete ui.confirmInline;
+  }
   await nodes.newTemplate.onclick();
   assert.equal(nodes.templateName.disabled, false);
   assert.equal(nodes.savedRevision.options.length, 1);
@@ -415,6 +444,7 @@ async function change(n, value) {
     false,
     'New template has an independent empty tree',
   );
+  active = 'settings';
   xrm.WebApi.retrieveMultipleRecords = async (name) => ({
     entities:
       name === 'asx_runtime'
@@ -476,11 +506,11 @@ async function change(n, value) {
   assert.equal(runtimeSaves.at(-1).ProcessRecordUpdates, true);
   assert.equal('Tables' in runtimeSaves.at(-1), false, 'Save no longer sends Tables');
   assert.doesNotMatch(
-    nodes.status.textContent,
+    said(),
     /registration verified/,
     'A pause or resume does not verify registration',
   );
-  assert.match(nodes.status.textContent, /Runtime profile saved/);
+  assert.match(said(), /Runtime profile saved/);
   assert.match(nodes.runtimeReadiness.textContent, /account.*Ready/);
   assert.equal(nodes.runtimePending.hidden, true);
   await nodes.unregisterRuntime.onclick();
@@ -516,6 +546,7 @@ async function change(n, value) {
     delete select.value;
     select.value = '';
   }
+  active = 'monitor';
   {
     const failed = [
       {
@@ -648,7 +679,7 @@ async function change(n, value) {
     xrm.WebApi.retrieveMultipleRecords = async () => ({ entities: [] });
     await nodes.loadFailedJobs.onclick();
     assert.equal(nodes.failedJobs.children.length, 0);
-    assert.equal(nodes.status.textContent, 'No failed capture jobs.');
+    assert.equal(said(), 'No failed capture jobs.');
   }
   {
     xrm.WebApi.retrieveMultipleRecords = async (name) =>
@@ -674,7 +705,7 @@ async function change(n, value) {
     nodes.failedJobs.children[0].children[0].checked = true;
     await nodes.replanFailed.onclick();
     assert.equal(calls, 0);
-    assert.match(nodes.status.textContent, /contact.*no template/i);
+    assert.match(said(), /contact.*no template/i);
   }
   {
     // Blocked records: outbox rows whose planning failed, each with an in-page Retry.
@@ -768,7 +799,7 @@ async function change(n, value) {
     await retry.onclick();
     assert.deepEqual(retried, [{ Command: 'RetryOutbox', Key: 'request:aaa' }]);
     assert.equal(retry.disabled, true);
-    assert.match(nodes.status.textContent, /queued for planning again/i);
+    assert.match(said(), /queued for planning again/i);
     // The Waiting section lists record plans with folders that wait, each with Replan.
     assert.match(html, /<h5>Waiting<\/h5>/);
     assert.match(waitingQueries[0][0], /asx_status eq 'Waiting'/);
@@ -796,14 +827,14 @@ async function change(n, value) {
     );
     assert.ok(retried[0].RequestId, 'Replan carries a fresh request ID');
     assert.equal(replan.disabled, true);
-    assert.match(nodes.status.textContent, /queued for replanning/i);
+    assert.match(said(), /queued for replanning/i);
     xrm.WebApi.retrieveMultipleRecords = async () => ({ entities: [] });
     await nodes.loadBlockedRecords.onclick();
     assert.equal(nodes.blockedRecords.children.length, 0);
     assert.equal(nodes.moreBlockedRecords.hidden, true);
     assert.equal(nodes.waitingRecords.children.length, 0);
     assert.equal(nodes.moreWaitingRecords.hidden, true);
-    assert.equal(nodes.status.textContent, 'No blocked records. No waiting records.');
+    assert.equal(said(), 'No blocked records. No waiting records.');
   }
   {
     // Blocked jobs: Blocked asx_operation rows of every kind, each with the operator Retry in-page.
@@ -909,14 +940,14 @@ async function change(n, value) {
     await retry.onclick();
     assert.deepEqual(retried, [{ Command: 'Retry', Key: 'folderjob:abc' }]);
     assert.equal(retry.disabled, true);
-    assert.match(nodes.status.textContent, /queued to run again/i);
+    assert.match(said(), /queued to run again/i);
     xrm.WebApi.online.execute = async () => ({
       ok: true,
       json: async () => ({ Result: JSON.stringify({ Status: 'Applied' }) }),
     });
     const second = nodes.blockedJobs.children[1].children.find((n) => n.tagName === 'BUTTON');
     await second.onclick();
-    assert.match(nodes.status.textContent, /Applied; nothing to retry/);
+    assert.match(said(), /Applied; nothing to retry/);
     // Cancel sits next to Retry and asks in the page first, like Remove in the Tables panel.
     const row = nodes.blockedJobs.children[0];
     const cancel = row.children.find((n) => n.tagName === 'BUTTON' && n.textContent === 'Cancel');
@@ -946,10 +977,7 @@ async function change(n, value) {
     assert.equal(ask.hidden, true);
     assert.equal(cancel.disabled, true);
     assert.equal(retry.disabled, true);
-    assert.equal(
-      nodes.status.textContent,
-      'Job cancelled. Nothing in SharePoint was undone or deleted.',
-    );
+    assert.equal(said(), 'Job cancelled. Nothing in SharePoint was undone or deleted.');
     // A library setup whose create is unknown shows its status; its choices come from Monitor's lookup.
     const lost = nodes.blockedJobs.children[2];
     assert.match(lost.textContent, /librarycreate:lost · Library setup · Needs recovery/);
@@ -988,10 +1016,7 @@ async function change(n, value) {
     await nodes.inspectOperationKey.onclick();
     assert.equal(inspected.at(-1).Key, 'folderjob:old');
     assert.equal(nodes.operation.children.length, listed);
-    assert.match(
-      nodes.status.textContent,
-      /folderjob:, librarycreate:, catalogprobe: or policywork:/,
-    );
+    assert.match(said(), /folderjob:, librarycreate:, catalogprobe: or policywork:/);
     // An operation Inspect cannot find is not added to the list either.
     const working = xrm.WebApi.online.execute;
     xrm.WebApi.online.execute = async () => {
@@ -1001,19 +1026,20 @@ async function change(n, value) {
     await nodes.inspectOperationKey.onclick();
     assert.equal(nodes.operation.children.length, listed);
     assert.equal(nodes.operation.value, 'folderjob:old');
-    assert.match(nodes.status.textContent, /Operation not found/);
+    assert.match(said(), /Operation not found/);
     xrm.WebApi.online.execute = working;
     nodes.operationKey.value = '';
     await nodes.inspectOperationKey.onclick();
-    assert.match(nodes.status.textContent, /Paste an operation key/);
+    assert.match(said(), /Paste an operation key/);
     xrm.WebApi.retrieveMultipleRecords = async () => ({ entities: [] });
     await nodes.loadBlockedJobs.onclick();
     assert.equal(nodes.blockedJobs.children.length, 0);
     assert.equal(nodes.moreBlockedJobs.hidden, true);
     assert.equal(nodes.waitingJobs.children.length, 0);
     assert.equal(nodes.moreWaitingJobs.hidden, true);
-    assert.equal(nodes.status.textContent, 'No blocked jobs. No jobs waiting to retry.');
+    assert.equal(said(), 'No blocked jobs. No jobs waiting to retry.');
   }
+  active = 'templates';
   {
     // Tables panel: enabled tables come from asx_runtimetable; add, remove and enable are server commands.
     let enabled = ['account'];

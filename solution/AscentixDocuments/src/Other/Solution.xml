@@ -118,6 +118,7 @@
       <RootComponent type="61" schemaName="asx_admin/admin.js" behavior="0" />
       <RootComponent type="61" schemaName="asx_admin/folder.svg" behavior="0" />
       <RootComponent type="61" schemaName="asx_admin/index.html" behavior="0" />
+      <RootComponent type="61" schemaName="asx_admin/shell.js" behavior="0" />
       <RootComponent type="61" schemaName="asx_admin/sites-access.js" behavior="0" />
       <RootComponent type="62" schemaName="asx_DocumentsAdmin" behavior="0" />
       <RootComponent type="80" schemaName="asx_DocumentsAdmin" behavior="0" />

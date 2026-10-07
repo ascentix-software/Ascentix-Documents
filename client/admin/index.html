@@ -4,12 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Ascentix Documents</title>
-    <link rel="stylesheet" href="admin.css?v=ui20260909labels4" />
+    <link rel="stylesheet" href="admin.css?v=ui20261006nav1" />
   </head>
   <body>
     <main class="app">
-      <div class="row between top">
-        <div class="brand">
+      <header class="row between top">
+        <h1 class="brand">
           <span class="logo"
             ><svg class="folder-icon" aria-hidden="true" viewBox="0 0 24 24">
               <path fill="#e8b84d" stroke="#ad7b16" stroke-width="1.2" d="M2 5.5h7l2 2h11v12H2z" />
@@ -19,46 +19,64 @@
                 stroke-width="1.2"
                 d="M2 9h20l-2 10.5H2z"
               /></svg></span
-          >Ascentix <span style="font-weight: 450">Documents</span>
+          >Ascentix <span class="brand-light">Documents</span>
+        </h1>
+        <div id="automationChip" class="chip" hidden>
+          <span class="dot" aria-hidden="true"></span>
+          <span id="automationChipText" role="status"></span>
+          <a id="automationChipLink" href="#monitor" hidden></a>
+          <button id="automationChipAction" type="button" class="secondary" hidden>Turn on</button>
+          <p class="feedback" id="fb-chip"></p>
         </div>
-        <div id="templateActions" class="row wrap" hidden>
-          <details class="header-availability">
-            <summary>Availability</summary>
-            <div class="availability-body">
-              <label class="inline-check"
-                ><input id="templateActive" type="checkbox" checked />Active</label
-              ><label class="inline-check"
-                ><input id="useSchedule" type="checkbox" />Set start or end dates</label
-              >
-              <div id="scheduleFields" hidden>
-                <label
-                  >Start (your local time, optional)<input
-                    id="templateStart"
-                    type="datetime-local" /></label
-                ><label
-                  >End (your local time, optional)<input id="templateEnd" type="datetime-local"
-                /></label>
-              </div>
-              <button id="saveAvailability" disabled>Save availability</button>
-              <p id="templateAvailability" role="status">Save a template first.</p>
-            </div>
-          </details>
-          <button id="save" class="primary" disabled>Save draft</button
-          ><button id="publish" disabled>Publish saved revision</button
-          ><button id="deleteTemplate" class="danger" disabled>Delete template</button>
-        </div>
-      </div>
-
-      <section class="shell">
-        <nav class="tabs" aria-label="Workspace">
-          <button class="tab active" data-view="author" aria-pressed="true">Folder templates</button
-          ><button class="tab" data-view="access" aria-pressed="false">Sites &amp; access</button
-          ><button class="tab" data-view="administration" aria-pressed="false">
-            Administration
+      </header>
+      <div class="shell">
+        <div id="tabs" class="tabs" role="tablist" aria-label="Documents">
+          <button
+            id="tab-templates"
+            role="tab"
+            type="button"
+            aria-controls="templates"
+            aria-selected="false"
+            tabindex="-1"
+          >
+            Folder templates</button
+          ><button
+            id="tab-access"
+            role="tab"
+            type="button"
+            aria-controls="access"
+            aria-selected="false"
+            tabindex="-1"
+          >
+            Sites &amp; access</button
+          ><button
+            id="tab-monitor"
+            role="tab"
+            type="button"
+            aria-controls="monitor"
+            aria-selected="false"
+            tabindex="-1"
+          >
+            Monitor <span id="monitorBadge" class="badge" hidden></span></button
+          ><button
+            id="tab-settings"
+            role="tab"
+            type="button"
+            aria-controls="settings"
+            aria-selected="false"
+            tabindex="-1"
+          >
+            Settings
           </button>
-        </nav>
-        <div id="status" role="status" aria-live="polite">Connecting to Dataverse…</div>
-        <div id="author-view">
+        </div>
+        <div id="tabPrompt"></div>
+        <section
+          id="templates"
+          role="tabpanel"
+          aria-labelledby="tab-templates"
+          tabindex="-1"
+          hidden
+        >
           <div class="template-layout">
             <aside class="template-nav" aria-label="Tables and templates">
               <div class="row between">
@@ -100,7 +118,36 @@
                     Load revision
                   </button>
                 </div>
+                <div id="templateActions" class="row wrap" data-actions hidden>
+                  <details class="header-availability">
+                    <summary>Availability</summary>
+                    <div class="availability-body">
+                      <label class="inline-check"
+                        ><input id="templateActive" type="checkbox" checked />Active</label
+                      ><label class="inline-check"
+                        ><input id="useSchedule" type="checkbox" />Set start or end dates</label
+                      >
+                      <div id="scheduleFields" hidden>
+                        <label
+                          >Start (your local time, optional)<input
+                            id="templateStart"
+                            type="datetime-local" /></label
+                        ><label
+                          >End (your local time, optional)<input
+                            id="templateEnd"
+                            type="datetime-local"
+                        /></label>
+                      </div>
+                      <button id="saveAvailability" disabled>Save availability</button>
+                      <p id="templateAvailability" role="status">Save a template first.</p>
+                    </div>
+                  </details>
+                  <button id="save" class="primary" disabled>Save draft</button
+                  ><button id="publish" disabled>Publish saved revision</button
+                  ><button id="deleteTemplate" class="danger" disabled>Delete template</button>
+                </div>
               </section>
+              <p class="feedback" id="fb-templates"></p>
               <p id="tablePrompt" class="empty">
                 Choose a table to load saved revisions or build a folder template.
               </p>
@@ -167,8 +214,8 @@
               </div>
             </div>
           </div>
-        </div>
-        <section id="access" hidden>
+        </section>
+        <section id="access" role="tabpanel" aria-labelledby="tab-access" tabindex="-1" hidden>
           <div class="ad-layout">
             <aside aria-label="Sites">
               <div class="ad-row ad-between">
@@ -182,7 +229,7 @@
               <div id="ad-sites"></div>
               <button id="ad-more-sites" hidden>More sites</button>
             </aside>
-            <main>
+            <div class="ad-main">
               <section id="ad-site-form" class="ad-box" hidden aria-label="Add a registered site">
                 <div class="ad-row ad-between">
                   <h3>Add site</h3>
@@ -360,63 +407,25 @@
                 <p>One application connection is used across authorized sites.</p>
                 <button id="ad-manage-connection" type="button">Manage in Power Platform</button>
               </details>
-            </main>
+            </div>
           </div>
         </section>
-        <details id="recordTools" class="card" hidden>
-          <summary>Record results and replanning</summary>
-          <p id="maintenanceContext"></p>
-          <div class="row wrap">
-            <button id="inspectRecord">Inspect record results</button
-            ><button id="replanRecord">Replan published template for record</button
-            ><button id="previewBatch">Review batch replan</button
-            ><button id="queueBatch" disabled>Queue reviewed batch</button>
-          </div>
-          <pre id="result">No inspection yet.</pre>
-          <pre id="batchReview">
+        <section id="monitor" role="tabpanel" aria-labelledby="tab-monitor" tabindex="-1" hidden>
+          <h2>Monitor</h2>
+          <p class="feedback" id="fb-monitor"></p>
+          <details id="recordTools" class="card">
+            <summary>Record results and replanning</summary>
+            <p id="maintenanceContext"></p>
+            <div class="row wrap">
+              <button id="inspectRecord">Inspect record results</button
+              ><button id="replanRecord">Replan published template for record</button
+              ><button id="previewBatch">Review batch replan</button
+              ><button id="queueBatch" disabled>Queue reviewed batch</button>
+            </div>
+            <pre id="result">No inspection yet.</pre>
+            <pre id="batchReview">
 Select up to five records for a published-revision impact review.</pre>
-        </details>
-        <details id="runtime" class="card">
-          <summary>Runtime administration</summary>
-          <p>
-            Configuration is separate from flow activation and role assignment. Business tables are
-            enabled from the Tables panel on Folder templates. Saving registers the pending event
-            steps for the worker; it requires System Administrator.
-          </p>
-          <button id="loadRuntime" class="secondary">Load runtime profile</button>
-          <p id="runtimePending" class="hint warning" hidden>
-            Tables pending registration: Save to register their event steps.
-          </p>
-          <div class="row">
-            <label>Worker application user<select id="runtimeWorker"></select></label
-            ><label
-              >SharePoint tenant hosts<input
-                id="runtimeSites"
-                placeholder="tenant.sharepoint.com" /></label
-            ><label>Runtime enabled<input id="runtimeEnabled" type="checkbox" /></label
-            ><label
-              >Apply folder templates when record data changes<input
-                id="runtimeRecordUpdates"
-                type="checkbox" /></label
-            ><button id="saveRuntime">Save runtime profile</button>
-          </div>
-          <p class="hint">
-            When the runtime is off, events keep queueing and nothing is lost; the worker resumes
-            when it is turned on. Record-update monitoring applies to future updates only.
-          </p>
-          <h4>Event registration</h4>
-          <ul id="runtimeReadiness"></ul>
-          <button id="unregisterRuntime" class="secondary">Remove all event registrations</button>
-          <div id="unregisterConfirm" class="confirm" hidden>
-            <p>
-              This removes every Documents event step. Record and team changes stop being captured
-              until you Save again. Use this before uninstalling.
-            </p>
-            <button id="confirmUnregister">Remove registrations</button
-            ><button id="cancelUnregister" class="secondary">Keep registrations</button>
-          </div>
-          <p id="runtimeStatus" class="hint">No profile loaded.</p>
-
+          </details>
           <h4>Failed capture jobs</h4>
           <p class="hint">
             Record or team events whose background job failed. Fix the cause, then replan the
@@ -458,31 +467,71 @@ Select up to five records for a published-revision impact review.</pre>
           </p>
           <ul id="waitingJobs"></ul>
           <button id="moreWaitingJobs" class="secondary" hidden>Load more</button>
-        </details>
-        <details id="operations" class="card">
-          <summary>Operations</summary>
-          <button id="loadOperations" class="secondary">Load latest 50 operations</button
-          ><label
-            >Operation<select id="operation">
-              <option value="">Load operations first</option>
-            </select></label
-          >
-          <label>Or paste an operation key<input id="operationKey" /></label
-          ><button id="inspectOperationKey" class="secondary">Inspect</button>
-          <pre id="operationStatus">Select an operation.</pre>
-          <div class="row">
-            <button id="retryOperation" class="secondary">Retry after repair</button
-            ><button id="cancelOperation" class="secondary">Cancel unstarted work</button>
+          <details id="operations" class="card">
+            <summary>Operations</summary>
+            <button id="loadOperations" class="secondary">Load latest 50 operations</button
+            ><label
+              >Operation<select id="operation">
+                <option value="">Load operations first</option>
+              </select></label
+            >
+            <label>Or paste an operation key<input id="operationKey" /></label
+            ><button id="inspectOperationKey" class="secondary">Inspect</button>
+            <pre id="operationStatus">Select an operation.</pre>
+            <div class="row">
+              <button id="retryOperation" class="secondary">Retry after repair</button
+              ><button id="cancelOperation" class="secondary">Cancel unstarted work</button>
+            </div>
+          </details>
+        </section>
+        <section id="settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="-1" hidden>
+          <h2>Settings</h2>
+          <p class="feedback" id="fb-settings"></p>
+          <div id="runtime">
+            <p>
+              Configuration is separate from flow activation and role assignment. Business tables
+              are enabled from the Tables panel on Folder templates. Saving registers the pending
+              event steps for the worker; it requires System Administrator.
+            </p>
+            <button id="loadRuntime" class="secondary">Load runtime profile</button>
+            <p id="runtimePending" class="hint warning" hidden>
+              Tables pending registration: Save to register their event steps.
+            </p>
+            <div class="row">
+              <label>Worker application user<select id="runtimeWorker"></select></label
+              ><label
+                >SharePoint tenant hosts<input
+                  id="runtimeSites"
+                  placeholder="tenant.sharepoint.com" /></label
+              ><label>Runtime enabled<input id="runtimeEnabled" type="checkbox" /></label
+              ><label
+                >Apply folder templates when record data changes<input
+                  id="runtimeRecordUpdates"
+                  type="checkbox" /></label
+              ><button id="saveRuntime">Save runtime profile</button>
+            </div>
+            <p class="hint">
+              When the runtime is off, events keep queueing and nothing is lost; the worker resumes
+              when it is turned on. Record-update monitoring applies to future updates only.
+            </p>
+            <h4>Event registration</h4>
+            <ul id="runtimeReadiness"></ul>
+            <button id="unregisterRuntime" class="secondary">Remove all event registrations</button>
+            <div id="unregisterConfirm" class="confirm" hidden>
+              <p>
+                This removes every Documents event step. Record and team changes stop being captured
+                until you Save again. Use this before uninstalling.
+              </p>
+              <button id="confirmUnregister">Remove registrations</button
+              ><button id="cancelUnregister" class="secondary">Keep registrations</button>
+            </div>
+            <p id="runtimeStatus" class="hint">No profile loaded.</p>
           </div>
-        </details>
-
-        <footer class="footer">
-          <span>Background provisioning requires an enabled runtime and active dispatcher.</span
-          ><span>Publishing saves configuration; it does not create folders.</span>
-        </footer>
-      </section>
+        </section>
+      </div>
     </main>
-    <script src="admin.js?v=ui20260909labels4"></script>
-    <script src="sites-access.js?v=ui20260909labels4"></script>
+    <script src="shell.js?v=ui20261006nav1"></script>
+    <script src="admin.js?v=ui20261006nav1"></script>
+    <script src="sites-access.js?v=ui20261006nav1"></script>
   </body>
 </html>

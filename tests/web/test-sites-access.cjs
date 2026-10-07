@@ -252,6 +252,7 @@ const xrm = {
 };
 const window = {
   Xrm: xrm,
+  AsxdUi: { onTab: () => {}, deeplink: () => null, activeTab: () => 'access', feedback: () => {} },
   AsxdAdmin: {
     refreshCatalog: async () => {
       refresh++;
@@ -1069,6 +1070,12 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
         },
       },
       AsxdAdmin: { refreshCatalog: async () => {} },
+      AsxdUi: {
+        onTab: () => {},
+        deeplink: () => null,
+        activeTab: () => 'access',
+        feedback: () => {},
+      },
     };
     vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), {
       window: reloaded,
@@ -1220,6 +1227,12 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
         },
       },
       AsxdAdmin: { refreshCatalog: async () => {} },
+      AsxdUi: {
+        onTab: () => {},
+        deeplink: () => null,
+        activeTab: () => 'access',
+        feedback: () => {},
+      },
     };
     vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), {
       window: deletedWindow,

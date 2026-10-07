@@ -55,6 +55,7 @@ These change what Documents does with existing data. Review them before you upgr
 - The runtime-row guard plug-in is removed. The solution has 57 guard steps.
 - The outbox has a new column, `asx_nextattempt`. It holds the time of the next automatic attempt.
 - Tables are enabled in the Tables panel of the template workspace, not in a fixed list. There is no table-count limit.
+- The admin app's left navigation now lists Folder templates, Sites & access, Monitor and Settings. Runtime is now Settings; Operations is now Monitor.
 - **Remove** hides a site or library from Documents: it leaves the pickers, planning and access sync, and its unfinished work is cancelled. If anything refers to it, Documents keeps its catalog row for history. For a library that means template revisions, access settings (including the inheritance confirmation) or record folders. For a site it means libraries or library setups. Otherwise the row is deleted. Either way nothing in SharePoint changes, and adding it again works: a kept row is reactivated, and a deleted one is created again.
 
 ## After you upgrade
