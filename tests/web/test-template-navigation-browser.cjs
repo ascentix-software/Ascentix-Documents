@@ -60,6 +60,7 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
                   RevisionId: 'revision-1',
                   RowVersion: '1',
                   Status: 'Draft',
+                  Version: 1,
                   Draft: {
                     Table: 'account',
                     Sources: [
@@ -111,10 +112,11 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
       document.dispatchEvent(new Event('DOMContentLoaded'));
     });
     await page.locator('#templateTree summary').click();
-    await page.getByRole('button', { name: 'Contract documents', exact: true }).click();
     await page
-      .getByText('Saved revision loaded. Stable section and folder identities are preserved.')
-      .waitFor();
+      .locator('#templateTree')
+      .getByRole('button', { name: 'Contract documents', exact: true })
+      .click();
+    await page.locator('#version-chip').filter({ hasText: 'Draft v1' }).waitFor();
     assert.equal(await page.locator('#templateName').inputValue(), 'Contract documents');
     for (const width of [1440, 1000, 800, 400])
       for (const scheme of ['light', 'dark']) {
@@ -130,9 +132,10 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
           fullPage: true,
         });
       }
-    await page.locator('#newTemplate').click();
+    await page.getByRole('button', { name: '＋ New template' }).first().click();
+    await page.locator('#version-chip').filter({ hasText: 'Draft v1' }).waitFor();
     assert.equal(await page.locator('#templateName').isDisabled(), false);
-    assert.match(await page.locator('#destinations').textContent(), /No destination sections yet/);
+    assert.match(await page.locator('#destinations').textContent(), /No folders yet/);
     assert.deepEqual(errors, []);
     console.log(
       'PASS template navigation in Edge: two templates per table, selection, new template, light/dark and 1440/1000/800/400 layouts. APIs mocked.',

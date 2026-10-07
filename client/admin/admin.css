@@ -260,23 +260,28 @@ h3 {
 .tree {
   margin: 20px 0;
 }
+/* Tree nodes (spec 3.1): the selected one has a 3px teal bar, not only the tint (1.41:1 dark). */
 .node {
   width: 100%;
   text-align: left;
-  border: 1px solid transparent;
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: 4px;
   background: transparent;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 8px;
-  margin: 4px 0;
-  font-size: 12px;
-  min-height: 41px;
+  padding: 6px 8px;
+  margin: 2px 0;
+  font-size: 13px;
+  min-height: 32px;
+  overflow-wrap: anywhere;
 }
-.node.active {
-  border-color: var(--teal);
+.node[aria-current='true'] {
+  border-left-color: var(--teal);
   background: var(--tint);
-  color: var(--teal);
+  color: var(--ink);
+  font-weight: 650;
 }
 .folder {
   color: #af790e;
@@ -292,11 +297,6 @@ h3 {
   background: #a46b0a;
   margin-left: auto;
   flex-shrink: 0;
-}
-.hint {
-  font-size: 11px;
-  line-height: 1.65;
-  color: var(--muted);
 }
 .help {
   margin: 4px 0 0;
@@ -570,8 +570,7 @@ dialog p {
 .preview-node {
   overflow-wrap: anywhere;
 }
-.preview-card h3,
-.destination-section .hint {
+.preview-card h3 {
   overflow-wrap: anywhere;
 }
 button:disabled {
@@ -605,17 +604,11 @@ button:disabled {
 .preview-pane {
   background: var(--canvas);
 }
-.pane > p.hint {
-  margin-top: 12px;
-}
 .pane label select,
 .pane label input,
 .revision-picker label select {
   display: block;
   margin-top: 7px;
-}
-.pane .hint {
-  margin-top: 8px;
 }
 .revision-picker {
   margin: 0 24px 18px;
@@ -645,9 +638,6 @@ button:disabled {
 }
 .node .folder-icon {
   width: 20px;
-}
-.node .dot {
-  margin-left: 0;
 }
 .destination-section .section-heading {
   color: var(--teal);
@@ -1480,8 +1470,7 @@ label,
 #access .ad-primary {
   color: var(--on-accent);
 }
-.selected-section,
-.node.active {
+.selected-section {
   border-color: var(--teal);
 }
 .validation-error {
@@ -2137,4 +2126,279 @@ input[type='checkbox'] {
     display: block;
     overflow-x: auto;
   }
+}
+
+/* Folder templates (spec 3.1): template bar, version chip, ⋯ menu, panels, rail, tree, folder
+   settings, condition builder and preview. */
+#template-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+}
+#template-bar > .row {
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  min-width: 260px;
+}
+#template-bar > .row > label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  font-weight: 700;
+  white-space: nowrap;
+}
+#templateActions {
+  position: relative;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+#templateActions .reason {
+  order: 10;
+  flex-basis: 100%;
+  margin: 0;
+  text-align: right;
+}
+#templateActions .menu {
+  top: 100%;
+  right: 0;
+}
+#template-bar > .confirm {
+  flex-basis: 100%;
+}
+.chip.version {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+#save.has-dot::after {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+  vertical-align: middle;
+}
+.menu {
+  position: absolute;
+  z-index: 10;
+  min-width: 220px;
+  margin: 4px 0 0;
+  padding: 4px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 8px 24px #0002;
+  list-style: none;
+}
+.menu [role='menuitem'] {
+  width: 100%;
+  min-height: 28px;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+.menu [role='menuitem']:hover,
+.menu [role='menuitem']:focus {
+  background: var(--tint);
+}
+.menu [role='separator'] {
+  margin: 4px 0;
+  border-top: 1px solid var(--line);
+}
+#fb-templates {
+  padding: 0 20px;
+}
+.template-main > .panel {
+  margin: 12px 20px;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.template-main > .panel h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.template-main > .panel label {
+  display: block;
+  max-width: 320px;
+  margin-top: 12px;
+}
+.template-main > .panel [data-actions],
+#rerun-impact {
+  margin-top: 12px;
+}
+#history-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+#history-list [aria-current='true'] {
+  border-color: var(--teal);
+}
+#schedule-panel .switch {
+  margin-top: 12px;
+}
+#rerun-progress {
+  margin: 12px 0 0;
+}
+.impact h4 {
+  margin: 12px 0 4px;
+}
+.template-nav h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.template-nav .table-entry {
+  margin: 8px 0;
+}
+.template-nav summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: baseline;
+}
+.template-nav .status {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 450;
+}
+.template-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.template-nav .template-item[aria-current='true'] {
+  border-left: 3px solid var(--teal);
+  background: var(--tint);
+}
+.template-nav .new-template {
+  display: block;
+  width: 100%;
+  margin: 5px 0;
+  background: transparent;
+}
+.template-nav .rail-group {
+  margin: 16px 0 0;
+  font-size: 13px;
+}
+.template-nav .empty {
+  padding: 16px 4px;
+  text-align: left;
+}
+.template-nav .empty p {
+  margin: 0 0 8px;
+  color: var(--ink);
+}
+#no-template h2 {
+  margin: 0 0 8px;
+  font-size: 17px;
+}
+#no-library {
+  margin-top: 12px;
+}
+.destination-section .section-heading {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+.node-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.node-row .node {
+  flex: 1;
+  min-width: 0;
+}
+.conditional-mark {
+  color: var(--conditional);
+  font-size: 13px;
+}
+#folderEditor > h3 {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+#folderEditor > label,
+#folderEditor > .picker-grid,
+#folderEditor > .token-row,
+#folderEditor > .condition-group,
+#folderEditor > .folder-actions {
+  margin-top: 12px;
+}
+#folderEditor .shows-as {
+  margin: 4px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+#folderEditor .warning {
+  margin: 12px 0 0;
+  color: var(--warning);
+  font-size: 13px;
+}
+#folderEditor .token-row select {
+  flex: 1;
+  min-width: 0;
+}
+.condition-group > legend {
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 750;
+}
+.condition-group > label {
+  display: block;
+  margin-top: 8px;
+}
+.condition-group > .remove {
+  margin-top: 8px;
+}
+.condition-line .error,
+.condition-error {
+  margin: 4px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+.lookup-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.lookup-value .chip {
+  display: inline-flex;
+  gap: 4px;
+  padding: 0 0 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.lookup-value .chip button {
+  border: 0;
+  background: none;
+}
+[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+#previewTrees.is-stale {
+  opacity: 0.55;
+}
+.badge.warning {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.callout.warning {
+  border-color: var(--warning);
+  background: var(--warning-bg);
 }

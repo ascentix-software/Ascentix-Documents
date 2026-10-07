@@ -78,149 +78,199 @@
           hidden
         >
           <div class="template-layout">
-            <aside class="template-nav" aria-label="Tables and templates">
-              <div class="row between">
-                <h3>Tables</h3>
-                <button id="addTable" type="button">＋ Add table</button>
+            <aside class="template-nav" aria-labelledby="tables-heading">
+              <div class="row between" id="tables-header">
+                <h2 id="tables-heading" tabindex="-1">Tables</h2>
+                <button id="addTable" type="button" class="secondary">＋ Add table</button>
               </div>
               <div id="tablePicker" hidden>
-                <label
-                  >Enable a document-enabled table<select id="enableTable">
-                    <option value="">Select a table to enable</option>
-                  </select></label
-                >
-              </div>
-              <div hidden>
-                <select id="table" disabled>
-                  <option>Loading metadata…</option>
-                </select>
+                <label>Table to add<select id="enableTable"></select></label>
               </div>
               <div id="templateTree"></div>
             </aside>
             <div class="template-main">
-              <section class="table-bar">
-                <label
-                  >Template name<input
-                    id="templateName"
-                    maxlength="200"
-                    placeholder="For example, Account onboarding" /></label
-                ><button id="newTemplate" type="button" disabled>＋ New template</button>
-                <div id="revisionControls" class="revision-inline" hidden>
-                  <label
-                    >Saved revision<select id="savedRevision">
-                      <option value="">Select a table first</option>
-                    </select></label
-                  ><button
-                    id="loadRevision"
-                    disabled
-                    title="Load this revision and replace unsaved edits"
-                  >
-                    Load revision
-                  </button>
+              <section id="template-bar" class="table-bar" hidden aria-label="Template">
+                <div class="row wrap">
+                  <label>Template name<input id="templateName" maxlength="200" /></label>
+                  <span
+                    id="version-chip"
+                    class="chip version"
+                    tabindex="0"
+                    aria-describedby="version-chip-desc"
+                  ></span>
+                  <span id="version-chip-desc" class="sr-only"></span>
                 </div>
-                <div id="templateActions" class="row wrap" data-actions hidden>
-                  <details class="header-availability">
-                    <summary>Availability</summary>
-                    <div class="availability-body">
-                      <label class="inline-check"
-                        ><input id="templateActive" type="checkbox" checked />Active</label
-                      ><label class="inline-check"
-                        ><input id="useSchedule" type="checkbox" />Set start or end dates</label
+                <div id="templateActions" class="row" data-actions>
+                  <button id="save" type="button" class="secondary">Save draft</button>
+                  <button id="publish" type="button" class="primary">Publish</button>
+                  <button
+                    id="template-menu"
+                    type="button"
+                    class="secondary"
+                    aria-haspopup="menu"
+                    aria-expanded="false"
+                    aria-controls="template-menu-list"
+                    aria-label="More actions"
+                  >
+                    ⋯
+                  </button>
+                  <ul id="template-menu-list" class="menu" role="menu" hidden>
+                    <li role="none">
+                      <button id="menu-history" type="button" role="menuitem" tabindex="-1">
+                        Version history…
+                      </button>
+                    </li>
+                    <li role="none">
+                      <button id="menu-schedule" type="button" role="menuitem" tabindex="-1">
+                        Schedule…
+                      </button>
+                    </li>
+                    <li role="none">
+                      <button id="menu-rerun" type="button" role="menuitem" tabindex="-1">
+                        Re-run for existing records…
+                      </button>
+                    </li>
+                    <li role="separator"></li>
+                    <li role="none">
+                      <button
+                        id="menu-delete"
+                        type="button"
+                        role="menuitem"
+                        tabindex="-1"
+                        class="danger"
                       >
-                      <div id="scheduleFields" hidden>
-                        <label
-                          >Start (your local time, optional)<input
-                            id="templateStart"
-                            type="datetime-local" /></label
-                        ><label
-                          >End (your local time, optional)<input
-                            id="templateEnd"
-                            type="datetime-local"
-                        /></label>
-                      </div>
-                      <button id="saveAvailability" disabled>Save availability</button>
-                      <p id="templateAvailability" role="status">Save a template first.</p>
-                    </div>
-                  </details>
-                  <button id="save" class="primary" disabled>Save draft</button
-                  ><button id="publish" disabled>Publish saved revision</button
-                  ><button id="deleteTemplate" class="danger" disabled>Delete template</button>
+                        Delete template
+                      </button>
+                    </li>
+                  </ul>
                 </div>
               </section>
               <p class="feedback" id="fb-templates"></p>
-              <p id="tablePrompt" class="empty">
-                Choose a table to load saved revisions or build a folder template.
-              </p>
+              <section id="history-panel" class="panel" hidden aria-labelledby="history-title">
+                <div class="row between">
+                  <h3 id="history-title">Version history</h3>
+                  <button
+                    type="button"
+                    class="link panel-close"
+                    data-close="history-panel"
+                    aria-label="Close version history"
+                  >
+                    Close
+                  </button>
+                </div>
+                <ul id="history-list" data-actions></ul>
+              </section>
+              <section id="schedule-panel" class="panel" hidden aria-labelledby="schedule-title">
+                <div class="row between">
+                  <h3 id="schedule-title">Schedule</h3>
+                  <button
+                    type="button"
+                    class="link panel-close"
+                    data-close="schedule-panel"
+                    aria-label="Close schedule"
+                  >
+                    Close
+                  </button>
+                </div>
+                <button
+                  id="schedule-on"
+                  type="button"
+                  role="switch"
+                  class="switch"
+                  aria-checked="true"
+                  aria-labelledby="schedule-on-label"
+                >
+                  <span class="switch-track" aria-hidden="true"
+                    ><span class="switch-thumb"></span
+                  ></span>
+                  <span id="schedule-on-label">On</span>
+                </button>
+                <label>Start (optional)<input id="templateStart" type="datetime-local" /></label>
+                <label>End (optional)<input id="templateEnd" type="datetime-local" /></label>
+                <div class="row" data-actions>
+                  <button id="saveAvailability" type="button">Save schedule</button>
+                </div>
+                <p class="feedback" id="fb-schedule"></p>
+              </section>
+              <section id="rerun-panel" class="panel" hidden aria-labelledby="rerun-title">
+                <div class="row between">
+                  <h3 id="rerun-title">Re-run for existing records</h3>
+                  <button
+                    type="button"
+                    class="link panel-close"
+                    data-close="rerun-panel"
+                    aria-label="Close re-run for existing records"
+                  >
+                    Close
+                  </button>
+                </div>
+                <p id="rerun-progress" hidden></p>
+                <div class="row wrap" data-actions>
+                  <button id="rerun-all" type="button" class="primary">Re-run all records</button>
+                  <button id="rerun-preview" type="button" class="secondary">
+                    Preview re-run for records…
+                  </button>
+                </div>
+                <div id="rerun-impact"></div>
+                <div class="row" data-actions>
+                  <button id="rerun-these" type="button" hidden>Re-run these records</button>
+                </div>
+                <p class="feedback" id="fb-rerun"></p>
+              </section>
+              <div id="no-template" class="empty-panel"></div>
               <div id="authorWorkspace" hidden>
-                <div class="toolbar row between">
-                  <div>
-                    <div class="row">
-                      <h2>Folder templates</h2>
-                      <span class="badge" id="destinationCount">0 destinations</span>
-                    </div>
-                    <p class="small muted" style="margin-top: 6px">
-                      Each destination has its own tree and inherits its library’s access.
-                    </p>
-                  </div>
-                </div>
                 <div class="editor">
-                  <section class="pane tree-pane">
-                    <div class="eyebrow">01 / Destinations &amp; structure</div>
-                    <div id="destinations" class="stack"></div>
-                    <button id="addDestination" class="wide" disabled>
-                      ＋ Add destination section
-                    </button>
-                    <p class="hint">
-                      Each section runs for the same record. Select a folder to edit its name and
-                      conditions.
-                    </p>
-                  </section>
-                  <section class="pane">
-                    <div class="eyebrow">02 / Edit selected section</div>
-                    <div id="folderEditor">
-                      <div class="empty">
-                        Select a business table, then add an approved destination to start shaping
-                        its folders.
-                      </div>
-                    </div>
-                  </section>
-                  <section class="pane preview-pane">
+                  <section
+                    class="pane tree-pane"
+                    aria-labelledby="folders-heading"
+                    data-focus-scope
+                    id="folders-pane"
+                  >
                     <div class="row between">
-                      <div class="eyebrow">03 / All destinations</div>
-                      <span class="badge gray">Record preview</span>
+                      <h2 id="folders-heading" tabindex="-1" data-focus-heading>Folders</h2>
+                      <span class="badge" id="destinationCount"></span>
                     </div>
-                    <h2 style="margin-top: 8px">One record, multiple trees</h2>
-                    <label
-                      >Record for preview<select id="record" disabled>
-                        <option>Select a table first</option>
-                      </select></label
-                    >
-                    <div class="row wrap">
-                      <button id="chooseRecord" disabled>Choose another record</button
-                      ><button id="preview" disabled>Preview saved revision</button>
-                    </div>
-                    <p id="revision" class="hint">No revision saved in this session.</p>
-                    <div id="previewTrees" aria-live="polite">
-                      <div class="callout">
-                        Save a draft and choose a record to preview folder names using your access.
-                      </div>
-                    </div>
-                    <p class="hint">
-                      Preview checks names and conditions. Existing physical folders and collisions
-                      are checked when provisioning runs. Placement never grants access.
+                    <div id="destinations" class="stack"></div>
+                    <button id="addDestination" type="button" class="wide secondary">
+                      ＋ Add destination
+                    </button>
+                    <p id="no-library" hidden>
+                      No libraries are ready yet.
+                      <button id="go-access" type="button" class="link">
+                        Set one up in Sites &amp; access →
+                      </button>
                     </p>
+                  </section>
+                  <section
+                    class="pane"
+                    aria-labelledby="folder-settings-heading"
+                    data-focus-scope
+                    id="settings-pane"
+                  >
+                    <h2 id="folder-settings-heading" tabindex="-1" data-focus-heading>
+                      Folder settings
+                    </h2>
+                    <div id="folderEditor"></div>
+                  </section>
+                  <section class="pane preview-pane" aria-labelledby="preview-heading">
+                    <div class="row between">
+                      <h2 id="preview-heading">Preview</h2>
+                      <span id="preview-stale" class="badge warning" hidden>Out of date</span>
+                    </div>
+                    <div class="row wrap" data-actions>
+                      <span class="label-text">Preview record</span>
+                      <button id="chooseRecord" type="button" class="secondary">
+                        Choose record…
+                      </button>
+                      <span id="preview-record-name"></span>
+                      <button id="refreshPreview" type="button" class="secondary" hidden>
+                        Refresh preview
+                      </button>
+                    </div>
+                    <div id="previewTrees"></div>
+                    <p id="preview-status" class="sr-only" role="status"></p>
                   </section>
                 </div>
-                <details id="recordTools" class="card">
-                  <summary>Record results and replanning</summary>
-                  <p id="maintenanceContext"></p>
-                  <div class="row wrap">
-                    <button id="previewBatch">Review batch replan</button
-                    ><button id="queueBatch" disabled>Queue reviewed batch</button>
-                  </div>
-                  <pre id="batchReview">
-Select up to five records for a published-revision impact review.</pre>
-                </details>
               </div>
             </div>
           </div>
