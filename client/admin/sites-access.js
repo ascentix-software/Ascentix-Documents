@@ -222,7 +222,7 @@
   // read holds nothing: the server repairs any location made early.
   const VALID = 4,
     validationReason =
-      "Dynamics hasn't validated this SharePoint site yet. Validate it in Settings › Document Management Settings, then choose Check again.";
+      "This SharePoint site hasn't been validated yet. Validate it in Settings › Document Management Settings, then choose Check again.";
   const nativeKey = (s) => String(s?._asx_nativeid_value || '').toLowerCase();
   const awaitingValidation = (s) => {
     const v = state.validation.get(nativeKey(s));
@@ -946,8 +946,7 @@
     // one reason, kept in that line (ui.disable removes it once they are released).
     const waiting = state.site && awaitingValidation(state.site),
       waitingText = waiting
-        ? 'Waiting for Dynamics to validate this site' +
-          (waiting.label ? ' (' + waiting.label + ')' : '')
+        ? 'Waiting for site validation' + (waiting.label ? ' (' + waiting.label + ')' : '')
         : '',
       reasonId = 'ad-validation-reason';
     $('ad-site-validation').hidden = !waiting;

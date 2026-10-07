@@ -1967,7 +1967,7 @@ const stage = (team, access) => {
     const n = held.nodes,
       siteRow = (s) => held.document.querySelector('[data-focus-key="site:' + s.asx_siteid + '"]'),
       reason =
-        "Dynamics hasn't validated this SharePoint site yet. Validate it in Settings › Document Management Settings, then choose Check again.",
+        "This SharePoint site hasn't been validated yet. Validate it in Settings › Document Management Settings, then choose Check again.",
       actions = ['ad-existing', 'ad-create', 'ad-empty-existing', 'ad-empty-create'];
     assert.equal(n['ad-site-title'].textContent, 'Awaiting');
     // Every listed site's status is read in one query, by its native site ID.
@@ -1984,7 +1984,7 @@ const stage = (team, access) => {
     assert(n['ad-site-validation'].classList.contains('muted'));
     assert.equal(
       n['ad-site-validation-text'].textContent,
-      'Waiting for Dynamics to validate this site (In Progress)',
+      'Waiting for site validation (In Progress)',
     );
     assert.equal(n['ad-check-validation'].textContent, 'Check again');
     assert(n['ad-check-validation'].classList.contains('link'));

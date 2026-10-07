@@ -265,9 +265,9 @@ async function open(context, tab, extra = '') {
     // actions are held with their reason, and Check again releases them once it is Valid.
     const held = await open(context, 'access', '(() => (window.__mock.validationStatus = 2))()');
     const line = held.locator('#ad-site-validation');
-    await line.getByText('Waiting for Dynamics to validate this site (In Progress)').waitFor();
+    await line.getByText('Waiting for site validation (In Progress)').waitFor();
     await line
-      .getByText("Dynamics hasn't validated this SharePoint site yet.", { exact: false })
+      .getByText("This SharePoint site hasn't been validated yet.", { exact: false })
       .waitFor();
     assert.equal(await held.locator('#ad-existing').getAttribute('aria-disabled'), 'true');
     assert.equal(await held.locator('#ad-create').getAttribute('aria-disabled'), 'true');
