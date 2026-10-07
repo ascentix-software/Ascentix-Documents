@@ -102,7 +102,14 @@ async function boot({
   };
   const xrm = {
     Navigation: {
-      navigateTo: async (page) => sent.push(['navigate', page]),
+      navigateTo: async (page) =>
+        sent.push([
+          'navigate',
+          {
+            ...page,
+            data: new URLSearchParams(page.webresourceName.split('?')[1] || '').get('data'),
+          },
+        ]),
       openForm: async () => {},
       openConfirmDialog: async () => assert.fail('No platform dialogs'),
     },

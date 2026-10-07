@@ -63,7 +63,13 @@ async function boot(options = {}) {
   let current = profile;
   const xrm = {
     // Copies: objects made inside the vm context have its Object prototype, which deepEqual refuses.
-    Navigation: { navigateTo: async (page) => navigations.push({ ...page }) },
+    Navigation: {
+      navigateTo: async (page) =>
+        navigations.push({
+          ...page,
+          data: new URLSearchParams(page.webresourceName.split('?')[1] || '').get('data'),
+        }),
+    },
     Utility: {
       getGlobalContext: () => ({
         getClientUrl: () => 'https://example.test',
@@ -141,7 +147,7 @@ const visible = (d) =>
     assert.deepEqual(run.navigations, [
       {
         pageType: 'webresource',
-        webresourceName: 'asx_admin/index.html',
+        webresourceName: 'asx_admin/index.html?data=monitor-' + BUILD,
         data: 'monitor-' + BUILD,
       },
     ]);

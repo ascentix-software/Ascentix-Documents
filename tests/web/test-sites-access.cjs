@@ -156,7 +156,14 @@ let policy = { Status: 'Applied', RowVersion: '1', Policy: { Desired: [], Applie
   refresh = 0;
 const xrm = {
   Utility: { getGlobalContext: () => ({ getClientUrl: () => 'https://example.test' }) },
-  Navigation: { openUrl: () => {}, navigateTo: async (page) => navigations.push(page) },
+  Navigation: {
+    openUrl: () => {},
+    navigateTo: async (page) =>
+      navigations.push({
+        ...page,
+        data: new URLSearchParams(page.webresourceName.split('?')[1] || '').get('data'),
+      }),
+  },
   WebApi: {
     retrieveMultipleRecords: async (table, options) => {
       if (table === 'team') teamQueries.push(options);

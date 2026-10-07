@@ -8,7 +8,7 @@ Requires a System Administrator for step 4.
 
 1. Let the work queue drain with **Automation** on. Then turn the **Automation** switch in Settings off and turn both flows off. A paused Automation does not drain the queue.
 2. Import 0.1.0.4 managed with `--stage-and-upgrade`. This removes the old packaged event steps.
-3. Publish all customizations (Power Apps › Solutions › Publish all customizations), then reload the Documents admin page. The import's `--publish-changes` does not always refresh the admin page's scripts: until everything is published, the app can keep serving the previous version.
+3. Publish all customizations (Power Apps › Solutions › Publish all customizations), then reload the Documents admin page without the browser cache (Ctrl+Shift+R, or Ctrl+F5). Until then the app's left menu can keep the previous names. The import's `--publish-changes` does not always refresh the admin page's scripts: until everything is published, the app can keep serving the previous version.
 4. As a System Administrator, open **Settings**. Check the change-tracking table and click **Repair all** (or **Repair** on the table's row when only one table needs it). Every table should show Ready.
 5. Check the solution layers of both flows (**Dispatch durable work** and **Provision requested record**). If either has an active unmanaged layer, for example because it was edited in the environment, remove that active customization. Otherwise it stays on top of the upgraded flow and hides its retries, failure handling and write guard.
 6. Turn the flows back on, then turn **Automation** back on with **Turn on** in the header chip.

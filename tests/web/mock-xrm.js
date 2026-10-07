@@ -432,7 +432,7 @@
     },
     Navigation: {
       navigateTo: async (page) => {
-        location.href = '/index.html?data=' + page.data;
+        location.href = '/' + page.webresourceName.replace(/^asx_admin\//, '');
       },
       openForm: async () => {},
       openUrl: () => {},

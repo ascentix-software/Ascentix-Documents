@@ -546,10 +546,10 @@
   async function go(tab, link, focus) {
     if (link) write(KEYS.link, JSON.stringify({ ...link, tab }));
     if (focus) write(KEYS.focus, tab);
+    // The same address the left menu uses, so the app highlights this tab's menu item.
     await xrm.Navigation.navigateTo({
       pageType: 'webresource',
-      webresourceName: 'asx_admin/index.html',
-      data: tab + '-' + BUILD,
+      webresourceName: 'asx_admin/index.html?data=' + tab + '-' + BUILD,
     });
   }
   // Leaving the tab reloads the page, so unsaved template edits ask first: Save draft,
