@@ -1,7 +1,8 @@
 'use strict';
-// Folder templates: the Tables rail, the template bar with its version chip and
-// actions, the folder tree and folder settings, the condition builder, the preview of the current
-// edits, and re-runs for existing records. Text is only ever set with textContent.
+// Folder templates: the templates list, the read-first overview of a template with its Schedule
+// and Versions panels, and the editor (template bar with its version chip, the folder tree and
+// folder settings, the condition builder, the preview of the current edits), and re-runs for
+// existing records. Text is only ever set with textContent.
 (() => {
   const $ = (id) => document.getElementById(id);
   const state = {
@@ -13,14 +14,29 @@
     libraries: [],
     sections: [],
     saved: null,
+    // The template open in the editor (null for a new one until its first save).
     template: null,
     templates: [],
+    // Every template's revisions: the list's states and the overview's Versions read them.
+    revisions: [],
     enabledTables: [],
-    expandedTables: new Set(),
+    // 'overview' shows a template read-only; 'edit' shows the editor.
+    view: 'overview',
+    step: 1,
+    // The template the overview shows: its row, the revision it reads, that revision's sources and
+    // destinations, its last re-run and the policies of its libraries.
+    overview: null,
+    // One GetPolicy per library per page load, shared by every reader.
+    policyCache: new Map(),
+    listQuery: '',
+    // The overview's Folders groups that are open, by destination key.
+    openGroups: new Set(),
+    // An earlier version opened from Versions: it can be read, not saved or published.
+    readOnly: false,
     sectionSequence: 0,
     editBase: null,
     busy: false,
-    // The rail's first load is done: its empty state is real, not "still loading".
+    // The list's first load is done: its empty state is real, not "still loading".
     loaded: false,
     // Edits since the last load or save: the chip, Save draft, Publish and the guards follow it.
     unsaved: false,
@@ -36,9 +52,15 @@
     // Which template open the background preload belongs to.
     preloadId: 0,
     pickersStale: false,
-    // A rail redraw waits for the rail's open confirmation.
+    // A list redraw waits for the list's open confirmation.
     railStale: false,
   };
+  const OPERATOR = 'prvCreateasx_operatorcommand';
+  const READ_ONLY = 'Viewing an earlier version.';
+  // The open side panel (Schedule, Version history or Re-run): one at a time.
+  let panel = null;
+  // Dataverse IDs compare without case.
+  const same = (a, b) => !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
   const metadata = new Map();
   const xrm = window.parent?.Xrm || window.Xrm;
   const ui = window.AsxdUi;
@@ -108,8 +130,9 @@
     const open = !!state.root;
     $('template-bar').hidden = !open;
     $('authorWorkspace').hidden = !open;
-    $('no-template').hidden = open;
     $('templateName').disabled = state.busy || !!state.template;
+    $('editor-title').textContent =
+      state.template?.asx_name || $('templateName').value.trim() || 'New template';
     const version = versionText();
     $('version-chip').textContent = version;
     $('version-chip-desc').textContent =
@@ -125,13 +148,16 @@
     if (state.unsaved) save.setAttribute('aria-label', 'Save draft, unsaved changes');
     else save.removeAttribute('aria-label');
     save.disabled = state.busy || !open || !state.sections.length;
-    // A symbol button names its object: "More actions for Account onboarding".
-    $('template-menu').setAttribute(
-      'aria-label',
-      'More actions for ' + ($('templateName').value.trim() || 'this template'),
-    );
-    const reason = publishReason();
+    const reason = state.readOnly ? READ_ONLY : publishReason();
     ui.disable($('publish'), 'publish-reason', reason);
+    // Read-only: Save draft is off for the same reason as Publish, named once beside them.
+    if (state.readOnly) {
+      save.setAttribute('aria-disabled', 'true');
+      save.setAttribute('aria-describedby', 'publish-reason');
+    } else {
+      save.removeAttribute('aria-disabled');
+      save.removeAttribute('aria-describedby');
+    }
     $('publish').classList.toggle('primary', !reason);
     $('publish').classList.toggle('secondary', !!reason);
     const atLimit = state.sections.length >= ui.BOUNDS.destinations;
@@ -145,15 +171,6 @@
             ui.BOUNDS.destinations +
             ' destinations, because each record plans all of them in one step that Dataverse stops after 2 minutes.'
         : null,
-    );
-    $('menu-history').hidden = !state.template;
-    $('menu-delete').hidden = !state.template;
-    $('menu-rerun').hidden =
-      !state.template?._asx_publishedrevisionid_value && state.editBase?.Status !== 'Published';
-    ui.disable(
-      $('saveAvailability'),
-      'schedule-reason',
-      state.template ? null : 'Save the template first.',
     );
   }
   // An edit: the chip, Save draft and Publish follow it, and the preview dims until refreshed.
@@ -329,15 +346,28 @@
       })),
     );
   }
+  // How a template's field reads, by alias and column: "Account Name" on the record itself,
+  // "Primary Contact › Full Name" on a related one; null when its sources do not have it.
+  function labelOf(sources) {
+    const root = sources.find((s) => s.Alias === 'root');
+    const lookups = metadata.get(root?.Table)?.lookups || [];
+    return (alias, column) => {
+      const source = sources.find((s) => s.Alias === alias);
+      const field = source?.columns.find((c) => c.Name === column);
+      if (!source || !field) return null;
+      if (alias === 'root') return field.Label;
+      const lookup = lookups.find((l) => l.LogicalName === source.Lookup);
+      return (lookup ? display(lookup) : source.Lookup) + ' › ' + field.Label;
+    };
+  }
   // A folder name with its fields shown by label: {root.name} → [Account Name].
   function readable(name) {
+    const label = labelOf(state.sources);
     return String(name || '').replace(
       /\{([a-z0-9_]+)\.([a-z0-9_]+)\}/gi,
       (match, alias, column) => {
-        const source = state.sources.find((s) => s.Alias === alias);
-        const field = source?.columns.find((c) => c.Name === column);
-        if (!source || !field) return match;
-        return '[' + (alias === 'root' ? '' : via(source) + ' › ') + field.Label + ']';
+        const text = label(alias, column);
+        return text ? '[' + text + ']' : match;
       },
     );
   }
@@ -473,6 +503,62 @@
     LessOrEqual: 'at most',
   };
   const unary = (operator) => ['IsNull', 'IsNotNull'].includes(operator);
+  // Operators as rule sentences say them: "Status is Active".
+  const SHORT = {
+    Equal: 'is',
+    NotEqual: 'is not',
+    Contains: 'contains',
+    DoesNotContain: "doesn't contain",
+    IsNull: 'is empty',
+    IsNotNull: 'has a value',
+    Greater: 'greater than',
+    GreaterOrEqual: 'at least',
+    Less: 'less than',
+    LessOrEqual: 'at most',
+  };
+  // A date as the version chip shows it: "3 Oct".
+  const day = (value) => ui.time(value).textContent.split(',')[0];
+  // One condition as words: its field, the operator, and the value by its label (an option's
+  // label, Yes or No, the record's name, the date, or the other field).
+  function clause(c, sources) {
+    const label = labelOf(sources);
+    const named = (value) => {
+      const [alias, column] = String(value).split('.');
+      return label(alias, column) || 'Unavailable field';
+    };
+    const text = named(c.field) + ' ' + (SHORT[c.Operator] || c.Operator);
+    if (unary(c.Operator)) return text;
+    if (c.right) return text + ' ' + named(c.right);
+    const [alias, column] = String(c.field).split('.');
+    const field = sources.find((s) => s.Alias === alias)?.columns.find((f) => f.Name === column);
+    const option = (value) => field.Options?.find((o) => o.value === value)?.label ?? value;
+    switch (field?.Kind) {
+      case 'Choice':
+        return text + ' ' + option(c.Literal);
+      case 'MultiChoice':
+        return text + ' ' + String(c.Literal).split(',').map(option).join(', ');
+      case 'Boolean':
+        return text + ' ' + (c.Literal === 'false' ? 'No' : 'Yes');
+      case 'Lookup':
+        return text + ' ' + (c.label || 'Record not available');
+      case 'DateOnly':
+        // A date without a time is read in local time, so it is the same day everywhere.
+        return text + ' ' + (c.Literal ? day(c.Literal + 'T00:00') : '');
+      case 'DateTime':
+        return text + ' ' + (c.Literal ? day(c.Literal) : '');
+      default:
+        return text + ' ' + c.Literal;
+    }
+  }
+  // A folder's rule: "Always", or "◆ " and its rule sentence.
+  function ruleText(folder, sources) {
+    const sentence = folder.Condition
+      ? ui.ruleSentence(folder.Condition, (c) => clause(c, sources))
+      : '';
+    return sentence
+      ? { text: '◆ ' + sentence, conditional: true }
+      : { text: 'Always', conditional: false };
+  }
   // The targets of the lookup a condition compares; a record ID column is its own table.
   function lookupTargets(field) {
     const [alias, column] = String(field).split('.');
@@ -854,10 +940,24 @@
   const siteName = (library) =>
     state.sites.find((s) => s.asx_siteid === library?._asx_siteid_value)?.asx_name ||
     'Unavailable site';
-  function destinationName(section) {
-    return section.Name && section.Name !== section.Key
-      ? section.Name
-      : 'Destination ' + (state.sections.indexOf(section) + 1);
+  // A destination's name, else its place in the template: "Destination 2".
+  const sectionName = (section, index) =>
+    section.Name && section.Name !== section.Key ? section.Name : 'Destination ' + (index + 1);
+  const destinationName = (section) => sectionName(section, state.sections.indexOf(section));
+  // A destination's folders in tree order with their depth; a folder whose parent is missing
+  // starts its own tree after the others.
+  function treeOrder(section) {
+    const order = [],
+      visited = new Set();
+    const visit = (folder, depth) => {
+      if (visited.has(folder)) return;
+      visited.add(folder);
+      order.push([folder, depth]);
+      section.Folders.filter((f) => f.Parent === folder.Key).forEach((f) => visit(f, depth + 1));
+    };
+    section.Folders.filter((f) => !f.Parent).forEach((f) => visit(f, 0));
+    section.Folders.filter((f) => !visited.has(f)).forEach((f) => visit(f, 0));
+    return order;
   }
   const nodeKey = (section, folder) => 'node:' + section.Key + ':' + folder.Key;
   function addChild(section, folder) {
@@ -931,11 +1031,8 @@
         'destination-section' + (section === selectedSection ? ' selected-section' : ''),
       );
       card.append(el('h3', destinationName(section), 'section-heading'));
-      const tree = el('div', null, 'tree'),
-        visited = new Set();
-      const addNode = (folder, depth) => {
-        if (visited.has(folder)) return;
-        visited.add(folder);
+      const tree = el('div', null, 'tree');
+      for (const [folder, depth] of treeOrder(section)) {
         const row = el('div', null, 'node-row');
         row.style.paddingLeft = depth * 16 + 'px';
         const node = button(
@@ -962,12 +1059,7 @@
           row.append(mark, text);
         }
         tree.append(row);
-        section.Folders.filter((f) => f.Parent === folder.Key).forEach((f) =>
-          addNode(f, depth + 1),
-        );
-      };
-      section.Folders.filter((f) => !f.Parent).forEach((f) => addNode(f, 0));
-      section.Folders.filter((f) => !visited.has(f)).forEach((f) => addNode(f, 0));
+      }
       card.append(tree);
       const parent =
         section === selectedSection ? selectedFolder : section.Folders.find((f) => !f.Parent);
@@ -1292,9 +1384,15 @@
     if (!response.ok) throw new Error(body.error?.message || 'Server operation failed.');
     return body.Result;
   }
-  // The template row as the bar, chip and Schedule read it. The one copy of this $select.
+  // The template row as the list, the overview, the bar, the chip and Schedule read it. The one
+  // copy of this $select.
   const TEMPLATE_SELECT =
     '?$select=asx_templateid,asx_name,asx_table,asx_disabled,asx_startsutc,asx_endsutc,_asx_publishedrevisionid_value';
+  // Every revision of every template, newest first. The publisher is the last writer of a
+  // published revision: publishing updates it, and the server freezes it afterwards.
+  const REVISION_SELECT =
+    '?$select=asx_revisionid,asx_version,asx_status,_asx_templateid_value,modifiedon,_modifiedby_value&$orderby=asx_version desc';
+  const BY = '_modifiedby_value@OData.Community.Display.V1.FormattedValue';
   const reloadTemplate = (templateId) =>
     xrm.WebApi.retrieveRecord('asx_template', templateId, TEMPLATE_SELECT);
   async function latestRevision() {
@@ -1306,24 +1404,437 @@
     );
     return rows.entities[0]?.asx_revisionid;
   }
-
-  // The ⋯ menu: keyboard, focus and closing come from AsxdUi.menu; choosing an item
-  // closes it.
-  ui.menu($('template-menu'), $('template-menu-list'));
-  $('menu-history').onclick = () => task(openHistory);
-  $('menu-schedule').onclick = openSchedule;
-  $('menu-rerun').onclick = openRerun;
-  $('menu-delete').onclick = deleteTemplate;
-  // One panel under the template bar at a time; Close returns to the ⋯ button.
-  const PANELS = ['history-panel', 'schedule-panel', 'rerun-panel'];
-  function showPanel(id) {
-    for (const panel of PANELS) $(panel).hidden = panel !== id;
-  }
-  for (const close of document.querySelectorAll('.panel-close'))
-    close.onclick = () => {
-      $(close.dataset.close).hidden = true;
-      $('template-menu').focus();
+  const revisionsOf = (templateId) =>
+    state.revisions.filter((r) => same(r._asx_templateid_value, templateId));
+  // A template's state from its published pointer, its Draft revision and its switch.
+  function templateState(t) {
+    const rows = revisionsOf(t.asx_templateid);
+    const live =
+      rows.find((r) => same(r.asx_revisionid, t._asx_publishedrevisionid_value))?.asx_version ??
+      null;
+    const draft = rows.find((r) => r.asx_status === 'Draft')?.asx_version ?? null;
+    const off = !!t.asx_disabled;
+    return {
+      live,
+      draft,
+      off,
+      label: off ? 'Off' : live ? 'Live v' + live : draft ? 'Draft v' + draft : 'Draft',
+      tone: off ? 'muted' : live ? 'ok' : 'warning',
     };
+  }
+  // A library's policy, read once per page load and shared; null without the Security
+  // Administrator role (no call) or when the read fails, which a later caller tries again.
+  function policyFor(libraryId) {
+    if (!libraryId || !ui.can('prvCreateasx_policy')) return Promise.resolve(null);
+    if (!state.policyCache.has(libraryId)) {
+      const read = ui
+        .api('asx_SecurityAdmin', { Command: 'GetPolicy', LibraryId: libraryId })
+        .catch(() => {
+          if (state.policyCache.get(libraryId) === read) state.policyCache.delete(libraryId);
+          return null;
+        });
+      state.policyCache.set(libraryId, read);
+    }
+    return state.policyCache.get(libraryId);
+  }
+  // The teams a policy gives access, as Sites & access lists them: a deleted team counts while it
+  // still has applied access.
+  function teamCount(policy) {
+    const deleted = new Set(
+      (policy.Teams || []).filter((t) => t.Deleted).map((t) => String(t.TeamId).toLowerCase()),
+    );
+    const applied = (teamId) =>
+      policy.Policy?.Applied?.find((a) => same(a.TeamId, teamId))?.Access || 'None';
+    return (policy.Policy?.Desired || []).filter((e) =>
+      deleted.has(String(e.TeamId).toLowerCase())
+        ? applied(e.TeamId) !== 'None'
+        : e.Access !== 'None',
+    ).length;
+  }
+  // A template's re-run from Monitor's TemplateRuns list (running, or ended in the last day);
+  // null without the Operator role (no call), when there is none, or when the read fails.
+  async function lastRun(templateId) {
+    if (!ui.can(OPERATOR)) return null;
+    try {
+      const runs = await ui.api('asx_ManageWork', {
+        Command: 'ListProblems',
+        List: 'TemplateRuns',
+      });
+      return (runs.Problems || []).find((p) => same(p.Run?.TemplateId, templateId))?.Run || null;
+    } catch {
+      return null;
+    }
+  }
+  // A loaded revision as the editor and the overview hold it. Pure: columnsOf(table) answers the
+  // columns of each source table, which the caller has read with fields() first.
+  function toModel(loaded, columnsOf) {
+    const group = (g) => ({
+      All: g.All,
+      Groups: (g.Groups || []).map(group),
+      Conditions: (g.Conditions || []).map((c) => ({
+        field: c.Source + '.' + c.Column,
+        Operator: c.Operator,
+        Literal: c.Literal || '',
+        right: c.RightSource ? c.RightSource + '.' + c.RightColumn : null,
+        label: c.LiteralLabel || null,
+        table: c.LiteralTable || null,
+      })),
+    });
+    return {
+      sources: loaded.Draft.Sources.map((source) => ({
+        Alias: source.Alias,
+        Table: source.Table,
+        Lookup: source.Lookup,
+        columns: columnsOf(source.Table),
+      })),
+      sections: loaded.Draft.Destinations.map((d) => ({
+        ...d,
+        nodeSequence: 0,
+        Folders: d.Folders.map((f) => ({
+          ...f,
+          Condition: f.Condition ? group(f.Condition) : null,
+        })),
+      })),
+    };
+  }
+
+  // The overview: one template read top to bottom (destinations, folders, schedule, versions),
+  // with Edit template to open the editor.
+  async function showOverview(templateId) {
+    state.view = 'overview';
+    panel?.close(false);
+    $('template-overview').hidden = false;
+    $('template-editor').hidden = true;
+    // The re-run read needs nothing else, so it runs beside the others.
+    const reading = lastRun(templateId);
+    try {
+      const template = await reloadTemplate(templateId);
+      const index = state.templates.findIndex((t) => same(t.asx_templateid, templateId));
+      if (index >= 0) state.templates[index] = template;
+      const rows = revisionsOf(templateId);
+      const revisionId =
+        template._asx_publishedrevisionid_value ||
+        rows.find((r) => r.asx_status === 'Draft')?.asx_revisionid ||
+        rows[0]?.asx_revisionid ||
+        null;
+      let model = { sources: [], sections: [] };
+      if (revisionId) {
+        const loaded = JSON.parse(await api('asx_LoadDraft', { RevisionId: revisionId }));
+        // A table whose fields cannot be read shows its field tokens as written.
+        await Promise.all(loaded.Draft.Sources.map((s) => fields(s.Table).catch(() => null)));
+        model = toModel(loaded, (table) => metadata.get(table)?.columns || []);
+      }
+      const [run, policies] = await Promise.all([
+        reading,
+        Promise.all(model.sections.map(async (d) => [d.LibraryId, await policyFor(d.LibraryId)])),
+      ]);
+      // Another template opens with its first destination's folders shown.
+      if (!same(state.overview?.template.asx_templateid, templateId))
+        state.openGroups = new Set(model.sections.slice(0, 1).map((d) => d.Key));
+      state.overview = { template, revisionId, model, run, policies: new Map(policies) };
+    } catch (error) {
+      state.overview = null;
+      throw error;
+    } finally {
+      renderList();
+      renderOverview();
+    }
+  }
+  function renderOverview() {
+    const o = state.overview;
+    $('overview-actions').hidden = !o;
+    $('overview-pill').hidden = !o;
+    if (!o) {
+      $('overview-title').textContent = 'Folder templates';
+      $('overview-meta').textContent = '';
+      const empty = el('div', null, 'empty-panel');
+      empty.append(el('h2', 'No template selected'));
+      $('overview-cards').replaceChildren(empty);
+      return;
+    }
+    const t = o.template,
+      s = templateState(t),
+      name = t.asx_name || tableName(t.asx_table);
+    $('overview-title').textContent = name;
+    $('overview-pill').textContent =
+      !s.off && s.live && s.draft ? 'Live v' + s.live + ' · Draft v' + s.draft : s.label;
+    $('overview-pill').dataset.tone = s.tone;
+    const published = state.revisions.find((r) =>
+      same(r.asx_revisionid, t._asx_publishedrevisionid_value),
+    );
+    $('overview-meta').textContent =
+      tableName(t.asx_table) +
+      ' table' +
+      (published?.modifiedon
+        ? ' · published ' +
+          day(published.modifiedon) +
+          (published[BY] ? ' by ' + published[BY] : '')
+        : '');
+    $('overview-menu').setAttribute('aria-label', 'More actions for ' + name);
+    $('menu-rerun').hidden = !t._asx_publishedrevisionid_value;
+    $('overview-edit').textContent = s.draft ? 'Continue Draft v' + s.draft : 'Edit template';
+    $('overview-cards').replaceChildren(
+      destinationsCard(o),
+      foldersCard(o),
+      scheduleCard(o),
+      versionsCard(o),
+    );
+  }
+  // A card whose head action is "Edit": named for what it edits, for screen readers.
+  function card(options, editLabel) {
+    const made = ui.card(options);
+    if (editLabel) made.head.querySelector('.card-action').setAttribute('aria-label', editLabel);
+    return made;
+  }
+  const edit = (step) => () => task(() => openEditor(step));
+  function destinationsCard(o) {
+    const sections = o.model.sections;
+    const made = card(
+      {
+        title: 'Destinations',
+        summary: plural(sections.length, 'library', 'libraries'),
+        action: { label: 'Edit', onClick: edit(1), key: 'overview:destinations' },
+      },
+      'Edit destinations',
+    );
+    sections.forEach((section, index) => {
+      const library = libraryFor(section),
+        row = el('div', null, 'card-row dest-row');
+      row.append(
+        el('strong', sectionName(section, index)),
+        el(
+          'span',
+          siteName(library) + ' › ' + (library?.asx_name || 'Unavailable library'),
+          'muted',
+        ),
+      );
+      const policy = o.policies.get(section.LibraryId);
+      if (policy) row.append(el('span', plural(teamCount(policy), 'team', 'teams'), 'teams'));
+      made.body.append(row);
+    });
+    return made.card;
+  }
+  function foldersCard(o) {
+    const { sources, sections } = o.model;
+    const folders = sections.flatMap((d) => d.Folders);
+    const conditional = folders.filter((f) => ruleText(f, sources).conditional).length;
+    const made = card(
+      {
+        title: 'Folders',
+        summary: plural(folders.length, 'folder', 'folders') + ' · ' + conditional + ' conditional',
+        action: { label: 'Edit', onClick: edit(2), key: 'overview:folders' },
+      },
+      'Edit folders',
+    );
+    const label = labelOf(sources);
+    sections.forEach((section, index) => {
+      const open = state.openGroups.has(section.Key);
+      const toggle = button(
+        '',
+        () => {
+          if (open) state.openGroups.delete(section.Key);
+          else state.openGroups.add(section.Key);
+          ui.withFocus(renderOverview);
+        },
+        'group-row',
+      );
+      toggle.setAttribute('aria-expanded', String(open));
+      keyed(toggle, 'folders:' + section.Key);
+      const glyph = el('span', open ? '▾' : '▸', 'glyph');
+      glyph.setAttribute('aria-hidden', 'true');
+      toggle.append(glyph, el('span', sectionName(section, index), 'group-name'));
+      if (!open)
+        toggle.append(el('span', plural(section.Folders.length, 'folder', 'folders'), 'count'));
+      made.body.append(toggle);
+      if (!open) return;
+      for (const [folder, depth] of treeOrder(section)) {
+        const row = el('div', null, 'card-row folder-row'),
+          rule = ruleText(folder, sources);
+        row.style.paddingLeft = 36 + 20 * depth + 'px';
+        row.append(
+          folderIcon(),
+          ui.tokens(folder.Name, label),
+          el('span', rule.text, rule.conditional ? 'rule conditional' : 'rule'),
+        );
+        made.body.append(row);
+      }
+    });
+    return made.card;
+  }
+  // "Off", or "On" with its start (when still ahead) and its end: "On · no end date".
+  function scheduleText(t) {
+    if (t.asx_disabled) return 'Off';
+    return (
+      'On' +
+      (t.asx_startsutc && new Date(t.asx_startsutc) > new Date()
+        ? ' · starts ' + day(t.asx_startsutc)
+        : '') +
+      (t.asx_endsutc ? ' · ends ' + day(t.asx_endsutc) : ' · no end date')
+    );
+  }
+  function scheduleCard(o) {
+    const made = card(
+      {
+        title: 'Schedule and runs',
+        summary: scheduleText(o.template),
+        action: {
+          label: 'Edit',
+          onClick: () => openSchedule(made.head.querySelector('.card-action')),
+          key: 'overview:schedule',
+        },
+      },
+      'Edit schedule',
+    );
+    const run = o.run;
+    if (run) {
+      const row = el('div', null, 'card-row run-row');
+      row.append(
+        el('span', 'Last re-run'),
+        el(
+          'strong',
+          (run.StartedUtc ? day(run.StartedUtc) + ' · ' : '') +
+            Number(run.Planned || 0).toLocaleString('en-US') +
+            ' of ' +
+            (run.TotalEstimated ? 'about ' : '') +
+            Number(run.Total || 0).toLocaleString('en-US') +
+            ' records',
+        ),
+      );
+      made.body.append(row);
+    }
+    return made.card;
+  }
+  // One version: its number, Live, Replaced or Draft, when and by whom it was last saved, and
+  // View, which opens it read-only in the editor.
+  function versionRow(r, t, before = null) {
+    const [text, tone] = same(r.asx_revisionid, t._asx_publishedrevisionid_value)
+      ? ['Live', 'ok']
+      : r.asx_status === 'Draft'
+        ? ['Draft', 'muted']
+        : ['Replaced', 'muted'];
+    const row = el('div', null, 'card-row version-row'),
+      status = el('span', text, 'state');
+    status.dataset.tone = tone;
+    const view = button(
+      'View',
+      () => {
+        before?.();
+        return task(() => openVersion(r.asx_revisionid));
+      },
+      'link',
+    );
+    view.setAttribute('aria-label', 'View v' + r.asx_version);
+    keyed(view, 'version:' + r.asx_revisionid);
+    row.append(
+      el('span', 'v' + r.asx_version, 'v'),
+      status,
+      el(
+        'span',
+        [r.modifiedon ? day(r.modifiedon) : '', r[BY]].filter(Boolean).join(' · '),
+        'muted',
+      ),
+      view,
+    );
+    return row;
+  }
+  // The draft, the live version and the one it replaced; All versions lists every one.
+  function versionsCard(o) {
+    const t = o.template,
+      rows = revisionsOf(t.asx_templateid);
+    const live = rows.find((r) => same(r.asx_revisionid, t._asx_publishedrevisionid_value));
+    const shown = [
+      rows.find((r) => r.asx_status === 'Draft'),
+      live,
+      live && rows.find((r) => r.asx_version < live.asx_version),
+    ].filter(Boolean);
+    const made = ui.card({
+      title: 'Versions',
+      summary: String(rows.length),
+      action: {
+        label: 'All versions',
+        onClick: () => openHistory(made.head.querySelector('.card-action')),
+        key: 'overview:versions',
+      },
+    });
+    [...new Set(shown)]
+      .sort((a, b) => b.asx_version - a.asx_version)
+      .forEach((r) => made.body.append(versionRow(r, t)));
+    return made.card;
+  }
+
+  // The editor: Edit template opens the latest revision of the overview's template; View opens
+  // one version read-only; Close returns to the overview, asking first about unsaved edits.
+  async function openEditor(step = 1) {
+    const t = state.overview?.template;
+    if (t && (!state.root || !same(state.template?.asx_templateid, t.asx_templateid)))
+      await selectTemplate(t.asx_table, t.asx_templateid);
+    state.step = step;
+    showEditor();
+  }
+  function showEditor() {
+    state.view = 'edit';
+    panel?.close(false);
+    $('template-overview').hidden = true;
+    $('template-editor').hidden = false;
+    controls();
+    renderList();
+    $('editor-title').focus();
+  }
+  async function openVersion(revisionId) {
+    const t = state.overview.template;
+    if (!state.root || !same(state.template?.asx_templateid, t.asx_templateid))
+      await selectTemplate(t.asx_table, t.asx_templateid);
+    // The viewed version replaces the latest one selectTemplate loaded.
+    await reloadVersion(revisionId);
+    state.readOnly = true;
+    await openEditor(1);
+  }
+  // Clears the editor, so the next Edit template loads the saved version again.
+  function resetEditor() {
+    Object.assign(state, {
+      saved: null,
+      editBase: null,
+      sections: [],
+      template: null,
+      root: null,
+      unsaved: false,
+      readOnly: false,
+      run: null,
+      batch: null,
+    });
+    // The background reads of the closed template take no more tables.
+    state.preloadId++;
+    selectedSection = null;
+    selectedFolder = null;
+    $('templateName').value = '';
+    resetPreview();
+    render();
+  }
+  async function closeEditor() {
+    if (!(await ui.confirmLeave())) return;
+    const id = state.template?.asx_templateid || state.overview?.template.asx_templateid;
+    panel?.close(false);
+    resetEditor();
+    if (id) await task(() => showOverview(id));
+    else {
+      state.view = 'overview';
+      $('template-overview').hidden = false;
+      $('template-editor').hidden = true;
+      renderList();
+      renderOverview();
+    }
+    (state.overview ? $('overview-edit') : $('overview-title')).focus();
+  }
+  $('editor-close').onclick = closeEditor;
+  $('overview-edit').onclick = edit(1);
+
+  // The overview's ⋯ menu: keyboard, focus and closing come from AsxdUi.menu; choosing an item
+  // closes it.
+  ui.menu($('overview-menu'), $('overview-menu-list'));
+  $('menu-rerun').onclick = () => openRerun($('overview-menu'));
+  $('menu-delete').onclick = deleteTemplate;
+  for (const close of document.querySelectorAll('.panel-close'))
+    close.onclick = () => panel?.close();
 
   $('publish').onclick = async () => {
     if (ui.blocked($('publish'))) return;
@@ -1353,6 +1864,8 @@
       // Save draft would be refused with the old one.
       await reloadVersion(state.saved.RevisionId);
       state.template = await reloadTemplate(state.template.asx_templateid);
+      // The list's state and the re-run's version follow the new published revision.
+      await loadTemplates();
       controls();
       ui.feedback(
         'templates',
@@ -1360,56 +1873,29 @@
         'success',
         {
           label: 'Re-run existing records…',
-          onClick: openRerun,
+          onClick: (event) => openRerun(event?.currentTarget),
         },
       );
     });
     controls();
   };
 
-  async function openHistory() {
-    const rows = await xrm.WebApi.retrieveMultipleRecords(
-      'asx_revision',
-      '?$select=asx_revisionid,asx_version,asx_status&$filter=_asx_templateid_value eq ' +
-        state.template.asx_templateid +
-        '&$orderby=asx_version desc',
-    );
+  // Every version of the overview's template, in a side panel.
+  function openHistory(invoker) {
+    const t = state.overview.template;
     $('history-list').replaceChildren(
-      ...rows.entities.map((r) => {
-        const item = el('li');
-        const pick = button('v' + r.asx_version + ' · ' + r.asx_status, () =>
-          openVersion(pick, r.asx_revisionid, r.asx_version),
-        );
-        if (r.asx_revisionid === state.saved?.RevisionId) pick.setAttribute('aria-current', 'true');
-        item.append(pick);
-        return item;
-      }),
+      ...revisionsOf(t.asx_templateid).map((r) => versionRow(r, t, () => panel?.close(false))),
     );
-    showPanel('history-panel');
-    $('history-list').querySelector('button')?.focus();
-  }
-  async function openVersion(control, revisionId, version) {
-    if (state.unsaved) {
-      const ok = await ui.confirmInline(control, {
-        text: 'Open v' + version + '? Your unsaved changes to this draft are discarded.',
-        confirm: 'Open v' + version,
-        keep: 'Keep editing',
-      });
-      if (!ok) return;
-    }
-    await task(() => reloadVersion(revisionId));
-    $('history-panel').hidden = true;
-    $('version-chip').focus();
+    panel = ui.sidePanel($('history-panel'), invoker);
   }
 
-  function openSchedule() {
-    const t = state.template;
-    $('schedule-on').setAttribute('aria-checked', String(!t?.asx_disabled));
-    $('templateStart').value = localTime(t?.asx_startsutc);
-    $('templateEnd').value = localTime(t?.asx_endsutc);
+  function openSchedule(invoker) {
+    const t = state.overview.template;
+    $('schedule-on').setAttribute('aria-checked', String(!t.asx_disabled));
+    $('templateStart').value = localTime(t.asx_startsutc);
+    $('templateEnd').value = localTime(t.asx_endsutc);
     ui.clearFeedback('schedule');
-    showPanel('schedule-panel');
-    $('schedule-on').focus();
+    panel = ui.sidePanel($('schedule-panel'), invoker);
   }
   $('schedule-on').onclick = () =>
     $('schedule-on').setAttribute(
@@ -1424,21 +1910,28 @@
         : null;
       const end = $('templateEnd').value ? new Date($('templateEnd').value).toISOString() : null;
       if (start && end && end <= start) throw new Error('The end must be after the start.');
-      await xrm.WebApi.updateRecord('asx_template', state.template.asx_templateid, {
+      const id = state.overview.template.asx_templateid;
+      await xrm.WebApi.updateRecord('asx_template', id, {
         asx_disabled: $('schedule-on').getAttribute('aria-checked') !== 'true',
         asx_startsutc: start,
         asx_endsutc: end,
       });
-      state.template = await reloadTemplate(state.template.asx_templateid);
+      const template = await reloadTemplate(id);
+      state.overview.template = template;
+      const index = state.templates.findIndex((t) => same(t.asx_templateid, id));
+      if (index >= 0) state.templates[index] = template;
+      if (same(state.template?.asx_templateid, id)) state.template = template;
+      renderList();
+      renderOverview();
       controls();
       ui.feedback('schedule', 'Schedule saved.');
     });
   };
 
   async function deleteTemplate() {
-    const name = state.template.asx_name || $('templateName').value;
-    const table = state.root.LogicalName;
-    const ok = await ui.confirmInline($('template-menu'), {
+    const t = state.overview.template;
+    const name = t.asx_name || tableName(t.asx_table);
+    const ok = await ui.confirmInline($('overview-menu'), {
       text:
         'Delete ' +
         name +
@@ -1448,26 +1941,23 @@
       danger: true,
     });
     if (!ok) return;
-    const done = await ui.busy($('template-menu'), 'Deleting…', 'templates', async () => {
-      await xrm.WebApi.deleteRecord('asx_template', state.template.asx_templateid);
-      Object.assign(state, {
-        saved: null,
-        editBase: null,
-        sections: [],
-        template: null,
-        root: null,
-        unsaved: false,
-      });
-      for (const panel of PANELS) $(panel).hidden = true;
+    // Its place in the list: focus goes to the template that takes it.
+    const place = $('template-groups')
+      .querySelectorAll('.list-row')
+      .findIndex((r) => r.dataset.focusKey === 'template:' + t.asx_templateid);
+    const done = await ui.busy($('overview-menu'), 'Deleting…', 'templates', async () => {
+      await xrm.WebApi.deleteRecord('asx_template', t.asx_templateid);
+      panel?.close(false);
+      if (same(state.template?.asx_templateid, t.asx_templateid)) resetEditor();
+      state.overview = null;
       await loadTemplates();
-      render();
+      renderOverview();
       ui.feedback('templates', name + ' deleted. Nothing in SharePoint changed.');
       return true;
     });
     if (!done) return;
-    // Focus stays in the rail (ruling 2): the table's next template, else the Tables heading.
-    const next = $('templateTree').querySelector('[data-table="' + table + '"] .template-item');
-    (next || $('tables-heading')).focus();
+    const next = place < 0 ? null : $('template-groups').querySelectorAll('.list-row')[place];
+    (next || $('template-search')).focus();
   }
 
   // Unsaved edits ask before another template replaces them; true when it may.
@@ -1490,32 +1980,10 @@
     const loaded = JSON.parse(await api('asx_LoadDraft', { RevisionId: revisionId }));
     if (loaded.Draft.Table !== state.root.LogicalName)
       throw new Error('This version belongs to another table.');
-    const sources = await Promise.all(
-      loaded.Draft.Sources.map(async (source) => ({
-        Alias: source.Alias,
-        Table: source.Table,
-        Lookup: source.Lookup,
-        columns: (await fields(source.Table)).columns,
-      })),
-    );
-    const group = (g) => ({
-      All: g.All,
-      Groups: (g.Groups || []).map(group),
-      Conditions: (g.Conditions || []).map((c) => ({
-        field: c.Source + '.' + c.Column,
-        Operator: c.Operator,
-        Literal: c.Literal || '',
-        right: c.RightSource ? c.RightSource + '.' + c.RightColumn : null,
-        label: c.LiteralLabel || null,
-        table: c.LiteralTable || null,
-      })),
-    });
-    state.sources = sources;
-    state.sections = loaded.Draft.Destinations.map((d) => ({
-      ...d,
-      nodeSequence: 0,
-      Folders: d.Folders.map((f) => ({ ...f, Condition: f.Condition ? group(f.Condition) : null })),
-    }));
+    await Promise.all(loaded.Draft.Sources.map((source) => fields(source.Table)));
+    const model = toModel(loaded, (table) => metadata.get(table).columns);
+    state.sources = model.sources;
+    state.sections = model.sections;
     state.saved = {
       RevisionId: loaded.RevisionId,
       RowVersion: loaded.RowVersion,
@@ -1586,22 +2054,21 @@
     if (!root) throw new Error(tableName(table) + ' is not available for document management.');
     state.template = templateId ? await reloadTemplate(templateId) : null;
     $('templateName').value = state.template?.asx_name || 'New template';
-    state.expandedTables.add(table);
     Object.assign(state, {
       root,
       editBase: null,
       saved: null,
       unsaved: false,
+      readOnly: false,
       sections: [],
       run: null,
       batch: null,
     });
     selectedSection = null;
     selectedFolder = null;
-    for (const panel of PANELS) $(panel).hidden = true;
+    panel?.close(false);
     ui.clearFeedback('templates');
     resetPreview();
-    renderTemplateTree();
     const meta = await fields(table);
     state.sources = [{ Alias: 'root', Table: table, Lookup: null, columns: meta.columns }];
     // The label reads the target's display name once its metadata is in.
@@ -1625,115 +2092,150 @@
   $('go-access').onclick = () => ui.navigate('access');
   // Tables are added, removed and repaired in Settings.
   $('manage-tables').onclick = () => ui.navigate('settings');
-  async function loadEnabledTables() {
+  // Every row of a paged read.
+  async function pages(table, query) {
     const rows = [];
-    let options = '?$select=asx_logicalname&$orderby=asx_logicalname';
+    let options = query;
     do {
-      const result = await xrm.WebApi.retrieveMultipleRecords('asx_runtimetable', options);
+      const result = await xrm.WebApi.retrieveMultipleRecords(table, options);
       rows.push(...result.entities);
       options = result.nextLink
         ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
         : null;
     } while (options);
+    return rows;
+  }
+  async function loadEnabledTables() {
+    const rows = await pages(
+      'asx_runtimetable',
+      '?$select=asx_logicalname&$orderby=asx_logicalname',
+    );
     state.enabledTables = [...new Set(rows.map((r) => r.asx_logicalname).filter(Boolean))].sort();
   }
-  // A confirmation in the rail. A redraw asked for while it is open waits, and runs once it closes.
+  // A confirmation in the list. A redraw asked for while it is open waits, and runs once it closes.
   async function railAsk(control, options) {
     try {
       return await ui.confirmInline(control, options);
     } finally {
-      if (state.railStale) renderTemplateTree();
+      if (state.railStale) renderList();
     }
   }
   async function loadTemplates() {
-    const rows = [];
-    let options = '?$select=asx_templateid,asx_name,asx_table&$orderby=asx_name';
-    do {
-      const result = await xrm.WebApi.retrieveMultipleRecords('asx_template', options);
-      rows.push(...result.entities);
-      options = result.nextLink
-        ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
-        : null;
-    } while (options);
-    state.templates = rows;
-    renderTemplateTree();
+    const [templates, revisions] = await Promise.all([
+      pages('asx_template', TEMPLATE_SELECT + '&$orderby=asx_name'),
+      pages('asx_revision', REVISION_SELECT),
+    ]);
+    state.templates = templates;
+    state.revisions = revisions;
+    renderList();
   }
-  // Opens a template (or a new one) from the rail, asking first when edits would be lost.
-  async function pick(control, table, templateId, what) {
-    if (!(await mayDiscard(control, what))) return;
-    await task(() => selectTemplate(table, templateId));
+  // Opens a template's overview from the list, asking first when editor changes would be lost.
+  async function pick(control, t) {
+    if (state.view === 'edit') {
+      if (!(await mayDiscard(control, t.asx_name || tableName(t.asx_table)))) return;
+      resetEditor();
+    }
+    $('new-template-table').hidden = true;
+    await task(() => showOverview(t.asx_templateid));
   }
-  function renderTemplateTree() {
-    const tree = $('templateTree');
+  // The list's tables in order: enabled tables by name, then tables no longer enabled.
+  function listTables() {
+    const byName = (a, b) => tableName(a).localeCompare(tableName(b));
+    const tables = [...new Set(state.templates.map((t) => t.asx_table).filter(Boolean))];
+    return {
+      enabled: tables.filter((t) => state.enabledTables.includes(t)).sort(byName),
+      disabled: tables.filter((t) => !state.enabledTables.includes(t)).sort(byName),
+    };
+  }
+  // The template the list marks as selected: the one the editor or the overview shows.
+  const selectedId = () =>
+    state.view === 'edit'
+      ? state.template?.asx_templateid
+      : state.overview?.template.asx_templateid;
+  function listRow(t) {
+    const s = templateState(t),
+      status = el('span', s.label, 'row-state');
+    status.dataset.tone = s.tone;
+    const row = button('', () => pick(row, t), 'list-row');
+    row.append(el('span', t.asx_name || tableName(t.asx_table), 'row-name'), status);
+    keyed(row, 'template:' + t.asx_templateid);
+    if (same(t.asx_templateid, selectedId())) row.setAttribute('aria-current', 'true');
+    return row;
+  }
+  // The templates list: one group per table, each template with its state; the search filters
+  // by name.
+  function renderList() {
+    const host = $('template-groups');
     // Never under an open confirmation (as Monitor's lists): railAsk redraws when it closes.
-    state.railStale = !!tree.querySelector('.confirm[role=group]');
+    state.railStale = !!host.querySelector('.confirm[role=group]');
     if (state.railStale) return;
-    tree.replaceChildren();
+    host.replaceChildren();
+    $('new-template').hidden = !state.enabledTables.length;
     if (!state.loaded) return;
-    const templated = [...new Set(state.templates.map((t) => t.asx_table))].filter(Boolean);
-    const enabled = [...state.enabledTables].sort();
-    const disabled = templated.filter((t) => !enabled.includes(t)).sort();
-    renderNoTemplate(!enabled.length && !disabled.length);
-    if (!enabled.length && !disabled.length) {
-      const empty = el('div', null, 'empty');
-      empty.append(el('p', 'No tables yet'));
-      tree.append(empty);
+    const { enabled, disabled } = listTables();
+    if (!enabled.length && !disabled.length && !state.enabledTables.length) {
+      host.append(el('p', 'No tables yet', 'empty'));
       return;
     }
-    const entry = (table, isEnabled) => {
-      const wrap = el('div', null, 'table-entry'),
-        section = el('details'),
-        summary = el('summary');
-      wrap.dataset.table = table;
-      summary.append(el('span', tableName(table), 'table-name'));
-      section.open = state.expandedTables.has(table);
-      section.ontoggle = () => {
-        if (section.open) state.expandedTables.add(table);
-        else state.expandedTables.delete(table);
-      };
-      section.append(summary);
-      const list = el('ul', null, 'template-list');
-      // A confirmation from a template button renders after the list, not inside it.
-      list.setAttribute('data-actions', '');
-      for (const template of state.templates.filter((t) => t.asx_table === table)) {
-        const item = el('li');
-        const open = button(
-          template.asx_name || tableName(table),
-          () => pick(open, table, template.asx_templateid, template.asx_name || 'this template'),
-          'template-item',
-        );
-        keyed(open, 'template:' + template.asx_templateid);
-        if (template.asx_templateid === state.template?.asx_templateid)
-          open.setAttribute('aria-current', 'true');
-        item.append(open);
-        list.append(item);
-      }
-      if (isEnabled) {
-        const item = el('li');
-        const create = button(
-          '＋ New template',
-          () => pick(create, table, null, 'a new template'),
-          'new-template',
-        );
-        item.append(create);
-        list.append(item);
-      }
-      section.append(list);
-      wrap.append(section);
-      tree.append(wrap);
+    const query = state.listQuery.trim().toLowerCase();
+    const group = (table) => {
+      const rows = state.templates.filter(
+        (t) =>
+          t.asx_table === table && (t.asx_name || tableName(table)).toLowerCase().includes(query),
+      );
+      if (!rows.length) return null;
+      const box = el('div', null, 'list-group');
+      box.append(el('span', tableName(table), 'group-label'), ...rows.map(listRow));
+      return box;
     };
-    enabled.forEach((table) => entry(table, true));
-    if (disabled.length) {
-      tree.append(el('h3', 'Not enabled', 'rail-group'));
-      disabled.forEach((table) => entry(table, false));
-    }
+    host.append(...enabled.map(group).filter(Boolean));
+    const others = disabled.map(group).filter(Boolean);
+    if (others.length) host.append(el('p', 'Not enabled', 'rail-group'), ...others);
   }
-  // The main area when no template is open.
-  function renderNoTemplate(noTables) {
-    const panel = $('no-template');
-    panel.replaceChildren(el('h2', 'No template selected'));
-    if (!noTables)
-      panel.append(el('p', 'Pick a template in Tables, or create one with ＋ New template.'));
+  $('template-search').oninput = () => {
+    state.listQuery = $('template-search').value;
+    renderList();
+  };
+  // ＋ New: the table first when there is more than one. Arrow keys move through the tables
+  // without opening one; Enter, or a pick with the pointer, opens it.
+  const tablePicker = $('new-template-table');
+  let browsing = false;
+  $('new-template').onclick = () => {
+    const tables = [...state.enabledTables].sort((a, b) =>
+      tableName(a).localeCompare(tableName(b)),
+    );
+    if (tables.length === 1) return newTemplate($('new-template'), tables[0]);
+    tablePicker.replaceChildren(
+      option('', 'Choose a table'),
+      ...tables.map((t) => option(t, tableName(t))),
+    );
+    tablePicker.value = '';
+    tablePicker.hidden = false;
+    tablePicker.focus();
+    return undefined;
+  };
+  tablePicker.addEventListener('pointerdown', () => (browsing = false));
+  tablePicker.addEventListener('keydown', (event) => {
+    browsing = event.key !== 'Enter';
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    chooseTable();
+  });
+  tablePicker.onchange = () => {
+    if (!browsing) chooseTable();
+  };
+  function chooseTable() {
+    if (!tablePicker.value) return;
+    tablePicker.hidden = true;
+    newTemplate($('new-template'), tablePicker.value);
+  }
+  async function newTemplate(control, table) {
+    if (state.view === 'edit' && !(await mayDiscard(control, 'a new template'))) return;
+    await task(async () => {
+      resetEditor();
+      await selectTemplate(table, null);
+      showEditor();
+    });
   }
   $('addDestination').onclick = () => {
     if (ui.blocked($('addDestination')) || !state.libraries.length) return;
@@ -1807,14 +2309,16 @@
     if (state.previewRecord) await runPreview();
   }
   $('save').onclick = async () => {
+    if (ui.blocked($('save'))) return;
     await ui.busy($('save'), 'Saving…', 'templates', async () => {
       await save();
       ui.feedback('templates', 'Draft saved.');
     });
     controls();
   };
+  // A version opened read-only has nothing to save: leaving it never asks.
   ui.setDirtyGuard(() =>
-    state.unsaved && state.root
+    state.unsaved && state.root && !state.readOnly
       ? {
           template: $('templateName').value.trim() || 'this template',
           save: () => save(),
@@ -1878,9 +2382,11 @@
     }
   }
 
-  // Re-run for existing records.
-  async function openRerun() {
-    showPanel('rerun-panel');
+  // Re-run for existing records, of the template the editor or the overview shows.
+  const rerunTemplate = () => (state.view === 'edit' ? state.template : state.overview?.template);
+  async function openRerun(invoker = document.activeElement) {
+    const t = rerunTemplate();
+    panel = ui.sidePanel($('rerun-panel'), invoker);
     $('rerun-impact').replaceChildren();
     $('rerun-these').hidden = true;
     ui.clearFeedback('rerun');
@@ -1889,7 +2395,7 @@
       ui
         .api('asx_ManageWork', {
           Command: 'CountRecords',
-          TemplateId: state.template.asx_templateid,
+          TemplateId: t.asx_templateid,
         })
         .catch(() => null),
       ui
@@ -1899,7 +2405,7 @@
     state.run =
       (runs?.Problems || []).find(
         (p) =>
-          p.Run?.TemplateId === state.template.asx_templateid &&
+          same(p.Run?.TemplateId, t.asx_templateid) &&
           ['Running', 'Waiting', 'Retrying', 'Paused', 'Blocked'].includes(p.Run.State),
       ) || null;
     const total = count?.Run
@@ -1925,22 +2431,23 @@
       );
     }
     // Every re-run action needs the Operator role; one reason line names it for all three.
-    const role = ui.needs('prvCreateasx_operatorcommand');
+    const role = ui.needs(OPERATOR);
     for (const id of ['rerun-all', 'rerun-preview', 'rerun-these'])
       ui.disable($(id), 'rerun-role-reason', role);
     ($('rerun-all').hidden ? $('rerun-preview') : $('rerun-all')).focus();
   }
   $('rerun-all').onclick = async () => {
     if (ui.blocked($('rerun-all'))) return;
-    const version =
-      state.editBase?.Status === 'Published' ? state.editBase.Version : state.editBase?.Version - 1;
+    const t = rerunTemplate();
+    // A re-run applies the published version.
+    const version = templateState(t).live ?? state.editBase?.Version;
     const ok = await ui.confirmInline($('rerun-all'), {
       text:
         'Re-run v' +
         version +
         ' for all ' +
         (state.runTotal ? state.runTotal + ' ' : '') +
-        display(state.root) +
+        tableName(t.asx_table) +
         ' records? Documents works through them in the background, after other work, so this can take a while. You can close this page and follow it in Monitor.',
       confirm: 'Re-run all records',
       keep: 'Not now',
@@ -1949,7 +2456,7 @@
     await ui.busy($('rerun-all'), 'Starting…', 'rerun', async () => {
       const started = await ui.api('asx_ManageWork', {
         Command: 'StartTemplateRun',
-        TemplateId: state.template.asx_templateid,
+        TemplateId: t.asx_templateid,
         RequestId: crypto.randomUUID(),
       });
       ui.feedback('rerun', ['Re-run started.', ...(started.Notices || [])].join(' '), 'success', {
@@ -1988,9 +2495,10 @@
   }
   $('rerun-preview').onclick = async () => {
     if (ui.blocked($('rerun-preview'))) return;
+    const t = rerunTemplate();
     const picked = await xrm.Utility.lookupObjects({
-      entityTypes: [state.root.LogicalName],
-      defaultEntityType: state.root.LogicalName,
+      entityTypes: [t.asx_table],
+      defaultEntityType: t.asx_table,
       allowMultiSelect: true,
     });
     if (!picked?.length) return;
@@ -2007,7 +2515,7 @@
     await ui.busy($('rerun-preview'), 'Previewing…', 'rerun', async () => {
       state.batch = await ui.api('asx_ManageWork', {
         Command: 'PreviewBatch',
-        TemplateId: state.template.asx_templateid,
+        TemplateId: t.asx_templateid,
         RecordIds: picked.map((r) => r.id.replace(/[{}]/g, '').toLowerCase()),
         RequestId: crypto.randomUUID(),
       });
@@ -2062,10 +2570,21 @@
       controls();
     },
   };
+  // The first template listed, in the list's order.
+  function firstListed() {
+    const { enabled, disabled } = listTables();
+    for (const table of [...enabled, ...disabled]) {
+      const found = state.templates.find((t) => t.asx_table === table);
+      if (found) return found;
+    }
+    return null;
+  }
   async function start() {
     render();
     resetPreview();
     if (!xrm?.WebApi || !xrm?.Utility) return;
+    ui.problemPill($('overview-problems'));
+    renderOverview();
     await task(async () => {
       state.tables = (
         await all(
@@ -2090,8 +2609,11 @@
       await loadEnabledTables();
       state.loaded = true;
       await loadTemplates();
-      renderTemplateTree();
-      render();
+      // A link to a template shows it; otherwise the first one listed.
+      const linked = ui.deeplink()?.template;
+      const shown = state.templates.find((t) => same(t.asx_templateid, linked)) || firstListed();
+      if (shown) await showOverview(shown.asx_templateid);
+      else renderOverview();
     });
   }
   ui.onTab('templates', start);

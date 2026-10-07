@@ -9,204 +9,217 @@
   <body>
     <main class="app">
       <div id="leavePrompt"></div>
-      <section id="templates" class="page" aria-labelledby="templates-title" tabindex="-1" hidden>
-        <header class="page-header">
-          <h1 id="templates-title" tabindex="-1">Folder templates</h1>
-        </header>
-        <p class="feedback" id="fb-templates"></p>
-        <div class="template-layout">
-          <aside class="template-nav" aria-labelledby="tables-heading">
-            <div class="row between" id="tables-header">
-              <h2 id="tables-heading" tabindex="-1">Tables</h2>
+      <section id="templates" class="page" aria-labelledby="overview-title" tabindex="-1" hidden>
+        <div class="templates-layout">
+          <aside id="templates-list" aria-labelledby="templates-list-title">
+            <div class="list-head">
+              <h2 id="templates-list-title">Templates</h2>
+              <button id="new-template" type="button" class="link">＋ New</button>
             </div>
-            <div id="templateTree"></div>
-            <button id="manage-tables" type="button" class="link">Manage tables</button>
+            <select id="new-template-table" aria-label="Table" hidden></select>
+            <input
+              id="template-search"
+              type="search"
+              placeholder="Search templates"
+              aria-label="Search templates"
+            />
+            <div id="template-groups"></div>
+            <div class="list-foot">
+              <button id="manage-tables" type="button" class="link">Manage tables</button>
+            </div>
           </aside>
-          <div class="template-main">
-            <section id="template-bar" class="table-bar" hidden aria-label="Template">
-              <div class="row wrap">
-                <label>Template name<input id="templateName" maxlength="200" /></label>
-                <span
-                  id="version-chip"
-                  class="chip version"
-                  tabindex="0"
-                  aria-describedby="version-chip-desc"
-                ></span>
-                <span id="version-chip-desc" class="sr-only"></span>
-              </div>
-              <div id="templateActions" class="row" data-actions>
-                <button id="save" type="button" class="secondary">Save draft</button>
-                <button id="publish" type="button" class="primary">Publish</button>
-                <button
-                  id="template-menu"
-                  type="button"
-                  class="secondary"
-                  aria-haspopup="menu"
-                  aria-expanded="false"
-                  aria-controls="template-menu-list"
-                  aria-label="More actions"
-                >
-                  ⋯
-                </button>
-                <ul id="template-menu-list" class="menu" role="menu" hidden>
-                  <li role="none">
-                    <button id="menu-history" type="button" role="menuitem" tabindex="-1">
-                      Version history…
-                    </button>
-                  </li>
-                  <li role="none">
-                    <button id="menu-schedule" type="button" role="menuitem" tabindex="-1">
-                      Schedule…
-                    </button>
-                  </li>
-                  <li role="none">
-                    <button id="menu-rerun" type="button" role="menuitem" tabindex="-1">
-                      Re-run for existing records…
-                    </button>
-                  </li>
-                  <li role="separator"></li>
-                  <li role="none">
+          <div class="templates-main">
+            <p class="feedback" id="fb-templates"></p>
+            <div id="template-overview">
+              <header id="overview-header" class="page-header">
+                <h1 id="overview-title" tabindex="-1">Folder templates</h1>
+                <span id="overview-pill" class="pill" hidden></span>
+                <span id="overview-problems" class="problem-host"></span>
+                <p id="overview-meta" class="page-meta"></p>
+                <div id="overview-actions" class="page-actions row" data-actions hidden>
+                  <div class="menu-anchor">
                     <button
-                      id="menu-delete"
+                      id="overview-menu"
                       type="button"
-                      role="menuitem"
-                      tabindex="-1"
-                      class="danger"
+                      class="secondary menu-button"
+                      aria-haspopup="menu"
+                      aria-expanded="false"
+                      aria-controls="overview-menu-list"
+                      aria-label="More actions"
                     >
-                      Delete template
+                      ⋯
                     </button>
-                  </li>
-                </ul>
-              </div>
-            </section>
-            <section id="history-panel" class="panel" hidden aria-labelledby="history-title">
-              <div class="row between">
-                <h3 id="history-title">Version history</h3>
-                <button
-                  type="button"
-                  class="link panel-close"
-                  data-close="history-panel"
-                  aria-label="Close version history"
-                >
-                  Close
-                </button>
-              </div>
-              <ul id="history-list" data-actions></ul>
-            </section>
-            <section id="schedule-panel" class="panel" hidden aria-labelledby="schedule-title">
-              <div class="row between">
-                <h3 id="schedule-title">Schedule</h3>
-                <button
-                  type="button"
-                  class="link panel-close"
-                  data-close="schedule-panel"
-                  aria-label="Close schedule"
-                >
-                  Close
-                </button>
-              </div>
-              <button
-                id="schedule-on"
-                type="button"
-                role="switch"
-                class="switch"
-                aria-checked="true"
-                aria-labelledby="schedule-on-label"
-              >
-                <span class="switch-track" aria-hidden="true"
-                  ><span class="switch-thumb"></span
-                ></span>
-                <span id="schedule-on-label">On</span>
-              </button>
-              <label>Start (optional)<input id="templateStart" type="datetime-local" /></label>
-              <label>End (optional)<input id="templateEnd" type="datetime-local" /></label>
-              <div class="row" data-actions>
-                <button id="saveAvailability" type="button">Save schedule</button>
-              </div>
-              <p class="feedback" id="fb-schedule"></p>
-            </section>
-            <section id="rerun-panel" class="panel" hidden aria-labelledby="rerun-title">
-              <div class="row between">
-                <h3 id="rerun-title">Re-run for existing records</h3>
-                <button
-                  type="button"
-                  class="link panel-close"
-                  data-close="rerun-panel"
-                  aria-label="Close re-run for existing records"
-                >
-                  Close
-                </button>
-              </div>
-              <p id="rerun-progress" hidden></p>
-              <div class="row wrap" data-actions>
-                <button id="rerun-all" type="button" class="primary">Re-run all records</button>
-                <button id="rerun-preview" type="button" class="secondary">
-                  Preview re-run for records…
-                </button>
-              </div>
-              <div id="rerun-impact"></div>
-              <div class="row" data-actions>
-                <button id="rerun-these" type="button" hidden>Re-run these records</button>
-              </div>
-              <p class="feedback" id="fb-rerun"></p>
-            </section>
-            <div id="no-template" class="empty-panel"></div>
-            <div id="authorWorkspace" hidden>
-              <div class="editor">
-                <section
-                  class="pane tree-pane"
-                  aria-labelledby="folders-heading"
-                  data-focus-scope
-                  id="folders-pane"
-                >
-                  <div class="row between">
-                    <h2 id="folders-heading" tabindex="-1" data-focus-heading>Folders</h2>
-                    <span class="badge" id="destinationCount"></span>
+                    <ul id="overview-menu-list" class="menu" role="menu" hidden>
+                      <li role="none">
+                        <button id="menu-rerun" type="button" role="menuitem" tabindex="-1">
+                          Re-run for existing records…
+                        </button>
+                      </li>
+                      <li role="separator"></li>
+                      <li role="none">
+                        <button
+                          id="menu-delete"
+                          type="button"
+                          role="menuitem"
+                          tabindex="-1"
+                          class="danger"
+                        >
+                          Delete template
+                        </button>
+                      </li>
+                    </ul>
                   </div>
-                  <div id="destinations" class="stack"></div>
-                  <button id="addDestination" type="button" class="wide secondary">
-                    ＋ Add destination
-                  </button>
-                  <p id="no-library" hidden>
-                    No libraries are ready yet.
-                    <button id="go-access" type="button" class="link">
-                      Set one up in Sites &amp; access →
+                  <button id="overview-edit" type="button" class="primary">Edit template</button>
+                </div>
+              </header>
+              <div id="overview-cards" class="page-body one-column"></div>
+            </div>
+            <div id="template-editor" hidden>
+              <header class="page-header">
+                <h1 id="editor-title" tabindex="-1">New template</h1>
+                <div class="page-actions row">
+                  <button id="editor-close" type="button" class="secondary">Close</button>
+                </div>
+              </header>
+              <section id="template-bar" class="table-bar" hidden aria-label="Template">
+                <div class="row wrap">
+                  <label>Template name<input id="templateName" maxlength="200" /></label>
+                  <span
+                    id="version-chip"
+                    class="chip version"
+                    tabindex="0"
+                    aria-describedby="version-chip-desc"
+                  ></span>
+                  <span id="version-chip-desc" class="sr-only"></span>
+                </div>
+                <div id="templateActions" class="row" data-actions>
+                  <button id="save" type="button" class="secondary">Save draft</button>
+                  <button id="publish" type="button" class="primary">Publish</button>
+                </div>
+              </section>
+              <div id="authorWorkspace" hidden>
+                <div class="editor">
+                  <section
+                    class="pane tree-pane"
+                    aria-labelledby="folders-heading"
+                    data-focus-scope
+                    id="folders-pane"
+                  >
+                    <div class="row between">
+                      <h2 id="folders-heading" tabindex="-1" data-focus-heading>Folders</h2>
+                      <span class="badge" id="destinationCount"></span>
+                    </div>
+                    <div id="destinations" class="stack"></div>
+                    <button id="addDestination" type="button" class="wide secondary">
+                      ＋ Add destination
                     </button>
-                  </p>
-                </section>
-                <section
-                  class="pane"
-                  aria-labelledby="folder-settings-heading"
-                  data-focus-scope
-                  id="settings-pane"
-                >
-                  <h2 id="folder-settings-heading" tabindex="-1" data-focus-heading>
-                    Folder settings
-                  </h2>
-                  <div id="folderEditor"></div>
-                </section>
-                <section class="pane preview-pane" aria-labelledby="preview-heading">
-                  <div class="row between">
-                    <h2 id="preview-heading">Preview</h2>
-                    <span id="preview-stale" class="badge warning" hidden>Out of date</span>
-                  </div>
-                  <div class="row wrap" data-actions>
-                    <span class="label-text">Preview record</span>
-                    <button id="chooseRecord" type="button" class="secondary">
-                      Choose record…
-                    </button>
-                    <span id="preview-record-name"></span>
-                    <button id="refreshPreview" type="button" class="secondary" hidden>
-                      Refresh preview
-                    </button>
-                  </div>
-                  <div id="previewTrees"></div>
-                  <p id="preview-status" class="sr-only" role="status"></p>
-                </section>
+                    <p id="no-library" hidden>
+                      No libraries are ready yet.
+                      <button id="go-access" type="button" class="link">
+                        Set one up in Sites &amp; access →
+                      </button>
+                    </p>
+                  </section>
+                  <section
+                    class="pane"
+                    aria-labelledby="folder-settings-heading"
+                    data-focus-scope
+                    id="settings-pane"
+                  >
+                    <h2 id="folder-settings-heading" tabindex="-1" data-focus-heading>
+                      Folder settings
+                    </h2>
+                    <div id="folderEditor"></div>
+                  </section>
+                  <section class="pane preview-pane" aria-labelledby="preview-heading">
+                    <div class="row between">
+                      <h2 id="preview-heading">Preview</h2>
+                      <span id="preview-stale" class="badge warning" hidden>Out of date</span>
+                    </div>
+                    <div class="row wrap" data-actions>
+                      <span class="label-text">Preview record</span>
+                      <button id="chooseRecord" type="button" class="secondary">
+                        Choose record…
+                      </button>
+                      <span id="preview-record-name"></span>
+                      <button id="refreshPreview" type="button" class="secondary" hidden>
+                        Refresh preview
+                      </button>
+                    </div>
+                    <div id="previewTrees"></div>
+                    <p id="preview-status" class="sr-only" role="status"></p>
+                  </section>
+                </div>
               </div>
             </div>
           </div>
         </div>
+        <aside id="schedule-panel" class="side-panel" hidden>
+          <div class="panel-head">
+            <h2 id="schedule-title">Schedule</h2>
+            <button type="button" class="link panel-close" aria-label="Close schedule">
+              Close
+            </button>
+          </div>
+          <div class="panel-body">
+            <button
+              id="schedule-on"
+              type="button"
+              role="switch"
+              class="switch"
+              aria-checked="true"
+              aria-labelledby="schedule-on-label"
+            >
+              <span class="switch-track" aria-hidden="true"
+                ><span class="switch-thumb"></span
+              ></span>
+              <span id="schedule-on-label">On</span>
+            </button>
+            <label>Start (optional)<input id="templateStart" type="datetime-local" /></label>
+            <label>End (optional)<input id="templateEnd" type="datetime-local" /></label>
+            <div class="row" data-actions>
+              <button id="saveAvailability" type="button">Save schedule</button>
+            </div>
+            <p class="feedback" id="fb-schedule"></p>
+          </div>
+        </aside>
+        <aside id="history-panel" class="side-panel" hidden>
+          <div class="panel-head">
+            <h2 id="history-title">Version history</h2>
+            <button type="button" class="link panel-close" aria-label="Close version history">
+              Close
+            </button>
+          </div>
+          <div class="panel-body">
+            <div id="history-list" data-actions></div>
+          </div>
+        </aside>
+        <aside id="rerun-panel" class="side-panel" hidden>
+          <div class="panel-head">
+            <h2 id="rerun-title">Re-run for existing records</h2>
+            <button
+              type="button"
+              class="link panel-close"
+              aria-label="Close re-run for existing records"
+            >
+              Close
+            </button>
+          </div>
+          <div class="panel-body">
+            <p id="rerun-progress" hidden></p>
+            <div class="row wrap" data-actions>
+              <button id="rerun-all" type="button" class="primary">Re-run all records</button>
+              <button id="rerun-preview" type="button" class="secondary">
+                Preview re-run for records…
+              </button>
+            </div>
+            <div id="rerun-impact"></div>
+            <div class="row" data-actions>
+              <button id="rerun-these" type="button" hidden>Re-run these records</button>
+            </div>
+            <p class="feedback" id="fb-rerun"></p>
+          </div>
+        </aside>
       </section>
       <section id="access" class="page" aria-labelledby="ad-site-title" tabindex="-1" hidden>
         <div class="ad-layout">

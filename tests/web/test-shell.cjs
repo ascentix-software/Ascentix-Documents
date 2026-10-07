@@ -333,7 +333,7 @@ const shownH1s = (section) =>
     choose('Stay');
     await d.settle();
     assert.deepEqual(run.navigations, []);
-    assert.equal(d.activeElement.id, 'templates-title', 'Focus returns to the page heading');
+    assert.equal(d.activeElement.id, 'overview-title', 'Focus returns to the page heading');
     d.track(run.ui.navigate('settings'));
     await d.settle();
     choose('Discard changes');
@@ -871,24 +871,26 @@ const shownH1s = (section) =>
     // out of it), and stays open while focus moves between them.
     const run = await boot({ session: storage({ 'asxd.launched': '1' }) });
     const d = run.document;
-    const trigger = d.getElementById('template-menu'),
-      list = d.getElementById('template-menu-list'),
+    const trigger = d.getElementById('overview-menu'),
+      list = d.getElementById('overview-menu-list'),
       item = (id) => d.getElementById(id);
     run.ui.menu(trigger, list);
     trigger.key('ArrowDown');
     assert.equal(list.hidden, false);
-    assert.equal(d.activeElement.id, 'menu-history');
-    trigger.dispatchEvent(new FakeEvent('focusout', { relatedTarget: item('menu-history') }));
-    item('menu-history').dispatchEvent(
-      new FakeEvent('focusout', { relatedTarget: item('menu-schedule') }),
+    assert.equal(d.activeElement.id, 'menu-rerun');
+    trigger.dispatchEvent(new FakeEvent('focusout', { relatedTarget: item('menu-rerun') }));
+    item('menu-rerun').dispatchEvent(
+      new FakeEvent('focusout', { relatedTarget: item('menu-delete') }),
     );
     assert.equal(list.hidden, false, 'Moving between items keeps it open');
-    item('menu-schedule').dispatchEvent(new FakeEvent('focusout', { relatedTarget: item('save') }));
+    item('menu-delete').dispatchEvent(
+      new FakeEvent('focusout', { relatedTarget: item('overview-edit') }),
+    );
     assert.equal(list.hidden, true, 'Tab out of the menu closes it');
     assert.equal(trigger.getAttribute('aria-expanded'), 'false');
     // A focus change with no element to go to (another window) leaves it to the click handler.
     trigger.key('ArrowDown');
-    item('menu-history').dispatchEvent(new FakeEvent('focusout', { relatedTarget: null }));
+    item('menu-rerun').dispatchEvent(new FakeEvent('focusout', { relatedTarget: null }));
     assert.equal(list.hidden, false);
   }
   {
@@ -911,8 +913,39 @@ const shownH1s = (section) =>
     d.dispatchEvent(new FakeEvent('click', { target: d.body }));
     assert.equal(clicks(), before);
   }
+  {
+    // Rule sentences: one condition, more than one, any-of, and a lone nested group.
+    const run = await boot({ session: storage({ 'asxd.launched': '1' }) });
+    const c = (text) => ({ text });
+    const say = (condition) => condition.text;
+    const sentence = (group) => run.ui.ruleSentence(group, say);
+    assert.equal(
+      sentence({ All: true, Conditions: [c('Status is Active')], Groups: [] }),
+      'When Status is Active',
+    );
+    assert.equal(
+      sentence({
+        All: true,
+        Conditions: [c('Status is Active'), c('Industry is Government')],
+        Groups: [{ All: false, Conditions: [c('x')], Groups: [] }],
+      }),
+      'When Status is Active + 2 more',
+    );
+    assert.equal(
+      sentence({ All: false, Conditions: [c('a'), c('b'), c('c')], Groups: [] }),
+      'When any of 3…',
+    );
+    assert.equal(
+      sentence({
+        All: true,
+        Conditions: [],
+        Groups: [{ All: true, Conditions: [c('Status is Active')], Groups: [] }],
+      }),
+      'When Status is Active',
+    );
+  }
   console.log(
-    'PASS shell contract: pages without tabs, landing, deep links, unsaved prompt at the top, side panel, tokens, status, plural, ms, automation, problem pill, feedback, confirmation (a replaced one answers keep), offline, a slow Get that does not delay the page, withFocus, time, help, busy, api errors, the ⋯ menu closing when focus leaves it, and a redrawn-away menu letting go of its document listener. Fake DOM; browser QA separate.',
+    'PASS shell contract: pages without tabs, landing, deep links, unsaved prompt at the top, side panel, tokens, status, plural, ms, automation, problem pill, feedback, confirmation (a replaced one answers keep), offline, a slow Get that does not delay the page, withFocus, time, help, busy, api errors, the ⋯ menu closing when focus leaves it, a redrawn-away menu letting go of its document listener, and rule sentences. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

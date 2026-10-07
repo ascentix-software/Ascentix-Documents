@@ -24,7 +24,13 @@ assert.doesNotMatch(html, /<footer/, 'The footer is removed');
 assert.equal((html.match(/<main\b/g) || []).length, 1, 'Exactly one main');
 const css = read('client/admin/admin.css');
 const h1s = [...html.matchAll(/<h1\b[^>]*\bid="([^"]+)"/g)].map((m) => m[1]);
-assert.deepEqual(h1s, ['templates-title', 'ad-site-title', 'monitor-title', 'settings-title']);
+assert.deepEqual(h1s, [
+  'overview-title',
+  'editor-title',
+  'ad-site-title',
+  'monitor-title',
+  'settings-title',
+]);
 assert.equal((html.match(/<h1\b/g) || []).length, h1s.length, 'Every h1 has an id');
 assert.doesNotMatch(html, /\brole="tab(list|panel)?"/, 'No in-page tab bar');
 assert.doesNotMatch(html, /class="[^"]*\bshell\b|automationChip|monitorBadge|tabPrompt/);

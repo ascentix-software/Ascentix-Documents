@@ -100,12 +100,34 @@ const computed = () => {
   };
 };
 
-// Opens the first table in the rail, then its template, and waits for it to load.
+// The page opens on the first template's overview; Edit template opens it in the editor.
 async function openTemplate(page) {
-  await page.locator('#templateTree summary').first().click();
-  await page.locator('#templateTree').getByRole('button', { name: 'Account onboarding' }).click();
+  await page.locator('#overview-title', { hasText: 'Account onboarding' }).waitFor();
+  await page.locator('#overview-edit').click();
   await page.locator('#destinations').getByRole('button', { name: 'General' }).waitFor();
   await settle(page);
+}
+// axe-core (WCAG 2.2 AA), page errors and the computed checks for the page as it is shown.
+async function check(page, label) {
+  if (!(await page.evaluate(() => !!window.axe))) await page.addScriptTag({ path: axe });
+  const result = await page.evaluate(async () =>
+    (
+      await window.axe.run(document, {
+        runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'] },
+      })
+    ).violations.map((v) => v.id + ': ' + v.nodes.map((n) => n.target.join(' ')).join(', ')),
+  );
+  assert.deepEqual(result, [], label);
+  assert.deepEqual(page.errors, [], label + ' page errors');
+  assert.deepEqual(
+    await page.evaluate(computed),
+    { weakBorders: [], smallText: [], smallTargets: [] },
+    label,
+  );
+  await page.screenshot({
+    path: path.join(shots, 'a11y-' + label.replace(/ /g, '-') + '.png'),
+    fullPage: true,
+  });
 }
 
 (async () => {
@@ -118,8 +140,17 @@ async function openTemplate(page) {
           colorScheme: scheme,
         });
         const page = await open(context, tab);
-        // The rail's tables are collapsed <details>; open the first, then the template.
-        if (tab === 'templates') await openTemplate(page);
+        // Folder templates: the overview, with its Schedule panel open, then the editor.
+        if (tab === 'templates') {
+          await page.locator('#overview-title', { hasText: 'Account onboarding' }).waitFor();
+          await settle(page);
+          await check(page, 'templates-overview ' + scheme);
+          await page.getByRole('button', { name: 'Edit schedule' }).click();
+          await page.getByRole('dialog', { name: 'Schedule' }).waitFor();
+          await check(page, 'templates-schedule ' + scheme);
+          await page.keyboard.press('Escape');
+          await openTemplate(page);
+        }
         // Sites & access: the access drawer of the first library is checked with the table.
         if (tab === 'access') {
           await page
@@ -129,25 +160,7 @@ async function openTemplate(page) {
           await page.getByRole('dialog', { name: 'General' }).waitFor();
           await settle(page);
         }
-        await page.addScriptTag({ path: axe });
-        const result = await page.evaluate(async () =>
-          (
-            await window.axe.run(document, {
-              runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'] },
-            })
-          ).violations.map((v) => v.id + ': ' + v.nodes.map((n) => n.target.join(' ')).join(', ')),
-        );
-        assert.deepEqual(result, [], tab + ' ' + scheme);
-        assert.deepEqual(page.errors, [], tab + ' ' + scheme + ' page errors');
-        assert.deepEqual(
-          await page.evaluate(computed),
-          { weakBorders: [], smallText: [], smallTargets: [] },
-          tab + ' ' + scheme,
-        );
-        await page.screenshot({
-          path: path.join(shots, 'a11y-' + tab + '-' + scheme + '.png'),
-          fullPage: true,
-        });
+        await check(page, tab + ' ' + scheme);
         await context.close();
       }
     // Keyboard flows (spec 5.6).
@@ -168,6 +181,34 @@ async function openTemplate(page) {
       before,
     );
     const templates = await open(context, 'templates');
+    await templates.locator('#overview-title', { hasText: 'Account onboarding' }).waitFor();
+    const active = () => templates.evaluate(() => document.activeElement.id);
+    await templates.locator('#overview-menu').focus();
+    await templates.keyboard.press('ArrowDown');
+    assert.equal(await active(), 'menu-rerun');
+    await templates.keyboard.press('Escape');
+    assert.equal(await active(), 'overview-menu');
+    // Tab out of the open menu closes it.
+    await templates.keyboard.press('ArrowDown');
+    await templates.keyboard.press('Tab');
+    assert.equal(await templates.locator('#overview-menu-list').isHidden(), true);
+    assert.equal(await templates.locator('#overview-menu').getAttribute('aria-expanded'), 'false');
+    // All versions opens a side panel at its heading; Escape returns to All versions.
+    await templates.getByRole('button', { name: 'All versions' }).focus();
+    await templates.keyboard.press('Enter');
+    assert.equal(await active(), 'history-title');
+    await templates.keyboard.press('Escape');
+    assert.equal(await templates.locator('#history-panel').isHidden(), true);
+    assert.equal(
+      await templates.evaluate(() => document.activeElement.textContent),
+      'All versions',
+    );
+    // Edit template opens the editor at its heading; Close returns to Edit template.
+    await openTemplate(templates);
+    assert.equal(await active(), 'editor-title');
+    await templates.locator('#editor-close').click();
+    await templates.locator('#template-overview').waitFor();
+    await templates.waitForFunction(() => document.activeElement?.id === 'overview-edit');
     await openTemplate(templates);
     await templates.locator('#destinations').getByRole('button', { name: 'General' }).focus();
     await templates.keyboard.press('Enter');
@@ -175,16 +216,6 @@ async function openTemplate(page) {
       await templates.evaluate(() => document.activeElement.getAttribute('data-focus-key')),
       /^node:/,
     );
-    await templates.locator('#template-menu').focus();
-    await templates.keyboard.press('ArrowDown');
-    assert.equal(await templates.evaluate(() => document.activeElement.id), 'menu-history');
-    await templates.keyboard.press('Escape');
-    assert.equal(await templates.evaluate(() => document.activeElement.id), 'template-menu');
-    // Tab out of the open menu closes it.
-    await templates.keyboard.press('ArrowDown');
-    await templates.keyboard.press('Tab');
-    assert.equal(await templates.locator('#template-menu-list').isHidden(), true);
-    assert.equal(await templates.locator('#template-menu').getAttribute('aria-expanded'), 'false');
     await templates.getByLabel('When should this folder appear?').selectOption('conditional');
     assert.equal(
       await templates.evaluate(() => document.activeElement.getAttribute('aria-label')),
@@ -225,7 +256,7 @@ async function openTemplate(page) {
       });
     }
     console.log(
-      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Sites & access with its access drawer open), computed borders, text and targets, keyboard flows (Monitor chips, a row menu and its confirmation, the Tools panel), screenshots. Mocked Dataverse.',
+      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel and the editor; Sites & access with its access drawer open), computed borders, text and targets, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, Monitor chips, a row menu and its confirmation, the Tools panel), screenshots. Mocked Dataverse.',
     );
   } finally {
     await browser.close();

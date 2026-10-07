@@ -647,6 +647,22 @@
     if (at < value.length) node.append(value.slice(at));
     return node;
   }
+  // A folder's rule as one short sentence: "When Status is Active", "When Status is Active + 2
+  // more", "When any of 3…". A group holding only one group reads as that group. clause turns
+  // one condition into "Field is Value". An empty group has no sentence ('').
+  function ruleSentence(group, clause) {
+    const conditions = group.Conditions || [],
+      groups = group.Groups || [];
+    const n = conditions.length + groups.length;
+    if (!n) return '';
+    if (conditions.length === 1 && !groups.length) return 'When ' + clause(conditions[0]);
+    if (groups.length === 1 && !conditions.length) return ruleSentence(groups[0], clause);
+    if (group.All === false) return 'When any of ' + n + '…';
+    const first = conditions.length
+      ? clause(conditions[0])
+      : ruleSentence(groups[0], clause).replace(/^When /, '');
+    return 'When ' + first + ' + ' + (n - 1) + ' more';
+  }
   // A section card: a head row with the title, a muted summary and an optional link pushed
   // right, then the body.
   function card({ id = null, title, summary = null, action = null, level = 2 }) {
@@ -812,6 +828,7 @@
     status,
     pill,
     tokens,
+    ruleSentence,
     card,
     sidePanel,
     automation,

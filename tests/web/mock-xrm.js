@@ -198,6 +198,7 @@
           Title: 'Account onboarding',
           SinceUtc: ago(20),
           Run: {
+            TemplateId: IDS.template,
             TemplateName: 'Account onboarding',
             TableLabel: 'Account',
             Version: 1,
@@ -319,6 +320,8 @@
             asx_version: 1,
             asx_status: 'Published',
             _asx_templateid_value: IDS.template,
+            modifiedon: ago(60 * 24 * 4),
+            '_modifiedby_value@OData.Community.Display.V1.FormattedValue': 'Dana Reyes',
           },
         ];
       // The published revision's destination is on General, so one template uses it.

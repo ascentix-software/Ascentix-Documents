@@ -1,7 +1,8 @@
 'use strict';
-// Folder templates with a fake DOM and mocked Dataverse: template bar and version chip, Publish,
-// the ⋯ menu, Schedule, Version history, Delete, the Tables rail, folders, Insert field, the
-// condition builder, preview of unsaved edits, focus, and Re-run for existing records.
+// Folder templates with a fake DOM and mocked Dataverse: the templates list and the overview,
+// its ⋯ menu, Schedule and Versions panels, Delete, the editor's template bar and version chip,
+// Publish, folders, Insert field, the condition builder, preview of unsaved edits, focus, and
+// Re-run for existing records.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -62,7 +63,15 @@ function draft(overrides = {}) {
 async function boot({
   pickMany = false,
   enabled = ['account'],
-  templates = [{ asx_templateid: TEMPLATE, asx_name: 'Account onboarding', asx_table: 'account' }],
+  templates = [
+    {
+      asx_templateid: TEMPLATE,
+      asx_name: 'Account onboarding',
+      asx_table: 'account',
+      _asx_publishedrevisionid_value: 'rev-1',
+      asx_disabled: false,
+    },
+  ],
   loaded = {
     RevisionId: 'rev-1',
     RowVersion: '3',
@@ -81,6 +90,11 @@ async function boot({
   extraLookups = [],
   delay = async () => {},
   failFetch = () => false,
+  // The asx_ManageWork Summary counts, and a table read's rows (a non-null answer wins).
+  summary = {},
+  rows = () => null,
+  // The page address's #hash: a deep link.
+  hash = '',
 } = {}) {
   const document = createDocument(html);
   const sent = [];
@@ -143,16 +157,28 @@ async function boot({
           asx_name: 'Account onboarding',
           asx_table: 'account',
           asx_disabled: false,
+          _asx_publishedrevisionid_value: 'rev-1',
+          ...templates.find((t) => t.asx_templateid === id),
         };
       },
-      retrieveMultipleRecords: async (table) => ({
+      retrieveMultipleRecords: async (table, options) => ({
         entities:
-          table === 'asx_runtimetable'
+          rows(table, options) ||
+          (table === 'asx_runtimetable'
             ? enabled.map((asx_logicalname) => ({ asx_logicalname }))
             : table === 'asx_template'
               ? templates
               : table === 'asx_revision'
-                ? [{ asx_revisionid: 'rev-1', asx_version: 1, asx_status: 'Published' }]
+                ? [
+                    {
+                      asx_revisionid: 'rev-1',
+                      asx_version: 1,
+                      asx_status: 'Published',
+                      _asx_templateid_value: TEMPLATE,
+                      modifiedon: '2026-10-03T09:00:00Z',
+                      '_modifiedby_value@OData.Community.Display.V1.FormattedValue': 'Dana Reyes',
+                    },
+                  ]
                 : table === 'asx_library'
                   ? libraries || [
                       { asx_libraryid: 'lib-a', asx_name: 'General', _asx_siteid_value: 'site-a' },
@@ -167,7 +193,7 @@ async function boot({
                         { asx_siteid: 'site-a', asx_name: 'Delivery' },
                         { asx_siteid: 'site-b', asx_name: 'Commercial' },
                       ]
-                    : [],
+                    : []),
       }),
       updateRecord: async (table, id, data) => sent.push(['update', table, data]),
       deleteRecord: async (table, id) => deleted.push([table, id]),
@@ -209,22 +235,24 @@ async function boot({
                       }
                     : api === 'asx_PublishTemplate'
                       ? { Status: 'Published', Notices: [] }
-                      : body.Command === 'CountRecords'
-                        ? { Status: 'Counted', Run: { Total: 1240, TotalEstimated: false } }
-                        : body.Command === 'ListProblems'
-                          ? { Status: 'Page', Problems: [], Next: null }
-                          : body.Command === 'StartTemplateRun'
-                            ? {
-                                Status: 'Pending',
-                                Key: 'templaterun:1',
-                                Run: {
-                                  State: 'Running',
-                                  Planned: 0,
-                                  Total: 1240,
-                                  TotalEstimated: false,
-                                },
-                              }
-                            : { Status: 'Pending' });
+                      : body.Command === 'Summary'
+                        ? { Status: 'Summary', Summary: summary }
+                        : body.Command === 'CountRecords'
+                          ? { Status: 'Counted', Run: { Total: 1240, TotalEstimated: false } }
+                          : body.Command === 'ListProblems'
+                            ? { Status: 'Page', Problems: [], Next: null }
+                            : body.Command === 'StartTemplateRun'
+                              ? {
+                                  Status: 'Pending',
+                                  Key: 'templaterun:1',
+                                  Run: {
+                                    State: 'Running',
+                                    Planned: 0,
+                                    Total: 1240,
+                                    TotalEstimated: false,
+                                  },
+                                }
+                              : { Status: 'Pending' });
           return { ok: true, json: async () => ({ Result: JSON.stringify(result) }) };
         },
       },
@@ -296,7 +324,7 @@ async function boot({
   const session = new Map([['asxd.launched', '1']]);
   const window = {
     parent: { Xrm: xrm },
-    location: { search: '?data=templates-' + BUILD, hash: '' },
+    location: { search: '?data=templates-' + BUILD, hash },
     sessionStorage: {
       getItem: (k) => session.get(k) ?? null,
       setItem: (k, v) => session.set(k, v),
@@ -326,7 +354,13 @@ async function boot({
     node.click();
     await document.settle();
   };
-  const find = (root, text) => root.querySelectorAll('button').find((b) => b.textContent === text);
+  // A button by its text and, when given, its aria-label.
+  const find = (root, text, label = null) =>
+    root
+      .querySelectorAll('button')
+      .find(
+        (b) => b.textContent === text && (label === null || b.getAttribute('aria-label') === label),
+      );
   const labelled = (root, name) =>
     root
       .querySelectorAll('input, select, textarea')
@@ -342,7 +376,19 @@ async function boot({
     await node.oninput?.();
     await document.settle();
   };
-  const open = async () => press(find($('templateTree'), 'Account onboarding'));
+  // A templates list row by its name (the row's whole text is its name and its state).
+  const row = (name) =>
+    $('template-groups')
+      .querySelectorAll('button')
+      .find(
+        (b) =>
+          b.classList.contains('list-row') && b.querySelector('.row-name')?.textContent === name,
+      );
+  const overview = async (name = 'Account onboarding') => press(row(name));
+  const open = async (name = 'Account onboarding') => {
+    await overview(name);
+    await press($('overview-edit'));
+  };
   return {
     document,
     $,
@@ -353,6 +399,8 @@ async function boot({
     find,
     labelled,
     change,
+    row,
+    overview,
     open,
     window,
     last: (api) => sent.filter(([a]) => a === api).at(-1)?.[1],
@@ -361,18 +409,19 @@ async function boot({
 
 (async () => {
   {
-    // Empty states: no tables yet, and no template selected.
+    // Empty states: no tables yet in the list, and no template selected in the overview.
     const t = await boot({ enabled: [], templates: [] });
-    const rail = t.$('templateTree');
-    assert.match(rail.visibleText, /No tables yet/);
-    assert.equal(t.$('template-bar').hidden, true, 'The template bar waits for a table');
-    assert.match(t.$('no-template').visibleText, /No template selected/);
+    assert.match(t.$('template-groups').visibleText, /No tables yet/);
+    assert.equal(t.$('template-editor').hidden, true, 'The editor waits for a template');
+    assert.equal(t.$('overview-title').textContent, 'Folder templates');
+    assert.match(t.$('overview-cards').visibleText, /No template selected/);
+    assert.equal(t.$('new-template').hidden, true, 'No ＋ New without a table');
   }
   {
-    // Tables are managed in Settings: the rail has no Add table, Remove or Enable, and links there.
+    // Tables are managed in Settings: the list has no Add table, Remove or Enable, and links there.
     const t = await boot({ enabled: [], templates: [] });
-    assert.equal(t.$('addTable') === null, true, 'No Add table in the rail');
-    assert.equal(t.$('tablePicker') === null, true, 'No table picker in the rail');
+    assert.equal(t.$('addTable') === null, true, 'No Add table in the list');
+    assert.equal(t.$('tablePicker') === null, true, 'No table picker in the list');
     await t.press(t.$('manage-tables'));
     assert.equal(
       t.sent
@@ -383,16 +432,11 @@ async function boot({
     );
   }
   {
-    // Opening a template: the bar and the version chip; no IDs in the panel.
+    // Edit template opens the editor: Publish explains why it is off; no IDs in the page.
     const t = await boot();
     await t.open();
     assert.equal(t.$('template-bar').hidden, false);
-    assert.equal(t.$('version-chip').textContent, 'Published v1');
-    assert.equal(t.$('version-chip').getAttribute('aria-describedby'), 'version-chip-desc');
-    assert.equal(
-      t.$('version-chip-desc').textContent,
-      'Published v1 keeps running while you edit. Saving creates Draft v2.',
-    );
+    assert.equal(t.$('editor-title').textContent, 'Account onboarding');
     assert.doesNotMatch(t.$('templates').visibleText, GUID);
     assert.doesNotMatch(t.$('templates').visibleText, /rev-1/);
     assert.match(
@@ -402,6 +446,490 @@ async function boot({
     );
     assert.equal(t.$('publish').getAttribute('aria-disabled'), 'true');
     assert.equal(t.$('publish-reason').textContent, 'Already published');
+  }
+  {
+    // The list groups templates by table with their state; search filters by name.
+    const t = await boot({
+      enabled: ['account', 'contact'],
+      templates: [
+        {
+          asx_templateid: TEMPLATE,
+          asx_name: 'Account onboarding',
+          asx_table: 'account',
+          _asx_publishedrevisionid_value: 'rev-1',
+          asx_disabled: false,
+        },
+        {
+          asx_templateid: OTHER,
+          asx_name: 'Key accounts',
+          asx_table: 'account',
+          _asx_publishedrevisionid_value: null,
+          asx_disabled: false,
+        },
+        {
+          asx_templateid: 'tpl-c',
+          asx_name: 'Contact files',
+          asx_table: 'contact',
+          _asx_publishedrevisionid_value: 'rev-c',
+          asx_disabled: true,
+        },
+      ],
+      rows: (table) =>
+        table === 'asx_revision'
+          ? [
+              {
+                asx_revisionid: 'rev-1',
+                asx_version: 1,
+                asx_status: 'Published',
+                _asx_templateid_value: TEMPLATE,
+              },
+              {
+                asx_revisionid: 'rev-k',
+                asx_version: 1,
+                asx_status: 'Draft',
+                _asx_templateid_value: OTHER,
+              },
+              {
+                asx_revisionid: 'rev-c',
+                asx_version: 2,
+                asx_status: 'Published',
+                _asx_templateid_value: 'tpl-c',
+              },
+            ]
+          : null,
+    });
+    const groups = t.$('template-groups').querySelectorAll('.list-group');
+    assert.deepEqual(
+      groups.map((g) => g.querySelector('.group-label').textContent),
+      ['Account', 'Contact'],
+    );
+    const states = t
+      .$('template-groups')
+      .querySelectorAll('.list-row')
+      .map((r) => [
+        r.querySelector('.row-name').textContent,
+        r.querySelector('.row-state').textContent,
+      ]);
+    assert.deepEqual(states, [
+      ['Account onboarding', 'Live v1'],
+      ['Key accounts', 'Draft v1'],
+      ['Contact files', 'Off'],
+    ]);
+    assert.deepEqual(
+      t
+        .$('template-groups')
+        .querySelectorAll('.row-state')
+        .map((s) => s.getAttribute('data-tone')),
+      ['ok', 'warning', 'muted'],
+    );
+    t.$('template-search').value = 'key';
+    t.$('template-search').oninput();
+    assert.deepEqual(
+      t
+        .$('template-groups')
+        .querySelectorAll('.list-row')
+        .map((r) => r.querySelector('.row-name').textContent),
+      ['Key accounts'],
+    );
+  }
+  {
+    // Overview: title, pill and meta (no record count); cards with chips and rule sentences.
+    const conditional = draft();
+    conditional.Sources[0].Columns.push({ Name: 'statecode', Kind: 'Choice' });
+    conditional.Destinations[0].Folders.push({
+      Key: 'tenders',
+      Parent: 'root',
+      Name: 'Public tenders',
+      Condition: {
+        All: true,
+        Groups: [],
+        Conditions: [{ Source: 'root', Column: 'statecode', Operator: 'Equal', Literal: '0' }],
+      },
+    });
+    const t = await boot({
+      loaded: {
+        RevisionId: 'rev-1',
+        RowVersion: '3',
+        Status: 'Published',
+        Version: 1,
+        Draft: conditional,
+      },
+    });
+    await t.overview();
+    assert.equal(t.$('overview-title').textContent, 'Account onboarding');
+    assert.equal(t.$('overview-pill').textContent, 'Live v1');
+    assert.match(t.$('overview-meta').textContent, /^Account table · published .+ by Dana Reyes$/);
+    assert.doesNotMatch(t.$('overview-meta').textContent, /records/);
+    assert.equal(t.row('Account onboarding').getAttribute('aria-current'), 'true');
+    const cards = t.$('overview-cards').querySelectorAll('.section-card');
+    assert.deepEqual(
+      cards.map((c) => c.querySelector('h2').textContent),
+      ['Destinations', 'Folders', 'Schedule and runs', 'Versions'],
+    );
+    // ui.card: a head with the h2, the summary and the action, then a body.
+    for (const card of cards) {
+      assert.equal(card.tagName, 'SECTION');
+      assert.ok(card.querySelector('.card-head h2'));
+      assert.ok(card.querySelector('.card-body'));
+    }
+    assert.equal(cards[3].querySelector('.card-head button').textContent, 'All versions');
+    assert.equal(cards[0].querySelector('.card-head .muted').textContent, '1 library');
+    const dest = cards[0].querySelector('.dest-row');
+    assert.equal(dest.querySelector('strong').textContent, 'Business documents');
+    assert.equal(dest.querySelector('.muted').textContent, 'Delivery › General');
+    assert.equal(dest.querySelector('.teams').textContent, '0 teams');
+    assert.equal(
+      cards[1].querySelector('.card-head .muted').textContent,
+      '3 folders · 1 conditional',
+    );
+    const folderRows = cards[1].querySelectorAll('.folder-row');
+    assert.equal(folderRows[0].querySelector('.token').textContent, 'Account Name');
+    assert.equal(folderRows[0].querySelector('.rule').textContent, 'Always');
+    assert.equal(folderRows[2].querySelector('.rule').textContent, '◆ When Status is Active');
+    assert.ok(folderRows[2].querySelector('.rule').classList.contains('conditional'));
+    assert.equal(cards[2].querySelector('.card-head .muted').textContent, 'On · no end date');
+    assert.equal(t.$('overview-edit').textContent, 'Edit template');
+    assert.doesNotMatch(t.$('templates').visibleText, GUID);
+    // A destination's folders collapse to a count; the first destination starts open.
+    const group = cards[1].querySelector('.group-row');
+    assert.equal(group.getAttribute('aria-expanded'), 'true');
+    group.focus();
+    await t.press(group);
+    const again = t.$('overview-cards').querySelectorAll('.section-card')[1];
+    assert.equal(again.querySelectorAll('.folder-row').length, 0);
+    assert.equal(again.querySelector('.group-row').getAttribute('aria-expanded'), 'false');
+    assert.match(again.querySelector('.group-row').textContent, /3 folders$/);
+    assert.equal(t.document.activeElement, again.querySelector('.group-row'));
+  }
+  {
+    // Versions: Live, Replaced and Draft from the status and the published pointer.
+    const t = await boot({
+      templates: [
+        {
+          asx_templateid: TEMPLATE,
+          asx_name: 'Account onboarding',
+          asx_table: 'account',
+          _asx_publishedrevisionid_value: 'rev-3',
+          asx_disabled: false,
+        },
+      ],
+      rows: (table) =>
+        table === 'asx_revision'
+          ? [
+              {
+                asx_revisionid: 'rev-4',
+                asx_version: 4,
+                asx_status: 'Draft',
+                _asx_templateid_value: TEMPLATE,
+              },
+              {
+                asx_revisionid: 'rev-3',
+                asx_version: 3,
+                asx_status: 'Published',
+                _asx_templateid_value: TEMPLATE,
+              },
+              {
+                asx_revisionid: 'rev-2',
+                asx_version: 2,
+                asx_status: 'Published',
+                _asx_templateid_value: TEMPLATE,
+              },
+            ]
+          : null,
+    });
+    await t.overview();
+    assert.equal(t.$('overview-pill').textContent, 'Live v3 · Draft v4');
+    assert.equal(t.$('overview-edit').textContent, 'Continue Draft v4');
+    const versions = t.$('overview-cards').querySelectorAll('.version-row');
+    assert.deepEqual(
+      versions.map((v) => [
+        v.querySelector('.v').textContent,
+        v.querySelector('.state').textContent,
+      ]),
+      [
+        ['v4', 'Draft'],
+        ['v3', 'Live'],
+        ['v2', 'Replaced'],
+      ],
+    );
+  }
+  {
+    // Schedule opens as a side panel from its card; Delete is in ⋯; Manage tables goes to Settings.
+    const t = await boot();
+    await t.overview();
+    const schedule = t.$('overview-cards').querySelectorAll('.section-card')[2];
+    await t.press(schedule.querySelector('.card-head button'));
+    assert.equal(t.$('schedule-panel').hidden, false);
+    assert.equal(t.$('schedule-panel').getAttribute('role'), 'dialog');
+    assert.equal(t.document.activeElement, t.$('schedule-title'));
+    t.$('schedule-title').key('Escape');
+    assert.equal(t.$('schedule-panel').hidden, true);
+    await t.press(t.$('overview-menu'));
+    assert.deepEqual(
+      t
+        .$('overview-menu-list')
+        .querySelectorAll('[role=menuitem]')
+        .map((i) => i.textContent.trim()),
+      ['Re-run for existing records…', 'Delete template'],
+    );
+    await t.press(t.$('manage-tables'));
+    assert.equal(
+      t.sent
+        .filter(([k]) => k === 'navigate')
+        .at(-1)[1]
+        .data.split('-')[0],
+      'settings',
+    );
+  }
+  {
+    // Edit template opens the editor; Close returns to the overview with focus on Edit.
+    const t = await boot();
+    await t.overview();
+    await t.press(t.$('overview-edit'));
+    assert.equal(t.$('template-overview').hidden, true);
+    assert.equal(t.$('template-editor').hidden, false);
+    assert.equal(t.document.activeElement, t.$('editor-title'));
+    await t.press(t.$('editor-close'));
+    assert.equal(t.$('template-overview').hidden, false);
+    assert.equal(t.$('template-editor').hidden, true);
+    assert.equal(t.document.activeElement, t.$('overview-edit'));
+    // Close with unsaved edits asks first, with the page's unsaved-changes prompt; Discard
+    // changes closes, and Edit template opens the saved version again.
+    await t.press(t.$('overview-edit'));
+    await t.press(t.find(t.$('destinations'), 'General'));
+    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Dropped');
+    await t.press(t.$('editor-close'));
+    assert.match(
+      t.$('leavePrompt').visibleText,
+      /You have unsaved changes to Account onboarding\./,
+    );
+    assert.equal(t.$('template-editor').hidden, false, 'Nothing closes before the answer');
+    await t.press(t.find(t.$('leavePrompt'), 'Discard changes'));
+    assert.equal(t.$('template-overview').hidden, false);
+    assert.equal(t.last('asx_CreateDraft'), undefined, 'Discard saves nothing');
+    await t.press(t.$('overview-edit'));
+    assert.doesNotMatch(t.$('destinations').visibleText, /Dropped/);
+    assert.equal(t.$('version-chip').textContent, 'Published v1');
+  }
+  {
+    // Without the Operator role the Last re-run row is left out; without the Security
+    // Administrator role so are team counts, and GetPolicy is never called.
+    const t = await boot({
+      privileges: { prvCreateasx_operatorcommand: false, prvCreateasx_policy: false },
+      summary: { BlockedJobs: 3 },
+    });
+    await t.overview();
+    assert.doesNotMatch(t.$('overview-cards').visibleText, /Last re-run/);
+    assert.doesNotMatch(t.$('overview-cards').visibleText, /\d teams?\b/);
+    assert.equal(t.sent.filter(([, b]) => b?.Command === 'GetPolicy').length, 0);
+    assert.equal(t.sent.filter(([, b]) => b?.Command === 'ListProblems').length, 0);
+    assert.equal(t.$('overview-problems').querySelector('.problem-pill').hidden, true);
+    assert.equal(t.sent.filter(([, b]) => b?.Command === 'Summary').length, 0);
+  }
+  {
+    // With both roles: the last re-run of this template from TemplateRuns, and team counts from
+    // one GetPolicy per library per page load.
+    const t = await boot({
+      handle: (api, b) =>
+        b.Command === 'ListProblems'
+          ? {
+              Status: 'Page',
+              Problems: [
+                {
+                  Key: 'templaterun:2',
+                  Kind: 'TemplateRun',
+                  Run: { TemplateId: OTHER, State: 'Done', Planned: 5, Total: 5 },
+                },
+                {
+                  Key: 'templaterun:1',
+                  Kind: 'TemplateRun',
+                  Run: {
+                    TemplateId: TEMPLATE.toUpperCase(),
+                    State: 'Done',
+                    Planned: 1284,
+                    Total: 1284,
+                    TotalEstimated: false,
+                    StartedUtc: '2026-10-01T10:00:00Z',
+                  },
+                },
+              ],
+              Next: null,
+            }
+          : b.Command === 'GetPolicy'
+            ? {
+                Status: 'Applied',
+                Policy: {
+                  Desired: [
+                    { TeamId: 'team-1', Access: 'Contribute' },
+                    { TeamId: 'team-2', Access: 'Read' },
+                    { TeamId: 'team-3', Access: 'None' },
+                  ],
+                  Applied: [],
+                },
+                Teams: [],
+              }
+            : null,
+    });
+    await t.overview();
+    const run = t.$('overview-cards').querySelector('.run-row');
+    assert.match(run.textContent, /^Last re-run.+ · 1,284 of 1,284 records$/);
+    assert.equal(t.$('overview-cards').querySelector('.teams').textContent, '2 teams');
+    await t.overview();
+    assert.equal(
+      t.sent.filter(([, b]) => b?.Command === 'GetPolicy').length,
+      1,
+      'The policy is read once per page load',
+    );
+  }
+  {
+    // The overview header links to Monitor with the problem count (owner decision 4); an
+    // overview redraw keeps the pill and makes no second Summary call.
+    const t = await boot({ summary: { BlockedJobs: 2, WaitingRecords: 1, TemplateRuns: 4 } });
+    await t.overview();
+    const pill = t.$('overview-problems').querySelector('.problem-pill');
+    assert.equal(pill.hidden, false);
+    assert.equal(pill.textContent, 'Monitor · 3 problems');
+    await t.overview();
+    assert.equal(t.$('overview-problems').querySelector('.problem-pill'), pill);
+    assert.equal(t.sent.filter(([, b]) => b?.Command === 'Summary').length, 1);
+    await t.press(pill);
+    assert.equal(
+      t.sent
+        .filter(([k]) => k === 'navigate')
+        .at(-1)[1]
+        .data.split('-')[0],
+      'monitor',
+    );
+  }
+  {
+    // View opens that version read-only, not the latest revision over it.
+    const t = await boot({
+      templates: [
+        {
+          asx_templateid: TEMPLATE,
+          asx_name: 'Account onboarding',
+          asx_table: 'account',
+          _asx_publishedrevisionid_value: 'rev-3',
+          asx_disabled: false,
+        },
+      ],
+      rows: (table) =>
+        table === 'asx_revision'
+          ? [
+              {
+                asx_revisionid: 'rev-4',
+                asx_version: 4,
+                asx_status: 'Draft',
+                _asx_templateid_value: TEMPLATE,
+              },
+              {
+                asx_revisionid: 'rev-3',
+                asx_version: 3,
+                asx_status: 'Published',
+                _asx_templateid_value: TEMPLATE,
+              },
+              {
+                asx_revisionid: 'rev-2',
+                asx_version: 2,
+                asx_status: 'Published',
+                _asx_templateid_value: TEMPLATE,
+              },
+            ]
+          : null,
+    });
+    await t.overview();
+    await t.press(t.find(t.$('overview-cards'), 'View', 'View v2'));
+    const loads = t.sent.filter(([a]) => a === 'asx_LoadDraft').map(([, b]) => b.RevisionId);
+    assert.equal(loads.at(-1), 'rev-2', 'The viewed version is loaded last');
+    assert.equal(t.$('template-editor').hidden, false);
+    // Read-only: Save draft and Publish say why they are off.
+    assert.equal(t.$('save').getAttribute('aria-disabled'), 'true');
+    assert.equal(t.$('publish-reason').textContent, 'Viewing an earlier version.');
+  }
+  {
+    // A related record's field reads through its lookup, as a chip; a lookup condition names the
+    // record; one of several conditions reads "any of".
+    const d = draft();
+    d.Sources[0].Columns.push({ Name: 'primarycontactid', Kind: 'Lookup' });
+    d.Sources.push({
+      Alias: 'lookup_1',
+      Table: 'contact',
+      Lookup: 'primarycontactid',
+      Columns: [{ Name: 'fullname', Kind: 'Text' }],
+    });
+    const folders = d.Destinations[0].Folders;
+    folders[1].Name = 'Contact {lookup_1.fullname}';
+    folders[1].Condition = {
+      All: true,
+      Groups: [],
+      Conditions: [
+        {
+          Source: 'root',
+          Column: 'primarycontactid',
+          Operator: 'Equal',
+          LiteralKind: 'Lookup',
+          Literal: CONTACT,
+          LiteralLabel: 'Jane Smith',
+          LiteralTable: 'contact',
+        },
+      ],
+    };
+    folders.push({
+      Key: 'either',
+      Parent: 'root',
+      Name: 'Either',
+      Condition: {
+        All: false,
+        Groups: [],
+        Conditions: [
+          { Source: 'root', Column: 'name', Operator: 'IsNull' },
+          { Source: 'lookup_1', Column: 'fullname', Operator: 'IsNotNull' },
+        ],
+      },
+    });
+    const t = await boot({
+      loaded: { RevisionId: 'rev-1', RowVersion: '3', Status: 'Published', Version: 1, Draft: d },
+    });
+    await t.overview();
+    const rows = t.$('overview-cards').querySelectorAll('.folder-row');
+    assert.equal(rows[1].querySelector('.token').textContent, 'Primary Contact › Full Name');
+    assert.equal(
+      rows[1].querySelector('.rule').textContent,
+      '◆ When Primary Contact is Jane Smith',
+    );
+    assert.equal(rows[2].querySelector('.rule').textContent, '◆ When any of 2…');
+    assert.doesNotMatch(t.$('overview-cards').visibleText, GUID);
+  }
+  {
+    // A link to a template opens on its overview.
+    const t = await boot({
+      hash: '#templates?template=' + OTHER,
+      templates: [
+        { asx_templateid: TEMPLATE, asx_name: 'Account onboarding', asx_table: 'account' },
+        { asx_templateid: OTHER, asx_name: 'Contract documents', asx_table: 'account' },
+      ],
+    });
+    assert.equal(t.$('overview-title').textContent, 'Contract documents');
+    assert.equal(t.row('Contract documents').getAttribute('aria-current'), 'true');
+    // Without one, the first template listed.
+    const first = await boot();
+    assert.equal(first.$('overview-title').textContent, 'Account onboarding');
+  }
+  {
+    // ＋ New: with more than one table it asks which; the choice opens a new template's editor.
+    const t = await boot({ enabled: ['account', 'contact'] });
+    await t.press(t.$('new-template'));
+    const table = t.$('new-template-table');
+    assert.equal(table.hidden, false);
+    assert.deepEqual(
+      table.querySelectorAll('option').map((o) => o.textContent),
+      ['Choose a table', 'Account', 'Contact'],
+    );
+    await t.change(table, 'contact');
+    assert.equal(table.hidden, true);
+    assert.equal(t.$('template-editor').hidden, false);
+    assert.equal(t.$('templateName').value, 'New template');
+    assert.equal(t.$('editor-title').textContent, 'New template');
   }
   {
     // An edit marks Save draft, explains Publish, and dims the preview.
@@ -482,24 +1010,24 @@ async function boot({
     assert.equal(role.$('publish-reason').textContent, 'Needs the Documents Publisher role.');
   }
   {
-    // The ⋯ menu: Delete template confirms in the page; Schedule and Version history open panels.
+    // The overview's ⋯ menu names its template; Delete template confirms in the page.
     const t = await boot();
-    await t.open();
-    const menu = t.$('template-menu');
+    await t.overview();
+    const menu = t.$('overview-menu');
     assert.equal(menu.getAttribute('aria-haspopup'), 'menu');
     assert.equal(
       menu.getAttribute('aria-label'),
       'More actions for Account onboarding',
-      'The ⋯ button names its template (spec 5.1)',
+      'The ⋯ button names its template',
     );
     menu.key('ArrowDown');
     await t.document.settle();
-    assert.equal(t.$('template-menu-list').hidden, false);
-    assert.equal(t.document.activeElement.id, 'menu-history');
+    assert.equal(t.$('overview-menu-list').hidden, false);
+    assert.equal(t.document.activeElement.id, 'menu-rerun');
     t.document.activeElement.key('ArrowDown');
-    assert.equal(t.document.activeElement.id, 'menu-schedule');
+    assert.equal(t.document.activeElement.id, 'menu-delete');
     t.document.activeElement.key('Escape');
-    assert.equal(t.$('template-menu-list').hidden, true);
+    assert.equal(t.$('overview-menu-list').hidden, true);
     assert.equal(t.document.activeElement, menu);
     await t.press(menu);
     await t.press(t.$('menu-delete'));
@@ -507,59 +1035,96 @@ async function boot({
       t.document.activeElement.textContent,
       'Delete Account onboarding and all its versions? No new folder work starts for it. Folders, documents and access in SharePoint stay as they are. Work already sent to SharePoint may still finish.',
     );
-    await t.press(t.find(t.$('template-bar').querySelector('.confirm'), 'Delete template'));
+    await t.press(t.find(t.$('overview-header').querySelector('.confirm'), 'Delete template'));
     assert.deepEqual(t.deleted, [['asx_template', TEMPLATE]]);
-    // Schedule: Save schedule writes the template row and says so.
-    const s = await boot();
-    await s.open();
-    await s.press(s.$('template-menu'));
-    await s.press(s.$('menu-schedule'));
+    // Schedule: Save schedule writes the template row, says so, and the card follows it.
+    let saved = false;
+    const s = await boot({
+      reads: (table, id) =>
+        table === 'asx_template' && saved
+          ? {
+              asx_templateid: id,
+              asx_name: 'Account onboarding',
+              asx_table: 'account',
+              asx_disabled: true,
+              _asx_publishedrevisionid_value: 'rev-1',
+            }
+          : null,
+    });
+    await s.overview();
+    const edit = s.$('overview-cards').querySelectorAll('.section-card')[2].querySelector('button');
+    assert.equal(edit.getAttribute('aria-label'), 'Edit schedule');
+    await s.press(edit);
     assert.equal(s.$('schedule-panel').hidden, false);
+    assert.equal(s.$('schedule-on').getAttribute('aria-checked'), 'true');
+    await s.press(s.$('schedule-on'));
+    saved = true;
     await s.press(s.$('saveAvailability'));
-    assert.equal(s.sent.filter(([k]) => k === 'update').length, 1);
+    const updates = s.sent.filter(([k]) => k === 'update');
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0][2].asx_disabled, true);
     assert.equal(s.$('fb-schedule').textContent, 'Schedule saved.');
-    // Version history lists the versions; picking one opens it.
+    assert.equal(
+      s.$('overview-cards').querySelectorAll('.section-card')[2].querySelector('.card-head .muted')
+        .textContent,
+      'Off',
+    );
+    assert.equal(s.$('overview-pill').textContent, 'Off');
+    assert.equal(s.row('Account onboarding').querySelector('.row-state').textContent, 'Off');
+    // The panel's Close returns focus to the card's Edit.
+    await s.press(s.$('schedule-panel').querySelector('.panel-close'));
+    assert.equal(s.$('schedule-panel').hidden, true);
+    assert.equal(s.document.activeElement.getAttribute('aria-label'), 'Edit schedule');
+    // All versions lists every version in a side panel; View opens it in the editor.
     const h = await boot();
-    await h.open();
-    await h.press(h.$('template-menu'));
-    await h.press(h.$('menu-history'));
+    await h.overview();
+    await h.press(h.find(h.$('overview-cards'), 'All versions'));
     assert.equal(h.$('history-panel').hidden, false);
-    assert.equal(h.document.activeElement.textContent, 'v1 · Published');
+    assert.equal(h.$('history-panel').getAttribute('role'), 'dialog');
+    assert.equal(h.document.activeElement, h.$('history-title'));
+    assert.match(h.$('history-list').visibleText, /^v1Live/);
     const loads = h.sent.filter(([k]) => k === 'asx_LoadDraft').length;
-    await h.press(h.document.activeElement);
-    assert.equal(h.sent.filter(([k]) => k === 'asx_LoadDraft').length, loads + 1);
+    await h.press(h.find(h.$('history-list'), 'View', 'View v1'));
+    const after = h.sent.filter(([k]) => k === 'asx_LoadDraft');
+    assert.ok(after.length > loads);
+    assert.equal(after.at(-1)[1].RevisionId, 'rev-1');
     assert.equal(h.$('history-panel').hidden, true);
+    assert.equal(h.$('template-editor').hidden, false);
   }
   {
-    // After Delete template, focus goes to the table's next template, else the Tables heading
-    // (ruling 2), and the result stays visible.
+    // After Delete template, focus goes to the next template in the list, else the search box,
+    // and the result stays visible.
     const list = [
       { asx_templateid: TEMPLATE, asx_name: 'Account onboarding', asx_table: 'account' },
       { asx_templateid: OTHER, asx_name: 'Contract documents', asx_table: 'account' },
     ];
     const t = await boot({ templates: list });
-    await t.open();
-    await t.press(t.$('template-menu'));
+    await t.overview();
+    await t.press(t.$('overview-menu'));
     await t.press(t.$('menu-delete'));
     list.splice(0, 1);
-    await t.press(t.find(t.$('template-bar').querySelector('.confirm'), 'Delete template'));
-    assert.equal(t.document.activeElement.textContent, 'Contract documents');
+    await t.press(t.find(t.$('overview-header').querySelector('.confirm'), 'Delete template'));
+    assert.equal(
+      t.document.activeElement.querySelector('.row-name').textContent,
+      'Contract documents',
+    );
     assert.match(
       t.$('fb-templates').visibleText,
       /^Account onboarding deleted\. Nothing in SharePoint changed\.$/,
     );
+    assert.match(t.$('overview-cards').visibleText, /No template selected/);
     const only = [
       { asx_templateid: TEMPLATE, asx_name: 'Account onboarding', asx_table: 'account' },
     ];
     const last = await boot({ templates: only });
-    await last.open();
-    await last.press(last.$('template-menu'));
+    await last.overview();
+    await last.press(last.$('overview-menu'));
     await last.press(last.$('menu-delete'));
     only.splice(0);
     await last.press(
-      last.find(last.$('template-bar').querySelector('.confirm'), 'Delete template'),
+      last.find(last.$('overview-header').querySelector('.confirm'), 'Delete template'),
     );
-    assert.equal(last.document.activeElement.id, 'tables-heading');
+    assert.equal(last.document.activeElement.id, 'template-search');
   }
   {
     // Another template with unsaved edits asks before it discards them.
@@ -573,14 +1138,21 @@ async function boot({
     await t.press(t.find(t.$('destinations'), 'General'));
     await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Kept');
     const loads = t.sent.filter(([k]) => k === 'asx_LoadDraft').length;
-    await t.press(t.find(t.$('templateTree'), 'Contract documents'));
+    await t.press(t.row('Contract documents'));
     assert.equal(
       t.document.activeElement.textContent,
       'Open Contract documents? Your unsaved changes to Account onboarding are discarded.',
     );
-    await t.press(t.find(t.$('templateTree'), 'Keep editing'));
+    await t.press(t.find(t.$('template-groups'), 'Keep editing'));
     assert.equal(t.sent.filter(([k]) => k === 'asx_LoadDraft').length, loads);
     assert.equal(t.$('version-chip').textContent, 'Draft v2 · unsaved changes');
+    assert.equal(t.$('template-editor').hidden, false);
+    assert.equal(t.document.activeElement, t.row('Contract documents'));
+    // Discarding opens the other template's overview.
+    await t.press(t.row('Contract documents'));
+    await t.press(t.find(t.$('template-groups'), 'Open Contract documents'));
+    assert.equal(t.$('template-editor').hidden, true);
+    assert.equal(t.$('overview-title').textContent, 'Contract documents');
   }
   {
     // Folders and folder settings: selection keeps focus, readable copy, Remove folder and Remove destination.
@@ -841,8 +1413,8 @@ async function boot({
   {
     // Re-run for existing records: the count labels the button, the confirmation, a background start.
     const t = await boot();
-    await t.open();
-    await t.press(t.$('template-menu'));
+    await t.overview();
+    await t.press(t.$('overview-menu'));
     await t.press(t.$('menu-rerun'));
     assert.equal(t.$('rerun-all').textContent, 'Re-run all 1,240 records');
     await t.press(t.$('rerun-all'));
@@ -866,8 +1438,8 @@ async function boot({
           ? { Status: 'Counted', Run: { Total: 1240, TotalEstimated: true } }
           : null,
     });
-    await about.open();
-    await about.press(about.$('template-menu'));
+    await about.overview();
+    await about.press(about.$('overview-menu'));
     await about.press(about.$('menu-rerun'));
     assert.equal(about.$('rerun-all').textContent, 'Re-run all about 1,240 records');
     await about.press(about.$('rerun-all'));
@@ -899,8 +1471,8 @@ async function boot({
             }
           : null,
     });
-    await busy.open();
-    await busy.press(busy.$('template-menu'));
+    await busy.overview();
+    await busy.press(busy.$('overview-menu'));
     await busy.press(busy.$('menu-rerun'));
     assert.equal(busy.$('rerun-all').hidden, true);
     assert.match(
@@ -909,8 +1481,8 @@ async function boot({
     );
     // Preview re-run: more records than the traced bound is refused at the button.
     const many = await boot({ pickMany: true });
-    await many.open();
-    await many.press(many.$('template-menu'));
+    await many.overview();
+    await many.press(many.$('overview-menu'));
     await many.press(many.$('menu-rerun'));
     await many.press(many.$('rerun-preview'));
     const bound = many.document.defaultBounds.previewRecords;
@@ -1077,13 +1649,8 @@ async function boot({
     });
     await t.open();
     assert.equal(requested.size, 4);
-    await t.press(
-      t
-        .$('templateTree')
-        .querySelector('[data-table="contact"]')
-        .querySelectorAll('button')
-        .find((b) => b.textContent === '＋ New template'),
-    );
+    await t.press(t.$('new-template'));
+    await t.change(t.$('new-template-table'), 'contact');
     release();
     await t.document.settle();
     assert.equal(requested.size, 4, 'The old template takes no more tables after a switch');
@@ -1108,7 +1675,7 @@ async function boot({
       versions: { 'rev-2': 1 },
       reads: (table) => (failing && table === 'asx_template' ? new Error('Network down.') : null),
     });
-    await t.press(t.find(t.$('templateTree'), '＋ New template'));
+    await t.press(t.$('new-template'));
     await t.press(t.$('addDestination'));
     failing = true;
     await t.press(t.$('save'));
@@ -1162,8 +1729,8 @@ async function boot({
   {
     // Fix 8: without the Operator role every re-run action is disabled with the reason.
     const t = await boot({ privileges: { prvCreateasx_operatorcommand: false } });
-    await t.open();
-    await t.press(t.$('template-menu'));
+    await t.overview();
+    await t.press(t.$('overview-menu'));
     await t.press(t.$('menu-rerun'));
     for (const id of ['rerun-all', 'rerun-preview', 'rerun-these']) {
       const control = t.$(id);
@@ -1179,7 +1746,7 @@ async function boot({
     assert.equal(t.looked.length, picks, 'A blocked preview opens no picker');
   }
   console.log(
-    'PASS Folder templates: empty states, version chip, Publish and its reasons, unsaved-changes prompts, menu, Delete and focus after it, Schedule, Version history, the rail and its Manage tables link, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload. Fake DOM; browser QA separate.',
+    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, version chip, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

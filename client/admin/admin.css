@@ -1039,55 +1039,6 @@ table {
     background-position: -200% 0;
   }
 }
-/* Table navigation shares the Sites and access rail geometry and palette. */
-.template-layout {
-  display: grid;
-  grid-template-columns: 205px minmax(0, 1fr);
-}
-.template-nav {
-  padding: 16px 12px;
-  background: var(--canvas);
-  border-right: 1px solid var(--line);
-}
-.template-nav h3 {
-  font-size: 15px;
-  margin: 0;
-}
-.template-nav button {
-  font: inherit;
-  font-size: 12px;
-  padding: 7px 11px;
-  border-radius: 6px;
-  text-align: left;
-}
-.template-nav details {
-  margin: 8px 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-.template-nav summary {
-  padding: 10px 4px;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-  cursor: pointer;
-}
-.template-nav .template-item {
-  display: block;
-  width: 100%;
-  margin: 5px 0;
-  padding: 10px;
-  background: transparent;
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-.template-nav .template-item[aria-pressed='true'] {
-  background: var(--tint);
-  border-color: var(--teal);
-}
-.template-main {
-  min-width: 0;
-}
 #templateName {
   min-width: 0;
   width: 100%;
@@ -1102,13 +1053,6 @@ table {
   }
 }
 @media (max-width: 700px) {
-  .template-layout {
-    grid-template-columns: 1fr;
-  }
-  .template-nav {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
   #authorWorkspace .editor {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1556,8 +1500,249 @@ button.filter-chip[aria-pressed='true'] {
     justify-content: flex-start;
   }
 }
-/* Folder templates: template bar, version chip, ⋯ menu, panels, rail, tree, folder
-   settings, condition builder and preview. */
+/* Folder templates: the templates list, the overview of one template, and the editor (template
+   bar, version chip, tree, folder settings, condition builder and preview). */
+.templates-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  min-height: 100vh;
+}
+#templates-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 10px;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+}
+.list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 6px;
+}
+.list-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+#template-search,
+#new-template-table {
+  width: 100%;
+}
+.list-group {
+  display: grid;
+  gap: 2px;
+}
+.group-label,
+#template-groups .rail-group {
+  padding: 8px 10px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+#template-groups .rail-group {
+  margin: 8px 0 0;
+}
+#template-groups .empty {
+  padding: 8px 10px;
+  text-align: left;
+}
+.list-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  white-space: normal;
+}
+.list-row[aria-current='true'] {
+  background: var(--tint);
+  box-shadow: inset 3px 0 0 var(--teal);
+}
+.row-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.row-state,
+.version-row .state {
+  flex-shrink: 0;
+  color: var(--teal);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.row-state[data-tone='warning'] {
+  color: var(--warning);
+}
+.row-state[data-tone='muted'],
+.version-row .state[data-tone='muted'] {
+  color: var(--muted);
+  font-weight: 500;
+}
+.list-foot {
+  margin-top: auto;
+  padding: 10px 6px 0;
+  border-top: 1px solid var(--line);
+}
+.templates-main {
+  min-width: 0;
+}
+#overview-header {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) auto auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'title pill problems . actions'
+    'meta meta meta meta actions';
+  align-items: center;
+  gap: 4px 10px;
+  padding: 12px 20px;
+}
+#overview-title {
+  grid-area: title;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 22px;
+}
+#overview-pill {
+  grid-area: pill;
+}
+#overview-pill[data-tone='ok'] {
+  color: var(--teal);
+}
+#overview-pill[data-tone='warning'] {
+  color: var(--warning);
+}
+#overview-problems {
+  grid-area: problems;
+}
+#overview-meta {
+  grid-area: meta;
+  margin: 0;
+}
+#overview-actions {
+  grid-area: actions;
+  gap: 8px;
+}
+#overview-header > .confirm {
+  grid-column: 1 / -1;
+}
+#overview-cards {
+  padding: 20px 28px;
+}
+.dest-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+.dest-row .teams {
+  color: var(--muted);
+  text-align: right;
+}
+.group-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 16px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--canvas);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+}
+.group-row .count {
+  margin-left: auto;
+  font-weight: 500;
+}
+.folder-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+.folder-row .rule {
+  color: var(--muted);
+}
+.folder-row .rule.conditional {
+  color: var(--conditional);
+  font-weight: 650;
+}
+.run-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.version-row {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr) 180px 50px;
+  align-items: center;
+  gap: 8px;
+}
+.version-row .v {
+  font-weight: 700;
+}
+.version-row .link {
+  justify-self: end;
+}
+/* In the 400px Version history panel the date takes the free width. */
+#history-list .version-row {
+  grid-template-columns: 36px 64px minmax(0, 1fr) auto;
+  padding: 7px 0;
+}
+#history-list .version-row:first-child {
+  border-top: 0;
+}
+#template-editor {
+  min-height: 100%;
+}
+#template-editor > .page-header {
+  padding: 12px 20px;
+}
+#editor-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Small screens: the list stacks above the overview, and the header's actions take their own
+   row. */
+@media (max-width: 700px) {
+  .templates-layout {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+  }
+  #templates-list {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  #overview-cards {
+    padding: 14px;
+  }
+  .version-row {
+    grid-template-columns: 36px 64px minmax(0, 1fr) auto;
+  }
+  #overview-header {
+    grid-template-columns: minmax(0, max-content) auto minmax(0, 1fr);
+    grid-template-areas:
+      'title pill problems'
+      'meta meta meta'
+      'actions actions actions';
+  }
+  #overview-actions {
+    justify-content: flex-start;
+  }
+}
 #template-bar {
   display: flex;
   flex-wrap: wrap;
@@ -1591,10 +1776,6 @@ button.filter-chip[aria-pressed='true'] {
   flex-basis: 100%;
   margin: 0;
   text-align: right;
-}
-#templateActions .menu {
-  top: 100%;
-  right: 0;
 }
 #template-bar > .confirm {
   flex-basis: 100%;
@@ -1645,91 +1826,11 @@ button.filter-chip[aria-pressed='true'] {
   border-top: 1px solid var(--line);
 }
 #fb-templates {
-  padding: 0 20px;
+  margin: 12px 20px 0;
 }
-.template-main > .panel {
-  margin: 12px 20px;
-  padding: 12px 16px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
-}
-.template-main > .panel h3 {
-  margin: 0;
-  font-size: 15px;
-}
-.template-main > .panel label {
-  display: block;
-  max-width: 320px;
-  margin-top: 12px;
-}
-.template-main > .panel [data-actions],
-#rerun-impact {
-  margin-top: 12px;
-}
-#history-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 12px 0 0;
-  padding: 0;
-  list-style: none;
-}
-#history-list [aria-current='true'] {
-  border-color: var(--teal);
-}
-#schedule-panel .switch {
-  margin-top: 12px;
-}
-#rerun-progress {
-  margin: 12px 0 0;
-}
+#rerun-progress,
 .impact h4 {
-  margin: 12px 0 4px;
-}
-.template-nav h2 {
-  margin: 0;
-  font-size: 15px;
-}
-.template-nav .table-entry {
-  margin: 8px 0;
-}
-.template-nav summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  align-items: baseline;
-}
-.template-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.template-nav .template-item[aria-current='true'] {
-  border-left: 3px solid var(--teal);
-  background: var(--tint);
-}
-.template-nav .new-template {
-  display: block;
-  width: 100%;
-  margin: 5px 0;
-  background: transparent;
-}
-.template-nav .rail-group {
-  margin: 16px 0 0;
-  font-size: 13px;
-}
-.template-nav .empty {
-  padding: 16px 4px;
-  text-align: left;
-}
-.template-nav .empty p {
-  margin: 0 0 8px;
-  color: var(--ink);
-}
-#no-template h2 {
-  margin: 0 0 8px;
-  font-size: 17px;
+  margin: 0 0 4px;
 }
 #no-library {
   margin-top: 12px;
@@ -1891,7 +1992,7 @@ main a {
   margin: 0;
 }
 /* Content that sat on the old shell card keeps a surface until its page is rebuilt. */
-.template-layout,
+#template-editor,
 .page .card {
   background: var(--surface);
 }

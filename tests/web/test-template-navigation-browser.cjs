@@ -37,7 +37,14 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
               t === 'asx_template'
                 ? templates
                 : t === 'asx_revision'
-                  ? [{ asx_revisionid: 'revision-1', asx_version: 1, asx_status: 'Draft' }]
+                  ? templates.map((v, i) => ({
+                      asx_revisionid: 'revision-' + (i + 1),
+                      asx_version: 1,
+                      asx_status: 'Draft',
+                      _asx_templateid_value: v.asx_templateid,
+                      modifiedon: '2026-10-03T09:00:00Z',
+                      '_modifiedby_value@OData.Community.Display.V1.FormattedValue': 'Dana Reyes',
+                    }))
                   : t === 'asx_library'
                     ? [
                         {
@@ -111,11 +118,33 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
       }
       document.dispatchEvent(new Event('DOMContentLoaded'));
     });
-    await page.locator('#templateTree summary').click();
+    // The page opens on the first template's overview; a row in the list opens another.
+    await page.locator('#overview-title', { hasText: 'Account onboarding' }).waitFor();
     await page
-      .locator('#templateTree')
-      .getByRole('button', { name: 'Contract documents', exact: true })
+      .locator('#template-groups .list-row')
+      .filter({ hasText: 'Contract documents' })
       .click();
+    await page.locator('#overview-title', { hasText: 'Contract documents' }).waitFor();
+    assert.equal(await page.locator('#overview-pill').textContent(), 'Draft v1');
+    for (const width of [1440, 1000, 800, 400])
+      for (const scheme of ['light', 'dark']) {
+        await page.setViewportSize({ width, height: 1000 });
+        await page.emulateMedia({ colorScheme: scheme });
+        assert.equal(
+          await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+          false,
+          'Overview overflow ' + width,
+        );
+        await page.screenshot({
+          path: path.resolve(
+            __dirname,
+            `../artifacts/browser/templates-overview-${width}-${scheme}.png`,
+          ),
+          fullPage: true,
+        });
+      }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.getByRole('button', { name: 'Continue Draft v1' }).click();
     await page.locator('#version-chip').filter({ hasText: 'Draft v1' }).waitFor();
     assert.equal(await page.locator('#templateName').inputValue(), 'Contract documents');
     for (const width of [1440, 1000, 800, 400])
@@ -132,13 +161,15 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
           fullPage: true,
         });
       }
-    await page.getByRole('button', { name: '＋ New template' }).first().click();
+    await page.locator('#editor-close').click();
+    await page.locator('#overview-title', { hasText: 'Contract documents' }).waitFor();
+    await page.locator('#new-template').click();
     await page.locator('#version-chip').filter({ hasText: 'Draft v1' }).waitFor();
     assert.equal(await page.locator('#templateName').isDisabled(), false);
     assert.match(await page.locator('#destinations').textContent(), /No folders yet/);
     assert.deepEqual(errors, []);
     console.log(
-      'PASS template navigation in Edge: two templates per table, selection, new template, light/dark and 1440/1000/800/400 layouts. APIs mocked.',
+      'PASS template navigation in Edge: the templates list and overview, Continue Draft into the editor, Close, ＋ New, light/dark and 1440/1000/800/400 layouts of the overview and the editor. APIs mocked.',
     );
   } finally {
     await browser.close();
