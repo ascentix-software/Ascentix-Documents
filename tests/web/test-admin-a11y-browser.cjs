@@ -104,7 +104,7 @@ const computed = () => {
 async function openTemplate(page) {
   await page.locator('#overview-title', { hasText: 'Account onboarding' }).waitFor();
   await page.locator('#overview-edit').click();
-  await page.locator('#destinations').getByRole('button', { name: 'General' }).waitFor();
+  await page.locator('#step-1 .destination-card').waitFor();
   await settle(page);
 }
 // axe-core (WCAG 2.2 AA), page errors and the computed checks for the page as it is shown.
@@ -210,6 +210,11 @@ async function check(page, label) {
     await templates.locator('#template-overview').waitFor();
     await templates.waitForFunction(() => document.activeElement?.id === 'overview-edit');
     await openTemplate(templates);
+    // The steps are tabs: arrow keys move focus, Enter shows the step.
+    await templates.locator('#step-tab-1').focus();
+    await templates.keyboard.press('ArrowRight');
+    assert.equal(await active(), 'step-tab-2');
+    await templates.keyboard.press('Enter');
     await templates.locator('#destinations').getByRole('button', { name: 'General' }).focus();
     await templates.keyboard.press('Enter');
     assert.match(

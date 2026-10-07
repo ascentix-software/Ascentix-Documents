@@ -12,7 +12,7 @@
     author: 'templates',
   };
   const KEYS = { launched: 'asxd.launched', link: 'asxd.deeplink' };
-  const PARAMS = ['library', 'operation', 'record', 'table', 'run', 'template'];
+  const PARAMS = ['library', 'operation', 'record', 'table', 'run', 'template', 'step'];
   const EMPTY = '00000000-0000-0000-0000-000000000000';
   // The server's bounds (Ascentix.Documents.Domain.Bounds, with their reasons); verify-admin.cjs
   // fails when these differ from it.

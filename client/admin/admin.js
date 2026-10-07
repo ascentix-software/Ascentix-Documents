@@ -33,13 +33,35 @@
     openGroups: new Set(),
     // An earlier version opened from Versions: it can be read, not saved or published.
     readOnly: false,
-    sectionSequence: 0,
     editBase: null,
     busy: false,
     // The list's first load is done: its empty state is real, not "still loading".
     loaded: false,
-    // Edits since the last load or save: the chip, Save draft, Publish and the guards follow it.
+    // Edits since the last load or save: autosave, Publish and the guards follow it.
     unsaved: false,
+    // Autosave: 'idle', 'saving', 'saved' or 'error', when it last saved, why it failed, the save
+    // in flight, whether an edit made during it needs one more save, the number of edits so far,
+    // and the pause before the next save.
+    saveState: 'idle',
+    savedAt: null,
+    saveError: null,
+    saving: null,
+    saveAgain: false,
+    edits: 0,
+    saveTimer: null,
+    // Which open editor work belongs to: a save that answers after another template opened
+    // leaves the new one alone.
+    session: 0,
+    // Publish is under way: autosave waits for it.
+    publishing: false,
+    // The published revision the draft is compared with ({ version, sources, sections }), and
+    // what changed since it (changesSince).
+    publishedSnapshot: null,
+    changes: null,
+    // The destination open in step 1, by key.
+    expanded: null,
+    // The last autosave found invalid conditions.
+    invalid: false,
     run: null,
     runTotal: null,
     batch: null,
@@ -107,93 +129,250 @@
   };
   const plural = ui.plural;
 
-  // The version chip: from the loaded revision's number and status and the schedule.
-  function versionText() {
-    const base = state.editBase;
-    if (!base) return state.unsaved ? 'Draft v1 · unsaved changes' : 'Draft v1';
-    if (base.Status === 'Draft')
-      return 'Draft v' + base.Version + (state.unsaved ? ' · unsaved changes' : '');
-    if (state.unsaved) return 'Draft v' + (base.Version + 1) + ' · unsaved changes';
-    const t = state.template;
-    const text = 'Published v' + base.Version;
-    if (t?.asx_disabled) return text + ' · Off';
-    if (t?.asx_startsutc && new Date(t.asx_startsutc) > new Date())
-      return text + ' · starts ' + ui.time(t.asx_startsutc).textContent.split(',')[0];
-    if (t?.asx_endsutc && new Date(t.asx_endsutc) <= new Date()) return text + ' · ended';
-    return text;
-  }
+  // The name the unsaved-changes prompt and Retry use.
+  const templateLabel = () => $('templateName').value.trim() || 'this template';
+  const changeCount = (step) => (state.readOnly ? 0 : state.changes?.byStep[step] || 0);
+  const current = () => ({ sources: state.sources, sections: state.sections });
+  // Publish needs the Publisher role and something not yet published; unsaved edits are saved
+  // first.
   function publishReason() {
     if (!ui.can('prvCreateasx_publication')) return ui.needs('prvCreateasx_publication');
-    if (state.unsaved || !state.saved) return 'Save your changes first';
-    if (state.saved.Status !== 'Draft') return 'Already published';
+    if (state.saved && state.saved.Status !== 'Draft' && !state.unsaved) return 'Already published';
     return null;
   }
-  function controls() {
-    const open = !!state.root;
-    $('template-bar').hidden = !open;
-    $('authorWorkspace').hidden = !open;
-    $('templateName').disabled = state.busy || !!state.template;
-    $('editor-title').textContent =
-      state.template?.asx_name || $('templateName').value.trim() || 'New template';
-    const version = versionText();
-    $('version-chip').textContent = version;
-    $('version-chip-desc').textContent =
-      state.editBase?.Status === 'Published' && !state.unsaved
-        ? 'Published v' +
-          state.editBase.Version +
-          ' keeps running while you edit. Saving creates Draft v' +
-          (state.editBase.Version + 1) +
-          '.'
-        : version + '.';
-    const save = $('save');
-    save.classList.toggle('has-dot', state.unsaved);
-    if (state.unsaved) save.setAttribute('aria-label', 'Save draft, unsaved changes');
-    else save.removeAttribute('aria-label');
-    save.disabled = state.busy || !open || !state.sections.length;
-    const reason = state.readOnly ? READ_ONLY : publishReason();
-    ui.disable($('publish'), 'publish-reason', reason);
-    // Read-only: Save draft is off for the same reason as Publish, named once beside them.
-    if (state.readOnly) {
-      save.setAttribute('aria-disabled', 'true');
-      save.setAttribute('aria-describedby', 'publish-reason');
+  // The header's first row: the table, the name (typed in for a new template), the version the
+  // draft becomes, which version stays live, and the save status.
+  function renderHeader() {
+    if (!state.root) return;
+    $('editor-table').textContent = tableName(state.root.LogicalName) + ' ›';
+    const name = $('templateName');
+    const naming = !state.template;
+    // A new template's name becomes the heading once it is saved; focus stays on the heading.
+    if (!naming && !name.hidden && document.activeElement === name) $('editor-title').focus();
+    name.hidden = !naming;
+    name.disabled = state.busy;
+    $('editor-name').textContent = naming
+      ? ''
+      : state.template.asx_name || tableName(state.root.LogicalName);
+    const base = state.editBase,
+      pill = $('editor-pill');
+    if (state.readOnly && base) {
+      const live = same(base.RevisionId, state.template?._asx_publishedrevisionid_value);
+      pill.textContent =
+        'v' +
+        base.Version +
+        ' · ' +
+        (live ? 'Live' : base.Status === 'Draft' ? 'Draft' : 'Replaced');
+      pill.dataset.tone = 'muted';
     } else {
-      save.removeAttribute('aria-disabled');
-      save.removeAttribute('aria-describedby');
+      pill.textContent =
+        'Draft v' + (!base ? 1 : base.Status === 'Draft' ? base.Version : base.Version + 1);
+      pill.dataset.tone = 'warning';
     }
-    $('publish').classList.toggle('primary', !reason);
-    $('publish').classList.toggle('secondary', !!reason);
-    const atLimit = state.sections.length >= ui.BOUNDS.destinations;
-    $('addDestination').hidden = !state.libraries.length;
-    $('no-library').hidden = !!state.libraries.length || !open;
+    const live = state.readOnly
+      ? null
+      : (state.publishedSnapshot?.version ??
+        (state.template ? templateState(state.template).live : null));
+    $('editor-note').hidden = live == null;
+    $('editor-note').textContent = live == null ? '' : 'v' + live + ' stays live until you publish';
+  }
+  const clock = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
+  function renderSaveStatus() {
+    const status = $('save-status');
+    const failed = state.saveState === 'error';
+    status.classList.toggle('is-error', failed);
+    if (failed) {
+      status.textContent = "Couldn't save · ";
+      const retry = button('Retry', () => autosave(), 'link');
+      retry.setAttribute('aria-label', 'Retry saving ' + templateLabel());
+      status.append(retry);
+      return;
+    }
+    status.textContent =
+      state.saveState === 'saving'
+        ? 'Saving…'
+        : state.saveState === 'saved'
+          ? 'Saved ' + clock.format(state.savedAt)
+          : '';
+  }
+  // The stepper: the current step, a dot on a step with changes, and the Folders step marked when
+  // its conditions are not valid. The name says it too.
+  const STEPS = ['Destinations', 'Folders', 'Review and publish'];
+  function renderStepper() {
+    STEPS.forEach((label, index) => {
+      const n = index + 1,
+        tab = $('step-tab-' + n),
+        selected = n === state.step;
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      tab.classList.toggle('is-current', selected);
+      const error = n === 2 && state.invalid && !state.readOnly;
+      const changed = n < 3 && changeCount(n) > 0;
+      tab.classList.toggle('has-error', error);
+      tab.querySelector('.step-dot').hidden = error || !changed;
+      if (error || changed)
+        tab.setAttribute('aria-label', label + (error ? ', has errors' : ', has changes'));
+      else tab.removeAttribute('aria-label');
+    });
+  }
+  function renderFooter() {
+    $('step-back').hidden = state.step === 1;
+    $('step-next').hidden = state.step === 3;
+    $('step-next').textContent = state.step === 1 ? 'Next: Folders' : 'Next: Review';
+    const n = state.step < 3 ? changeCount(state.step) : 0;
+    $('step-count').textContent = n ? plural(n, 'change', 'changes') + ' in this step' : '';
+  }
+  // Publish and ＋ Add destination follow the draft, the role, the bound and read-only.
+  function renderActions() {
+    const reason = publishReason();
+    const publish = $('publish');
+    publish.hidden = state.readOnly || (!state.saved && !state.sections.length);
+    ui.disable(publish, 'publish-reason', reason);
+    publish.classList.toggle('primary', !reason);
+    publish.classList.toggle('secondary', !!reason);
+    const add = $('add-destination');
+    add.hidden = state.readOnly || !state.libraries.length;
+    $('destination-limit-note').hidden = add.hidden;
+    $('destination-limit-note').textContent = 'Up to ' + ui.BOUNDS.destinations + ' per template';
+    $('no-library').hidden = !!state.libraries.length || state.readOnly;
     ui.disable(
-      $('addDestination'),
+      add,
       'destination-reason',
-      atLimit
+      state.sections.length >= ui.BOUNDS.destinations
         ? 'A template can have up to ' +
             ui.BOUNDS.destinations +
             ' destinations, because each record plans all of them in one step that Dataverse stops after 2 minutes.'
         : null,
     );
   }
-  // An edit: the chip, Save draft and Publish follow it, and the preview dims until refreshed.
+  // Everything around the steps: header, save status, stepper, footer and actions.
+  function chrome() {
+    if (!state.root) return;
+    renderHeader();
+    renderSaveStatus();
+    renderStepper();
+    renderFooter();
+    renderActions();
+  }
+  // Shows a step. With focus, its first heading or control takes focus (Back and Next); a tab
+  // keeps the focus it has.
+  function goStep(n, focus = true) {
+    state.step = n;
+    for (const i of [1, 2, 3]) $('step-' + i).hidden = i !== n;
+    renderStepper();
+    renderFooter();
+    if (focus) stepStart(n)?.focus();
+  }
+  const stepStart = (n) =>
+    n === 1
+      ? $('destination-list').querySelector('.destination-card input') || $('add-destination')
+      : n === 2
+        ? $('folders-heading')
+        : $('preview-heading');
+  // An edit: change tracking, the stepper and footer follow it, the preview dims until refreshed,
+  // and the autosave waits for the pause after it.
   function dirty() {
     state.unsaved = true;
+    state.edits++;
+    state.changes = changesSince(state.publishedSnapshot, current());
     $('preview-stale').hidden = !state.previewed;
     $('previewTrees').classList.toggle('is-stale', state.previewed);
     $('refreshPreview').hidden = !state.previewRecord;
-    controls();
+    renderStepper();
+    renderFooter();
+    renderActions();
+    scheduleSave();
+  }
+  function scheduleSave() {
+    if (state.readOnly) return;
+    clearTimeout(state.saveTimer);
+    state.saveTimer = setTimeout(autosave, 1500);
+  }
+  // Saves the draft once edits pause. One save at a time: an edit made while one runs is saved
+  // by one more save after it, with the row version the first one returned.
+  async function autosave() {
+    if (state.readOnly || !state.root || state.publishing) return undefined;
+    if (state.saving) {
+      state.saveAgain = true;
+      return state.saving;
+    }
+    if (!state.unsaved) return undefined;
+    // A new template is saved once it has a name and a destination.
+    if (!state.template && (!$('templateName').value.trim() || !state.sections.length))
+      return undefined;
+    state.invalid = !validate({ focus: false });
+    renderStepper();
+    if (state.invalid) return undefined;
+    const edits = state.edits,
+      session = state.session;
+    state.saveState = 'saving';
+    renderSaveStatus();
+    const saving = (async () => {
+      try {
+        let refresh = null;
+        try {
+          await save();
+        } catch (error) {
+          // The draft was saved; only the reads after it failed.
+          if (!error.saved) throw error;
+          refresh = error.message;
+        }
+        if (session !== state.session) return;
+        // Edits made while this save was in flight are still unsaved.
+        state.unsaved = state.edits !== edits;
+        state.saveState = 'saved';
+        state.savedAt = new Date();
+        state.saveError = null;
+        if (refresh) ui.feedback('editor', refresh, 'error');
+        else ui.clearFeedback('editor');
+      } catch (error) {
+        if (session !== state.session) return;
+        state.unsaved = true;
+        state.saveState = 'error';
+        state.saveError = error.message || String(error);
+        state.saveAgain = false;
+        ui.feedback('editor', state.saveError, 'error');
+      } finally {
+        if (state.saving === saving) state.saving = null;
+        if (session === state.session) {
+          renderSaveStatus();
+          renderHeader();
+          renderActions();
+        }
+      }
+      if (session === state.session && state.saveAgain && state.saveState === 'saved') {
+        state.saveAgain = false;
+        await autosave();
+      }
+    })();
+    state.saving = saving;
+    return saving;
+  }
+  // Saves now: Save draft in the unsaved-changes prompt, and Publish. Refuses with the reason
+  // when the draft could not be saved.
+  async function flushSave() {
+    clearTimeout(state.saveTimer);
+    await state.saving;
+    await autosave();
+    await state.saving;
+    if (state.invalid) {
+      goStep(2, false);
+      validate();
+      throw new Error('Fix the highlighted conditions first.');
+    }
+    if (state.saveState === 'error') throw new Error(state.saveError);
   }
   async function task(action) {
     if (state.busy) return;
     state.busy = true;
-    controls();
+    chrome();
     try {
       await action();
     } catch (error) {
       message(error.message || String(error), true);
     } finally {
       state.busy = false;
-      controls();
+      chrome();
     }
   }
   async function get(path) {
@@ -860,8 +1039,9 @@
   // A number as the server reads it (decimal.Parse with a leading sign and a decimal point, in
   // the invariant culture): no exponent, no thousands separators.
   const DECIMAL = /^[+-]?(\d+(\.\d*)?|\.\d+)$/;
-  // Checks every condition at its control; the first invalid control takes focus.
-  function validate() {
+  // Checks every condition at its control. With focus, the first invalid control takes it, or the
+  // footer names a problem in a folder that is not open; the autosave checks without focus.
+  function validate({ focus = true } = {}) {
     document.querySelectorAll('.condition-error').forEach((n) => n.remove());
     document
       .querySelectorAll('#folderEditor [aria-invalid]')
@@ -907,11 +1087,12 @@
       control.setAttribute('aria-invalid', 'true');
       control.setAttribute('aria-describedby', error.id);
     }
+    if (!focus) return false;
     const first = document.querySelector('[data-focus-key="' + problems[0][0] + '"]');
     if (first) first.focus();
     else
       ui.feedback(
-        'templates',
+        'editor',
         problems[0][1] + ' in a folder that is not open. Select it in Folders.',
         'error',
       );
@@ -962,12 +1143,17 @@
     return order;
   }
   const nodeKey = (section, folder) => 'node:' + section.Key + ':' + folder.Key;
+  // The published revision's destination with this key, if it has one.
+  const publishedSection = (key) =>
+    state.publishedSnapshot?.sections.find((s) => s.Key === key) || null;
   function addChild(section, folder) {
-    do {
-      section.nodeSequence++;
-    } while (section.Folders.some((f) => f.Key === 'folder_' + section.nodeSequence));
+    // Keys of the published revision are skipped too: a new folder never takes the key of one
+    // removed since, so the change reads as removed plus added.
+    const used = new Set(
+      [...section.Folders, ...(publishedSection(section.Key)?.Folders || [])].map((f) => f.Key),
+    );
     const child = {
-      Key: 'folder_' + section.nodeSequence,
+      Key: nextKey('folder_', used),
       Parent: folder.Key,
       Name: 'New folder',
       Condition: null,
@@ -1020,11 +1206,6 @@
   function renderFolders() {
     const list = $('destinations');
     list.replaceChildren();
-    $('destinationCount').textContent = plural(
-      state.sections.length,
-      'destination',
-      'destinations',
-    );
     if (!state.sections.length) list.append(el('p', 'No folders yet', 'empty'));
     for (const section of state.sections) {
       const card = el(
@@ -1048,6 +1229,7 @@
         );
         node.prepend(folderIcon());
         keyed(node, nodeKey(section, folder));
+        node.dataset.nav = 'true';
         if (section === selectedSection && folder === selectedFolder)
           node.setAttribute('aria-current', 'true');
         row.append(node);
@@ -1094,63 +1276,9 @@
     if (!selectedSection || !selectedFolder) return;
     const section = selectedSection,
       folder = selectedFolder,
-      library = libraryFor(section),
-      siteId = library?._asx_siteid_value || '';
-    const heading = el('h3', destinationName(section));
-    editor.append(heading);
-    const destination = el('input');
-    destination.value = section.Name === section.Key ? '' : section.Name || '';
-    destination.maxLength = 200;
-    destination.setAttribute('maxlength', '200');
-    keyed(destination, 'edit:destination');
-    destination.oninput = () => {
-      section.Name = destination.value;
-      heading.textContent = destinationName(section);
-      dirty();
-      renderFolders();
-    };
-    destination.onchange = destination.oninput;
-    editor.append(label('Destination name', destination));
-    const pickers = el('div', null, 'picker-grid'),
-      sites = state.sites.filter((s) =>
-        state.libraries.some((l) => l._asx_siteid_value === s.asx_siteid),
-      );
-    const site = select(
-      [
-        { value: '', label: 'Choose a site' },
-        ...sites.map((s) => ({ value: s.asx_siteid, label: s.asx_name })),
-      ],
-      siteId,
-      (v) => {
-        section.LibraryId =
-          state.libraries.find((l) => l._asx_siteid_value === v)?.asx_libraryid || '';
-        ui.withFocus(render);
-      },
-    );
-    keyed(site, 'edit:site');
-    const libraryPicker = select(
-      [
-        { value: '', label: 'Choose a library' },
-        ...state.libraries
-          .filter((l) => l._asx_siteid_value === siteId)
-          .map((l) => ({ value: l.asx_libraryid, label: l.asx_name })),
-      ],
-      library?.asx_libraryid || '',
-      (v) => {
-        section.LibraryId = v;
-        ui.withFocus(render);
-      },
-    );
-    keyed(libraryPicker, 'edit:library');
-    pickers.append(label('Site', site), label('Library', libraryPicker));
-    editor.append(pickers);
-    editor.append(
-      button(
-        'View this library’s team access →',
-        () => ui.navigate('access', { library: section.LibraryId }),
-        'link',
-      ),
-    );
+      library = libraryFor(section);
+    // The folder's destination; its name, site and library are edited in step 1.
+    editor.append(el('h3', destinationName(section)));
     // A top folder without a field gives every record the same folder (row 46).
     const same = el('p', 'Every record will use this same folder.', 'warning');
     const fixed = () => !folder.Parent && !/\{[^}]+\}/.test(folder.Name);
@@ -1259,16 +1387,42 @@
         children ? 'Remove its folders first' : null,
       );
     }
-    const removeDestination = button(
-      'Remove destination',
+  }
+  // Step 1: one destination open at a time, with its name, site, library and who can open its
+  // folders; the others as one line each.
+  function renderDestinations() {
+    const list = $('destination-list');
+    if (!state.root) {
+      list.replaceChildren();
+      return;
+    }
+    if (!state.sections.some((s) => s.Key === state.expanded))
+      state.expanded = state.sections[0]?.Key ?? null;
+    list.replaceChildren(
+      ...state.sections.map((s) =>
+        s.Key === state.expanded ? destinationCard(s) : destinationRow(s),
+      ),
+    );
+  }
+  // The Library list's last option goes to Sites & access to set one up.
+  const SETUP = '__setup';
+  function destinationCard(section) {
+    const key = 'dest:' + section.Key,
+      library = libraryFor(section),
+      siteId = library?._asx_siteid_value || '';
+    const card = el('section', null, 'destination-card');
+    const main = el('div', null, 'destination-main');
+    const top = el('div', null, 'card-top');
+    top.setAttribute('data-actions', '');
+    const remove = button(
+      'Remove',
       async () => {
-        const count = section.Folders.length;
-        const ok = await ui.confirmInline(removeDestination, {
+        const ok = await ui.confirmInline(remove, {
           text:
             'Remove ' +
             destinationName(section) +
             ' and its ' +
-            plural(count, 'folder', 'folders') +
+            plural(section.Folders.length, 'folder', 'folders') +
             ' from this draft? Nothing changes in SharePoint until you publish.',
           confirm: 'Remove destination',
           keep: 'Keep destination',
@@ -1276,22 +1430,183 @@
         });
         if (!ok) return;
         state.sections.splice(state.sections.indexOf(section), 1);
-        selectedSection = null;
-        selectedFolder = null;
         dirty();
         render();
-        $('folders-heading').focus();
+        stepStart(1)?.focus();
       },
-      'danger',
+      'link danger',
     );
-    keyed(removeDestination, 'edit:remove-destination');
-    actions.append(removeDestination);
+    remove.setAttribute('aria-label', 'Remove ' + destinationName(section));
+    keyed(remove, key + ':remove');
+    top.append(
+      el('span', 'Destination ' + (state.sections.indexOf(section) + 1), 'eyebrow'),
+      remove,
+    );
+    const name = el('input');
+    name.value = section.Name === section.Key ? '' : section.Name || '';
+    name.maxLength = 200;
+    name.setAttribute('maxlength', '200');
+    keyed(name, key + ':name');
+    name.oninput = () => {
+      section.Name = name.value;
+      remove.setAttribute('aria-label', 'Remove ' + destinationName(section));
+      dirty();
+      renderFolders();
+    };
+    name.onchange = name.oninput;
+    const sites = state.sites.filter((s) =>
+      state.libraries.some((l) => l._asx_siteid_value === s.asx_siteid),
+    );
+    const site = select(
+      [
+        { value: '', label: 'Choose a site' },
+        ...sites.map((s) => ({ value: s.asx_siteid, label: s.asx_name })),
+      ],
+      siteId,
+      (v) => {
+        section.LibraryId =
+          state.libraries.find((l) => l._asx_siteid_value === v)?.asx_libraryid || '';
+        ui.withFocus(render);
+      },
+    );
+    keyed(site, key + ':site');
+    const chosen = library?.asx_libraryid || '';
+    const libraries = el('select');
+    [
+      { value: '', label: 'Choose a library' },
+      ...state.libraries
+        .filter((l) => l._asx_siteid_value === siteId)
+        .map((l) => ({ value: l.asx_libraryid, label: l.asx_name })),
+      { value: SETUP, label: 'Set up a library in Sites & access…' },
+    ].forEach((o) => libraries.append(option(o.value, o.label)));
+    libraries.value = chosen;
+    keyed(libraries, key + ':library');
+    const setUp = () => {
+      libraries.value = chosen;
+      return ui.navigate('access');
+    };
+    // Arrow keys move through the list without leaving the page; Enter or a pick with the
+    // pointer goes to Sites & access. Leaving the list keeps the library.
+    let browsing = false;
+    libraries.addEventListener('keydown', (event) => {
+      browsing = event.key !== 'Enter';
+      if (event.key === 'Enter' && libraries.value === SETUP) {
+        event.preventDefault();
+        setUp();
+      }
+    });
+    libraries.addEventListener('pointerdown', () => (browsing = false));
+    libraries.addEventListener('focusout', () => {
+      browsing = false;
+      if (libraries.value === SETUP) libraries.value = chosen;
+    });
+    libraries.onchange = () => {
+      if (libraries.value === SETUP) return browsing ? undefined : setUp();
+      section.LibraryId = libraries.value;
+      dirty();
+      ui.withFocus(render);
+      return undefined;
+    };
+    const pickers = el('div', null, 'picker-grid');
+    pickers.append(label('Site', site), label('Library', libraries));
+    main.append(top, label('Name', name), pickers);
+    const who = el('div', null, 'who-can-open');
+    const change = button(
+      'Change in Sites & access',
+      () => ui.navigate('access', { library: section.LibraryId }),
+      'link',
+    );
+    change.dataset.nav = 'true';
+    who.append(el('h3', 'Who can open these folders'), whoCanOpen(section), change);
+    card.append(main, who);
+    return card;
+  }
+  // The teams a library's policy lists, as Sites & access lists them: a deleted team shows while
+  // it still has applied access.
+  function listedTeams(policy) {
+    const teams = new Map((policy.Teams || []).map((t) => [String(t.TeamId).toLowerCase(), t]));
+    const applied = (teamId) =>
+      policy.Policy?.Applied?.find((a) => same(a.TeamId, teamId))?.Access || 'None';
+    return (policy.Policy?.Desired || []).flatMap((entry) => {
+      const team = teams.get(String(entry.TeamId).toLowerCase());
+      const access = team?.Deleted ? applied(entry.TeamId) : entry.Access;
+      if (access === 'None') return [];
+      const name = team?.Name || entry.TeamId;
+      return [{ name: team?.Deleted ? 'Deleted team: ' + name : name, access }];
+    });
+  }
+  // Who can open a destination's folders, from its library's policy. Without the Security
+  // Administrator role the policy is not read, and the panel says what is needed.
+  function whoCanOpen(section) {
+    const box = el('div', null, 'team-lines');
+    if (!ui.can('prvCreateasx_policy')) {
+      box.append(el('p', ui.needs('prvCreateasx_policy'), 'reason'));
+      return box;
+    }
+    if (!section.LibraryId) return box;
+    box.append(el('div', null, 'skeleton'));
+    policyFor(section.LibraryId).then((policy) =>
+      box.replaceChildren(
+        ...(policy ? listedTeams(policy) : []).map((t) =>
+          el('p', t.name + ' · ' + t.access, 'team-line'),
+        ),
+      ),
+    );
+    return box;
+  }
+  // A destination not open: its number, name, site and library, its teams, and Edit.
+  function destinationRow(section) {
+    const name = destinationName(section),
+      library = libraryFor(section);
+    const row = el('div', null, 'destination-row');
+    const teams = el('span', null, 'teams');
+    const edit = button(
+      'Edit',
+      () => {
+        state.expanded = section.Key;
+        state.focusKey = 'dest:' + section.Key + ':name';
+        render();
+      },
+      'link',
+    );
+    edit.setAttribute('aria-label', 'Edit ' + name);
+    keyed(edit, 'dest:' + section.Key + ':edit');
+    edit.dataset.nav = 'true';
+    row.append(
+      el('span', 'Destination ' + (state.sections.indexOf(section) + 1), 'eyebrow'),
+      el('strong', name),
+      el('span', siteName(library) + ' › ' + (library?.asx_name || 'Unavailable library'), 'where'),
+      teams,
+      edit,
+    );
+    if (ui.can('prvCreateasx_policy') && section.LibraryId)
+      policyFor(section.LibraryId).then((policy) => {
+        if (!policy) return;
+        const listed = listedTeams(policy);
+        teams.textContent =
+          plural(listed.length, 'team', 'teams') +
+          (listed.length
+            ? ' · ' + listed.map((t) => t.name + ' (' + t.access + ')').join(', ')
+            : '');
+      });
+    return row;
+  }
+  // A version opened read-only: its fields and actions are off; opening a folder or another
+  // destination still works.
+  function lockEditor() {
+    for (const control of [
+      ...$('destination-list').querySelectorAll('input, select, button'),
+      ...$('authorWorkspace').querySelectorAll('input, select, button'),
+    ])
+      if (!control.dataset.nav) control.disabled = true;
   }
   function render() {
     normalizeSelection();
+    renderDestinations();
     renderFolders();
     renderEditor();
-    controls();
+    chrome();
+    if (state.readOnly) lockEditor();
     if (state.focusKey) {
       const target = document.querySelector('[data-focus-key="' + state.focusKey + '"]');
       state.focusKey = null;
@@ -1439,20 +1754,8 @@
     }
     return state.policyCache.get(libraryId);
   }
-  // The teams a policy gives access, as Sites & access lists them: a deleted team counts while it
-  // still has applied access.
-  function teamCount(policy) {
-    const deleted = new Set(
-      (policy.Teams || []).filter((t) => t.Deleted).map((t) => String(t.TeamId).toLowerCase()),
-    );
-    const applied = (teamId) =>
-      policy.Policy?.Applied?.find((a) => same(a.TeamId, teamId))?.Access || 'None';
-    return (policy.Policy?.Desired || []).filter((e) =>
-      deleted.has(String(e.TeamId).toLowerCase())
-        ? applied(e.TeamId) !== 'None'
-        : e.Access !== 'None',
-    ).length;
-  }
+  // The number of teams a policy gives access (listedTeams).
+  const teamCount = (policy) => listedTeams(policy).length;
   // A template's re-run from Monitor's TemplateRuns list (running, or ended in the last day);
   // null without the Operator role (no call), when there is none, or when the read fails.
   async function lastRun(templateId) {
@@ -1491,13 +1794,161 @@
       })),
       sections: loaded.Draft.Destinations.map((d) => ({
         ...d,
-        nodeSequence: 0,
         Folders: d.Folders.map((f) => ({
           ...f,
           Condition: f.Condition ? group(f.Condition) : null,
         })),
       })),
     };
+  }
+
+  // Change tracking: the draft against the published revision, by destination and folder Key.
+  // A field as the same field whatever alias a revision gave its related record:
+  // 'root.<column>', or '<lookup>:<table>.<column>'.
+  function identity(sources, field) {
+    const [alias, column] = String(field || '').split('.');
+    if (alias === 'root') return field;
+    const source = sources.find((s) => s.Alias === alias);
+    return source ? source.Lookup + ':' + source.Table + '.' + column : field;
+  }
+  // A folder name with its field tokens as identities.
+  const canonicalName = (sources, name) =>
+    String(name ?? '').replace(
+      /\{([a-z0-9_]+\.[a-z0-9_]+)\}/gi,
+      (match, field) => '{' + identity(sources, field) + '}',
+    );
+  const GUID_LITERAL = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  // A literal as compared: a date and time as one ISO form, a record ID in lower case.
+  function canonicalLiteral(value) {
+    const text = String(value ?? '');
+    if (/^\d{4}-\d{2}-\d{2}T/.test(text) && !isNaN(new Date(text)))
+      return new Date(text).toISOString();
+    return GUID_LITERAL.test(text) ? text.toLowerCase() : text;
+  }
+  // A condition group as compared: identities instead of aliases, canonical literals, and no
+  // display-only parts (a chosen record's name and table).
+  function canonicalGroup(sources, group) {
+    if (!group) return 'null';
+    const walk = (g) => ({
+      All: !!g.All,
+      Conditions: (g.Conditions || []).map((c) => {
+        const single = unary(c.Operator);
+        return {
+          field: identity(sources, c.field),
+          Operator: c.Operator,
+          right: !single && c.right ? identity(sources, c.right) : null,
+          Literal: single || c.right ? null : canonicalLiteral(c.Literal),
+        };
+      }),
+      Groups: (g.Groups || []).map(walk),
+    });
+    return JSON.stringify(walk(group));
+  }
+  // The first key with this prefix that is not used: 'folder_1', 'folder_2', ...
+  function nextKey(prefix, used) {
+    let n = 1;
+    while (used.has(prefix + n)) n++;
+    return prefix + n;
+  }
+  // What changed from snapshot to current ({ sources, sections } each): destinations added,
+  // removed, renamed or moved to another library; folders added, removed, renamed, moved or with
+  // other conditions. Each list holds the added, then the removed, then the edited, in tree
+  // order. marks tells the draft's new and edited folders by 'destinationKey/folderKey';
+  // removed keeps each removed folder as it was; byStep counts the changes of steps 1 and 2.
+  function changesSince(snapshot, current) {
+    const changes = {
+      destinations: [],
+      folders: [],
+      marks: new Map(),
+      removed: [],
+      byStep: { 1: 0, 2: 0 },
+    };
+    if (!snapshot || !current) return changes;
+    const before = new Map(snapshot.sections.map((s) => [s.Key, s]));
+    const after = new Set(current.sections.map((s) => s.Key));
+    const named = (section, list) => sectionName(section, list.sections.indexOf(section));
+    const stored = (section) => (section.Name && section.Name !== section.Key ? section.Name : '');
+    for (const section of current.sections)
+      if (!before.has(section.Key)) {
+        changes.destinations.push({
+          kind: 'added',
+          key: section.Key,
+          name: named(section, current),
+        });
+        for (const folder of section.Folders)
+          changes.marks.set(section.Key + '/' + folder.Key, 'new');
+      }
+    for (const section of snapshot.sections)
+      if (!after.has(section.Key))
+        changes.destinations.push({
+          kind: 'removed',
+          key: section.Key,
+          name: named(section, snapshot),
+        });
+    const added = [],
+      removed = [],
+      edited = [];
+    for (const section of current.sections) {
+      const old = before.get(section.Key);
+      if (!old) continue;
+      const name = named(section, current);
+      if (stored(section) !== stored(old))
+        changes.destinations.push({
+          kind: 'renamed',
+          key: section.Key,
+          name,
+          before: named(old, snapshot),
+          after: name,
+        });
+      if (section.LibraryId !== old.LibraryId)
+        changes.destinations.push({
+          kind: 'library',
+          key: section.Key,
+          name,
+          before: old.LibraryId,
+          after: section.LibraryId,
+        });
+      const was = new Map(old.Folders.map((f) => [f.Key, f]));
+      const kept = new Set(section.Folders.map((f) => f.Key));
+      for (const [folder] of treeOrder(section)) {
+        const entry = { destination: section.Key, key: folder.Key, name: folder.Name };
+        const prior = was.get(folder.Key);
+        const mark = section.Key + '/' + folder.Key;
+        if (!prior) {
+          added.push({ kind: 'added', ...entry });
+          changes.marks.set(mark, 'new');
+          continue;
+        }
+        const edits = [];
+        if (
+          canonicalName(snapshot.sources, prior.Name) !==
+          canonicalName(current.sources, folder.Name)
+        )
+          edits.push({ kind: 'renamed', ...entry, before: prior.Name, after: folder.Name });
+        if ((prior.Parent ?? null) !== (folder.Parent ?? null))
+          edits.push({ kind: 'moved', ...entry, before: prior.Parent, after: folder.Parent });
+        if (
+          canonicalGroup(snapshot.sources, prior.Condition) !==
+          canonicalGroup(current.sources, folder.Condition)
+        )
+          edits.push({ kind: 'condition', ...entry });
+        if (edits.length) changes.marks.set(mark, 'edited');
+        edited.push(...edits);
+      }
+      for (const [folder] of treeOrder(old))
+        if (!kept.has(folder.Key)) {
+          removed.push({
+            kind: 'removed',
+            destination: section.Key,
+            key: folder.Key,
+            name: folder.Name,
+          });
+          changes.removed.push({ destination: section.Key, folder });
+        }
+    }
+    changes.folders = [...added, ...removed, ...edited];
+    changes.byStep = { 1: changes.destinations.length, 2: changes.folders.length };
+    return changes;
   }
 
   // The overview: one template read top to bottom (destinations, folders, schedule, versions),
@@ -1779,7 +2230,8 @@
     panel?.close(false);
     $('template-overview').hidden = true;
     $('template-editor').hidden = false;
-    controls();
+    goStep(state.step, false);
+    chrome();
     renderList();
     $('editor-title').focus();
   }
@@ -1790,10 +2242,32 @@
     // The viewed version replaces the latest one selectTemplate loaded.
     await reloadVersion(revisionId);
     state.readOnly = true;
+    state.changes = null;
+    render();
     await openEditor(1);
+  }
+  // A new editor session: nothing saving, nothing to compare yet, step 1.
+  function resetSession() {
+    clearTimeout(state.saveTimer);
+    state.session++;
+    Object.assign(state, {
+      saveState: 'idle',
+      savedAt: null,
+      saveError: null,
+      saving: null,
+      saveAgain: false,
+      edits: 0,
+      publishedSnapshot: null,
+      changes: null,
+      expanded: null,
+      invalid: false,
+      step: 1,
+    });
+    ui.clearFeedback('editor');
   }
   // Clears the editor, so the next Edit template loads the saved version again.
   function resetEditor() {
+    resetSession();
     Object.assign(state, {
       saved: null,
       editBase: null,
@@ -1831,6 +2305,27 @@
   $('editor-close').onclick = closeEditor;
   $('overview-edit').onclick = edit(1);
 
+  // The steps are tabs: a click shows its step; arrow keys, Home and End move focus only, and
+  // Enter or Space shows the focused one.
+  const stepTabs = [1, 2, 3].map((n) => $('step-tab-' + n));
+  stepTabs.forEach((tab, index) => (tab.onclick = () => goStep(index + 1, false)));
+  $('editor-steps').addEventListener('keydown', (event) => {
+    const index = stepTabs.indexOf(document.activeElement);
+    const target = {
+      ArrowRight: index + 1,
+      ArrowLeft: index - 1,
+      Home: 0,
+      End: stepTabs.length - 1,
+    }[event.key];
+    if (index < 0 || target === undefined) return;
+    event.preventDefault();
+    const next = stepTabs[(target + stepTabs.length) % stepTabs.length];
+    stepTabs.forEach((tab) => (tab.tabIndex = tab === next ? 0 : -1));
+    next.focus();
+  });
+  $('step-back').onclick = () => goStep(state.step - 1);
+  $('step-next').onclick = () => goStep(state.step + 1);
+
   // The overview's ⋯ menu: keyboard, focus and closing come from AsxdUi.menu; choosing an item
   // closes it.
   ui.menu($('overview-menu'), $('overview-menu-list'));
@@ -1841,6 +2336,18 @@
 
   $('publish').onclick = async () => {
     if (ui.blocked($('publish'))) return;
+    // What is published is what is saved: edits not saved yet are saved first.
+    try {
+      await flushSave();
+    } catch (error) {
+      ui.feedback('editor', error.message || String(error), 'error');
+      return;
+    }
+    // A new template without a name cannot be saved yet.
+    if (!state.saved) {
+      $('templateName').focus();
+      return;
+    }
     const next = state.editBase.Version;
     const paused = ui.runtime() && !ui.runtime().Enabled;
     const ok = await ui.confirmInline($('publish'), {
@@ -1857,30 +2364,49 @@
     });
     if (!ok) return;
     await ui.busy($('publish'), 'Publishing…', 'templates', async () => {
-      const result = JSON.parse(
-        await api('asx_PublishTemplate', {
-          RevisionId: state.saved.RevisionId,
-          RowVersion: state.saved.RowVersion,
-        }),
-      );
-      // Publishing changes the revision row, so its row version is read back with it; the next
-      // Save draft would be refused with the old one.
-      await reloadVersion(state.saved.RevisionId);
-      state.template = await reloadTemplate(state.template.asx_templateid);
-      // The list's state and the re-run's version follow the new published revision.
-      await loadTemplates();
-      controls();
-      ui.feedback(
-        'templates',
-        ['Published v' + next + '.', ...(result.Notices || [])].join(' '),
-        'success',
-        {
-          label: 'Re-run existing records…',
-          onClick: (event) => openRerun(event?.currentTarget),
-        },
-      );
+      // Edits made while the confirmation was open.
+      await flushSave();
+      state.publishing = true;
+      try {
+        const result = JSON.parse(
+          await api('asx_PublishTemplate', {
+            RevisionId: state.saved.RevisionId,
+            RowVersion: state.saved.RowVersion,
+          }),
+        );
+        // Publishing changes the revision row, so its row version is read back with it; the
+        // next save would be refused with the old one. Edits made during the publish stay.
+        // The published version is what the draft is compared with from now on.
+        if (state.unsaved) {
+          const loaded = await reloadBasis(state.saved.RevisionId);
+          state.publishedSnapshot = {
+            version: next,
+            ...toModel(loaded, (table) => metadata.get(table)?.columns || []),
+          };
+        } else {
+          await reloadVersion(state.saved.RevisionId);
+          state.publishedSnapshot = structuredClone({ version: next, ...current() });
+        }
+        state.changes = changesSince(state.publishedSnapshot, current());
+        state.template = await reloadTemplate(state.template.asx_templateid);
+        // The list's state and the re-run's version follow the new published revision.
+        await loadTemplates();
+        chrome();
+        ui.feedback(
+          'templates',
+          ['Published v' + next + '.', ...(result.Notices || [])].join(' '),
+          'success',
+          {
+            label: 'Re-run existing records…',
+            onClick: (event) => openRerun(event?.currentTarget),
+          },
+        );
+      } finally {
+        state.publishing = false;
+        if (state.unsaved) scheduleSave();
+      }
     });
-    controls();
+    chrome();
   };
 
   // Every version of the overview's template, in a side panel.
@@ -1926,7 +2452,7 @@
       if (same(state.template?.asx_templateid, id)) state.template = template;
       renderList();
       renderOverview();
-      controls();
+      chrome();
       ui.feedback('schedule', 'Schedule saved.');
     });
   };
@@ -1963,8 +2489,10 @@
     (next || $('template-search')).focus();
   }
 
-  // Unsaved edits ask before another template replaces them; true when it may.
+  // Unsaved edits ask before another template replaces them; true when it may. A save in
+  // flight finishes first.
   async function mayDiscard(control, what) {
+    await state.saving;
     if (!state.unsaved || !state.root) return true;
     return railAsk(control, {
       text:
@@ -1999,6 +2527,35 @@
     render();
     if (state.previewRecord) await runPreview();
   }
+  // Reads a version's row version and status again and leaves the editor's edits as they are.
+  async function reloadBasis(revisionId) {
+    const loaded = JSON.parse(await api('asx_LoadDraft', { RevisionId: revisionId }));
+    state.saved = {
+      RevisionId: loaded.RevisionId,
+      RowVersion: loaded.RowVersion,
+      Status: loaded.Status,
+    };
+    state.editBase = { ...state.saved, Version: loaded.Version };
+    return loaded;
+  }
+  // The published revision the draft is compared with: the loaded one when it is the published
+  // one, else read; null without one, or when it cannot be read (no change marks then).
+  async function publishedModel() {
+    const id = state.template?._asx_publishedrevisionid_value;
+    if (!id) return null;
+    if (same(id, state.saved?.RevisionId))
+      return structuredClone({ version: state.editBase.Version, ...current() });
+    try {
+      const loaded = JSON.parse(await api('asx_LoadDraft', { RevisionId: id }));
+      await Promise.all(loaded.Draft.Sources.map((s) => fields(s.Table).catch(() => null)));
+      return {
+        version: loaded.Version,
+        ...toModel(loaded, (table) => metadata.get(table)?.columns || []),
+      };
+    } catch {
+      return null;
+    }
+  }
   // Each table's fields take about seven metadata requests at once, and Dataverse serves 52
   // concurrent requests per user before it answers 429. Four tables at a time stay well inside
   // that, beside the page's other reads.
@@ -2030,7 +2587,7 @@
   // moves: out of the field, or back to the invoker when the confirmation closes.
   function refreshPickers() {
     if (!state.root) return;
-    const editor = $('folderEditor');
+    const editor = $('template-editor');
     const active = document.activeElement;
     state.pickersStale =
       !!editor.querySelector('.confirm[role=group]') ||
@@ -2039,7 +2596,7 @@
   }
   // After the focus change settles: during focusout, focus has not reached its next element yet.
   for (const type of ['focusout', 'focusin'])
-    $('folderEditor').addEventListener(type, () => {
+    $('template-editor').addEventListener(type, () => {
       if (state.pickersStale) setTimeout(refreshPickers, 0);
     });
   function resetPreview() {
@@ -2057,6 +2614,7 @@
     if (!root) throw new Error(tableName(table) + ' is not available for document management.');
     state.template = templateId ? await reloadTemplate(templateId) : null;
     $('templateName').value = state.template?.asx_name || 'New template';
+    resetSession();
     Object.assign(state, {
       root,
       editBase: null,
@@ -2088,8 +2646,12 @@
     // The tables the draft uses load before the first render (reloadVersion); the other related
     // tables load after it, in the background.
     const latest = state.template ? await latestRevision() : null;
-    if (latest) await reloadVersion(latest);
-    else render();
+    if (latest) {
+      await reloadVersion(latest);
+      state.publishedSnapshot = await publishedModel();
+      state.changes = changesSince(state.publishedSnapshot, current());
+    }
+    render();
     preload([...new Set(meta.lookups.flatMap((l) => l.Targets))], id);
   }
   $('go-access').onclick = () => ui.navigate('access');
@@ -2253,18 +2815,18 @@
       showEditor();
     });
   }
-  $('addDestination').onclick = () => {
-    if (ui.blocked($('addDestination')) || !state.libraries.length) return;
-    do {
-      state.sectionSequence++;
-    } while (state.sections.some((s) => s.Key === 'destination_' + state.sectionSequence));
+  $('add-destination').onclick = () => {
+    if (ui.blocked($('add-destination')) || !state.libraries.length || state.readOnly) return;
+    // Keys of the published revision are skipped too, as for folders.
+    const used = new Set(
+      [...state.sections, ...(state.publishedSnapshot?.sections || [])].map((s) => s.Key),
+    );
     const library = state.libraries[0];
-    state.sections.push({
-      Key: 'destination_' + state.sectionSequence,
-      // A new destination is named after its library (row 45).
+    const section = {
+      Key: nextKey('destination_', used),
+      // A new destination is named after its library.
       Name: library.asx_name,
       LibraryId: library.asx_libraryid,
-      nodeSequence: 0,
       Folders: [
         {
           Key: 'root',
@@ -2273,10 +2835,13 @@
           Condition: null,
         },
       ],
-    });
-    selectedSection = state.sections[state.sections.length - 1];
-    selectedFolder = selectedSection.Folders[0];
-    state.focusKey = nodeKey(selectedSection, selectedFolder);
+    };
+    state.sections.push(section);
+    // The new destination opens in step 1, and its top folder in step 2.
+    state.expanded = section.Key;
+    selectedSection = section;
+    selectedFolder = section.Folders[0];
+    state.focusKey = 'dest:' + section.Key + ':name';
     dirty();
     render();
   };
@@ -2285,12 +2850,15 @@
   };
 
   // Saves the draft. The version follows CreateDraftApi: a Draft is saved in place, anything
-  // else starts the next version; a new template starts at v1.
+  // else starts the next version; a new template starts at v1. It never redraws the editor, so
+  // the field being typed in stays as it is.
   async function save() {
-    if (!validate()) throw new Error('Fix the highlighted conditions first.');
-    const base = state.editBase;
+    const base = state.editBase,
+      session = state.session;
     const name = $('templateName').value.trim();
     const saved = JSON.parse(await api('asx_CreateDraft', { Request: JSON.stringify(payload()) }));
+    // Another template opened meanwhile: this answer is not about it.
+    if (session !== state.session) return;
     // What the save made is recorded at once, so a failed read below cannot make the next save
     // create a second template or a second draft.
     state.saved = saved;
@@ -2303,8 +2871,8 @@
       ...saved,
       Version: !base ? 1 : base.Status === 'Draft' ? base.Version : base.Version + 1,
     };
-    state.unsaved = false;
-    controls();
+    // A draft saved in place changes nothing else; a new template or version is read back.
+    if (base?.Status === 'Draft') return;
     try {
       // The saved version's own number: a version opened from Version history is not the latest.
       const revision = await xrm.WebApi.retrieveRecord(
@@ -2312,33 +2880,29 @@
         saved.RevisionId,
         '?$select=asx_version',
       );
+      if (session !== state.session) return;
       if (revision?.asx_version) state.editBase.Version = revision.asx_version;
-      state.template = await reloadTemplate(saved.TemplateId);
+      const template = await reloadTemplate(saved.TemplateId);
+      if (session !== state.session) return;
+      state.template = template;
       await loadTemplates();
     } catch (error) {
-      controls();
-      throw new Error(
+      const refused = new Error(
         'Draft saved, but the page could not refresh: ' + (error.message || String(error)),
       );
+      refused.saved = true;
+      throw refused;
     }
-    controls();
-    if (state.previewRecord) await runPreview();
   }
-  $('save').onclick = async () => {
-    if (ui.blocked($('save'))) return;
-    await ui.busy($('save'), 'Saving…', 'templates', async () => {
-      await save();
-      ui.feedback('templates', 'Draft saved.');
-    });
-    controls();
-  };
+  // Unsaved edits and a save in flight ask before the page changes; Save draft saves them first.
   // A version opened read-only has nothing to save: leaving it never asks.
   ui.setDirtyGuard(() =>
-    state.unsaved && state.root && !state.readOnly
+    state.root && !state.readOnly && (state.unsaved || state.saving || state.saveState === 'error')
       ? {
-          template: $('templateName').value.trim() || 'this template',
-          save: () => save(),
+          template: templateLabel(),
+          save: flushSave,
           discard: () => {
+            clearTimeout(state.saveTimer);
             state.unsaved = false;
           },
         }
@@ -2581,8 +3145,10 @@
         '?$select=asx_siteid,asx_name&$filter=asx_approved eq true',
       );
       state.sites = sites.entities;
-      controls();
+      chrome();
     },
+    changesSince,
+    nextKey,
   };
   // The first template listed, in the list's order.
   function firstListed() {
@@ -2628,6 +3194,10 @@
       const shown = state.templates.find((t) => same(t.asx_templateid, linked)) || firstListed();
       if (shown) await showOverview(shown.asx_templateid);
       else renderOverview();
+      // A link to a step opens the template's editor there.
+      const step = Number(ui.deeplink()?.step);
+      if (shown && same(shown.asx_templateid, linked) && [1, 2, 3].includes(step))
+        await openEditor(step);
     });
   }
   ui.onTab('templates', start);

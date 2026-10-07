@@ -254,7 +254,11 @@ const shownH1s = (section) =>
     for (const id of ['tabs', 'tabPrompt', 'automationChip', 'monitorBadge'])
       assert.equal(d.getElementById(id), null, id + ' is gone');
     assert.equal(d.querySelectorAll('.shell').length, 0);
-    assert.equal(d.querySelectorAll('[role=tab]').length, 0);
+    // The only tabs are the template editor's steps.
+    assert.deepEqual(
+      d.querySelectorAll('[role=tab]').map((tab) => tab.id),
+      ['step-tab-1', 'step-tab-2', 'step-tab-3'],
+    );
     for (const page of ['templates', 'access', 'monitor', 'settings']) {
       const section = d.getElementById(page);
       assert.equal(section.getAttribute('role'), null, page);

@@ -145,8 +145,20 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
       }
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.getByRole('button', { name: 'Continue Draft v1' }).click();
-    await page.locator('#version-chip').filter({ hasText: 'Draft v1' }).waitFor();
-    assert.equal(await page.locator('#templateName').inputValue(), 'Contract documents');
+    await page.locator('#editor-pill').filter({ hasText: 'Draft v1' }).waitFor();
+    assert.equal(await page.locator('#editor-name').textContent(), 'Contract documents');
+    assert.equal(await page.locator('#templateName').isHidden(), true);
+    // The steps are tabs: arrow keys move focus, Enter shows the step.
+    await page.locator('#step-tab-1').focus();
+    await page.keyboard.press('ArrowRight');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'step-tab-2');
+    assert.equal(await page.locator('#step-tab-2').getAttribute('aria-selected'), 'false');
+    await page.keyboard.press('Enter');
+    await page.locator('#step-2').waitFor();
+    assert.equal(await page.locator('#step-1').isHidden(), true);
+    assert.equal(await page.locator('#step-next').textContent(), 'Next: Review');
+    await page.locator('#step-back').click();
+    await page.locator('#step-1 .destination-card').waitFor();
     for (const width of [1440, 1000, 800, 400])
       for (const scheme of ['light', 'dark']) {
         await page.setViewportSize({ width, height: 1000 });
@@ -161,15 +173,21 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
           fullPage: true,
         });
       }
+    // Adding a destination saves by itself after a pause; Close then returns to the overview
+    // without asking.
+    await page.getByRole('button', { name: '＋ Add destination' }).click();
+    await page.locator('#step-1 .destination-row').waitFor();
+    await page.locator('#save-status', { hasText: /^Saved / }).waitFor({ timeout: 5000 });
     await page.locator('#editor-close').click();
     await page.locator('#overview-title', { hasText: 'Contract documents' }).waitFor();
+    assert.equal(await page.locator('#leavePrompt').textContent(), '');
     await page.locator('#new-template').click();
-    await page.locator('#version-chip').filter({ hasText: 'Draft v1' }).waitFor();
+    await page.locator('#editor-pill').filter({ hasText: 'Draft v1' }).waitFor();
     assert.equal(await page.locator('#templateName').isDisabled(), false);
     assert.match(await page.locator('#destinations').textContent(), /No folders yet/);
     assert.deepEqual(errors, []);
     console.log(
-      'PASS template navigation in Edge: the templates list and overview, Continue Draft into the editor, Close, ＋ New, light/dark and 1440/1000/800/400 layouts of the overview and the editor. APIs mocked.',
+      'PASS template navigation in Edge: the templates list and overview, Continue Draft into the editor, the steps by keyboard, an added destination saved by itself, Close, ＋ New, light/dark and 1440/1000/800/400 layouts of the overview and the editor. APIs mocked.',
     );
   } finally {
     await browser.close();

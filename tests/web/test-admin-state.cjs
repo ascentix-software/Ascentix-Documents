@@ -1,7 +1,7 @@
 'use strict';
 // Folder templates with a fake DOM and mocked Dataverse: the templates list and the overview,
-// its ⋯ menu, Schedule and Versions panels, Delete, the editor's template bar and version chip,
-// Publish, folders, Insert field, the condition builder, preview of unsaved edits, focus, and
+// its ⋯ menu, Schedule and Versions panels, Delete, the editor's header, steps, autosave and
+// change tracking, step 1 Destinations, Publish, folders, Insert field, the condition builder, preview of unsaved edits, focus, and
 // Re-run for existing records.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -97,6 +97,8 @@ async function boot({
   hash = '',
 } = {}) {
   const document = createDocument(html);
+  // Timers of 100 ms or more (the autosave pause) wait for flush(); shorter ones run as usual.
+  const timers = [];
   const sent = [];
   const deleted = [];
   const looked = [];
@@ -204,7 +206,7 @@ async function boot({
             ? JSON.parse(request.Request)
             : { RevisionId: request.RevisionId, RowVersion: request.RowVersion };
           sent.push([api, body]);
-          const custom = handle(api, body);
+          const custom = await handle(api, body);
           if (custom instanceof Error)
             return { ok: false, json: async () => ({ error: { message: custom.message } }) };
           const result =
@@ -341,8 +343,12 @@ async function boot({
     console,
     navigator: { clipboard: { writeText: async () => {} } },
     crypto: require('node:crypto').webcrypto,
-    setTimeout,
-    clearTimeout,
+    structuredClone,
+    setTimeout: (fn, ms) => (ms >= 100 ? timers.push(fn) : setTimeout(fn, ms)),
+    clearTimeout: (id) => {
+      if (id > 0 && id <= timers.length) timers[id - 1] = null;
+      else clearTimeout(id);
+    },
     setInterval: () => 0,
     clearInterval: () => {},
   });
@@ -404,6 +410,15 @@ async function boot({
     open,
     window,
     last: (api) => sent.filter(([a]) => a === api).at(-1)?.[1],
+    // Runs the queued timers, and the ones they queue, until none is left.
+    flush: async () => {
+      while (timers.some(Boolean)) {
+        const due = timers.splice(0);
+        for (const fn of due) fn?.();
+        await document.settle();
+      }
+    },
+    step: (n) => press($('step-tab-' + n)),
   };
 }
 
@@ -435,7 +450,7 @@ async function boot({
     // Edit template opens the editor: Publish explains why it is off; no IDs in the page.
     const t = await boot();
     await t.open();
-    assert.equal(t.$('template-bar').hidden, false);
+    assert.equal(t.$('step-1').hidden, false);
     assert.equal(t.$('editor-title').textContent, 'Account onboarding');
     assert.doesNotMatch(t.$('templates').visibleText, GUID);
     assert.doesNotMatch(t.$('templates').visibleText, /rev-1/);
@@ -709,7 +724,9 @@ async function boot({
     assert.equal(t.last('asx_CreateDraft'), undefined, 'Discard saves nothing');
     await t.press(t.$('overview-edit'));
     assert.doesNotMatch(t.$('destinations').visibleText, /Dropped/);
-    assert.equal(t.$('version-chip').textContent, 'Published v1');
+    assert.equal(t.$('editor-pill').textContent, 'Draft v2');
+    await t.flush();
+    assert.equal(t.last('asx_CreateDraft'), undefined, 'The discarded edit is never saved');
   }
   {
     // Without the Operator role the Last re-run row is left out; without the Security
@@ -804,6 +821,16 @@ async function boot({
   {
     // View opens that version read-only, not the latest revision over it.
     const t = await boot({
+      handle: (api, body) =>
+        api === 'asx_LoadDraft'
+          ? {
+              RevisionId: body.RevisionId,
+              RowVersion: '3',
+              Status: body.RevisionId === 'rev-4' ? 'Draft' : 'Published',
+              Version: Number(body.RevisionId.split('-')[1]),
+              Draft: draft(),
+            }
+          : null,
       templates: [
         {
           asx_templateid: TEMPLATE,
@@ -842,9 +869,15 @@ async function boot({
     const loads = t.sent.filter(([a]) => a === 'asx_LoadDraft').map(([, b]) => b.RevisionId);
     assert.equal(loads.at(-1), 'rev-2', 'The viewed version is loaded last');
     assert.equal(t.$('template-editor').hidden, false);
-    // Read-only: Save draft and Publish say why they are off.
-    assert.equal(t.$('save').getAttribute('aria-disabled'), 'true');
-    assert.equal(t.$('publish-reason').textContent, 'Viewing an earlier version.');
+    // Read-only: the pill names the version and its state; nothing can be edited or published.
+    assert.equal(t.$('editor-pill').textContent, 'v2 · Replaced');
+    assert.equal(t.$('editor-pill').getAttribute('data-tone'), 'muted');
+    assert.equal(t.$('editor-note').hidden, true);
+    assert.equal(t.$('publish').hidden, true);
+    assert.equal(t.$('add-destination').hidden, true);
+    assert.ok(t.labelled(t.$('step-1'), 'Name').disabled);
+    assert.ok(t.labelled(t.$('folderEditor'), 'Folder name').disabled);
+    assert.equal(t.find(t.$('destinations'), 'General').disabled, false, 'Folders can be opened');
   }
   {
     // A related record's field reads through its lookup, as a chip; a lookup condition names the
@@ -1005,7 +1038,9 @@ async function boot({
     picker.dispatchEvent(new FakeEvent('focusout'));
     await t.change(picker, 'contact');
     assert.equal(t.$('template-editor').hidden, false, 'A pick after leaving the picker opens');
-    assert.equal(t.$('editor-title').textContent, 'New template');
+    assert.equal(t.$('templateName').hidden, false);
+    assert.equal(t.$('templateName').value, 'New template');
+    assert.equal(t.$('editor-table').textContent, 'Contact ›');
     // Enter opens the table the picker shows.
     const e = await boot({ enabled: ['account', 'contact'] });
     await e.press(e.$('new-template'));
@@ -1027,12 +1062,14 @@ async function boot({
       'Open a new template? Your unsaved changes to Account onboarding are discarded.',
     );
     await t.press(t.find(t.$('templates-list'), 'Keep editing'));
-    assert.equal(t.$('version-chip').textContent, 'Draft v2 · unsaved changes');
-    assert.equal(t.$('templateName').value, 'Account onboarding');
+    assert.equal(t.$('editor-pill').textContent, 'Draft v2');
+    assert.equal(t.$('editor-name').textContent, 'Account onboarding');
     await t.press(t.$('new-template'));
     await t.press(t.find(t.$('templates-list'), 'Open a new template'));
     assert.equal(t.$('templateName').value, 'New template');
-    assert.equal(t.$('version-chip').textContent, 'Draft v1');
+    assert.equal(t.$('editor-pill').textContent, 'Draft v1');
+    assert.equal(t.$('editor-note').hidden, true, 'A new template has no live version');
+    await t.flush();
     assert.equal(t.last('asx_CreateDraft'), undefined, 'Nothing was saved');
   }
   {
@@ -1049,17 +1086,17 @@ async function boot({
     assert.equal(table.hidden, true);
     assert.equal(t.$('template-editor').hidden, false);
     assert.equal(t.$('templateName').value, 'New template');
-    assert.equal(t.$('editor-title').textContent, 'New template');
+    assert.equal(t.$('templateName').hidden, false, 'A new template is named in the heading');
   }
   {
-    // An edit marks Save draft, explains Publish, and dims the preview.
+    // An edit dims the preview and enables Publish, which saves it first.
     const t = await boot();
     await t.open();
     await t.press(t.find(t.$('destinations'), 'General'));
     await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'General documents');
-    assert.equal(t.$('version-chip').textContent, 'Draft v2 · unsaved changes');
-    assert.equal(t.$('save').getAttribute('aria-label'), 'Save draft, unsaved changes');
-    assert.equal(t.$('publish-reason').textContent, 'Save your changes first');
+    assert.equal(t.$('editor-pill').textContent, 'Draft v2');
+    assert.equal(t.$('preview-stale').hidden, true, 'Nothing previewed yet');
+    assert.equal(t.$('publish').hasAttribute('aria-disabled'), false);
     // Leaving the page with unsaved edits asks first (the shell owns the prompt).
     t.document.track(t.window.AsxdUi.navigate('monitor'));
     await t.document.settle();
@@ -1067,22 +1104,36 @@ async function boot({
       t.$('leavePrompt').visibleText,
       /You have unsaved changes to Account onboarding\./,
     );
-    // Save draft, then Publish with its confirmation (kept text #3).
+    // The autosave, then Publish with its confirmation (kept text #3).
     await t.press(t.find(t.$('leavePrompt'), 'Stay'));
-    await t.press(t.$('save'));
+    await t.flush();
     assert.equal(t.last('asx_CreateDraft').Destinations[0].Folders[1].Name, 'General documents');
-    assert.equal(t.$('version-chip').textContent, 'Draft v2');
-    assert.equal(t.$('publish').hasAttribute('aria-disabled'), false);
+    assert.equal(t.$('editor-pill').textContent, 'Draft v2');
+    await t.step(3);
     await t.press(t.$('publish'));
     assert.equal(t.document.activeElement.textContent, 'Publish v2?');
     assert.equal(
       t.$('help-publish').textContent,
       'Documents uses v2 for records created from now on, and for changed records when record updates are on. Existing records keep their folders until you re-run them.',
     );
-    await t.press(t.find(t.$('template-bar').querySelector('.confirm'), 'Publish v2'));
+    await t.press(t.find(t.$('step-3').querySelector('.confirm'), 'Publish v2'));
     assert.deepEqual(t.last('asx_PublishTemplate'), { RevisionId: 'rev-2', RowVersion: '4' });
     assert.match(t.$('fb-templates').textContent, /^Published v2\./);
     assert.ok(t.find(t.$('fb-templates'), 'Re-run existing records…'));
+    // Publishing makes the published version the new basis: no changes left to show.
+    assert.equal(t.$('step-tab-2').querySelector('.step-dot').hidden, true);
+  }
+  {
+    // Publish with an edit not saved yet saves it first, then publishes what was saved.
+    const t = await boot();
+    await t.open();
+    await t.press(t.find(t.$('destinations'), 'General'));
+    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Unsaved');
+    await t.step(3);
+    await t.press(t.$('publish'));
+    assert.equal(t.last('asx_CreateDraft').Destinations[0].Folders[1].Name, 'Unsaved');
+    await t.press(t.find(t.$('step-3').querySelector('.confirm'), 'Publish v2'));
+    assert.deepEqual(t.last('asx_PublishTemplate'), { RevisionId: 'rev-2', RowVersion: '4' });
   }
   {
     // Unsaved edits ask before the library link leaves the page too: Save draft saves and then
@@ -1091,7 +1142,7 @@ async function boot({
     await t.open();
     await t.press(t.find(t.$('destinations'), 'General'));
     await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Renamed');
-    await t.press(t.find(t.$('folderEditor'), 'View this library’s team access →'));
+    await t.press(t.find(t.$('step-1'), 'Change in Sites & access'));
     assert.match(
       t.$('leavePrompt').visibleText,
       /You have unsaved changes to Account onboarding\./,
@@ -1265,7 +1316,7 @@ async function boot({
     );
     await t.press(t.find(t.$('template-groups'), 'Keep editing'));
     assert.equal(t.sent.filter(([k]) => k === 'asx_LoadDraft').length, loads);
-    assert.equal(t.$('version-chip').textContent, 'Draft v2 · unsaved changes');
+    assert.equal(t.$('editor-pill').textContent, 'Draft v2');
     assert.equal(t.$('template-editor').hidden, false);
     assert.equal(t.document.activeElement, t.row('Contract documents'));
     // Discarding opens the other template's overview.
@@ -1275,7 +1326,8 @@ async function boot({
     assert.equal(t.$('overview-title').textContent, 'Contract documents');
   }
   {
-    // Folders and folder settings: selection keeps focus, readable copy, Remove folder and Remove destination.
+    // Folders and folder settings: selection keeps focus, readable copy, Remove folder; the
+    // destination's Remove in step 1 keeps its confirmation.
     const t = await boot();
     await t.open();
     const node = t.find(t.$('destinations'), 'General');
@@ -1307,7 +1359,7 @@ async function boot({
       /^node:general:/,
       'A new folder takes focus',
     );
-    await t.press(t.find(editor, 'Remove destination'));
+    await t.press(t.find(t.$('step-1'), 'Remove', 'Remove Business documents'));
     assert.equal(
       t.document.activeElement.textContent,
       'Remove Business documents and its 3 folders from this draft? Nothing changes in SharePoint until you publish.',
@@ -1429,7 +1481,7 @@ async function boot({
         .querySelectorAll('button')
         .find((b) => b.getAttribute('aria-label') === 'Add group to conditions for General'),
     );
-    await t.press(t.$('save'));
+    await t.flush();
     assert.equal(t.sent.filter(([k]) => k === 'asx_CreateDraft').length, 0);
     const alert = editor.querySelector('[role=alert]');
     assert.equal(alert.textContent, 'Add a condition or remove this group');
@@ -1439,7 +1491,7 @@ async function boot({
         .querySelectorAll('button')
         .find((b) => b.getAttribute('aria-label') === 'Remove group 2'),
     );
-    await t.press(t.$('save'));
+    await t.flush();
     const saved = t.last('asx_CreateDraft').Destinations[0].Folders[1].Condition.Conditions[0];
     assert.deepEqual(
       [saved.Column, saved.LiteralKind, saved.Literal],
@@ -1640,11 +1692,12 @@ async function boot({
     });
     await t.open();
     await t.press(t.$('publish'));
-    await t.press(t.find(t.$('template-bar').querySelector('.confirm'), 'Publish v2'));
-    assert.equal(t.$('version-chip').textContent, 'Published v2');
+    await t.press(t.find(t.$('step-3').querySelector('.confirm'), 'Publish v2'));
+    assert.equal(t.$('editor-pill').textContent, 'Draft v3');
+    assert.equal(t.$('editor-note').textContent, 'v2 stays live until you publish');
     await t.press(t.find(t.$('destinations'), 'General'));
     await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'After publish');
-    await t.press(t.$('save'));
+    await t.flush();
     const after = t.last('asx_CreateDraft');
     assert.deepEqual([after.RevisionId, after.RowVersion], ['rev-2', '5']);
   }
@@ -1781,8 +1834,8 @@ async function boot({
     await t.open();
     await t.press(t.find(t.$('destinations'), 'General'));
     await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'From v1');
-    await t.press(t.$('save'));
-    assert.equal(t.$('version-chip').textContent, 'Draft v4');
+    await t.flush();
+    assert.equal(t.$('editor-pill').textContent, 'Draft v4');
     await t.press(t.$('publish'));
     assert.equal(t.document.activeElement.textContent, 'Publish v4?');
   }
@@ -1796,17 +1849,18 @@ async function boot({
       reads: (table) => (failing && table === 'asx_template' ? new Error('Network down.') : null),
     });
     await t.press(t.$('new-template'));
-    await t.press(t.$('addDestination'));
+    await t.press(t.$('add-destination'));
     failing = true;
-    await t.press(t.$('save'));
+    await t.flush();
     assert.match(
-      t.$('fb-templates').textContent,
+      t.$('fb-editor').textContent,
       /^Draft saved, but the page could not refresh: Network down\./,
     );
-    assert.equal(t.$('version-chip').textContent, 'Draft v1');
+    assert.match(t.$('save-status').textContent, /^Saved /, 'The draft itself was saved');
+    assert.equal(t.$('editor-pill').textContent, 'Draft v1');
     failing = false;
     await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Second save');
-    await t.press(t.$('save'));
+    await t.flush();
     const second = t.last('asx_CreateDraft');
     assert.deepEqual(
       [second.TemplateId, second.RevisionId, second.RowVersion],
@@ -1838,11 +1892,11 @@ async function boot({
     await t.change(t.labelled(editor, 'When should this folder appear?'), 'conditional');
     await t.change(t.labelled(editor, 'Field, condition 1'), 'root.revenue');
     await t.change(t.labelled(editor, 'Value, condition 1'), '1e5');
-    await t.press(t.$('save'));
+    await t.flush();
     assert.equal(t.sent.filter(([k]) => k === 'asx_CreateDraft').length, 0);
     assert.equal(editor.querySelector('[role=alert]').textContent, 'Enter a number');
     await t.change(t.labelled(editor, 'Value, condition 1'), ' 12345678901234567890.5 ');
-    await t.press(t.$('save'));
+    await t.flush();
     const saved = t.last('asx_CreateDraft').Destinations[0].Folders[1].Condition.Conditions[0];
     assert.equal(saved.Literal, '12345678901234567890.5');
   }
@@ -1865,8 +1919,486 @@ async function boot({
     await t.press(t.$('rerun-preview'));
     assert.equal(t.looked.length, picks, 'A blocked preview opens no picker');
   }
+  {
+    // Header and stepper: table, name, Draft pill, the live note; three tabs, freely clickable,
+    // arrows move focus only.
+    const t = await boot();
+    await t.open();
+    assert.equal(t.$('editor-table').textContent, 'Account ›');
+    assert.equal(t.$('editor-title').textContent, 'Account onboarding');
+    assert.equal(t.$('editor-pill').textContent, 'Draft v2');
+    assert.equal(t.$('editor-note').textContent, 'v1 stays live until you publish');
+    const tabs = t.$('editor-steps').querySelectorAll('[role=tab]');
+    assert.deepEqual(
+      tabs.map((b) => b.querySelector('.step-label').textContent),
+      ['Destinations', 'Folders', 'Review and publish'],
+    );
+    assert.equal(tabs[0].getAttribute('aria-selected'), 'true');
+    assert.equal(t.$('step-back').hidden, true);
+    assert.equal(t.$('step-next').textContent, 'Next: Folders');
+    tabs[0].focus();
+    tabs[0].key('ArrowRight');
+    assert.equal(t.document.activeElement, tabs[1]);
+    assert.equal(tabs[1].getAttribute('aria-selected'), 'false', 'Arrows move focus only');
+    await t.press(tabs[2]);
+    assert.equal(t.$('step-3').hidden, false);
+    assert.equal(t.$('step-1').hidden, true);
+    await t.press(t.$('step-back'));
+    assert.equal(t.$('step-2').hidden, false);
+    assert.equal(t.$('step-next').textContent, 'Next: Review');
+  }
+  {
+    // Autosave: 1.5 s after the last edit; one save in flight; an edit made meanwhile is saved
+    // next, with the revision and row version the first save returned (Review Focus 1).
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    let saves = 0;
+    const t = await boot({
+      handle: async (api) => {
+        if (api !== 'asx_CreateDraft') return null;
+        saves++;
+        if (saves === 1) await gate;
+        return {
+          TemplateId: TEMPLATE,
+          RevisionId: 'rev-2',
+          RowVersion: String(3 + saves),
+          Status: 'Draft',
+        };
+      },
+    });
+    await t.open();
+    await t.step(2);
+    await t.press(t.find(t.$('destinations'), 'General'));
+    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'One');
+    const drafts = () => t.sent.filter(([a]) => a === 'asx_CreateDraft').map(([, b]) => b);
+    assert.equal(drafts().length, 0, 'Nothing saves before the pause');
+    await t.flush();
+    assert.equal(t.$('save-status').textContent, 'Saving…');
+    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Two');
+    await t.flush();
+    assert.equal(drafts().length, 1, 'One save in flight at a time');
+    release();
+    await t.document.settle();
+    await t.flush();
+    assert.equal(drafts().length, 2);
+    assert.equal(drafts()[1].RevisionId, 'rev-2');
+    assert.equal(drafts()[1].RowVersion, '4');
+    assert.equal(drafts()[1].Destinations[0].Folders[1].Name, 'Two');
+    assert.match(t.$('save-status').textContent, /^Saved \d{1,2}:\d{2}/);
+    assert.equal(t.$('editor-pill').textContent, 'Draft v2');
+  }
+  {
+    // A new template is created once, even when an edit lands while its first save runs.
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    let saves = 0;
+    const t = await boot({
+      templates: [],
+      reads: (table, id) =>
+        table === 'asx_template' && id === OTHER
+          ? { asx_templateid: OTHER, asx_name: 'Client onboarding', asx_table: 'account' }
+          : null,
+      handle: async (api) => {
+        if (api !== 'asx_CreateDraft') return null;
+        saves++;
+        if (saves === 1) await gate;
+        return {
+          TemplateId: OTHER,
+          RevisionId: 'rev-new',
+          RowVersion: String(saves),
+          Status: 'Draft',
+        };
+      },
+    });
+    await t.press(t.$('new-template'));
+    // A new template saves once it has a name and a destination.
+    assert.equal(t.$('templateName').hidden, false);
+    await t.change(t.$('templateName'), 'Client onboarding');
+    await t.press(t.$('add-destination'));
+    const drafts = () => t.sent.filter(([a]) => a === 'asx_CreateDraft').map(([, b]) => b);
+    await t.flush(); // save 1 starts and waits at the gate
+    assert.equal(drafts().length, 1);
+    assert.equal(drafts()[0].Name, 'Client onboarding');
+    await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files'); // an edit during the flight
+    await t.flush();
+    assert.equal(drafts().length, 1, 'No second save while the first runs');
+    release();
+    await t.document.settle();
+    await t.flush();
+    assert.deepEqual(
+      drafts().map((d) => d.TemplateId),
+      [null, OTHER],
+      'One template, then its follow-up save',
+    );
+    assert.equal(drafts()[1].Destinations[0].Name, 'Client files');
+    assert.equal(t.$('templateName').hidden, true, 'The saved name shows as the heading');
+    assert.equal(t.$('editor-name').textContent, 'Client onboarding');
+  }
+  {
+    // A failed save says so with Retry; Retry saves again.
+    let fail = true;
+    const t = await boot({
+      handle: (api) =>
+        api === 'asx_CreateDraft' && fail ? new Error('The server refused the request.') : null,
+    });
+    await t.open();
+    await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files');
+    await t.flush();
+    assert.equal(t.$('save-status').visibleText, "Couldn't save · Retry");
+    assert.ok(t.$('save-status').classList.contains('is-error'));
+    assert.equal(t.$('fb-editor').textContent, 'The server refused the request.');
+    const retry = t.find(t.$('save-status'), 'Retry');
+    assert.equal(retry.getAttribute('aria-label'), 'Retry saving Account onboarding');
+    fail = false;
+    await t.press(retry);
+    assert.match(t.$('save-status').textContent, /^Saved /);
+    assert.equal(t.$('fb-editor').textContent, '');
+  }
+  {
+    // Invalid conditions block the autosave and mark the Folders tab, and never move focus.
+    const t = await boot();
+    await t.open();
+    await t.step(2);
+    await t.press(t.find(t.$('destinations'), 'General'));
+    await t.change(
+      t.labelled(t.$('folderEditor'), 'When should this folder appear?'),
+      'conditional',
+    );
+    await t.change(t.labelled(t.$('folderEditor'), 'Field, condition 1'), 'root.revenue');
+    const value = t.labelled(t.$('folderEditor'), 'Value, condition 1');
+    value.focus();
+    await t.change(value, '1e5');
+    await t.flush();
+    assert.equal(t.sent.filter(([a]) => a === 'asx_CreateDraft').length, 0);
+    assert.ok(t.$('step-tab-2').classList.contains('has-error'));
+    assert.equal(t.$('step-tab-2').getAttribute('aria-label'), 'Folders, has errors');
+    assert.equal(t.$('step-tab-2').querySelector('.step-dot').hidden, true, 'No dot with an error');
+    assert.equal(t.document.activeElement, value, 'Autosave never takes focus');
+    // Fixed, the next autosave saves and the error state clears.
+    await t.change(value, '100000');
+    await t.flush();
+    assert.equal(t.sent.filter(([a]) => a === 'asx_CreateDraft').length, 1);
+    assert.equal(t.$('step-tab-2').classList.contains('has-error'), false);
+  }
+  {
+    // The dirty guard covers an edit not saved yet: Save draft flushes the autosave first.
+    const t = await boot();
+    await t.open();
+    await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files');
+    const going = t.window.AsxdUi.navigate('monitor');
+    await t.document.settle();
+    await t.press(t.find(t.$('leavePrompt'), 'Save draft'));
+    await going;
+    assert.equal(t.last('asx_CreateDraft').Destinations[0].Name, 'Client files');
+    assert.equal(
+      t.sent
+        .filter(([k]) => k === 'navigate')
+        .at(-1)[1]
+        .data.split('-')[0],
+      'monitor',
+    );
+  }
+  {
+    // The dirty guard also covers a save still in flight: Save draft waits for it.
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    const t = await boot({
+      handle: async (api) => (api === 'asx_CreateDraft' ? gate.then(() => null) : null),
+    });
+    await t.open();
+    await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files');
+    await t.flush();
+    assert.equal(t.$('save-status').textContent, 'Saving…');
+    const going = t.window.AsxdUi.navigate('monitor');
+    await t.document.settle();
+    assert.match(
+      t.$('leavePrompt').visibleText,
+      /You have unsaved changes to Account onboarding\./,
+    );
+    await t.press(t.find(t.$('leavePrompt'), 'Save draft'));
+    assert.equal(t.sent.filter(([k]) => k === 'navigate').length, 0, 'Nothing leaves mid-save');
+    release();
+    await going;
+    assert.equal(t.sent.filter(([a]) => a === 'asx_CreateDraft').length, 1);
+    assert.equal(t.sent.filter(([k]) => k === 'navigate').length, 1);
+  }
+  {
+    // changesSince: alias renumbering and date formats are not changes; added, removed and
+    // condition changes are listed in order and drive marks and step counts (Review Focus 2).
+    const t = await boot();
+    const { changesSince, nextKey } = t.window.AsxdAdmin;
+    const sources = (alias) => [
+      { Alias: 'root', Table: 'account', Lookup: null, columns: [] },
+      { Alias: alias, Table: 'contact', Lookup: 'primarycontactid', columns: [] },
+    ];
+    const f = (Key, Parent, Name, Condition = null) => ({ Key, Parent, Name, Condition });
+    const when = (field, Literal) => ({
+      All: true,
+      Groups: [],
+      Conditions: [{ field, Operator: 'Equal', Literal, right: null }],
+    });
+    const dest = (Folders) => [
+      { Key: 'general', Name: 'Client files', LibraryId: 'lib-a', Folders },
+    ];
+    const published = {
+      sources: sources('lookup_1'),
+      sections: dest([
+        f('root', null, '{root.name}'),
+        f('folder_1', 'root', 'Contact {lookup_1.fullname}'),
+        f('folder_2', 'root', 'Reviewed', when('root.reviewedon', '2026-10-01T00:00:00Z')),
+        f('folder_3', 'root', 'Invoices'),
+        f('folder_4', 'root', 'Contracts'),
+      ]),
+    };
+    const current = {
+      sources: sources('lookup_2'),
+      sections: dest([
+        f('root', null, '{root.name}'),
+        f('folder_1', 'root', 'Contact {lookup_2.fullname}'),
+        f('folder_2', 'root', 'Reviewed', when('root.reviewedon', '2026-10-01T00:00:00.000Z')),
+        f('folder_4', 'root', 'Contracts', when('root.statecode', '0')),
+        f('folder_5', 'root', 'Projects'),
+      ]),
+    };
+    const changes = changesSince(published, current);
+    // Array.from: the page's arrays come from another realm, which deepEqual compares too.
+    assert.deepEqual(
+      Array.from(changes.folders, (c) => [c.kind, c.key]),
+      [
+        ['added', 'folder_5'],
+        ['removed', 'folder_3'],
+        ['condition', 'folder_4'],
+      ],
+    );
+    assert.deepEqual({ ...changes.byStep }, { 1: 0, 2: 3 });
+    assert.equal(changes.marks.get('general/folder_5'), 'new');
+    assert.equal(changes.marks.get('general/folder_4'), 'edited');
+    assert.equal(
+      changes.marks.get('general/folder_1'),
+      undefined,
+      'Alias renumbering is not a change',
+    );
+    assert.equal(changes.marks.get('general/folder_2'), undefined, 'Same instant, other format');
+    assert.deepEqual(
+      Array.from(changes.removed, (r) => r.folder.Key),
+      ['folder_3'],
+    );
+    // A new folder never takes a key the published revision used.
+    assert.equal(
+      nextKey(
+        'folder_',
+        new Set(['root', 'folder_1', 'folder_2', 'folder_3', 'folder_4', 'folder_5']),
+      ),
+      'folder_6',
+    );
+    assert.equal(
+      changesSince(null, current).folders.length,
+      0,
+      'No published revision: no changes',
+    );
+    // Destinations: added, removed, renamed and a new library, keyed by Key; a folder of an
+    // added destination is marked new without its own entry.
+    const two = {
+      sources: sources('lookup_1'),
+      sections: [
+        {
+          Key: 'general',
+          Name: 'Client files',
+          LibraryId: 'lib-a',
+          Folders: [f('root', null, 'A')],
+        },
+        { Key: 'legal', Name: 'Legal', LibraryId: 'lib-b', Folders: [f('root', null, 'B')] },
+      ],
+    };
+    const moved = changesSince(two, {
+      sources: sources('lookup_1'),
+      sections: [
+        { Key: 'general', Name: 'Clients', LibraryId: 'lib-c', Folders: [f('root', null, 'A')] },
+        { Key: 'destination_1', Name: 'New', LibraryId: 'lib-a', Folders: [f('root', null, 'C')] },
+      ],
+    });
+    assert.deepEqual(
+      Array.from(moved.destinations, (c) => [c.kind, c.key, c.name, c.before, c.after]),
+      [
+        ['added', 'destination_1', 'New', undefined, undefined],
+        ['removed', 'legal', 'Legal', undefined, undefined],
+        ['renamed', 'general', 'Clients', 'Client files', 'Clients'],
+        ['library', 'general', 'Clients', 'lib-a', 'lib-c'],
+      ],
+    );
+    assert.equal(moved.folders.length, 0);
+    assert.equal(moved.marks.get('destination_1/root'), 'new');
+    assert.deepEqual({ ...moved.byStep }, { 1: 4, 2: 0 });
+  }
+  {
+    // Change tracking in the page: the Folders tab gets a dot and the footer a count.
+    const t = await boot();
+    await t.open();
+    assert.equal(t.$('step-tab-2').querySelector('.step-dot').hidden, true);
+    await t.step(2);
+    await t.press(t.find(t.$('destinations'), 'General'));
+    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'General documents');
+    assert.equal(t.$('step-tab-2').querySelector('.step-dot').hidden, false);
+    assert.equal(t.$('step-tab-2').getAttribute('aria-label'), 'Folders, has changes');
+    assert.equal(t.$('step-count').textContent, '1 change in this step');
+    // A new folder never reuses a key of the published revision.
+    const published = await boot({
+      loaded: {
+        RevisionId: 'rev-1',
+        RowVersion: '3',
+        Status: 'Published',
+        Version: 1,
+        Draft: draft({
+          Destinations: [
+            {
+              Key: 'general',
+              Name: 'Business documents',
+              LibraryId: 'lib-a',
+              Folders: [
+                { Key: 'root', Parent: null, Name: '{root.name}', Condition: null },
+                { Key: 'folder_1', Parent: 'root', Name: 'Invoices', Condition: null },
+              ],
+            },
+          ],
+        }),
+      },
+    });
+    await published.open();
+    await published.step(2);
+    await published.press(published.find(published.$('destinations'), 'Invoices'));
+    await published.press(published.find(published.$('folderEditor'), 'Remove folder'));
+    await published.press(published.find(published.$('destinations'), '[Account Name]'));
+    await published.press(
+      published.find(published.$('destinations'), '＋ Add folder inside [Account Name]'),
+    );
+    await published.flush();
+    assert.deepEqual(
+      published.last('asx_CreateDraft').Destinations[0].Folders.map((x) => x.Key),
+      ['root', 'folder_2'],
+    );
+  }
+  {
+    // Step 1: the expanded destination with Name, Site and Library, the team panel and the
+    // library link; the Library list ends with Sites & access.
+    const t = await boot({
+      handle: (api, body) =>
+        body?.Command === 'GetPolicy'
+          ? {
+              Status: 'Applied',
+              Policy: { Desired: [{ TeamId: 'team-1', Access: 'Contribute' }], Applied: [] },
+              Teams: [{ TeamId: 'team-1', Name: 'Account managers' }],
+            }
+          : null,
+    });
+    await t.open();
+    assert.equal(
+      t.$('help-destinations').textContent,
+      'Each destination is a SharePoint library. Every team with access to the library can open the folders created in it; to restrict a folder, give it its own library.',
+    );
+    const card = t.$('step-1').querySelector('.destination-card');
+    assert.equal(card.querySelector('.eyebrow').textContent, 'Destination 1');
+    assert.equal(t.labelled(card, 'Name').value, 'Business documents');
+    const library = t.labelled(card, 'Library');
+    assert.equal(
+      library.querySelectorAll('option').at(-1).textContent,
+      'Set up a library in Sites & access…',
+    );
+    const who = card.querySelector('.who-can-open');
+    assert.equal(who.querySelector('h3').textContent, 'Who can open these folders');
+    assert.equal(who.querySelector('.team-line').textContent, 'Account managers · Contribute');
+    await t.press(t.find(who, 'Change in Sites & access'));
+    assert.equal(
+      t.sent
+        .filter(([k]) => k === 'navigate')
+        .at(-1)[1]
+        .data.split('-')[0],
+      'access',
+    );
+    // Choosing "Set up a library…" keeps the chosen library and goes to Sites & access.
+    const s = await boot();
+    await s.open();
+    const picker = s.labelled(s.$('step-1'), 'Library');
+    await s.change(picker, '__setup');
+    assert.equal(picker.value, 'lib-a');
+    assert.equal(
+      s.sent
+        .filter(([k]) => k === 'navigate')
+        .at(-1)[1]
+        .data.split('-')[0],
+      'access',
+    );
+    await s.flush();
+    assert.equal(s.last('asx_CreateDraft'), undefined, 'Not an edit');
+  }
+  {
+    // Add destination: the new one expands and the other collapses to one row; at the bound the
+    // button is disabled with its reason; without the Security Administrator role the team panel
+    // says what is needed.
+    const t = await boot({ privileges: { prvCreateasx_policy: false } });
+    await t.open();
+    assert.equal(t.$('destination-limit-note').textContent, 'Up to 10 per template');
+    await t.press(t.$('add-destination'));
+    assert.equal(t.$('step-1').querySelectorAll('.destination-card').length, 1);
+    const row = t.$('step-1').querySelector('.destination-row');
+    assert.equal(row.querySelector('.eyebrow').textContent, 'Destination 1');
+    assert.equal(row.querySelector('strong').textContent, 'Business documents');
+    assert.equal(row.querySelector('.where').textContent, 'Delivery › General');
+    assert.equal(
+      t.$('step-1').querySelector('.who-can-open .reason').textContent,
+      'Needs the Documents Security Administrator role.',
+    );
+    assert.equal(t.sent.filter(([, b]) => b?.Command === 'GetPolicy').length, 0);
+    assert.equal(t.$('step-tab-1').getAttribute('aria-label'), 'Destinations, has changes');
+    // Edit expands the row and collapses the other.
+    await t.press(t.find(row, 'Edit', 'Edit Business documents'));
+    assert.equal(
+      t.labelled(t.$('step-1').querySelector('.destination-card'), 'Name').value,
+      'Business documents',
+    );
+    // At the bound the button says why it is off.
+    for (let i = 2; i < t.window.AsxdUi.BOUNDS.destinations; i++)
+      await t.press(t.$('add-destination'));
+    assert.equal(t.$('add-destination').getAttribute('aria-disabled'), 'true');
+    assert.equal(
+      t.$('destination-reason').textContent,
+      'A template can have up to 10 destinations, because each record plans all of them in one step that Dataverse stops after 2 minutes.',
+    );
+    // With a policy read, a collapsed row names its teams.
+    const p = await boot({
+      handle: (api, body) =>
+        body?.Command === 'GetPolicy'
+          ? {
+              Status: 'Applied',
+              Policy: {
+                Desired: [
+                  { TeamId: 'team-1', Access: 'Contribute' },
+                  { TeamId: 'team-2', Access: 'None' },
+                ],
+                Applied: [],
+              },
+              Teams: [
+                { TeamId: 'team-1', Name: 'Legal' },
+                { TeamId: 'team-2', Name: 'Finance' },
+              ],
+            }
+          : null,
+    });
+    await p.open();
+    await p.press(p.$('add-destination'));
+    assert.equal(
+      p.$('step-1').querySelector('.destination-row .teams').textContent,
+      '1 team · Legal (Contribute)',
+    );
+  }
+  {
+    // A link to a step opens that template's editor at the step.
+    const t = await boot({ hash: '#templates?template=' + TEMPLATE + '&step=2' });
+    assert.equal(t.$('template-editor').hidden, false);
+    assert.equal(t.$('step-2').hidden, false);
+    assert.equal(t.$('step-tab-2').getAttribute('aria-selected'), 'true');
+  }
   console.log(
-    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, version chip, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload. Fake DOM; browser QA separate.',
+    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

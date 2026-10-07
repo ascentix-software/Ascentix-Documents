@@ -784,16 +784,6 @@ pre {
 #authorWorkspace .divider {
   margin: 16px 0;
 }
-@media (min-width: 1000px) {
-  #authorWorkspace .editor {
-    grid-template-columns: minmax(200px, 0.75fr) minmax(330px, 1.35fr) minmax(260px, 1fr);
-  }
-  #authorWorkspace .preview-pane {
-    grid-column: auto;
-    border-top: 0;
-    border-left: 1px solid var(--line) !important;
-  }
-}
 @media (max-width: 700px) {
   .table-bar > label {
     display: block;
@@ -851,13 +841,6 @@ pre {
 }
 .danger {
   color: var(--danger);
-}
-#templateActions button {
-  font-size: 12px;
-  padding: 8px 12px;
-}
-#templateActions {
-  justify-content: flex-end;
 }
 .availability-body {
   font-size: 12px;
@@ -1037,24 +1020,6 @@ table {
   }
   to {
     background-position: -200% 0;
-  }
-}
-#templateName {
-  min-width: 0;
-  width: 100%;
-}
-@media (max-width: 1200px) {
-  #authorWorkspace .editor {
-    grid-template-columns: minmax(200px, 1fr) minmax(280px, 1.3fr);
-  }
-  #authorWorkspace .preview-pane {
-    grid-column: 1/-1;
-    border-top: 1px solid var(--line);
-  }
-}
-@media (max-width: 700px) {
-  #authorWorkspace .editor {
-    grid-template-columns: minmax(0, 1fr);
   }
 }
 .sr-only {
@@ -1704,17 +1669,6 @@ button.filter-chip[aria-pressed='true'] {
 #history-list .version-row:first-child {
   border-top: 0;
 }
-#template-editor {
-  min-height: 100%;
-}
-#template-editor > .page-header {
-  padding: 12px 20px;
-}
-#editor-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 /* Small screens: the list stacks above the overview, and the header's actions take their own
    row. */
 @media (max-width: 700px) {
@@ -1742,61 +1696,6 @@ button.filter-chip[aria-pressed='true'] {
   #overview-actions {
     justify-content: flex-start;
   }
-}
-#template-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px 20px;
-}
-#template-bar > .row {
-  flex: 1;
-  align-items: center;
-  gap: 12px;
-  min-width: 260px;
-}
-#template-bar > .row > label {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: 12px;
-  margin: 0;
-  font-weight: 700;
-  white-space: nowrap;
-}
-#templateActions {
-  position: relative;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-#templateActions .reason {
-  order: 10;
-  flex-basis: 100%;
-  margin: 0;
-  text-align: right;
-}
-#template-bar > .confirm {
-  flex-basis: 100%;
-}
-.chip.version {
-  display: inline-block;
-  padding: 2px 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-#save.has-dot::after {
-  content: '';
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  margin-left: 6px;
-  border-radius: 50%;
-  background: var(--warning);
-  vertical-align: middle;
 }
 .menu {
   position: absolute;
@@ -2873,6 +2772,279 @@ button.danger-outline {
   }
   #settings-footer {
     flex-wrap: wrap;
+    padding: 12px 14px;
+  }
+}
+
+/* Template editor: a two-row header (the name and save status, then the steps), one panel per
+   step, and a footer with Back, the step's change count and Next. */
+#template-editor:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.editor-header {
+  padding: 14px 24px 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.editor-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.editor-table {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+#editor-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin: 0;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.4px;
+}
+#editor-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#templateName {
+  width: min(360px, 100%);
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+#editor-pill {
+  flex-shrink: 0;
+  color: var(--warning);
+  font-weight: 750;
+}
+#editor-pill[data-tone='muted'] {
+  color: var(--muted);
+}
+/* Secondary header text shrinks first. */
+#editor-note {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+#save-status {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 12px;
+}
+#save-status.is-error,
+#save-status.is-error button.link {
+  color: var(--danger);
+}
+#save-status button.link {
+  font-size: 12px;
+}
+#editor-close {
+  flex-shrink: 0;
+}
+.stepper {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+  overflow-x: auto;
+}
+.stepper [role='tab'] {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 9px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.stepper [role='tab']:hover {
+  background: var(--tint);
+}
+.stepper [role='tab'].is-current {
+  border-bottom-color: var(--teal);
+  color: var(--ink);
+}
+.step-num {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--tint);
+  color: var(--teal);
+  font-size: 12px;
+  font-weight: 700;
+}
+.is-current .step-num {
+  background: var(--teal);
+  color: var(--on-accent);
+}
+.step-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+/* A step with invalid conditions: its number and its underlined label in the danger colour. */
+.stepper .has-error .step-num {
+  background: var(--danger);
+  color: var(--on-accent);
+}
+.stepper .has-error .step-label {
+  color: var(--danger);
+  text-decoration: underline wavy;
+  text-underline-offset: 4px;
+}
+.step-panel {
+  flex: 1;
+}
+#step-1 {
+  padding: 20px 24px;
+  background: var(--canvas);
+}
+#help-destinations {
+  max-width: 720px;
+  margin: 0 0 14px;
+  font-size: 13px;
+}
+.destination-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 24px;
+  padding: 18px;
+  border: 1px solid var(--teal);
+  border-radius: 12px;
+  box-shadow: 0 0 0 3px var(--tint);
+  background: var(--surface);
+}
+.destination-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.destination-main label input,
+.destination-main label select {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+}
+.destination-main .card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.destination-card .eyebrow,
+.destination-row .eyebrow {
+  color: var(--muted);
+}
+.destination-card button.link.danger {
+  color: var(--danger);
+  font-weight: 700;
+  text-decoration: none;
+}
+.destination-card button.link.danger:hover {
+  text-decoration: underline;
+}
+.who-can-open {
+  align-self: start;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--canvas);
+}
+.who-can-open h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.team-line {
+  margin: 0 0 4px;
+}
+.who-can-open .reason {
+  margin: 0 0 8px;
+}
+.destination-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.destination-row .where,
+.destination-row .teams {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#step-1 > [data-actions] {
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+#destination-limit-note {
+  font-size: 12px;
+}
+#step-1 > [data-actions] .reason {
+  margin: 0;
+}
+#publish-actions {
+  margin-top: 16px;
+}
+#editor-footer {
+  margin-top: auto;
+}
+#step-count {
+  font-weight: 500;
+}
+#fb-editor {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+#step-next {
+  margin-left: auto;
+}
+@media (max-width: 1000px) {
+  .destination-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .destination-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .destination-row .where,
+  .destination-row .teams {
+    grid-column: 2 / 3;
+  }
+}
+@media (max-width: 700px) {
+  .editor-header {
+    padding: 12px 14px 0;
+  }
+  #editor-note {
+    display: none;
+  }
+  #step-1 {
+    padding: 14px;
+  }
+  #editor-footer {
     padding: 12px 14px;
   }
 }

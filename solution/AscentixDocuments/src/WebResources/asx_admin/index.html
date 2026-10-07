@@ -75,50 +75,89 @@
               <div id="overview-cards" class="page-body one-column"></div>
             </div>
             <div id="template-editor" hidden>
-              <header class="page-header">
-                <h1 id="editor-title" tabindex="-1">New template</h1>
-                <div class="page-actions row">
+              <header id="editor-header" class="editor-header">
+                <div class="editor-row">
+                  <span id="editor-table" class="editor-table"></span>
+                  <h1 id="editor-title" tabindex="-1">
+                    <span id="editor-name"></span
+                    ><input id="templateName" maxlength="200" aria-label="Template name" hidden />
+                  </h1>
+                  <span id="editor-pill" class="pill" data-tone="warning"></span>
+                  <span id="editor-note" class="muted"></span>
+                  <span id="save-status" class="muted" role="status"></span>
                   <button id="editor-close" type="button" class="secondary">Close</button>
                 </div>
+                <div id="editor-steps" class="stepper" role="tablist" aria-label="Steps">
+                  <button
+                    id="step-tab-1"
+                    type="button"
+                    role="tab"
+                    aria-controls="step-1"
+                    aria-selected="true"
+                  >
+                    <span class="step-num" aria-hidden="true">1</span
+                    ><span class="step-label">Destinations</span
+                    ><span class="step-dot" aria-hidden="true" hidden></span>
+                  </button>
+                  <button
+                    id="step-tab-2"
+                    type="button"
+                    role="tab"
+                    aria-controls="step-2"
+                    aria-selected="false"
+                    tabindex="-1"
+                  >
+                    <span class="step-num" aria-hidden="true">2</span
+                    ><span class="step-label">Folders</span
+                    ><span class="step-dot" aria-hidden="true" hidden></span>
+                  </button>
+                  <button
+                    id="step-tab-3"
+                    type="button"
+                    role="tab"
+                    aria-controls="step-3"
+                    aria-selected="false"
+                    tabindex="-1"
+                  >
+                    <span class="step-num" aria-hidden="true">3</span
+                    ><span class="step-label">Review and publish</span
+                    ><span class="step-dot" aria-hidden="true" hidden></span>
+                  </button>
+                </div>
               </header>
-              <section id="template-bar" class="table-bar" hidden aria-label="Template">
-                <div class="row wrap">
-                  <label>Template name<input id="templateName" maxlength="200" /></label>
-                  <span
-                    id="version-chip"
-                    class="chip version"
-                    tabindex="0"
-                    aria-describedby="version-chip-desc"
-                  ></span>
-                  <span id="version-chip-desc" class="sr-only"></span>
+              <section id="step-1" role="tabpanel" aria-labelledby="step-tab-1" class="step-panel">
+                <!-- prettier-ignore -->
+                <p class="help" id="help-destinations">Each destination is a SharePoint library. Every team with access to the library can open the folders created in it; to restrict a folder, give it its own library.</p>
+                <div id="destination-list" class="stack" data-focus-scope></div>
+                <div class="row" data-actions>
+                  <button id="add-destination" type="button" class="secondary">
+                    ＋ Add destination
+                  </button>
+                  <span id="destination-limit-note" class="muted"></span>
                 </div>
-                <div id="templateActions" class="row" data-actions>
-                  <button id="save" type="button" class="secondary">Save draft</button>
-                  <button id="publish" type="button" class="primary">Publish</button>
-                </div>
+                <p id="no-library" hidden>
+                  No libraries are ready yet.
+                  <button id="go-access" type="button" class="link">
+                    Set one up in Sites &amp; access →
+                  </button>
+                </p>
               </section>
-              <div id="authorWorkspace" hidden>
-                <div class="editor">
+              <section
+                id="step-2"
+                role="tabpanel"
+                aria-labelledby="step-tab-2"
+                class="step-panel"
+                hidden
+              >
+                <div id="authorWorkspace" class="editor">
                   <section
                     class="pane tree-pane"
                     aria-labelledby="folders-heading"
                     data-focus-scope
                     id="folders-pane"
                   >
-                    <div class="row between">
-                      <h2 id="folders-heading" tabindex="-1" data-focus-heading>Folders</h2>
-                      <span class="badge" id="destinationCount"></span>
-                    </div>
+                    <h2 id="folders-heading" tabindex="-1" data-focus-heading>Folders</h2>
                     <div id="destinations" class="stack"></div>
-                    <button id="addDestination" type="button" class="wide secondary">
-                      ＋ Add destination
-                    </button>
-                    <p id="no-library" hidden>
-                      No libraries are ready yet.
-                      <button id="go-access" type="button" class="link">
-                        Set one up in Sites &amp; access →
-                      </button>
-                    </p>
                   </section>
                   <section
                     class="pane"
@@ -131,25 +170,42 @@
                     </h2>
                     <div id="folderEditor"></div>
                   </section>
-                  <section class="pane preview-pane" aria-labelledby="preview-heading">
-                    <div class="row between">
-                      <h2 id="preview-heading">Preview</h2>
-                      <span id="preview-stale" class="badge warning" hidden>Out of date</span>
-                    </div>
-                    <div class="row wrap" data-actions>
-                      <span class="label-text">Preview record</span>
-                      <button id="chooseRecord" type="button" class="secondary">
-                        Choose record…
-                      </button>
-                      <span id="preview-record-name"></span>
-                      <button id="refreshPreview" type="button" class="secondary" hidden>
-                        Refresh preview
-                      </button>
-                    </div>
-                    <div id="previewTrees"></div>
-                    <p id="preview-status" class="sr-only" role="status"></p>
-                  </section>
                 </div>
+              </section>
+              <section
+                id="step-3"
+                role="tabpanel"
+                aria-labelledby="step-tab-3"
+                class="step-panel"
+                hidden
+              >
+                <section class="pane preview-pane" aria-labelledby="preview-heading">
+                  <div class="row between">
+                    <h2 id="preview-heading" tabindex="-1">Preview</h2>
+                    <span id="preview-stale" class="badge warning" hidden>Out of date</span>
+                  </div>
+                  <div class="row wrap" data-actions>
+                    <span class="label-text">Preview record</span>
+                    <button id="chooseRecord" type="button" class="secondary">
+                      Choose record…
+                    </button>
+                    <span id="preview-record-name"></span>
+                    <button id="refreshPreview" type="button" class="secondary" hidden>
+                      Refresh preview
+                    </button>
+                  </div>
+                  <div id="previewTrees"></div>
+                  <p id="preview-status" class="sr-only" role="status"></p>
+                  <div id="publish-actions" class="row" data-actions>
+                    <button id="publish" type="button" class="primary">Publish</button>
+                  </div>
+                </section>
+              </section>
+              <div id="editor-footer" class="footer-bar">
+                <button id="step-back" type="button" class="secondary">Back</button>
+                <span id="step-count" class="muted"></span>
+                <p class="feedback" id="fb-editor"></p>
+                <button id="step-next" type="button" class="primary"></button>
               </div>
             </div>
           </div>

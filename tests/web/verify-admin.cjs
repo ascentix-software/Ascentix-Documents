@@ -32,7 +32,16 @@ assert.deepEqual(h1s, [
   'settings-title',
 ]);
 assert.equal((html.match(/<h1\b/g) || []).length, h1s.length, 'Every h1 has an id');
-assert.doesNotMatch(html, /\brole="tab(list|panel)?"/, 'No in-page tab bar');
+const tabIds = [...html.matchAll(/<button[^>]*\brole="tab"[^>]*>/g)].map(
+  (m) => /\bid="([^"]+)"/.exec(m[0])[1],
+);
+assert.deepEqual(
+  tabIds,
+  ['step-tab-1', 'step-tab-2', 'step-tab-3'],
+  'Only the editor steps are tabs',
+);
+for (const n of [1, 2, 3])
+  assert.match(html, new RegExp('id="step-' + n + '"[^>]*role="tabpanel"'));
 assert.doesNotMatch(html, /class="[^"]*\bshell\b|automationChip|monitorBadge|tabPrompt/);
 assert.doesNotMatch(css, /#access\b/, 'Sites & access uses the shared controls');
 assert.doesNotMatch(html + js, /\bad-primary\b/, 'One primary button class');
@@ -48,6 +57,7 @@ const FEEDBACK = [
   'fb-advanced',
   'fb-settings',
   'fb-settings-save',
+  'fb-editor',
 ];
 assert.deepEqual(
   [...html.matchAll(/\bid="(fb-[^"]+)"/g)].map((m) => m[1]).sort(),
@@ -112,6 +122,7 @@ const KEPT = [
   'help-publish',
   'help-include-root',
   'help-folder-access',
+  'help-destinations',
 ];
 const helpInHtml = [...html.matchAll(/<p class="help" id="([^"]+)"/g)].map((m) => m[1]);
 const helpInJs = [...js.matchAll(/\bhelp\(\s*'([^']+)'/g)].map((m) => m[1]);
