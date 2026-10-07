@@ -13,9 +13,11 @@ const BUILD = /const BUILD = '([^']+)'/.exec(read('shell.js'))[1];
 const id = (n) => String(n).padStart(8, '0') + '-0000-0000-0000-000000000000';
 
 // Loads the page the way the app does: the shell, then this tab's script, on the access tab.
-function boot(xrm, { timers, uuid, refreshCatalog = async () => {} }) {
+function boot(xrm, { timers, uuid, refreshCatalog = async () => {}, link = null }) {
   const document = createDocument(html);
   const session = new Map([['asxd.launched', '1']]);
+  // A deep link another page stored before navigating here.
+  if (link) session.set('asxd.deeplink', JSON.stringify(link));
   const window = {
     parent: { Xrm: xrm },
     location: { search: '?data=access-' + BUILD, hash: '' },
@@ -142,6 +144,12 @@ let destinations = [],
   templateRows = [],
   listedLibraries = [lib],
   problemSummary = { BlockedJobs: 2, TemplateRuns: 1 };
+// Page sizes of the library-count reads, team records read by ID, and GetPolicy reads in flight.
+const countSizes = [],
+  teamReadIds = [];
+let slowPolicies = false,
+  policiesInFlight = 0,
+  maxPolicies = 0;
 let discovery = false;
 // Inspect results by operation key, checked before the shared mock answers.
 const inspectByKey = {};
@@ -173,7 +181,9 @@ const xrm = {
       }),
   },
   WebApi: {
-    retrieveMultipleRecords: async (table, options) => {
+    retrieveMultipleRecords: async (table, options, size) => {
+      if (table === 'asx_library' && options.includes('$select=_asx_siteid_value'))
+        countSizes.push(size);
       if (table === 'team') teamQueries.push(options);
       if (table === 'asx_library') libraryQueries.push(options);
       if (table === 'asx_site') siteQueries.push(options);
@@ -209,13 +219,14 @@ const xrm = {
       };
     },
     retrieveRecord: async (table, key) =>
-      table === 'asx_library'
+      (table === 'team' && teamReadIds.push(key) && false) ||
+      (table === 'asx_library'
         ? key === id(13)
           ? lib2
           : lib
         : table === 'asx_site'
           ? site
-          : { name: 'Operations' },
+          : { name: 'Operations' }),
     online: {
       execute: async (req) => {
         const command = JSON.parse(req.Request);
@@ -238,8 +249,16 @@ const xrm = {
           return refused(retrySetupRefusal);
         let result;
         if (command.Command === 'Summary') result = { Status: 'Summary', Summary: problemSummary };
-        else if (command.Command === 'GetPolicy') result = policy;
-        else if (command.Command === 'RetryAccessRun')
+        else if (command.Command === 'GetPolicy') {
+          result = policy;
+          // Held for a turn while slowPolicies is on, to count the reads in flight together.
+          if (slowPolicies) {
+            policiesInFlight++;
+            maxPolicies = Math.max(maxPolicies, policiesInFlight);
+            await new Promise(setImmediate);
+            policiesInFlight--;
+          }
+        } else if (command.Command === 'RetryAccessRun')
           result = policy = { ...policy, RunStatus: 'Pending', RunNotice: null };
         else if (command.Command === 'CancelAccessRun')
           result = policy = {
@@ -987,12 +1006,17 @@ const stage = (team, access) => {
     await press(named('Retry'));
     assert.deepEqual(requests.at(-1), { Command: 'RetrySetup', Key: 'librarycreate:test' });
     assert.equal(apis.at(-1), 'asx_CatalogAdmin');
-    assert.equal(nodes['fb-access'].textContent, retrySetupRefusal);
-    assert.equal(nodes['fb-access'].className, 'feedback is-error');
+    // A card in the drawer reports in the drawer's footer, which a full-width drawer keeps in
+    // view; the line under the page header does not get it.
+    assert.equal(nodes['fb-access-library'].textContent, retrySetupRefusal);
+    assert.equal(nodes['fb-access-library'].className, 'feedback is-error');
+    assert.equal(nodes['ad-drawer-footer'].hidden, false);
+    assert.equal(nodes['ad-apply'].hidden, true, 'A setup drawer has no Apply');
+    assert.notEqual(nodes['fb-access'].textContent, retrySetupRefusal);
     retrySetupRefusal = null;
     await press(named('Retry'));
     assert.equal(apis.at(-1), 'asx_CatalogAdmin');
-    assert.equal(nodes['fb-access'].textContent, 'Setup queued again.');
+    assert.equal(nodes['fb-access-library'].textContent, 'Setup queued again.');
     await timers.shift()();
     await press(named('Cancel setup'));
     assert.equal(
@@ -1010,6 +1034,7 @@ const stage = (team, access) => {
     assert.doesNotMatch(area.textContent, /Stalled/, 'A cancelled setup leaves the list');
     assert.match(nodes['ad-changes'].textContent, /Nothing in SharePoint was deleted/);
     assert.equal(nodes['ad-drawer'].hidden, true, 'The drawer of a cancelled setup closes');
+    assert.equal(nodes['fb-access'].textContent, 'The setup of Stalled was cancelled.');
     assert(
       apis.every((a, i) => a !== 'asx_ManageWork' || requests[i].Command === 'Summary'),
       'Sites calls asx_ManageWork only for the header problem count',
@@ -1550,14 +1575,17 @@ const stage = (team, access) => {
         },
       ],
     );
-    assert.equal(nodes['fb-access'].textContent, 'Using the existing library. Setup continues.');
+    assert.equal(
+      nodes['fb-access-library'].textContent,
+      'Using the existing library. Setup continues.',
+    );
     card
       .querySelectorAll('button')
       .find((b) => b.textContent === 'Check again')
       .click();
     await document.settle();
     assert.deepEqual([apis.at(-1), requests.at(-1).Command], ['asx_CatalogAdmin', 'RecheckSetup']);
-    assert.equal(nodes['fb-access'].textContent, 'Checking SharePoint again.');
+    assert.equal(nodes['fb-access-library'].textContent, 'Checking SharePoint again.');
     // Another blocked setup links to Monitor instead of "Open Administration".
     inspectByKey['librarycreate:blocked'] = {
       Key: 'librarycreate:blocked',
@@ -1646,6 +1674,8 @@ const stage = (team, access) => {
     assert.equal(rows[0].querySelector('strong').textContent, 'Delivery');
     assert.equal(rows[0].querySelector('.sub').textContent, '2 libraries');
     assert.equal(rows[0].getAttribute('aria-current'), 'true');
+    // The counts come from all active libraries, read 5,000 at a time as other full reads are.
+    assert(countSizes.length > 0 && countSizes.every((n) => n === 5000), String(countSizes));
     assert.equal(nodes['ad-add-site'].textContent, '＋ Add');
   }
   {
@@ -1747,6 +1777,143 @@ const stage = (team, access) => {
     assert.equal(nodes['ad-drawer-access'].hidden, true, 'A setup drawer shows only its stage');
   }
   {
+    // A setup that completes with its drawer open becomes a library row; closing the drawer then
+    // gives focus to the libraries, since the row that opened it is gone.
+    inspectByKey['librarycreate:board'] = {
+      Key: 'librarycreate:board',
+      Status: 'Ready',
+      CatalogId: lib2.asx_libraryid,
+    };
+    await timers.shift()();
+    assert.equal(
+      nodes['ad-libraries'].querySelector('[data-focus-key="setup:librarycreate:board"]'),
+      null,
+    );
+    assert.equal(nodes['ad-drawer'].hidden, false);
+    nodes['ad-library-title'].focus();
+    nodes['ad-library-title'].key('Escape');
+    await document.settle();
+    assert.equal(nodes['ad-drawer'].hidden, true);
+    assert.equal(document.activeElement.id, 'ad-libraries-heading');
+    delete inspectByKey['librarycreate:board'];
+  }
+  {
+    // Opening a site reads each library's access four at a time, and reads no team by ID and
+    // refreshes no catalog: the drawer does that for the library it opens.
+    const extra = [60, 61, 62, 63].map((n) => ({
+      asx_libraryid: id(n),
+      asx_name: 'Extra ' + n,
+      _asx_siteid_value: id(1),
+      asx_approved: true,
+      asx_policyapplied: true,
+    }));
+    listedLibraries = [lib, lib2, ...extra];
+    policy = {
+      Status: 'Applied',
+      RowVersion: '64',
+      Policy: {
+        Desired: [{ TeamId: id(64), Access: 'Read' }],
+        Applied: [{ TeamId: id(64), Access: 'Read' }],
+      },
+    };
+    const teamReads = teamReadIds.length,
+      refreshes = refresh;
+    slowPolicies = true;
+    maxPolicies = 0;
+    await press(nodes['ad-sites'].querySelector('.ad-site'));
+    slowPolicies = false;
+    assert.equal(rowNamed('Extra 63').querySelector('.teams').textContent, '1 team');
+    assert.equal(teamReadIds.length, teamReads, 'Opening a site reads no team by ID');
+    assert.equal(refresh, refreshes, 'Opening a site refreshes no catalog');
+    assert(maxPolicies > 1 && maxPolicies <= 4, 'GetPolicy reads in flight: ' + maxPolicies);
+    listedLibraries = [lib, lib2];
+  }
+  {
+    // A stopped access run waits for the admin: it is not read again every 5 seconds unless its
+    // library's drawer is open.
+    policy = {
+      Status: 'Queued',
+      RowVersion: '65',
+      Policy: {
+        Desired: [{ TeamId: id(4), Access: 'Read' }],
+        Applied: [],
+        OperationKey: 'policywork:stopped',
+      },
+      RunStatus: 'Blocked',
+      RunNotice: 'SharePoint refused the write (HTTP 403).',
+    };
+    await press(nodes['ad-sites'].querySelector('.ad-site'));
+    assert.equal(nodes['ad-drawer'].hidden, true);
+    assert.equal(accessOf('General'), 'Needs attention');
+    const reads = () => requests.filter((r) => r.Command === 'GetPolicy').length,
+      before = reads();
+    await timers.shift()();
+    assert.equal(reads(), before, 'A stopped run of a closed library is not polled');
+  }
+  {
+    // A link to a library on another site opens that site and the library's drawer, without
+    // opening the first site on the way.
+    const other = {
+        asx_siteid: id(70),
+        asx_name: 'Archive site',
+        asx_approved: true,
+        _asx_nativeid_value: id(2),
+      },
+      archived = {
+        asx_libraryid: id(71),
+        asx_name: 'Old papers',
+        _asx_siteid_value: id(70),
+        asx_approved: true,
+        asx_policyapplied: true,
+        statecode: 0,
+      },
+      reads = [];
+    const linkedXrm = {
+      Utility: xrm.Utility,
+      Navigation: xrm.Navigation,
+      WebApi: {
+        retrieveMultipleRecords: async (table, options) => {
+          reads.push(table + options);
+          return {
+            entities:
+              table === 'asx_site'
+                ? [site, other]
+                : table === 'asx_library' && options.includes('_asx_siteid_value eq ' + id(70))
+                  ? [archived]
+                  : [],
+          };
+        },
+        retrieveRecord: async (table) =>
+          table === 'asx_library' ? archived : table === 'asx_site' ? other : { name: 'Team' },
+        online: {
+          execute: async (req) => ({
+            ok: true,
+            json: async () => ({
+              Result: JSON.stringify(
+                JSON.parse(req.Request).Command === 'GetPolicy'
+                  ? { Status: 'Applied', RowVersion: '1', Policy: { Desired: [], Applied: [] } }
+                  : { Status: 'Pending' },
+              ),
+            }),
+          }),
+        },
+      },
+    };
+    const linked = boot(linkedXrm, {
+      timers: [],
+      uuid: id(72),
+      link: { tab: 'access', library: id(71) },
+    });
+    await linked.document.fire('DOMContentLoaded');
+    assert.equal(linked.nodes['ad-site-title'].textContent, 'Archive site');
+    assert.equal(linked.nodes['ad-library-title'].textContent, 'Old papers');
+    assert.equal(linked.nodes['ad-drawer'].hidden, false);
+    assert(
+      !reads.some((r) => r.includes('_asx_siteid_value eq ' + id(1))),
+      'The first site is not opened on the way',
+    );
+  }
+  {
     // Add site opens as a side panel; Cancel closes it and returns focus to "＋ Add".
     await pressFocused(nodes['ad-add-site']);
     assert.equal(nodes['ad-site-form'].hidden, false);
@@ -1761,7 +1928,7 @@ const stage = (team, access) => {
     assert.equal(navigations.at(-1).data, 'monitor-' + BUILD);
   }
   console.log(
-    'PASS Sites & access on the shell: the sites rail with library counts, the libraries table (Used by from the in-use rule, teams, access with a dot, the four-segment bar of a setup), the access drawer as a dialog (changed rows, the change count, Discard, Escape and focus back to the redrawn row), the Monitor problem count in the header, staging versus apply, removals with Undo and their confirmation, consent in the page, server refusals at the form that failed, the Add site combobox, site and library menus with focus keys, library setups with Documents’ SharePoint check and Open in Monitor, stuck access runs (also the inheritance stop), the access label from the policy and its run, discovery matched by list ID, re-point found again after a reload, removed destinations hidden at once and after a reload, deleted Dataverse teams, and where focus goes after actions that close what was focused. Mocked APIs; connected acceptance pending.',
+    'PASS Sites & access on the shell: the sites rail with library counts, the libraries table (Used by from the in-use rule, teams, access with a dot, the four-segment bar of a setup), the access drawer as a dialog (changed rows, the change count, Discard, Escape and focus back to the redrawn row), the Monitor problem count in the header, staging versus apply, removals with Undo and their confirmation, consent in the page, server refusals at the form that failed, the Add site combobox, site and library menus with focus keys, library setups with Documents’ SharePoint check and Open in Monitor, stuck access runs (also the inheritance stop), the access label from the policy and its run, discovery matched by list ID, re-point found again after a reload, removed destinations hidden at once and after a reload, deleted Dataverse teams, and where focus goes after actions that close what was focused; fix round 1: card actions in the drawer report in its footer, library counts read 5,000 a page, opening a site reads access four at a time with no team reads or catalog refresh, a stopped run of a closed library is not polled, focus after a setup that became a library row, and a link to a library on another site. Mocked APIs; connected acceptance pending.',
   );
 })().catch((e) => {
   console.error(e);

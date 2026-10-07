@@ -217,8 +217,8 @@
   const api = (name, request) => ui.api(name, request);
   const catalog = (request) => api('asx_CatalogAdmin', request),
     security = (request) => api('asx_SecurityAdmin', request);
-  async function page(table, options) {
-    return xrm.WebApi.retrieveMultipleRecords(table, options, 50);
+  async function page(table, options, size = 50) {
+    return xrm.WebApi.retrieveMultipleRecords(table, options, size);
   }
   function nextOptions(next) {
     const url = new URL(next, xrm.Utility.getGlobalContext().getClientUrl());
@@ -365,6 +365,9 @@
     o.status = result.Status;
     state.progressSignature = null;
   }
+  // Where a card's action reports: the drawer's footer while the drawer is open (a full-width
+  // drawer covers the line under the page header), otherwise the line under the page header.
+  const cardArea = () => (state.drawer ? 'access-library' : 'access');
   // A confirmation on a card. The cards are not redrawn while it is open, and are once it closes.
   async function cardAsk(invoker, options) {
     try {
@@ -389,7 +392,7 @@
           }),
         );
         issue(said);
-      }, 'access');
+      }, cardArea());
     const named = (b) => {
       b.setAttribute('aria-label', b.textContent + ' for ' + o.name);
       return b;
@@ -465,7 +468,7 @@
               action(async () => {
                 settled(o, await catalog({ Command: 'RecheckSetup', Key: key }));
                 issue('Checking SharePoint again.');
-              }, 'access'),
+              }, cardArea()),
             ),
           ),
         );
@@ -486,7 +489,7 @@
         if (ok)
           await action(
             () => runConfirmed({ kind: 'CancelSetup', id: key, name: o.name }),
-            'access',
+            cardArea(),
           );
       },
       'danger',
@@ -613,7 +616,7 @@
             );
             state.operations.delete(key);
             state.completed.delete(key);
-          }, 'access'),
+          }, cardArea()),
         ),
       );
     } else if (p.status === 'Blocked' && o.kind === 'Repoint') {
@@ -626,7 +629,7 @@
               state.operations.delete(key);
               state.completed.delete(key);
               await runConfirmed({ kind: o.command, id: o.id, name: o.name });
-            }, 'access'),
+            }, cardArea()),
           ),
         );
     } else if (
@@ -640,7 +643,7 @@
         action(async () => {
           settled(o, await catalog({ Command: 'RetrySetup', Key: key }));
           issue('Setup queued again.');
-        }, 'access'),
+        }, cardArea()),
       );
       retry.setAttribute('aria-label', 'Retry setup of ' + o.name);
       actions.append(retry, cancelSetupButton(key, o), monitorLink(key, o));
@@ -650,7 +653,7 @@
           await api('asx_ManageWork', { Command: 'Retry', Key: o.result?.RecoveryKey || key });
           settled(o, { Status: 'Pending' });
           issue('Retry queued.');
-        }, 'access'),
+        }, cardArea()),
       );
       retry.setAttribute('aria-label', 'Retry ' + o.name);
       actions.append(retry, monitorLink(key, o));
@@ -918,7 +921,9 @@
     $('ad-library-status').hidden = !state.library || state.library.asx_approved;
     $('ad-library-menu').hidden = !state.library;
     $('ad-drawer-access').hidden = !state.library;
-    $('ad-drawer-footer').hidden = !state.library;
+    // A setup's drawer keeps its footer only to show what its card's actions report.
+    $('ad-drawer-footer').hidden = !state.library && !$('fb-access-library').textContent;
+    for (const id of ['ad-change-status', 'ad-apply']) $(id).hidden = !state.library;
     $('ad-team-rows').replaceChildren();
     // The queued access run: one that stopped or waits is shown with its notice and can be
     // retried or cancelled here. Teams stay editable while a run is queued or running: Apply
@@ -952,7 +957,7 @@
     $('ad-change-status').textContent = count
       ? ui.plural(count, 'change', 'changes') + ' not applied'
       : '';
-    $('ad-discard').hidden = !count;
+    $('ad-discard').hidden = !count || !state.library;
     $('ad-discard').disabled = state.busy;
     // A stopped run comes first, as its own notice; a change waiting behind it applies once the
     // run is retried or cancelled. A run that waits to retry carries on by itself. Changes not
@@ -1102,6 +1107,7 @@
         if (state.drawer === c.id) {
           closeDrawer(false);
           state.focusAfter = ['ad-libraries-heading', 'ad-site-title'];
+          state.area = 'access';
         }
       } else if (o) settled(o, result);
       issue('The setup of ' + c.name + ' was cancelled.');
@@ -1195,10 +1201,10 @@
     loadPolicies(list).catch(() => {});
   }
   // Every row of a query, page after page.
-  async function readAll(table, options) {
+  async function readAll(table, options, size = 50) {
     const rows = [];
     while (options) {
-      const result = await page(table, options);
+      const result = await page(table, options, size);
       rows.push(...result.entities);
       options = result.nextLink ? nextOptions(result.nextLink) : null;
     }
@@ -1256,12 +1262,13 @@
     for (const [id, used] of users) state.usedBy.set(id, used.size);
     render();
   }
-  // Each site's number of libraries, for the sites list.
+  // Each site's number of libraries, for the sites list: one ID column, 5,000 rows a page.
   async function loadSiteCounts() {
     const counts = new Map();
     for (const r of await readAll(
       'asx_library',
       '?$select=_asx_siteid_value&$filter=statecode eq 0',
+      5000,
     ))
       counts.set(r._asx_siteid_value, (counts.get(r._asx_siteid_value) || 0) + 1);
     state.siteCounts = counts;
@@ -1350,21 +1357,29 @@
     p.complete = true;
     if (p.result.Status === 'Applied') await window.AsxdAdmin?.refreshCatalog();
   }
-  async function loadPolicy(l) {
-    await readPolicy(l);
-    await completePolicy(l);
-  }
   // The access drawer, a dialog over the right of the page. It opens on a library's row, on a
   // setup's row, or from a link; closing it returns focus to what opened it, found again by its
   // data-focus-key when the table was redrawn meanwhile.
   let drawerHandle = null;
   function showDrawer(id, invoker) {
+    // What the footer said was about the library or setup shown before.
+    if (id !== state.drawer) ui.clearFeedback('access-library');
     drawerHandle = ui.sidePanel($('ad-drawer'), invoker, {
       onClose: () => {
         state.drawer = null;
         state.library = null;
         $('ad-team-form').hidden = true;
         render();
+        // When the row that opened it is gone (a setup that became a library row), focus goes to
+        // the libraries instead of staying in the closed drawer. This runs after the panel gave
+        // focus back, so a control that took it keeps it.
+        Promise.resolve().then(() => {
+          if (!shown(document.activeElement))
+            ['ad-libraries-heading', 'ad-site-title']
+              .map((id) => $(id))
+              .find(shown)
+              ?.focus();
+        });
       },
     });
     state.drawer = id;
@@ -1485,11 +1500,18 @@
       });
     state.nextActivity = rows.nextLink || null;
   }
-  const pendingPolicy = () =>
-    state.libraries.some((l) => {
-      const p = state.policies.get(l.asx_libraryid);
-      return p?.result.Policy?.OperationKey && !changed(p);
-    });
+  // Whether a library's access is read again on the next poll: its run is queued or applying
+  // and it has no changes not applied. A run that stopped or waits to retry waits for the admin,
+  // so it is read again only while its library's drawer is open.
+  const polled = (l) => {
+    const p = state.policies.get(l.asx_libraryid);
+    return (
+      !!p?.result.Policy?.OperationKey &&
+      !changed(p) &&
+      (!stuckRun(p) || l.asx_libraryid === state.drawer)
+    );
+  };
+  const pendingPolicy = () => state.libraries.some(polled);
   // Reads tracked setup operations and refreshes catalogs after confirmed completion. What
   // they report goes to the site's feedback line, which is always shown.
   async function refreshOperations() {
@@ -1573,10 +1595,12 @@
         issue(result.Issue ? o.name + ': ' + result.Issue : o.name + ' is ready.', false, 'access');
       }
     }
-    for (const l of state.libraries) {
-      const p = state.policies.get(l.asx_libraryid);
-      if (p?.result.Policy?.OperationKey && !changed(p)) await loadPolicy(l);
-    }
+    for (const l of state.libraries)
+      if (polled(l)) {
+        await readPolicy(l);
+        // Only the drawer's library names its teams and refreshes the catalog.
+        if (l.asx_libraryid === state.drawer) await completePolicy(l);
+      }
     state.progressSignature = signature;
     render();
   }
@@ -1591,7 +1615,8 @@
       }
       await loadSites();
       loadSiteCounts().catch(() => {});
-      if (state.sites.length) await selectSite(state.sites[0]);
+      // A link to a library opens that library's site instead of the first one.
+      if (state.sites.length && !ui.deeplink()?.library) await selectSite(state.sites[0]);
       await loadTeams();
       await discoverActivity();
       state.loaded = true;
