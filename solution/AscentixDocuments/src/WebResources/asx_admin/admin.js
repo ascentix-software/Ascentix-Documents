@@ -1,5 +1,5 @@
 'use strict';
-// Folder templates (spec 3.1): the Tables rail, the template bar with its version chip and
+// Folder templates: the Tables rail, the template bar with its version chip and
 // actions, the folder tree and folder settings, the condition builder, the preview of the current
 // edits, and re-runs for existing records. Text is only ever set with textContent.
 (() => {
@@ -30,7 +30,7 @@
     batch: null,
     previewRecord: null,
     previewed: false,
-    // The data-focus-key that takes focus after the next render (spec 5.2).
+    // The data-focus-key that takes focus after the next render.
     focusKey: null,
     // Related tables whose fields could not be read, even after a retry.
     failedTables: new Set(),
@@ -45,7 +45,7 @@
   const ui = window.AsxdUi;
   // The rail's ＋ Add table moves into the rail's empty state and back to the rail header.
   const addTableButton = $('addTable');
-  // Results of an action show in the feedback line of the tab that ran it (spec 2.5).
+  // Results of an action show in the feedback line of the tab that ran it.
   const message = (text, error = false) =>
     ui.feedback(ui.activeTab(), text, error ? 'error' : 'success');
   const el = (tag, text, css) => {
@@ -86,7 +86,7 @@
   };
   const plural = (n, one, many) => n.toLocaleString('en-US') + ' ' + (n === 1 ? one : many);
 
-  // The version chip (spec 3.1): from the loaded revision's number and status and the schedule.
+  // The version chip: from the loaded revision's number and status and the schedule.
   function versionText() {
     const base = state.editBase;
     if (!base) return state.unsaved ? 'Draft v1 · unsaved changes' : 'Draft v1';
@@ -128,7 +128,7 @@
     if (state.unsaved) save.setAttribute('aria-label', 'Save draft, unsaved changes');
     else save.removeAttribute('aria-label');
     save.disabled = state.busy || !open || !state.sections.length;
-    // A symbol button names its object (spec 5.1): "More actions for Account onboarding".
+    // A symbol button names its object: "More actions for Account onboarding".
     $('template-menu').setAttribute(
       'aria-label',
       'More actions for ' + ($('templateName').value.trim() || 'this template'),
@@ -332,7 +332,7 @@
       })),
     );
   }
-  // A folder name with its fields shown by label: {root.name} → [Account Name] (F-23).
+  // A folder name with its fields shown by label: {root.name} → [Account Name].
   function readable(name) {
     return String(name || '').replace(
       /\{([a-z0-9_]+)\.([a-z0-9_]+)\}/gi,
@@ -377,7 +377,7 @@
     ' related records, because Documents tracks each one so it can re-run records when it changes.';
   // One picker: this record's fields, then one group per related record. The primary name comes
   // first and deprecated fields last. At the related-record bound, the groups of related records
-  // not used yet are disabled (spec 6.9).
+  // not used yet are disabled.
   function fieldSelect(keep) {
     const picker = el('select');
     const order = (columns, primary) =>
@@ -666,7 +666,7 @@
     row.append(remove);
     return row;
   }
-  // The value control for a field kind (spec 3.1). key is the row's focus-key prefix.
+  // The value control for a field kind. key is the row's focus-key prefix.
   function valueControl(condition, kind, options, name, key) {
     const named = (control) => {
       control.setAttribute('aria-label', 'Value, ' + name);
@@ -775,7 +775,7 @@
   // A number as the server reads it (decimal.Parse with a leading sign and a decimal point, in
   // the invariant culture): no exponent, no thousands separators.
   const DECIMAL = /^[+-]?(\d+(\.\d*)?|\.\d+)$/;
-  // Checks every condition at its control; the first invalid control takes focus (spec 5.2).
+  // Checks every condition at its control; the first invalid control takes focus.
   function validate() {
     document.querySelectorAll('.condition-error').forEach((n) => n.remove());
     document
@@ -956,7 +956,7 @@
           node.setAttribute('aria-current', 'true');
         row.append(node);
         if (folder.Condition) {
-          // A labelled marker, not colour only (F-16); the hidden text describes the node.
+          // A labelled marker, not colour only; the hidden text describes the node.
           const mark = el('span', '◆', 'conditional-mark');
           mark.setAttribute('aria-hidden', 'true');
           const text = el('span', ' (conditional)', 'sr-only');
@@ -1310,7 +1310,7 @@
     return rows.entities[0]?.asx_revisionid;
   }
 
-  // The ⋯ menu (spec 5.6): keyboard, focus and closing come from AsxdUi.menu; choosing an item
+  // The ⋯ menu: keyboard, focus and closing come from AsxdUi.menu; choosing an item
   // closes it.
   ui.menu($('template-menu'), $('template-menu-list'));
   $('menu-history').onclick = () => task(openHistory);
@@ -1664,7 +1664,7 @@
       ? Object.fromEntries(readiness.map((r) => [r.Scope, r.Status]))
       : null;
   }
-  // One of three readiness words per table (spec 3.1 Tables rail).
+  // One of three readiness words per table.
   function readiness(table) {
     const status = state.readiness?.[table];
     if (!status) return null;
@@ -1804,7 +1804,7 @@
       disabled.forEach((table) => entry(table, false));
     }
   }
-  // The main area when no template is open (spec 3.1, rows 3, 6, 42, 66).
+  // The main area when no template is open.
   function renderNoTemplate(noTables) {
     const panel = $('no-template');
     panel.replaceChildren(el('h2', 'No template selected'));
@@ -1917,7 +1917,7 @@
     await runPreview();
   };
   $('refreshPreview').onclick = () => runPreview();
-  // Previews the saved revision, or the current edits when there are any (spec 6.3).
+  // Previews the saved revision, or the current edits when there are any.
   async function runPreview() {
     if (!state.previewRecord) return;
     const trees = $('previewTrees');
@@ -1954,7 +1954,7 @@
     }
   }
 
-  // Re-run for existing records (spec 3.1, 6.5).
+  // Re-run for existing records.
   async function openRerun() {
     showPanel('rerun-panel');
     $('rerun-impact').replaceChildren();

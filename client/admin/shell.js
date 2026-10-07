@@ -1,6 +1,6 @@
 'use strict';
-// The admin page shell: which tab a load shows (spec 2.3), tab clicks that reload the page so the
-// app's left menu follows, deep links between tabs, the automation chip (2.5), and the helpers
+// The admin page shell: which tab a load shows, tab clicks that reload the page so the
+// app's left menu follows, deep links between tabs, the automation chip, and the helpers
 // every tab uses through window.AsxdUi. Text is only ever set with textContent.
 (() => {
   const BUILD = 'ui20261006nav1';
@@ -110,7 +110,7 @@
   }
   const blocked = (control) => control.disabled || control.getAttribute('aria-disabled') === 'true';
   // A disabled reason is shown next to its control and linked with aria-describedby; the
-  // control stays focusable (aria-disabled). Clearing the reason removes both (spec 4.3 rule 5).
+  // control stays focusable (aria-disabled). Clearing the reason removes both.
   function disable(control, reasonId, reason) {
     let note = $(reasonId);
     if (reason) {
@@ -151,7 +151,7 @@
   }
 
   // One confirmation per button row. It renders right after the invoker's row (or in host),
-  // focuses its consequence text, and resolves with the chosen value; Escape keeps (spec 5.2).
+  // focuses its consequence text, and resolves with the chosen value; Escape keeps.
   function ask(invoker, { text, choices, keep, host = null, details = null }) {
     return new Promise((resolve) => {
       const row = host ? null : invoker.closest('[data-actions]') || invoker.parentNode;
@@ -217,7 +217,7 @@
       ],
     });
 
-  // A "⋯" menu (spec 5.6): Enter, Space or Down opens and focuses the first item; Up and Down
+  // A "⋯" menu: Enter, Space or Down opens and focuses the first item; Up and Down
   // move; Escape closes and returns focus to the trigger. Choosing an item closes it, and so do
   // Tab out of it and a click anywhere else. A busy trigger (AsxdUi.busy) does not open.
   function menu(trigger, list) {
@@ -269,8 +269,8 @@
     });
   }
 
-  // What Documents' SharePoint check found for a library setup whose create answer was lost
-  // (spec 6.8), as one sentence for Monitor and Sites & access.
+  // What Documents' SharePoint check found for a library setup whose create answer was lost,
+  // as one sentence for Monitor and Sites & access.
   function recoverySentence(name, recovery) {
     const found = recovery.Candidates?.[0];
     switch (recovery.State) {
@@ -306,7 +306,7 @@
       .filter(Boolean)
       .join(', ');
 
-  // Re-renders without losing focus (spec 5.2): the element with the same data-focus-key gets
+  // Re-renders without losing focus: the element with the same data-focus-key gets
   // focus back; if it is gone, the row that took its place, else its list or pane heading.
   function withFocus(fn) {
     const active = document.activeElement;
@@ -340,8 +340,8 @@
     if (!isNaN(date)) node.setAttribute('datetime', date.toISOString().replace(/\.\d{3}Z$/, 'Z'));
     return node;
   }
-  // The only place keys and IDs appear outside Monitor › Advanced (spec 3, "Details"). Copy is a
-  // symbol-like button, so its aria-label names what it copies (spec 5.1).
+  // The only place keys and IDs appear outside Monitor › Advanced. Copy is a
+  // symbol-like button, so its aria-label names what it copies.
   function details(value, label = 'Details', object = null) {
     const box = el('details', null, 'details');
     const name = label.toLowerCase() + (object ? ' for ' + object : '');
@@ -365,7 +365,7 @@
   }
 
   // The clicked button shows a spinner and an "-ing" label; its area is aria-busy and the sibling
-  // actions are disabled until the work ends (spec 2.5, F-15). Errors go to the area's feedback.
+  // actions are disabled until the work ends. Errors go to the area's feedback.
   async function busy(control, label, area, fn) {
     if (control.dataset.busy) return undefined;
     const region = control.closest('[data-actions]') || control.parentNode;
@@ -460,7 +460,7 @@
   async function setAutomation(enabled) {
     const current = state.runtime;
     if (!current) throw new Error('Automation settings are not available to you.');
-    // Pause and resume only (spec 6.6): a stale row version is refused, never a profile save.
+    // Pause and resume only: a stale row version is refused, never a profile save.
     const result = await api('asx_RuntimeAdmin', {
       Command: 'SetEnabled',
       Enabled: enabled,
@@ -483,7 +483,7 @@
       '. Repair it in Settings.'
     );
   }
-  // The automation chip (spec 2.5). Its text is a status region and is set only when it changes.
+  // The automation chip. Its text is a status region and is set only when it changes.
   function renderChip() {
     const runtime = state.runtime;
     const chip = $('automationChip');
@@ -553,7 +553,7 @@
     });
   }
   // Leaving the tab reloads the page, so unsaved template edits ask first: Save draft,
-  // Discard changes or Stay (spec 2.4). Resolves true when the page may go.
+  // Discard changes or Stay. Resolves true when the page may go.
   async function leave() {
     const guard = state.dirty?.();
     if (!guard) return true;
@@ -595,7 +595,7 @@
     controls.forEach((control, index) => {
       control.onclick = () => activate(TABS[index]);
     });
-    // Manual activation (spec 2.4): arrows, Home and End move focus only; the native click of
+    // Manual activation: arrows, Home and End move focus only; the native click of
     // Enter and Space activates.
     $('tabs').addEventListener('keydown', (event) => {
       const index = controls.indexOf(document.activeElement);
@@ -630,7 +630,7 @@
           '?$select=asx_templateid&$filter=_asx_publishedrevisionid_value ne null&$top=1',
         ),
       ]);
-      // A caller who cannot read the runtime skips the worker condition (spec 2.3).
+      // A caller who cannot read the runtime skips the worker condition.
       const worker = runtime ? !!runtime.WorkerId && runtime.WorkerId !== EMPTY : null;
       const hasLibrary = libraries.entities.length > 0;
       const ready = tables.entities.length > 0 && published.entities.length > 0;

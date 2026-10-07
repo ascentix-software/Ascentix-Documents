@@ -6,12 +6,12 @@ Requires a System Administrator for step 4.
 
 ## Steps
 
-1. Let the work queue drain with the runtime on. Then turn the runtime off and turn both flows off. A paused runtime does not drain the queue.
+1. Let the work queue drain with **Automation** on. Then turn the **Automation** switch in Settings off and turn both flows off. A paused Automation does not drain the queue.
 2. Import 0.1.0.4 managed with `--stage-and-upgrade`. This removes the old packaged event steps.
 3. Publish all customizations (Power Apps › Solutions › Publish all customizations), then reload the Documents admin page. The import's `--publish-changes` does not always refresh the admin page's scripts: until everything is published, the app can keep serving the previous version.
-4. As a System Administrator, open **Settings**. Check the change-tracking table and click **Repair all**. Every table should show Ready.
+4. As a System Administrator, open **Settings**. Check the change-tracking table and click **Repair all** (or **Repair** on the table's row when only one table needs it). Every table should show Ready.
 5. Check the solution layers of both flows (**Dispatch durable work** and **Provision requested record**). If either has an active unmanaged layer, for example because it was edited in the environment, remove that active customization. Otherwise it stays on top of the upgraded flow and hides its retries, failure handling and write guard.
-6. Turn the flows and runtime back on.
+6. Turn the flows back on, then turn **Automation** back on with **Turn on** in the header chip.
 7. Records saved between steps 2 and 4 have no event. Re-run them (filter by modified date).
 
 Use stage-and-upgrade. A plain update leaves the removed components behind.
@@ -51,7 +51,7 @@ These change what Documents does with existing data. Review them before you upgr
 
 - **Breaking change:** the `asx_RecoverWorker` custom API is removed. Library creations whose outcome was lost are now resolved by a SharePoint check; the evidence form is gone. Remove any script that calls it.
 - **Breaking change:** the `asx_PublishTemplate` result is now JSON, `{Status, Notices}`, instead of the text "Published". Update any caller that compares the result to "Published".
-- The Documents Security Administrator role no longer has write access to the runtime settings row. Runtime changes stay System Administrator only.
+- The Documents Security Administrator role no longer has write access to the Automation settings row. Automation changes stay System Administrator only.
 - The runtime-row guard plug-in is removed. The solution has 57 guard steps.
 - The outbox has a new column, `asx_nextattempt`. It holds the time of the next automatic attempt.
 - Tables are enabled in Folder templates › Tables, not in a fixed list. There is no table-count limit.

@@ -29,7 +29,7 @@ public sealed class TemplateRunTests
         };
         f.SeedTemplate();
         RuntimeSeed.Seed(f.Service, Worker, "account");
-        f.Service.Seed(new Entity("systemuser", Admin) { ["fullname"] = "Matt LaCasse" });
+        f.Service.Seed(new Entity("systemuser", Admin) { ["fullname"] = "Alex Rivera" });
         for (int i = 0; i < records; i++)
             f.Service.Seed(new Entity("account", Guid.NewGuid()) { ["name"] = "Account " + i });
         if (snapshot >= 0)
@@ -123,7 +123,7 @@ public sealed class TemplateRunTests
         Assert.Equal("Running", started.Run!.State);
         Assert.Equal(4, started.Run.Total);
         Assert.True(started.Run.TotalEstimated);
-        Assert.Equal("Matt LaCasse", started.Run.StartedBy);
+        Assert.Equal("Alex Rivera", started.Run.StartedBy);
         Assert.Equal(started.Key, Start(f, request).Key);
         var again = Start(f);
         Assert.Equal(started.Key, again.Key);
@@ -675,15 +675,15 @@ public sealed class TemplateRunTests
         );
         Assert.Equal("Pending", started.Status);
         Assert.Equal(4, started.Run!.Total);
-        Assert.Equal("Matt LaCasse", started.Run.StartedBy);
-        Assert.Equal("Matt LaCasse", Run(f).StartedByName);
+        Assert.Equal("Alex Rivera", started.Run.StartedBy);
+        Assert.Equal("Alex Rivera", Run(f).StartedByName);
         var paused = ManageWork(
             f,
             Factory,
             new WorkerRequest { Command = "PauseTemplateRun", Key = started.Key }
         );
         Assert.Equal("Paused", paused.Run!.State);
-        Assert.Equal("Matt LaCasse", paused.Run.StartedBy);
+        Assert.Equal("Alex Rivera", paused.Run.StartedBy);
     }
 
     private static WorkerResult ManageWork(

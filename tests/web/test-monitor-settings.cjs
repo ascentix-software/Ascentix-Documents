@@ -21,7 +21,7 @@ function row(overrides) {
     Record: {
       Table: 'account',
       TableLabel: 'Account',
-      Id: '607cba8a-acc1-f111-aaaf-7c1e52067fd0',
+      Id: '00000000-0000-0000-0000-0000000000a1',
       Name: 'Contoso Ltd',
     },
     TemplateId: '11111111-2222-3333-4444-555555555555',
@@ -96,7 +96,7 @@ async function boot({
       }),
       lookupObjects: async () => [
         {
-          id: '{607CBA8A-ACC1-F111-AAAF-7C1E52067FD0}',
+          id: '{00000000-0000-0000-0000-0000000000A1}',
           name: 'Contoso Ltd',
           entityType: 'account',
         },
@@ -275,7 +275,7 @@ async function boot({
     await m.press(m.buttons(list).find((b) => b.textContent === 'Open record'));
     assert.deepEqual(m.opened.at(-1), {
       entityName: 'account',
-      entityId: '607cba8a-acc1-f111-aaaf-7c1e52067fd0',
+      entityId: '00000000-0000-0000-0000-0000000000a1',
       openInNewWindow: true,
     });
     // Retry sends the operation's Retry and leaves the row with its new status.
@@ -338,7 +338,7 @@ async function boot({
             Record: {
               Table: 'account',
               TableLabel: 'Account',
-              Id: '607cba8a-acc1-f111-aaaf-7c1e52067fd0',
+              Id: '00000000-0000-0000-0000-0000000000a1',
               Name: null,
             },
             Actions: ['Retry', 'Check'],
@@ -463,7 +463,7 @@ async function boot({
           Total: 40000,
           TotalEstimated: false,
           StartedUtc: '2026-10-06T18:02:00Z',
-          StartedBy: 'Matt LaCasse',
+          StartedBy: 'Alex Rivera',
           EstimatedFinishUtc: '2026-10-07T20:00:00Z',
           ...extra,
         },
@@ -488,7 +488,7 @@ async function boot({
     assert.match(list.visibleText, /12,500 of 40,000/);
     assert.match(list.visibleText, /TEST Account Documents · Account · v2/);
     assert.match(list.visibleText, /Ends around/);
-    assert.match(list.visibleText, /Matt LaCasse/);
+    assert.match(list.visibleText, /Alex Rivera/);
     await m.press(m.buttons(list).find((b) => b.textContent === 'Pause'));
     assert.deepEqual(m.sent.at(-1)[1], { Command: 'PauseTemplateRun', Key: 'templaterun:9c4e' });
     assert.match(list.visibleText, /Paused/);
@@ -550,7 +550,7 @@ async function boot({
           Total: 40000,
           TotalEstimated: false,
           StartedUtc: '2026-10-06T18:02:00Z',
-          StartedBy: 'Matt LaCasse',
+          StartedBy: 'Alex Rivera',
           EstimatedFinishUtc: null,
         },
         Actions: [],
@@ -867,7 +867,7 @@ async function boot({
     assert.deepEqual(m.sent.at(-1)[1], {
       Command: 'InspectRecord',
       TemplateId: '11111111-2222-3333-4444-555555555555',
-      RecordId: '607cba8a-acc1-f111-aaaf-7c1e52067fd0',
+      RecordId: '00000000-0000-0000-0000-0000000000a1',
     });
     assert.equal(m.$('check-result').querySelectorAll('pre').length, 0);
     assert.match(m.$('check-result').visibleText, /Folders are created\./);
@@ -1125,7 +1125,7 @@ async function boot({
     assert.equal(s.$('repair-all').textContent, 'Repair all (2)');
   }
   {
-    // Shared runtime state (controller ruling 2): pausing from Settings updates the chip.
+    // Shared runtime state: pausing from Settings updates the chip.
     const s = await boot({ tab: 'settings' });
     await s.press(s.$('automation-switch-settings'));
     assert.deepEqual(s.sent.at(-1), [

@@ -1,6 +1,6 @@
 # Operations and retention runbook
 
-Keep runtime and flows disabled during installation. Follow the [installation procedure](customer-installation.md). Review the [preview limitations](public-preview.md#preview-limitations), including recovery scenarios that have not yet been rehearsed live.
+Keep Automation and flows off during installation. Follow the [installation procedure](customer-installation.md). Review the [preview limitations](public-preview.md#preview-limitations), including recovery scenarios that have not yet been rehearsed live.
 
 ## Enable after verification
 
@@ -123,7 +123,7 @@ A team deleted in Dataverse needs no action. The library shows it as "Deleted te
 
 ## Connection or certificate rotation
 
-Drain the writer and pending unknown requests before changing runtime or connection configuration. Turn off schedules, verify the claim is idle, and disable the profile with its current row version. A tenant administrator rotates credentials in the managed connection through the approved platform procedure; never copy credentials into this repository or flow inputs. Revalidate the exact reference/worker/site binding and GET-only identity/denial probes before re-enabling.
+Drain the writer and pending unknown requests before changing Automation or connection configuration. Turn off schedules, verify the claim is idle, and disable the profile with its current row version. A tenant administrator rotates credentials in the managed connection through the approved platform procedure; never copy credentials into this repository or flow inputs. Revalidate the exact reference/worker/site binding and GET-only identity/denial probes before re-enabling.
 
 ## Upgrade, rollback and decommission
 

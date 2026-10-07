@@ -1,5 +1,5 @@
 'use strict';
-// Monitor and Settings (spec 3.3, 3.4). Monitor's lists load when the tab opens; each row comes
+// Monitor and Settings. Monitor's lists load when the tab opens; each row comes
 // from asx_ManageWork ListProblems with names and the actions the server allows. Settings loads
 // the automation profile at once. Text is only ever set with textContent.
 (() => {
@@ -83,7 +83,7 @@
     Check: 'Check',
     OpenRecord: 'Open record',
   };
-  // Retrying automatically says "Retry now" (spec 3.3): the job retries anyway; this runs it at once.
+  // Retrying automatically says "Retry now": the job retries anyway; this runs it at once.
   const labelFor = (list, action) =>
     list === 'RetryingJobs' && action === 'Retry' ? 'Retry now' : LABEL[action];
   const BUSY = {
@@ -268,7 +268,7 @@
     );
   }
 
-  // The badge on the Monitor tab: the five problem lists, refreshed every 60 s while visible (2.4).
+  // The badge on the Monitor tab: the five problem lists, refreshed every 60 s while visible.
   function renderBadge(summary) {
     const badge = $('monitorBadge');
     const tab = $('tab-monitor');
@@ -298,7 +298,7 @@
   }
 
   // While Monitor is the open tab, the 60-second tick re-reads the counts, the re-runs and the
-  // blocked jobs (spec 5.3). Progress updates silently. A re-run that reaches Done or Needs
+  // blocked jobs. Progress updates silently. A re-run that reaches Done or Needs
   // attention is announced in the Monitor feedback line, and a library setup that leaves
   // "Checking SharePoint…" announces its finding sentence once in its list's feedback line.
   async function watch() {
@@ -903,7 +903,7 @@
       );
     const line = tr.querySelector('.row-status');
     if (line) line.textContent = DONE[action];
-    // The row stays and its actions disable; opening or checking the record still works (spec 3.3).
+    // The row stays and its actions disable; opening or checking the record still works.
     [...tr.querySelectorAll('button')]
       .filter(
         (b) =>
@@ -963,7 +963,7 @@
     monitor.rerunSelected.textContent = 'Re-run selected (' + count + ')';
   }
 
-  // Check a record (spec 3.3).
+  // Check a record.
   function wireCheck() {
     const refreshButtons = () => {
       const reason = monitor.record && $('check-template').value ? null : 'Choose a record first';
@@ -1101,7 +1101,7 @@
     return [el('p', sentence), ...(result.Notices || []).map((n) => el('p', n)), list];
   }
 
-  // Advanced (spec 3.3): recent operations and look up by ID. The first page loads once, when
+  // Advanced: recent operations and look up by ID. The first page loads once, when
   // Advanced opens or a link opens it; a failed read is reported and tried again next time.
   function ensureRecent() {
     if (!monitor.recentLoad)
@@ -1172,7 +1172,7 @@
     };
     if (setup && result.Recovery) {
       // A library setup with a SharePoint finding offers the same recovery choices as its
-      // Blocked jobs row (spec 3.3 Advanced): Use the library, Use this one, Create it again,
+      // Blocked jobs row: Use the library, Use this one, Create it again,
       // Check again, Cancel setup.
       fields.append(el('dd', ui.recoverySentence(key, result.Recovery)));
       row.Actions = result.Recovery.Choices || [];
@@ -1245,7 +1245,7 @@
   const listOf = (id) => document.getElementById('list-' + id);
   const rowsOf = (id) => document.getElementById('rows-' + id);
 
-  // Automation switch (Monitor and Settings): SetEnabled, never a whole-profile save (6.6). The
+  // Automation switch (Monitor and Settings): SetEnabled, never a whole-profile save. The
   // switch keeps its label and state spans while it works: its state text says what it is doing.
   function renderSwitch(where) {
     const runtime = ui.runtime();
@@ -1300,7 +1300,7 @@
 
   // Settings ----------------------------------------------------------------------------------
 
-  // The tab starts before the shell's runtime Get may be back (spec 2.3): the form stays busy
+  // The tab starts before the shell's runtime Get may be back: the form stays busy
   // until it is, then follows every runtime change (Turn on in the chip, the switches, Save,
   // Repair). A refused Get shows the missing-settings alert.
   async function openSettings() {
@@ -1403,7 +1403,7 @@
     if (!settings.edited) {
       const worker = $('runtimeWorker');
       worker.replaceChildren(...settings.workers.map((w) => option(w.systemuserid, w.fullname)));
-      // A disabled or deleted run-as user stays selectable so saving keeps it (spec 3.4).
+      // A disabled or deleted run-as user stays selectable so saving keeps it.
       if (
         runtime.WorkerId &&
         runtime.WorkerId !== EMPTY &&
@@ -1546,7 +1546,7 @@
     ui.disable($('repair-all'), 'repair-all-reason', editable ? null : ADMIN_ONLY);
   }
 
-  // Register repeatedly until nothing is pending or a call makes no progress (spec 3.4).
+  // Register repeatedly until nothing is pending or a call makes no progress.
   async function repairAll() {
     let before = ui.runtime().Registration?.Pending ?? 0;
     const total = before;

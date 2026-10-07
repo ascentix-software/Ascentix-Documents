@@ -1,7 +1,7 @@
 'use strict';
-// Sites & access (spec 3.2): sites, their libraries, each library's team access, and the setup
+// Sites & access: sites, their libraries, each library's team access, and the setup
 // activity on them. Each area reports in its own feedback line; every command asks in the page,
-// next to what asked (spec 5.2). Text is only ever set with textContent.
+// next to what asked. Text is only ever set with textContent.
 (() => {
   const root = document.getElementById('access'),
     $ = (id) => document.getElementById(id),
@@ -184,7 +184,7 @@
     const date = new Date(ms ? Number(ms[1]) : value);
     return isNaN(date) ? String(value) : date.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
   };
-  // A refusal reads as the server's sentence (F-14), never as a raw response body.
+  // A refusal reads as the server's sentence, never as a raw response body.
   const api = (name, request) => ui.api(name, request);
   const catalog = (request) => api('asx_CatalogAdmin', request),
     security = (request) => api('asx_SecurityAdmin', request);
@@ -337,7 +337,7 @@
       if (state.progressStale) render();
     }
   }
-  // Documents' SharePoint check for a setup whose create answer was lost (spec 6.8): its
+  // Documents' SharePoint check for a setup whose create answer was lost: its
   // finding, each ambiguous candidate with the checks it failed, and the choices it offers.
   function recoveryChoices(card, actions, key, o, recovery) {
     const resolve = (choice, listId, said) =>
@@ -595,7 +595,7 @@
     if (loading) area.append(node('p', 'Loading…', 'ad-muted'));
     $('ad-activity').hidden = area.children.length === 0;
   }
-  // A team row (spec 3.2): its access, or Removed · Undo until Apply, and what SharePoint has.
+  // A team row: its access, or Removed · Undo until Apply, and what SharePoint has.
   function teamRow(p, e, running) {
     const tr = node('tr'),
       gone = deletedTeam(e.TeamId),
@@ -654,7 +654,7 @@
     );
     return tr;
   }
-  // Every redraw keeps focus on the same control, by its data-focus-key (spec 5.2).
+  // Every redraw keeps focus on the same control, by its data-focus-key.
   const render = () => ui.withFocus(draw);
   function draw() {
     const term = $('ad-search').value.trim();

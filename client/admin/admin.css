@@ -260,7 +260,7 @@ h3 {
 .tree {
   margin: 20px 0;
 }
-/* Tree nodes (spec 3.1): the selected one has a 3px teal bar, not only the tint (1.41:1 dark). */
+/* Tree nodes: the selected one has a 3px teal bar, not only the tint (1.41:1 dark). */
 .node {
   width: 100%;
   text-align: left;
@@ -1974,7 +1974,7 @@ input[type='checkbox'] {
   padding-left: 18px;
 }
 
-/* Monitor and Settings panels (spec 3.3, 3.4): spacing, wrapping form rows and list layout. */
+/* Monitor and Settings panels: spacing, wrapping form rows and list layout. */
 #monitor,
 #settings {
   padding: 24px;
@@ -2128,7 +2128,7 @@ input[type='checkbox'] {
   }
 }
 
-/* Folder templates (spec 3.1): template bar, version chip, ⋯ menu, panels, rail, tree, folder
+/* Folder templates: template bar, version chip, ⋯ menu, panels, rail, tree, folder
    settings, condition builder and preview. */
 #template-bar {
   display: flex;
@@ -2403,7 +2403,7 @@ input[type='checkbox'] {
   background: var(--warning-bg);
 }
 
-/* Sites & access (spec 3.2): menus, in-page confirmations, the Add site combobox, team rows. */
+/* Sites & access: menus, in-page confirmations, the Add site combobox, team rows. */
 #access .primary {
   background: var(--teal);
   color: var(--on-accent);
@@ -2508,7 +2508,7 @@ input[type='checkbox'] {
 #access .ad-progress-card > .ad-row {
   margin-top: 12px;
 }
-/* Every target at least 24×24 (spec 5.5, WCAG 2.5.8), links too. */
+/* Every target at least 24×24 (WCAG 2.5.8), links too. */
 main a {
   display: inline-block;
   min-height: 24px;

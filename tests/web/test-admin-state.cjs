@@ -14,7 +14,7 @@ const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const TEMPLATE = '11111111-0000-0000-0000-000000000001';
 const OTHER = '33333333-0000-0000-0000-000000000003';
 const CONTACT = '22222222-0000-0000-0000-000000000002';
-const RECORD = '607cba8a-acc1-f111-aaaf-7c1e52067fd0';
+const RECORD = '00000000-0000-0000-0000-0000000000a1';
 
 const attribute = (name, type, label) => ({
   LogicalName: name,

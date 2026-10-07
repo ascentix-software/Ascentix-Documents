@@ -1,5 +1,5 @@
-// The TEST environment checker (spec 7.4). The controller pastes it into the claude-in-chrome
-// javascript_tool on the Documents app's top page; it finds the admin frame and returns JSON
+// The test environment checker. Paste it into the browser console on each tab of the Documents
+// app's top page; it finds the admin frame and returns JSON
 // about the shown tab. It reads the page only: no innerHTML assignment, no changes. Its
 // outerHTML.slice(0, 80) reads are diagnostics in a test file that verify-admin.cjs does not scan.
 (() => {
