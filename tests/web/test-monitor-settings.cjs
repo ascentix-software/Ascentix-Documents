@@ -816,11 +816,23 @@ async function boot({
       'asx_RuntimeAdmin',
       { Command: 'SetEnabled', Enabled: false, RowVersion: '7' },
     ]);
-    assert.equal(
-      m.$('fb-automation-monitor').textContent,
-      'Automation paused. Changes keep queueing.',
-    );
+    // The chip's status text announces the new state; the feedback line stays empty (fix round 1).
+    assert.equal(m.$('fb-automation-monitor').textContent, '');
     assert.equal(m.$('automationChipText').textContent, 'Automation paused');
+    // A refused change is reported next to the switch.
+    const stale = await boot({
+      handle: (api, b) =>
+        b.Command === 'SetEnabled'
+          ? new Error('Automation settings changed. Reopen the page and try again.')
+          : null,
+    });
+    await stale.press(stale.$('automation-switch-monitor'));
+    assert.equal(
+      stale.$('fb-automation-monitor').textContent,
+      'Automation settings changed. Reopen the page and try again.',
+    );
+    assert.equal(stale.$('fb-automation-monitor').getAttribute('role'), 'alert');
+    assert.equal(stale.$('automation-switch-monitor').getAttribute('aria-checked'), 'true');
     const viewer = await boot({ runtime: { CanChange: false } });
     const off = viewer.$('automation-switch-monitor');
     assert.equal(off.getAttribute('aria-disabled'), 'true');
@@ -1049,6 +1061,9 @@ async function boot({
       2,
       'Repair all stops when nothing is pending',
     );
+    // Once it ends the button shows the current state, not its progress (fix round 1).
+    assert.doesNotMatch(s.$('repair-all').textContent, /Repaired/);
+    assert.equal(s.$('repair-all').hidden, true);
     await s.press(s.$('stop-tracking'));
     assert.equal(
       s.document.activeElement.textContent,
@@ -1107,6 +1122,7 @@ async function boot({
       s.$('fb-tracking').textContent,
       'Repair made no progress. 2 tables still need repair.',
     );
+    assert.equal(s.$('repair-all').textContent, 'Repair all (2)');
   }
   {
     // Shared runtime state (controller ruling 2): pausing from Settings updates the chip.
@@ -1119,10 +1135,7 @@ async function boot({
     assert.equal(s.$('automationChipText').textContent, 'Automation paused');
     assert.equal(s.$('automation-switch-settings').getAttribute('aria-checked'), 'false');
     assert.equal(s.$('automation-state-settings').textContent, 'Paused');
-    assert.equal(
-      s.$('fb-automation-settings').textContent,
-      'Automation paused. Changes keep queueing.',
-    );
+    assert.equal(s.$('fb-automation-settings').textContent, '');
     // Turning on from the chip gives the Settings form the new row version and keeps its
     // unsaved edits; Save then sends that version and the running state.
     const c = await boot({ tab: 'settings', runtime: { Enabled: false } });
@@ -1169,8 +1182,196 @@ async function boot({
     assert.equal(refused.$('settings-missing').hidden, false);
     assert.equal(refused.$('automation-settings').hasAttribute('aria-busy'), false);
   }
+  // Fix round 1 -------------------------------------------------------------------------------
+  {
+    // A row acted on and gone from the server's next first page is gone after the tick; a row
+    // that "Show 50 more" appended stays. Show 50 more runs once however often it is pressed.
+    const a = row({ Key: 'folderjob:a', Title: 'Alpha · Account documents' });
+    const b = row({ Key: 'folderjob:b', Title: 'Beta · Account documents' });
+    let first = [a];
+    let more = 0;
+    const m = await boot({
+      summary: { BlockedJobs: 2 },
+      handle: (api, q) => {
+        if (q.Command !== 'ListProblems' || q.List !== 'BlockedJobs') return null;
+        if (!q.Page) return { Status: 'Page', Problems: first, Next: 'p2' };
+        more++;
+        return { Status: 'Page', Problems: [b], Next: null };
+      },
+    });
+    const list = m.$('list-BlockedJobs');
+    const showMore = m.$('more-BlockedJobs');
+    showMore.click();
+    showMore.click();
+    await m.document.settle();
+    assert.equal(more, 1, 'Show 50 more appends once');
+    assert.equal(list.querySelectorAll('tbody tr').length, 2);
+    await m.press(
+      m
+        .buttons(list)
+        .find((x) => x.getAttribute('aria-label') === 'Retry for Alpha · Account documents'),
+    );
+    first = [];
+    await m.tick();
+    assert.doesNotMatch(list.visibleText, /Alpha/, 'The retried row is gone');
+    assert.match(list.visibleText, /Beta/, 'The appended row stays');
+  }
+  {
+    // Show 50 more that fails keeps the loaded rows and reports in the list's feedback line.
+    const m = await boot({
+      summary: { BlockedJobs: 1 },
+      handle: (api, q) =>
+        q.Command === 'ListProblems' && q.List === 'BlockedJobs'
+          ? q.Page
+            ? new Error('The list changed. Refresh it.')
+            : { Status: 'Page', Problems: [row()], Next: 'p2' }
+          : null,
+    });
+    await m.press(m.$('more-BlockedJobs'));
+    assert.equal(m.$('list-BlockedJobs').querySelectorAll('tbody tr').length, 1);
+    assert.equal(m.$('fb-list-BlockedJobs').textContent, 'The list changed. Refresh it.');
+    assert.ok(m.$('more-BlockedJobs'), 'Show 50 more stays to try again');
+  }
+  {
+    // The tick does not redraw a list with an open confirmation, open Details or focus on a
+    // control it cannot restore; it redraws it on a later tick once that is over.
+    const lists = { BlockedJobs: [row()] };
+    const m = await boot({ summary: { BlockedJobs: 1 }, lists });
+    const list = m.$('list-BlockedJobs');
+    const cancel = m.buttons(list).find((x) => x.textContent === 'Cancel job');
+    await m.press(cancel);
+    const question = m.document.activeElement;
+    lists.BlockedJobs = [row({ Problem: 'Something else now.' })];
+    await m.tick();
+    assert.equal(m.document.activeElement, question, 'The open confirmation keeps focus');
+    assert.equal(question.isConnected, true, 'The open confirmation survives the tick');
+    await m.press(m.buttons(list).find((x) => x.textContent === 'Cancel job' && x !== cancel));
+    assert.deepEqual(m.sent.at(-1)[1], { Command: 'Cancel', Key: 'folderjob:abc' });
+    m.document.body.focus();
+    await m.tick();
+    assert.match(list.visibleText, /Something else now\./, 'Redrawn on the next tick');
+    // Focus on Copy (no focus key) survives a tick, and so does an open Details.
+    const copy = m.buttons(list).find((x) => x.textContent === 'Copy');
+    copy.focus();
+    await m.tick();
+    assert.equal(m.document.activeElement, copy);
+    assert.equal(copy.isConnected, true);
+    m.document.body.focus();
+    const details = list.querySelector('details');
+    details.open = true;
+    await m.tick();
+    assert.equal(details.isConnected, true, 'Open Details stays open');
+    // A focused tile keeps focus across the tick's redraw.
+    const tile = m.$('monitor-tiles').querySelectorAll('button')[0];
+    tile.focus();
+    await m.tick();
+    assert.equal(m.document.activeElement.textContent, tile.textContent);
+    assert.equal(m.document.activeElement.isConnected, true);
+  }
+  {
+    // Changes not captured: only rows the server can re-run get a checkbox; Re-run selected
+    // reports each row it could not queue and still queues the rest.
+    const capture = (id, name, record, actions) =>
+      row({
+        Key: id,
+        Kind: 'CaptureJob',
+        KindLabel: 'Missed change',
+        Title: name,
+        Record: record,
+        Problem: 'Runtime identity is incomplete.',
+        Status: 'Failed',
+        Actions: actions,
+      });
+    const account = (id, name) => ({ Table: 'account', TableLabel: 'Account', Id: id, Name: name });
+    const id = (n) => 'aaaaaaaa-0000-0000-0000-00000000000' + n;
+    const m = await boot({
+      summary: { NotCaptured: 4 },
+      lists: {
+        NotCaptured: [
+          capture(id(1), 'Alpha · Account', account(id(1), 'Alpha'), [
+            'Rerun',
+            'Dismiss',
+            'OpenRecord',
+          ]),
+          capture(id(2), 'Beta · Account', account(id(2), 'Beta'), [
+            'Rerun',
+            'Dismiss',
+            'OpenRecord',
+          ]),
+          capture(
+            id(3),
+            'Sales team · Team',
+            { Table: 'team', TableLabel: 'Team', Id: id(3), Name: 'Sales team' },
+            ['Dismiss', 'OpenRecord'],
+          ),
+          capture(id(4), 'Record not available · Missed change', null, ['Dismiss']),
+        ],
+      },
+      handle: (api, b) =>
+        b.Command === 'RerunRecord'
+          ? b.RecordId === id(2)
+            ? new Error('Enable account in Folder templates first.')
+            : { Status: 'Queued', Keys: ['request:x'], Notices: [] }
+          : null,
+    });
+    const list = m.$('list-NotCaptured');
+    const boxes = list.querySelectorAll('input[type=checkbox]');
+    assert.equal(boxes.length, 2, 'No checkbox on team rows or rows without a record');
+    for (const box of boxes) {
+      box.checked = true;
+      box.onchange();
+    }
+    await m.press(m.buttons(list).find((b) => b.textContent.startsWith('Re-run selected')));
+    assert.equal(m.sent.filter(([, b]) => b.Command === 'RerunRecord').length, 2);
+    assert.equal(
+      m.$('fb-list-NotCaptured').textContent,
+      "Queued 1; 1 couldn't be re-run: Beta: Enable account in Folder templates first.",
+    );
+    assert.equal(m.$('fb-list-NotCaptured').getAttribute('role'), 'alert');
+  }
+  {
+    // Refresh says "5,000+" for a capped list.
+    const m = await boot({ summary: { NotCaptured: 5000, Capped: ['NotCaptured'] } });
+    await m.press(m.$('monitor-refresh'));
+    assert.equal(m.$('fb-monitor').textContent, 'Refreshed. 5,000+ changes not captured.');
+  }
+  {
+    // A recent operation that cannot be looked up says why in Advanced.
+    const m = await boot({
+      lists: { RecentOperations: [row({ Status: 'Applied', Actions: [] })] },
+      handle: (api, b) => (b.Command === 'Inspect' ? new Error('Operation not found.') : null),
+    });
+    m.$('advanced').open = true;
+    await m.$('advanced').ontoggle();
+    await m.press(m.buttons(m.$('recent-rows'))[0]);
+    assert.equal(m.$('fb-advanced').textContent, 'Operation not found.');
+  }
+  {
+    // A per-table Repair that makes the table Ready leaves focus on the Change tracking heading.
+    const ready = (status, pending) => ({
+      WorkerId: 'worker-1',
+      Enabled: true,
+      CanChange: true,
+      RowVersion: '7',
+      SharePointHosts: [],
+      Registration: {
+        Readiness: [{ Scope: 'account', Status: status }],
+        Pending: pending,
+        Error: null,
+      },
+    });
+    const s = await boot({
+      tab: 'settings',
+      runtime: { Registration: ready('Missing', 1).Registration },
+      handle: (api, b) => (b.Command === 'Register' ? ready('Ready', 0) : null),
+    });
+    const repair = s.$('tracking-rows').querySelector('button');
+    repair.focus();
+    await s.press(repair);
+    assert.equal(s.document.activeElement.id, 'tracking-title');
+  }
   console.log(
-    'PASS Monitor and Settings: lists on open, names and Details, row actions, Retry now, re-runs, 60-second re-read announcements, recovery choices (lists and Advanced), load errors, Refresh, switch, checklist, Check a record, Advanced, Settings, Repair all, danger zone, runtime shared with the chip, a late or refused Get. Fake DOM; browser QA separate.',
+    'PASS Monitor and Settings: lists on open, names and Details, row actions, Retry now, re-runs, 60-second re-read announcements, recovery choices (lists and Advanced), load errors, Refresh, switch, checklist, Check a record, Advanced, Settings, Repair all, danger zone, runtime shared with the chip, a late or refused Get; fix round 1: the tick keeps appended rows and drops removed ones, defers redraws under confirmations, Details and focus; checkboxes only on re-runnable rows with per-row reasons; Show 50 more once, and its errors; capped Refresh text; recent lookup errors; Repair focus and text; one announcement for the switch. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

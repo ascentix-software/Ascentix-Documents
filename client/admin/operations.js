@@ -178,21 +178,21 @@
     $('monitor-checked').textContent = 'Checked ';
     $('monitor-checked').append(ui.time(summary?.CountedUtc || new Date().toISOString()));
     if (!announce || !summary) return;
+    // Counted as the tiles count: a list Dataverse stopped counting says "5,000+".
+    const say = (list, one, many, after = '') =>
+      summary[list]
+        ? counted(list) +
+          ' ' +
+          (summary[list] === 1 && !summary.Capped?.includes(list) ? one : many) +
+          after
+        : null;
     const parts = [
-      summary.TemplateRuns
-        ? plural(summary.TemplateRuns, 're-run', 're-runs') + ' in progress'
-        : null,
-      summary.NotCaptured
-        ? plural(summary.NotCaptured, 'change', 'changes') + ' not captured'
-        : null,
-      summary.BlockedRecords
-        ? plural(summary.BlockedRecords, 'blocked record', 'blocked records')
-        : null,
-      summary.WaitingRecords
-        ? plural(summary.WaitingRecords, 'record', 'records') + ' waiting for data'
-        : null,
-      summary.BlockedJobs ? plural(summary.BlockedJobs, 'blocked job', 'blocked jobs') : null,
-      summary.RetryingJobs ? plural(summary.RetryingJobs, 'job', 'jobs') + ' retrying' : null,
+      say('TemplateRuns', 're-run', 're-runs', ' in progress'),
+      say('NotCaptured', 'change', 'changes', ' not captured'),
+      say('BlockedRecords', 'blocked record', 'blocked records'),
+      say('WaitingRecords', 'record', 'records', ' waiting for data'),
+      say('BlockedJobs', 'blocked job', 'blocked jobs'),
+      say('RetryingJobs', 'job', 'jobs', ' retrying'),
     ].filter(Boolean);
     ui.feedback(
       'monitor',
@@ -232,29 +232,39 @@
     $('setup-checklist').hidden = !open;
     $('monitor-tiles').hidden = !!open;
     if (!open) return;
-    $('setup-checklist').replaceChildren(
-      ...steps.map(([text, tab, done]) => {
-        const item = el('li', null, done ? 'is-done' : '');
-        if (done)
-          item.append(
-            el('span', '✓ ', 'check'),
-            el('span', text),
-            el('span', ' (done)', 'sr-only'),
-          );
-        else if (tab) item.append(button(text, () => ui.navigate(tab), 'link'));
-        else item.append(el('span', text));
-        return item;
-      }),
+    // Redrawn on every count and runtime change: focus keys bring focus back to its step.
+    ui.withFocus(() =>
+      $('setup-checklist').replaceChildren(
+        ...steps.map(([text, tab, done]) => {
+          const item = el('li', null, done ? 'is-done' : '');
+          if (done)
+            item.append(
+              el('span', '✓ ', 'check'),
+              el('span', text),
+              el('span', ' (done)', 'sr-only'),
+            );
+          else if (tab) {
+            const step = button(text, () => ui.navigate(tab), 'link');
+            step.dataset.focusKey = 'setup:' + tab;
+            item.append(step);
+          } else item.append(el('span', text));
+          return item;
+        }),
+      ),
     );
   }
 
   function renderTiles() {
-    $('monitor-tiles').replaceChildren(
-      ...LISTS.map((list) => {
-        const tile = button(list.tile + ' ', () => $('h-' + list.id).focus(), 'tile');
-        tile.append(el('strong', counted(list.id)));
-        return tile;
-      }),
+    // Redrawn on every tick: focus keys bring focus back to the same tile.
+    ui.withFocus(() =>
+      $('monitor-tiles').replaceChildren(
+        ...LISTS.map((list) => {
+          const tile = button(list.tile + ' ', () => $('h-' + list.id).focus(), 'tile');
+          tile.dataset.focusKey = 'tile:' + list.id;
+          tile.append(el('strong', counted(list.id)));
+          return tile;
+        }),
+      ),
     );
   }
 
@@ -310,21 +320,36 @@
         ui.feedback('list-BlockedJobs', recoverySentence(row.Title, row.Recovery));
     }
   }
-  // The watch's re-read of a list's first page: no skeleton, focus kept, rows merged by key so
-  // rows from "Show 50 more" stay; a failed read leaves the list as it was until the next tick.
+  // The watch's re-read of a list's first page, with no skeleton. The fresh page replaces the
+  // first page, so a row that was retried, cancelled or resolved and has left the list is gone;
+  // rows that "Show 50 more" appended stay. A failed read leaves the list as it was until the
+  // next tick.
   async function reread(id) {
     const state = monitor.lists.get(id);
     if (!state) return;
     try {
       const page = await work({ Command: 'ListProblems', List: id, Page: null });
-      const fresh = new Map(page.Problems.map((r) => [r.Key, r]));
-      const kept = state.rows.map((r) => fresh.get(r.Key) || r);
-      const known = new Set(kept.map((r) => r.Key));
-      state.rows = page.Problems.filter((r) => !known.has(r.Key)).concat(kept);
-      ui.withFocus(() => renderList(id));
+      const fresh = new Set(page.Problems.map((r) => r.Key));
+      const appended = state.rows.filter((r) => state.extra.has(r.Key) && !fresh.has(r.Key));
+      state.extra = new Set(appended.map((r) => r.Key));
+      state.rows = page.Problems.concat(appended);
+      if (!appended.length) state.next = page.Next;
+      redraw(id);
     } catch {
       // Quiet: the next tick tries again.
     }
+  }
+  // Redraws a list unless the admin is in the middle of something there: an open in-page
+  // confirmation, open Details, or focus on a control a redraw cannot give focus back to (Copy,
+  // a checkbox, the table filter, the Since sort). The next tick redraws it once that is over.
+  function redraw(id) {
+    const section = listOf(id);
+    const active = document.activeElement;
+    const held =
+      !!section?.querySelector('.confirm[role=group]') ||
+      [...(section?.querySelectorAll('details') || [])].some((d) => d.open) ||
+      (!!section?.contains(active) && active !== $('h-' + id) && !active.dataset?.focusKey);
+    if (!held) ui.withFocus(() => renderList(id));
   }
 
   function renderLists() {
@@ -342,7 +367,15 @@
         const feedback = el('p', null, 'feedback');
         feedback.id = 'fb-list-' + list.id;
         section.append(heading, body, feedback);
-        monitor.lists.set(list.id, { rows: [], next: null, filter: '', order: 'desc', meta: list });
+        // extra: keys of rows that "Show 50 more" appended, which the tick's re-read keeps.
+        monitor.lists.set(list.id, {
+          rows: [],
+          next: null,
+          extra: new Set(),
+          filter: '',
+          order: 'desc',
+          meta: list,
+        });
         return section;
       }),
     );
@@ -359,10 +392,19 @@
         List: id,
         Page: append ? state.next : null,
       });
-      state.rows = append ? state.rows.concat(page.Problems) : page.Problems;
+      if (append) {
+        const known = new Set(state.rows.map((r) => r.Key));
+        const added = page.Problems.filter((r) => !known.has(r.Key));
+        added.forEach((r) => state.extra.add(r.Key));
+        state.rows = state.rows.concat(added);
+      } else {
+        state.rows = page.Problems;
+        state.extra = new Set();
+      }
       state.next = page.Next;
-      renderList(id);
+      ui.withFocus(() => renderList(id));
     } catch (error) {
+      if (append) throw error;
       const failed = el(
         'p',
         "Couldn't load " + state.meta.title + ': ' + (error.message || String(error)),
@@ -446,9 +488,15 @@
     table.append(caption, head, rows);
     parts.push(table);
     if (state.next) {
-      const more = button('Show 50 more', () => loadList(id, true));
+      const more = button('Show 50 more', () =>
+        ui.busy(more, 'Loading…', 'list-' + id, () => loadList(id, true)),
+      );
       more.id = 'more-' + id;
-      parts.push(more);
+      more.dataset.focusKey = 'more:' + id;
+      const row = el('div', null, 'row');
+      row.setAttribute('data-actions', '');
+      row.append(more);
+      parts.push(row);
     }
     body.replaceChildren(...parts);
   }
@@ -495,10 +543,15 @@
         tr.append(...runCells(row, status));
         break;
       case 'NotCaptured': {
-        const box = el('input');
-        box.type = 'checkbox';
-        box.setAttribute('aria-labelledby', nameId);
-        box.onchange = () => updateSelected();
+        // A team row or a row without a record cannot be re-run (the server offers no Rerun).
+        let box = null;
+        if (row.Actions?.includes('Rerun')) {
+          box = el('input');
+          box.type = 'checkbox';
+          box.dataset.key = row.Key;
+          box.setAttribute('aria-labelledby', nameId);
+          box.onchange = () => updateSelected();
+        }
         tr.append(
           cell(box),
           recordCell(row, nameId),
@@ -898,19 +951,36 @@
       return ui.busy(run, 'Re-running…', 'list-NotCaptured', async () => {
         const rows = monitor.lists.get('NotCaptured').rows;
         let queued = 0;
+        const failed = [];
+        // Each row on its own: one refusal is reported and the rest are still queued.
         for (const box of picked) {
-          const row = rows.find(
-            (r) =>
-              'name-NotCaptured-' + r.Key.replace(/[^\w-]/g, '_') ===
-              box.getAttribute('aria-labelledby'),
-          );
-          const result = await send(row, 'Rerun');
-          if (result.Status === 'Queued') queued++;
+          const row = rows.find((r) => r.Key === box.dataset.key);
+          const name = row?.Record?.Name || row?.Title || 'A record';
+          try {
+            const result = await send(row, 'Rerun');
+            if (result.Status === 'Inactive')
+              failed.push(name + ': no template for this table is on.');
+            else queued++;
+          } catch (error) {
+            failed.push(name + ': ' + String(error.message || error).replace(/\.?$/, '.'));
+          }
         }
-        ui.feedback(
-          'list-NotCaptured',
-          'Re-run queued for ' + plural(queued, 'record', 'records') + '.',
-        );
+        if (!failed.length)
+          ui.feedback(
+            'list-NotCaptured',
+            'Re-run queued for ' + plural(queued, 'record', 'records') + '.',
+          );
+        else
+          ui.feedback(
+            'list-NotCaptured',
+            'Queued ' +
+              number(queued) +
+              '; ' +
+              number(failed.length) +
+              " couldn't be re-run: " +
+              failed.join(' '),
+            'error',
+          );
       });
     });
     monitor.rerunSelected = run;
@@ -1085,7 +1155,11 @@
     if (!append) $('recent-rows').replaceChildren();
     for (const row of page.Problems) {
       const tr = el('tr');
-      const open = button(row.Title, () => lookUp(row.Key), 'link');
+      const open = button(
+        row.Title,
+        () => ui.busy(open, 'Looking up…', 'advanced', () => lookUp(row.Key)),
+        'link',
+      );
       tr.append(
         cell(open),
         cell(el('span', row.KindLabel)),
@@ -1232,7 +1306,8 @@
     ui.clearFeedback(area);
     try {
       // setAutomation shares the result through setRuntime: the chip, both switches and the
-      // Settings form's row version follow it.
+      // Settings form's row version follow it. The chip's status text announces the new state,
+      // as for Turn on in the chip; the feedback line only adds what still needs work.
       const result = await ui.setAutomation(turnOn);
       const problem = turnOn ? result.Registration?.Error : null;
       if (problem)
@@ -1243,11 +1318,6 @@
           where === 'monitor'
             ? { label: 'Open Settings', onClick: () => ui.navigate('settings') }
             : null,
-        );
-      else
-        ui.feedback(
-          area,
-          turnOn ? 'Automation running.' : 'Automation paused. Changes keep queueing.',
         );
     } catch (error) {
       ui.feedback(area, error.message || String(error), 'error');
@@ -1281,9 +1351,11 @@
       );
     };
     $('save-settings').onclick = () => ui.busy($('save-settings'), 'Saving…', 'settings', save);
-    $('repair-all').onclick = () => {
-      if (ui.blocked($('repair-all'))) return undefined;
-      return ui.busy($('repair-all'), 'Repairing…', 'tracking', repairAll);
+    // Once Repair all ends, the button shows what is still pending, not its progress text.
+    $('repair-all').onclick = async () => {
+      if (ui.blocked($('repair-all'))) return;
+      await ui.busy($('repair-all'), 'Repairing…', 'tracking', repairAll);
+      if (ui.runtime()) renderTracking(ui.runtime());
     };
     $('stop-tracking').onclick = async () => {
       if (ui.blocked($('stop-tracking'))) return;
