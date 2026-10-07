@@ -3125,6 +3125,13 @@ public sealed class SecurityWorkerTests
         Assert.Equal(notice, f.Operation().ErrorCode);
         Assert.True(f.Policy().Inherits);
         Assert.DoesNotContain("BreakInheritance", f.Writes);
+        // The library shows it like any stopped run: Blocked, with the notice, so Sites offers
+        // Retry and Cancel next to Apply access.
+        var shown = Library(f, "GetPolicy");
+        Assert.Equal("Blocked", shown.RunStatus);
+        Assert.Equal(notice, shown.RunNotice);
+        Assert.Equal(f.Key, shown.Policy!.OperationKey);
+        Assert.True(shown.Policy.Inherits);
         var old = f.Key;
         var policy = f.Store.Require<PolicyDocument>(
             "asx_policy",

@@ -476,10 +476,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     'Ready for folder templates',
     'An approved library is ready for templates before its access is applied',
   );
-  assert.equal(nodes['ad-library-access'].textContent, 'Access setup pending');
   lib.asx_policyapplied = true;
-  await window.AsxdSites.selectLibrary(id(3));
-  assert.equal(nodes['ad-library-access'].textContent, 'Access applied');
   lib.asx_approved = false;
   await window.AsxdSites.selectLibrary(id(3));
   assert.equal(nodes['ad-library-status'].textContent, 'Needs attention');
@@ -580,7 +577,11 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
   assert.equal(adds().at(-1).BreakInheritance, true);
   assert.equal(adds().at(-1).ListId, id(14));
   delete inspectByKey['catalogprobe:test'];
-  // A library reset to inherit stops its access run; Apply access asks before stopping it again.
+  // A library reset to inherit stops its access run (GetPolicy answers as the server does: the
+  // run is Blocked with the inheritance notice). It needs attention like any stopped run, with
+  // Retry and Cancel, and Apply access, which asks before stopping the inheritance again.
+  const inheritsAgain =
+    'This library inherits permissions again. Use Apply access to let Documents stop the inheritance again.';
   policy = {
     Status: 'Queued',
     RowVersion: '30',
@@ -590,16 +591,22 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
       OperationKey: 'policywork:stopped',
       Inherits: true,
     },
+    RunStatus: 'Blocked',
+    RunNotice: inheritsAgain,
   };
   // A library not opened before, so its policy is read fresh.
   lib2.asx_libraryid = id(19);
   lib2.asx_name = 'Reset';
+  lib2.asx_policyapplied = false;
   await window.AsxdSites.selectLibrary(id(13));
-  assert.equal(
-    nodes['ad-change-status'].textContent,
-    'This library inherits permissions again. Use Apply access to let Documents stop the inheritance again.',
-  );
+  assert.equal(nodes['ad-change-status'].textContent, 'Needs attention: ' + inheritsAgain);
+  assert.equal(nodes['ad-change-status'].className, 'ad-issue');
+  assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
+  assert.equal(nodes['ad-run-actions'].hidden, false, 'The stopped run offers Retry and Cancel');
+  assert.equal(nodes['ad-run-retry'].disabled, false);
+  assert.equal(nodes['ad-run-cancel'].disabled, false);
   assert.equal(nodes['ad-apply'].disabled, false, 'Apply access is offered for the reset library');
+  lib2.asx_policyapplied = true;
   const beforeReapply = applies();
   await nodes['ad-apply'].onclick();
   assert.equal(applies(), beforeReapply, 'Nothing is applied before the admin confirms');
@@ -720,6 +727,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
       'Needs attention: SharePoint refused the write (HTTP 403).',
     );
     assert.equal(nodes['ad-change-status'].className, 'ad-issue');
+    assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
     assert.equal(nodes['ad-run-actions'].hidden, false);
     assert.equal(nodes['ad-add-team'].disabled, false, 'A stopped run does not lock the teams');
     await nodes['ad-run-retry'].onclick();
@@ -730,6 +738,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
     });
     assert.equal(apis.at(-1), 'asx_SecurityAdmin');
     assert.equal(nodes['ad-change-status'].textContent, 'Applying access and syncing members…');
+    assert.equal(nodes['ad-library-access'].textContent, 'Applying access…');
     assert.equal(nodes['ad-run-actions'].hidden, true);
     assert.equal(
       nodes['ad-add-team'].disabled,
@@ -747,6 +756,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
       nodes['ad-change-status'].textContent,
       'Needs attention: Waiting to retry after a temporary error (HTTP 503); attempt 4. Next check: 2026-10-05 18:30 UTC.',
     );
+    assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
     const cancels = () => requests.filter((r) => r.Command === 'CancelAccessRun');
     nodes['ad-run-cancel'].onclick();
     assert.equal(cancels().length, 0, 'Nothing is cancelled before the admin confirms');
@@ -766,6 +776,7 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
       nodes['ad-change-status'].textContent,
       'The access run was cancelled. Apply access to run it again.',
     );
+    assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
     assert.equal(nodes['ad-apply'].disabled, false, 'Apply access starts a new run');
     // Apply access replaces a stopped run with the admin's newer access.
     policy = stuck;
@@ -805,11 +816,46 @@ vm.runInNewContext(fs.readFileSync(path.join(base, 'sites-access.js'), 'utf8'), 
       /^Needs attention: access is applied, but team membership was not synced. People removed from a team keep access, and people added get none/,
     );
     assert.equal(nodes['ad-change-status'].className, 'ad-issue');
+    assert.equal(nodes['ad-library-access'].textContent, 'Needs attention');
     assert.doesNotMatch(nodes['ad-change-status'].textContent, /confirmed/);
     policy = { ...policy, Policy: { ...policy.Policy, MembershipIncomplete: false, Notices: [] } };
     lib2.asx_libraryid = id(23);
     await window.AsxdSites.selectLibrary(id(13));
     assert.equal(nodes['ad-change-status'].textContent, 'Access and team membership confirmed.');
+    // The header follows the policy and its run, never the flag the library list was read
+    // with: here the list still says access is pending while the policy is Applied.
+    lib2.asx_policyapplied = false;
+    lib2.asx_libraryid = id(24);
+    await window.AsxdSites.selectLibrary(id(13));
+    assert.equal(nodes['ad-change-status'].textContent, 'Access and team membership confirmed.');
+    assert.equal(nodes['ad-library-access'].textContent, 'Access applied');
+    // A run that is queued or running.
+    policy = {
+      Status: 'Queued',
+      RowVersion: '43',
+      Policy: { Desired: stuck.Policy.Desired, Applied: [], OperationKey: 'policywork:new' },
+      RunStatus: 'Pending',
+    };
+    lib2.asx_policyapplied = true;
+    lib2.asx_libraryid = id(25);
+    await window.AsxdSites.selectLibrary(id(13));
+    assert.equal(nodes['ad-library-access'].textContent, 'Applying access…');
+    // It applies: the next poll shows it, with no reload.
+    policy = {
+      Status: 'Applied',
+      RowVersion: '44',
+      Policy: { Desired: stuck.Policy.Desired, Applied: stuck.Policy.Desired },
+    };
+    await timers.shift()();
+    assert.equal(nodes['ad-change-status'].textContent, 'Access and team membership confirmed.');
+    assert.equal(nodes['ad-library-access'].textContent, 'Access applied');
+    // Access never applied.
+    policy = { Status: 'Missing', RowVersion: '', Policy: null };
+    lib2.asx_policyapplied = false;
+    lib2.asx_libraryid = id(26);
+    await window.AsxdSites.selectLibrary(id(13));
+    assert.equal(nodes['ad-library-access'].textContent, 'Access setup pending');
+    lib2.asx_policyapplied = true;
   }
   {
     // A library setup that needs attention offers Retry and Cancel through the catalog API, so

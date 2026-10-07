@@ -59,7 +59,7 @@ Documents manages only its own SharePoint groups and their grants on the library
   - Security-group "Owners" teams give all members of the group access.
   - Both require the admin to confirm a warning.
   - "Guests only" teams cannot be supported, because SharePoint has no claim for them.
-- When you register an existing library that inherits permissions, Documents asks you to confirm. It then stops the inheritance and keeps a copy of the current permissions. If an admin later resets the library to inherit, access sync stops with a notice until **Apply access** is confirmed again.
+- When you register an existing library that inherits permissions, Documents asks you to confirm. It then stops the inheritance and keeps a copy of the current permissions. If an admin later resets the library to inherit, its access run stops and the library shows **Needs attention** with the notice, **Retry access run** and **Cancel access run**. **Apply access**, confirmed again, stops the inheritance and applies the access.
 
 ## Folder names
 

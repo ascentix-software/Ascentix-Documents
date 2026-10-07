@@ -106,6 +106,26 @@
     'Needs attention: access is applied, but team membership was not synced. People removed from a team keep access, and people added get none, until this is resolved. See the notices below.';
   // The last access run stopped because the library inherits the site's permissions.
   const inherits = (p) => !!p?.result.Policy?.Inherits;
+  // The library's queued access run stopped or waits to retry. A run stopped because the
+  // library inherits permissions again is one of them: it needs attention like any other, and
+  // Apply access with the acknowledgement is its remedy.
+  const stuckRun = (p) => ['Blocked', 'RetryWait'].includes(p?.result.RunStatus);
+  // The library's access state, from its policy and queued run as GetPolicy last read them,
+  // never from the catalog flag the library list was read with, which can be older.
+  function accessLabel(p) {
+    if (!p) return 'Checking access…';
+    const status = p.result.Status,
+      queued = !!p.result.Policy?.OperationKey;
+    if (
+      stuckRun(p) ||
+      (!queued && status === 'NeedsReview') ||
+      (!queued && status === 'Applied' && p.result.Policy?.MembershipIncomplete)
+    )
+      return 'Needs attention';
+    if (queued) return 'Applying access…';
+    if (status === 'Applied') return 'Access applied';
+    return 'Access setup pending';
+  }
   const applyKey = (p) => (state.library?.asx_libraryid || '') + JSON.stringify(p?.entries || []);
   const issue = (text, error = false) => {
     $('ad-message').textContent = text;
@@ -419,9 +439,7 @@
       $('ad-library-status').textContent = state.library.asx_approved
         ? 'Ready for folder templates'
         : 'Needs attention';
-      $('ad-library-access').textContent = state.library.asx_policyapplied
-        ? 'Access applied'
-        : 'Access setup pending';
+      $('ad-library-access').textContent = accessLabel(p);
     }
     $('ad-teams').replaceChildren();
     // The queued access run: one that stopped or waits is shown with its notice and can be
@@ -429,8 +447,8 @@
     // access replaces the run, or, while a flow holds it or SharePoint has not answered its
     // write, the change waits for it (ApplyPending) and is applied right after.
     const run = p?.result.RunStatus,
-      stuck = ['Blocked', 'RetryWait'].includes(run) && !inherits(p),
-      running = !!p?.result.Policy?.OperationKey && !inherits(p) && run !== 'Blocked',
+      stuck = stuckRun(p),
+      running = !!p?.result.Policy?.OperationKey && !stuck,
       pending = !!p?.result.Policy?.ApplyPending,
       incomplete = !!p?.result.Policy?.MembershipIncomplete;
     if (p) {
@@ -479,7 +497,7 @@
       ? 'Loading access…'
       : stuck
         ? 'Needs attention: ' +
-          (p.result.RunNotice || 'the access run stopped.') +
+          (p.result.RunNotice || (inherits(p) ? inheritsAgain : 'the access run stopped.')) +
           (run === 'RetryWait' && p.result.RunNextAttemptUtc
             ? ' Next check: ' + when(p.result.RunNextAttemptUtc) + '.'
             : '') +
