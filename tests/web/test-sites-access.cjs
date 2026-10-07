@@ -9,6 +9,7 @@ const { createDocument } = require('./fake-dom.cjs');
 const base = path.resolve(__dirname, '../../client/admin'),
   html = fs.readFileSync(path.join(base, 'index.html'), 'utf8');
 const read = (name) => fs.readFileSync(path.join(base, name), 'utf8');
+const BUILD = /const BUILD = '([^']+)'/.exec(read('shell.js'))[1];
 const id = (n) => String(n).padStart(8, '0') + '-0000-0000-0000-000000000000';
 
 // Loads the page the way the app does: the shell, then this tab's script, on the access tab.
@@ -17,7 +18,7 @@ function boot(xrm, { timers, uuid, refreshCatalog = async () => {} }) {
   const session = new Map([['asxd.launched', '1']]);
   const window = {
     parent: { Xrm: xrm },
-    location: { search: '?data=access-ui20261006nav1', hash: '' },
+    location: { search: '?data=access-' + BUILD, hash: '' },
     sessionStorage: {
       getItem: (k) => session.get(k) ?? null,
       setItem: (k, v) => session.set(k, v),
@@ -488,7 +489,7 @@ const stage = (team, access) => {
   assert.equal(nodes['ad-poll-status'].hidden, true);
   operationStatus = 'Approved';
   await timers.shift()();
-  assert.match(nodes['fb-access-site'].textContent, /ready/);
+  assert.match(nodes['fb-access'].textContent, /ready/);
   assert.match(nodes['ad-provision-progress'].textContent, /Setup completed/);
   const readySite = nodes['ad-sites'].children[0],
     readyRequests = requests.length;
@@ -507,7 +508,7 @@ const stage = (team, access) => {
   const created = requests.find((r) => r.Command === 'CreateLibrary');
   assert.equal(created.SiteId, id(1));
   assert.equal(created.Entries[0].Access, 'Contribute');
-  assert.equal(nodes['fb-access-site'].textContent, 'Creating Projects.');
+  assert.equal(nodes['fb-access'].textContent, 'Creating Projects.');
   await window.AsxdSites.selectLibrary(id(3));
   assert.equal(nodes['ad-library-title'].textContent, 'General');
   // A library already in Documents is not offered again, also after a rename in SharePoint:
@@ -703,7 +704,7 @@ const stage = (team, access) => {
     },
   };
   await timers.shift()();
-  assert.match(nodes['fb-access-site'].textContent, /Reset re-pointed/);
+  assert.match(nodes['fb-access'].textContent, /Reset re-pointed/);
   assert.equal(nodes['ad-changes'].hidden, false);
   assert.equal(
     nodes['ad-changes'].children[0].textContent,
@@ -760,7 +761,7 @@ const stage = (team, access) => {
   await press(menuItem('ad-library-menu-list', 'Remove library'));
   await press(confirmIn(nodes['ad-library-detail'], 'Remove library'));
   assert.equal(removes().length, 2);
-  assert.match(nodes['fb-access-site'].textContent, /Reset was removed from Documents/);
+  assert.match(nodes['fb-access'].textContent, /Reset was removed from Documents/);
   assert(
     document.activeElement === nodes['ad-libraries-heading'],
     'Remove library moves focus to the Libraries heading',
@@ -940,12 +941,12 @@ const stage = (team, access) => {
     await press(named('Retry'));
     assert.deepEqual(requests.at(-1), { Command: 'RetrySetup', Key: 'librarycreate:test' });
     assert.equal(apis.at(-1), 'asx_CatalogAdmin');
-    assert.equal(nodes['fb-access-site'].textContent, retrySetupRefusal);
-    assert.equal(nodes['fb-access-site'].className, 'feedback is-error');
+    assert.equal(nodes['fb-access'].textContent, retrySetupRefusal);
+    assert.equal(nodes['fb-access'].className, 'feedback is-error');
     retrySetupRefusal = null;
     await press(named('Retry'));
     assert.equal(apis.at(-1), 'asx_CatalogAdmin');
-    assert.equal(nodes['fb-access-site'].textContent, 'Setup queued again.');
+    assert.equal(nodes['fb-access'].textContent, 'Setup queued again.');
     await timers.shift()();
     await press(named('Cancel setup'));
     assert.equal(
@@ -985,10 +986,7 @@ const stage = (team, access) => {
     assert.match(card.textContent, /first access run was cancelled; apply access/);
     assert.doesNotMatch(card.textContent, /Setup completed/);
     assert(rowButton(card, 'Dismiss'));
-    assert.match(
-      nodes['fb-access-site'].textContent,
-      /Unsynced: Library created. Its first access run/,
-    );
+    assert.match(nodes['fb-access'].textContent, /Unsynced: Library created. Its first access run/);
     delete inspectByKey['librarycreate:test'];
   }
   {
@@ -1145,7 +1143,7 @@ const stage = (team, access) => {
     await reloaded.press(reloaded.menuItem('ad-library-menu-list', 'Remove library'));
     await reloaded.press(reloaded.confirmIn(fresh['ad-library-detail'], 'Remove library'));
     assert.deepEqual(sent.at(-1), { Command: 'RemoveLibrary', CatalogId: id(3) });
-    assert.match(fresh['fb-access-site'].textContent, /General was removed from Documents/);
+    assert.match(fresh['fb-access'].textContent, /General was removed from Documents/);
     assert(
       reloaded.document.activeElement === fresh['ad-site-title'],
       'With no library left, focus moves to the site heading',
@@ -1157,7 +1155,7 @@ const stage = (team, access) => {
     assert.equal(fresh['ad-activity'].hidden, true);
     // A link to it does not bring it back.
     await reloaded.window.AsxdSites.selectLibrary(id(3));
-    assert.match(fresh['fb-access-site'].textContent, /This library was removed from Documents/);
+    assert.match(fresh['fb-access'].textContent, /This library was removed from Documents/);
     assert.deepEqual(listed(), []);
     // Remove site, now that it has no libraries: the site leaves the list the same way.
     await fresh['ad-site-menu'].onclick();
@@ -1487,17 +1485,14 @@ const stage = (team, access) => {
         },
       ],
     );
-    assert.equal(
-      nodes['fb-access-site'].textContent,
-      'Using the existing library. Setup continues.',
-    );
+    assert.equal(nodes['fb-access'].textContent, 'Using the existing library. Setup continues.');
     card
       .querySelectorAll('button')
       .find((b) => b.textContent === 'Check again')
       .click();
     await document.settle();
     assert.deepEqual([apis.at(-1), requests.at(-1).Command], ['asx_CatalogAdmin', 'RecheckSetup']);
-    assert.equal(nodes['fb-access-site'].textContent, 'Checking SharePoint again.');
+    assert.equal(nodes['fb-access'].textContent, 'Checking SharePoint again.');
     // Another blocked setup links to Monitor instead of "Open Administration".
     inspectByKey['librarycreate:blocked'] = {
       Key: 'librarycreate:blocked',
@@ -1514,7 +1509,7 @@ const stage = (team, access) => {
       .find((b) => b.textContent === 'Open in Monitor')
       .click();
     await document.settle();
-    assert.equal(navigations.at(-1).data, 'monitor-ui20261006nav1');
+    assert.equal(navigations.at(-1).data, 'monitor-' + BUILD);
     assert.doesNotMatch(nodes['ad-provision-progress'].visibleText, /Open Administration/);
   }
   {

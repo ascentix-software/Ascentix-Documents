@@ -24,6 +24,7 @@
   --disabled-bg: light-dark(#eceef3, #2a3439);
   --warning-bg: light-dark(#fdf3e7, #3d3320);
   --radius: 8px;
+  --shadow: light-dark(#1b1c3314, #0000004d);
 }
 * {
   box-sizing: border-box;
@@ -33,7 +34,7 @@ body {
   background: var(--canvas);
   color: var(--ink);
   font:
-    14px 'Manrope',
+    13px 'Manrope',
     'Segoe UI',
     system-ui,
     sans-serif;
@@ -153,72 +154,6 @@ h3 {
   display: grid;
   gap: 12px;
 }
-.app {
-  max-width: 1480px;
-  margin: auto;
-  padding: 24px 28px;
-}
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 16px;
-  font-weight: 800;
-}
-.logo {
-  width: 33px;
-  height: 33px;
-  background: var(--teal);
-  border-radius: 10px;
-  display: grid;
-  place-items: center;
-  color: white;
-  font-size: 21px;
-}
-.top {
-  margin-bottom: 25px;
-}
-.avatar {
-  width: 30px;
-  height: 30px;
-  background: #e5e5ef;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  font-size: 11px;
-  font-weight: 800;
-}
-.header {
-  margin-bottom: 22px;
-}
-.header p {
-  margin-top: 7px;
-}
-.shell {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  overflow: hidden;
-  box-shadow: 0 5px 20px #1b1c3306;
-  border-top: 4px solid var(--teal);
-}
-.tabs {
-  display: flex;
-  padding: 0 24px;
-  gap: 24px;
-  border-bottom: 1px solid var(--line);
-}
-.tab {
-  border: 0;
-  border-radius: 0;
-  padding: 18px 0;
-  color: var(--muted);
-  border-bottom: 3px solid transparent;
-}
-.tab.active {
-  color: var(--teal);
-  border-bottom-color: var(--teal);
-}
 .toolbar {
   padding: 20px 24px;
   border-bottom: 1px solid var(--line);
@@ -289,14 +224,6 @@ h3 {
 }
 .node .name {
   overflow-wrap: anywhere;
-}
-.dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 100%;
-  background: #a46b0a;
-  margin-left: auto;
-  flex-shrink: 0;
 }
 .help {
   margin: 4px 0 0;
@@ -485,9 +412,6 @@ dialog p {
   }
 }
 @media (max-width: 700px) {
-  .app {
-    padding: 16px 10px;
-  }
   .editor {
     grid-template-columns: 1fr;
   }
@@ -499,9 +423,6 @@ dialog p {
   .boundary {
     flex-wrap: wrap;
   }
-  .header h1 {
-    font-size: 24px;
-  }
   .toolbar,
   .pane {
     padding: 16px;
@@ -509,18 +430,10 @@ dialog p {
   .boundary {
     margin: 14px;
   }
-  .top .muted {
-    display: none;
-  }
   .security {
     padding: 0 14px 14px;
   }
-  .tabs {
-    gap: 18px;
-    padding: 0 15px;
-  }
 }
-
 /* REVISION_STYLES */
 .folder-icon {
   width: 22px;
@@ -529,11 +442,6 @@ dialog p {
   vertical-align: middle;
   flex-shrink: 0;
   margin-right: 3px;
-}
-.logo .folder-icon {
-  width: 25px;
-  height: 25px;
-  margin: 0;
 }
 .picker-grid {
   display: grid;
@@ -593,7 +501,6 @@ button:disabled {
     flex-basis: 100%;
   }
 }
-
 /* Connected editor controls; base type, colors and shell retained from approved concept. */
 #destinations {
   margin-top: 18px;
@@ -782,20 +689,7 @@ pre {
 .preview-card .eyebrow {
   margin-bottom: 5px;
 }
-.tabs {
-  flex-wrap: wrap;
-}
 @media (max-width: 700px) {
-  .app {
-    padding: 16px 10px;
-  }
-  .tabs {
-    gap: 14px;
-  }
-  .tab {
-    font-size: 12px;
-    padding: 14px 0;
-  }
   .admin-panel {
     margin: 14px;
   }
@@ -808,27 +702,6 @@ pre {
   .toolbar .row {
     flex-wrap: wrap;
   }
-}
-
-#access.admin-panel {
-  margin: 0;
-  border: 0;
-  padding: 0;
-}
-#access > summary {
-  display: none;
-}
-#access .boundary label select {
-  margin-top: 7px;
-}
-#access .security-grid {
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
-}
-#access .card h2 {
-  margin-bottom: 8px;
-}
-#access .card label {
-  margin-top: 17px;
 }
 #policyEntries select {
   font-size: 12px;
@@ -844,36 +717,10 @@ pre {
     sans-serif;
   line-height: 1.7;
 }
-#access .boundary {
-  align-items: end;
-}
-#access .row > label {
-  min-width: 120px;
-}
-@media (max-width: 1100px) {
-  #access .security-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 [hidden] {
   display: none !important;
 }
-
 /* Compact authoring workspace: spend vertical space on the folder tree. */
-.app {
-  max-width: none;
-  padding: 12px 20px;
-}
-.top {
-  margin-bottom: 12px;
-}
-.tabs {
-  gap: 24px;
-}
-.tab {
-  padding: 12px 0;
-}
 .table-bar {
   padding: 12px 20px;
   border-bottom: 1px solid var(--line);
@@ -948,9 +795,6 @@ pre {
   }
 }
 @media (max-width: 700px) {
-  .app {
-    padding: 10px;
-  }
   .table-bar > label {
     display: block;
   }
@@ -964,13 +808,6 @@ pre {
   .template-options > details {
     min-width: 100%;
   }
-}
-
-.header-availability {
-  position: relative;
-}
-.header-availability > summary {
-  padding: 9px 10px;
 }
 .availability-body {
   position: absolute;
@@ -1015,7 +852,6 @@ pre {
 .danger {
   color: var(--danger);
 }
-
 #templateActions button {
   font-size: 12px;
   padding: 8px 12px;
@@ -1023,18 +859,12 @@ pre {
 #templateActions {
   justify-content: flex-end;
 }
-.top {
-  position: relative;
-  z-index: 6;
-  min-height: 36px;
-}
 .availability-body {
   font-size: 12px;
 }
 #authorWorkspace > .toolbar {
   padding: 8px 20px;
 }
-
 .table-bar {
   display: flex;
   align-items: center;
@@ -1083,340 +913,31 @@ pre {
     white-space: normal;
   }
 }
-
 /* Combined site and library workspace */
-
-#access {
-  color: var(--ink);
-  background: var(--surface);
-  line-height: 1.5;
-}
-#access * {
-  box-sizing: border-box;
-}
-#access [hidden] {
-  display: none !important;
-}
-#access h2,
-#access h3,
-#access p {
-  margin: 0;
-}
-#access h2 {
-  font-size: 18px;
-}
-#access h3 {
-  font-size: 15px;
-}
-#access button,
-#access input,
-#access select {
-  font: inherit;
-  color: inherit;
-}
-#access button {
-  padding: 7px 11px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
-  cursor: pointer;
-  text-align: left;
-}
-#access button:hover {
-  background: var(--tint);
-}
-#access button:disabled {
-  background: var(--disabled-bg);
-  color: var(--muted);
-  border-color: var(--line);
-  opacity: 1;
-  cursor: default;
-}
-#access .ad-primary {
-  background: var(--teal);
-  color: var(--on-accent);
-  border-color: var(--teal);
-}
-#access .ad-primary:hover {
-  filter: brightness(0.94);
-}
-#access :focus-visible {
-  outline: 3px solid var(--teal);
-  outline-offset: 2px;
-}
-#access input,
-#access select {
-  padding: 8px;
-  border: 1px solid var(--control-border);
-  border-radius: 6px;
-  background: var(--surface);
-  min-width: 0;
-  width: 100%;
-}
-#access label {
-  display: grid;
-  gap: 5px;
-}
-#access small,
-#access .ad-muted {
-  font-size: 12px;
-  color: var(--muted);
-}
-#access .ad-row {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-#access .ad-between {
-  justify-content: space-between;
-}
-#access .ad-header {
-  padding: 13px 18px;
-  border-bottom: 1px solid var(--line);
-}
-#access .ad-brand {
-  font-weight: 650;
-  font-size: 16px;
-}
-#access .ad-tabs {
-  display: flex;
-  gap: 24px;
-  padding: 0 18px;
-  border-bottom: 1px solid var(--line);
-}
-#access .ad-tabs span {
-  padding: 12px 0;
-  color: var(--muted);
-}
-#access .ad-tabs .ad-active {
-  color: var(--teal);
-  border-bottom: 3px solid var(--teal);
-}
-#access .ad-layout {
-  display: grid;
-  grid-template-columns: 205px minmax(0, 1fr);
-}
-#access aside {
-  padding: 16px 12px;
-  background: var(--canvas);
-  border-right: 1px solid var(--line);
-}
-#access .ad-site {
-  display: block;
-  width: 100%;
-  margin: 8px 0;
-  text-align: left;
-  padding: 10px;
-  background: transparent;
-}
-#access .ad-site[aria-pressed='true'] {
-  background: var(--tint);
-  border-color: var(--teal);
-}
-#access .ad-site small {
-  display: block;
-  margin-top: 3px;
-}
-#access .ad-main {
-  padding: 16px 18px;
-  min-width: 0;
-}
-#access .ad-status {
-  font-size: 12px;
-  color: var(--teal);
-}
-#access .ad-issue {
-  color: var(--warning);
-}
-#access .ad-libraries {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin: 16px 0;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 12px;
-}
-#access .ad-library[aria-pressed='true'] {
-  background: var(--tint);
-  border-color: var(--teal);
-}
-#access .ad-box {
-  background: var(--canvas);
-  border: 1px solid var(--line);
-  padding: 14px;
-  border-radius: 8px;
-  margin: 14px 0;
-}
-#access .ad-box label {
-  margin: 10px 0;
-}
-#access .ad-box .ad-row label {
-  flex: 1;
-  min-width: 160px;
-}
-#access table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 12px 0;
-}
-#access th,
-#access td {
-  padding: 10px 8px;
-  text-align: left;
-  border-bottom: 1px solid var(--line);
-  vertical-align: middle;
-}
-#access th {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--muted);
-}
-#access th:first-child,
-#access td:first-child {
-  padding-left: 0;
-}
-#access td select {
-  max-width: 155px;
-}
-#access .ad-access-footer {
-  padding-top: 6px;
-}
-#access .ad-access-notices {
-  margin: 6px 0 0;
-  padding-left: 18px;
-  font-size: 12px;
-  color: var(--muted);
-}
-#access details {
-  border-top: 1px solid var(--line);
-  margin-top: 16px;
-  padding-top: 12px;
-}
-#access summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 12px;
-}
-#access details p {
-  margin: 8px 0;
-}
-#access .ad-note {
-  font-size: 12px;
-  padding: 10px 18px;
-  background: var(--canvas);
-  border-top: 1px solid var(--line);
-}
-#access #ad-message {
-  padding: 9px 0;
-  color: var(--teal);
-}
-#access .ad-empty {
-  padding: 18px 0;
-  color: var(--muted);
-}
-#access ol {
-  padding-left: 22px;
-}
-#access .ad-topgap {
-  margin-top: 10px;
-}
-#access #ad-filter {
-  margin-top: 12px;
-}
-#access .ad-compact th,
-#access .ad-compact td {
-  padding-top: 6px;
-  padding-bottom: 6px;
-}
-@media (max-width: 650px) {
-  #access .ad-layout {
-    grid-template-columns: 1fr;
-  }
-  #access aside {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-  #access #ad-sites {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  #access .ad-site {
-    width: auto;
-    flex: 1;
-    min-width: 130px;
-  }
-  #access .ad-tabs {
-    gap: 15px;
-    font-size: 12px;
-  }
-  #access .ad-main {
-    padding: 14px 12px;
-  }
-  #access th,
-  #access td {
-    padding: 8px 4px;
-    font-size: 12px;
-  }
-  #access td select {
-    padding: 6px 3px;
-  }
-  #access .ad-header {
-    padding: 12px;
-  }
-  #access .ad-box .ad-row label {
-    min-width: 100%;
-  }
-}
-@media (pointer: coarse) {
-  #access button {
-    min-height: 44px;
-  }
-  #access input,
-  #access select {
-    font-size: 16px;
-    min-height: 44px;
-  }
-}
-
-#access {
-  border: 0;
-  border-radius: 0;
-}
-#access .ad-layout {
-  min-height: 420px;
-}
-
 /* Shared visual language across authoring, access, and administration. */
 body {
   line-height: 1.5;
 }
 h2,
-#access h2,
 #authorWorkspace > .toolbar h2 {
   font-size: 18px;
   font-weight: 750;
   letter-spacing: -0.3px;
 }
-h3,
-#access h3 {
+h3 {
   font-size: 15px;
   font-weight: 700;
 }
-button,
-#access button {
+button {
   padding: 8px 12px;
   border-radius: var(--radius);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 650;
   line-height: 1.5;
 }
 input,
 select,
-textarea,
-#access input,
-#access select {
+textarea {
   font-family: inherit;
   font-size: 14px;
   line-height: 1.5;
@@ -1426,30 +947,11 @@ textarea,
   background: var(--surface);
   color: var(--ink);
 }
-label,
-#access label {
+label {
   font-size: 12px;
   font-weight: 700;
 }
-#access label {
-  margin: 17px 0 7px;
-}
-#access label input,
-#access label select {
-  margin-top: 2px;
-}
-.tab {
-  border-radius: 0;
-  padding: 12px 0;
-  background: transparent;
-  font-size: 14px;
-}
-.tab:hover {
-  background: transparent;
-  color: var(--teal);
-}
 .tree-pane,
-#access aside,
 .preview-pane {
   background: var(--canvas);
 }
@@ -1459,17 +961,6 @@ label,
 .condition-group,
 .availability-body {
   border-radius: var(--radius);
-}
-#access .ad-box {
-  background: var(--canvas);
-  border-radius: var(--radius);
-}
-#access .ad-site {
-  padding: 10px;
-  font-size: 12px;
-}
-#access .ad-primary {
-  color: var(--on-accent);
 }
 .selected-section {
   border-color: var(--teal);
@@ -1482,8 +973,7 @@ label,
 .badge {
   color: var(--teal);
 }
-.gray,
-.avatar {
+.gray {
   background: var(--canvas);
   color: var(--muted);
 }
@@ -1491,168 +981,45 @@ label,
   background: var(--tint);
   color: var(--warning);
 }
-#access th,
 th {
   font-size: 12px;
   font-weight: 650;
   letter-spacing: 0;
   text-transform: none;
 }
-#access table,
 table {
   font-size: 12px;
 }
-#access .ad-main,
 #authorWorkspace .pane {
   padding: 16px;
 }
-.table-bar,
-.tabs {
+.table-bar {
   padding-left: 20px;
   padding-right: 20px;
 }
 @media (pointer: coarse) {
   button,
-  #access button,
   input,
   select,
-  textarea,
-  #access input,
-  #access select {
+  textarea {
     min-height: 44px;
   }
   input,
   select,
-  textarea,
-  #access input,
-  #access select {
+  textarea {
     font-size: 16px;
   }
 }
 @media (max-width: 700px) {
-  .table-bar,
-  .tabs {
+  .table-bar {
     padding-left: 14px;
     padding-right: 14px;
   }
-  #access .ad-main,
   #authorWorkspace .pane {
     padding: 14px;
   }
 }
-
 /* Setup stages use shared light/dark theme colors. */
-#access .ad-progress-card {
-  padding: 18px;
-  margin: 16px 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--canvas);
-}
-#access .ad-progress-badge {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--teal);
-}
-#access .ad-progress-card progress {
-  display: block;
-  width: calc(100% - 100% / var(--stage-count));
-  height: 7px;
-  margin: 18px calc(50% / var(--stage-count)) 14px;
-  border: 0;
-  border-radius: 8px;
-  overflow: hidden;
-  appearance: none;
-  background: var(--line);
-  accent-color: var(--teal);
-}
-#access .ad-progress-card progress::-webkit-progress-bar {
-  background: var(--line);
-  border-radius: 8px;
-}
-#access .ad-progress-card progress::-webkit-progress-value {
-  background: var(--teal);
-  border-radius: 8px;
-}
-#access .ad-progress-card progress::-moz-progress-bar {
-  background: var(--teal);
-  border-radius: 8px;
-}
-#access .ad-progress-stages {
-  display: grid;
-  grid-template-columns: repeat(var(--stage-count), minmax(0, 1fr));
-  gap: 0;
-  padding: 0;
-  margin: 0 0 16px;
-  list-style: none;
-}
-#access .ad-progress-stages li {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  align-items: center;
-  text-align: center;
-  padding: 0 4px;
-  font-size: 12px;
-  color: var(--muted);
-  min-width: 0;
-}
-#access .ad-step-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  flex: 0 0 22px;
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  font-size: 12px;
-}
-#access .ad-progress-stages .is-current,
-#access .ad-progress-stages .is-complete {
-  color: var(--teal);
-  font-weight: 600;
-}
-#access .is-current .ad-step-mark,
-#access .is-complete .ad-step-mark {
-  border-color: var(--teal);
-  background: var(--tint);
-}
-#access .ad-progress-attention {
-  border-color: var(--warning);
-}
-#access .ad-progress-attention .ad-progress-badge {
-  color: var(--warning);
-}
-#access .ad-progress-card > button {
-  margin-top: 12px;
-}
-#access #ad-message.ad-issue {
-  color: var(--warning);
-}
-@media (max-width: 600px) {
-  #access .ad-progress-stages li {
-    padding: 0 2px;
-    font-size: 12px;
-  }
-  #access .ad-progress-card {
-    padding: 14px;
-  }
-}
-
-#access .is-loading .is-current .ad-step-mark {
-  animation: ad-stage-pulse 1.8s ease-in-out infinite;
-}
-#access .is-loading progress::-webkit-progress-value {
-  background: linear-gradient(100deg, var(--teal) 20%, var(--tint) 50%, var(--teal) 80%);
-  background-size: 200% 100%;
-  animation: ad-progress-shimmer 2.6s linear infinite;
-}
-#access .is-loading progress::-moz-progress-bar {
-  background: linear-gradient(100deg, var(--teal) 20%, var(--tint) 50%, var(--teal) 80%);
-  background-size: 200% 100%;
-  animation: ad-progress-shimmer 2.6s linear infinite;
-}
 @keyframes ad-stage-pulse {
   0%,
   100% {
@@ -1672,18 +1039,6 @@ table {
     background-position: -200% 0;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  #access .is-loading .is-current .ad-step-mark {
-    animation: none;
-  }
-  #access .is-loading progress::-webkit-progress-value {
-    animation: none;
-  }
-  #access .is-loading progress::-moz-progress-bar {
-    animation: none;
-  }
-}
-
 /* Table navigation shares the Sites and access rail geometry and palette. */
 .template-layout {
   display: grid;
@@ -1761,15 +1116,6 @@ table {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-
-.brand {
-  margin: 0;
-  font: inherit;
-  font-weight: 750;
-}
-.brand-light {
-  font-weight: 450;
-}
 .sr-only {
   position: absolute;
   width: 1px;
@@ -1780,42 +1126,6 @@ table {
   clip: rect(0 0 0 0);
   white-space: nowrap;
   border: 0;
-}
-.tabs[role='tablist'] {
-  display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--line);
-}
-[role='tab'] {
-  min-height: 32px;
-  padding: 6px 14px;
-  border: 0;
-  border-bottom: 3px solid transparent;
-  border-radius: 0;
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  font-weight: 650;
-}
-[role='tab'][aria-selected='true'] {
-  color: var(--ink);
-  border-bottom-color: var(--teal);
-}
-.chip {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-.chip .dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--teal);
-}
-.chip[data-tone='warning'] .dot {
-  background: var(--warning);
 }
 .feedback {
   margin: 6px 0 0;
@@ -1877,7 +1187,6 @@ button.link {
 }
 button,
 summary,
-[role='tab'],
 [role='switch'],
 input[type='checkbox'] {
   min-height: 24px;
@@ -1974,7 +1283,6 @@ input[type='checkbox'] {
   margin: 6px 0;
   padding-left: 18px;
 }
-
 /* Monitor and Settings panels: spacing, wrapping form rows and list layout. */
 #monitor,
 #settings {
@@ -2128,7 +1436,6 @@ input[type='checkbox'] {
     overflow-x: auto;
   }
 }
-
 /* Folder templates: template bar, version chip, ⋯ menu, panels, rail, tree, folder
    settings, condition builder and preview. */
 #template-bar {
@@ -2403,73 +1710,365 @@ input[type='checkbox'] {
   border-color: var(--warning);
   background: var(--warning-bg);
 }
-
 /* Sites & access: menus, in-page confirmations, the Add site combobox, team rows. */
-#access .primary {
-  background: var(--teal);
-  color: var(--on-accent);
-  border-color: var(--teal);
-}
-#access .danger {
-  color: var(--danger);
-}
-#access button.link {
+/* Every target at least 24×24 (WCAG 2.5.8), links too. */
+main a {
+  display: inline-block;
   min-height: 24px;
-  padding: 0 4px;
+  line-height: 24px;
+}
+
+/* Page chrome: no in-page header or tab bar. Each page sits on the canvas with its own header. */
+.app {
+  padding: 0;
+  background: var(--canvas);
+}
+.page-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  padding: 14px 24px;
+  white-space: nowrap;
+}
+.page-header > * {
+  flex-shrink: 0;
+}
+.page-header h1 {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.4px;
+  margin: 0;
+}
+/* Secondary header text shrinks first; header items never wrap. */
+.page-header .page-meta {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--muted);
+}
+.page-actions {
+  margin-left: auto;
+}
+.page-header:has(> .confirm) {
+  flex-wrap: wrap;
+}
+.page-header > .confirm {
+  flex-basis: 100%;
+  white-space: normal;
+}
+#leavePrompt:not(:empty) {
+  padding: 12px 24px 0;
+}
+#leavePrompt .confirm {
+  margin-top: 0;
+}
+#monitor,
+#settings {
+  padding: 0 0 24px;
+}
+#monitor > :not(.page-header),
+#settings > :not(.page-header) {
+  margin-left: 24px;
+  margin-right: 24px;
+}
+/* Content that sat on the old shell card keeps a surface until its page is rebuilt. */
+.template-layout,
+.page .card {
+  background: var(--surface);
+}
+
+/* Section cards, rows, column heads and sticky footers. */
+.section-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+}
+.card-head h2,
+.card-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+.card-head .card-action {
+  margin-left: auto;
+}
+.card-row {
+  border-top: 1px solid var(--line);
+  padding: 7px 16px;
+}
+.col-head {
+  border-top: 1px solid var(--line);
+  padding: 6px 16px;
+  background: var(--canvas);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+.footer-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 24px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+.footer-bar > [data-actions] {
+  margin-left: auto;
+}
+.card-row:hover,
+.list-row:hover {
+  background: var(--tint);
+}
+
+/* Inner panels (forms that open in place). */
+.panel {
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--canvas);
+}
+.panel > * + * {
+  margin-top: 10px;
+}
+.panel .row > label {
+  flex: 1;
+  min-width: 160px;
+}
+
+/* Status dots, pills and field tokens. A dot always sits next to text that says the same. */
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--teal);
+}
+.dot[data-tone='attention'],
+.dot[data-tone='warning'] {
+  background: var(--warning);
+}
+.dot[data-tone='blocked'] {
+  background: var(--danger);
+}
+.dot[data-tone='pending'] {
+  border: 1.5px solid var(--control-border);
+  background: transparent;
+}
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 30px;
+  background: var(--tint);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.pill[data-tone='warning'] {
+  background: var(--warning-bg);
+}
+.pill[data-tone='muted'] {
+  background: var(--canvas);
+  color: var(--muted);
+}
+#monitor-automation::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--teal);
+}
+#monitor-automation[data-tone='warning']::before {
+  background: var(--warning);
+}
+button.problem-pill {
+  min-height: 24px;
+  padding: 3px 10px;
   border: 0;
-  background: none;
-  color: var(--teal);
+  border-radius: 30px;
+  background: var(--warning-bg);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+button.problem-pill:hover {
+  background: var(--warning-bg);
   text-decoration: underline;
 }
-#access [data-actions] {
+/* Selected chips and pills on a dark fill: --ink is light in dark mode, so the text is
+   --on-accent, never a literal white. */
+.pill[aria-pressed='true'],
+.pill[aria-current='true'] {
+  background: var(--ink);
+  color: var(--on-accent);
+}
+.token {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: var(--tint);
+  color: var(--teal);
+  font-size: 12px;
+  font-weight: 700;
+}
+.name {
+  overflow-wrap: anywhere;
+}
+
+/* Right-side panels and drawers. */
+.side-panel,
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 400px;
+  max-width: 100%;
+  overflow: auto;
+  z-index: 20;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  box-shadow: -12px 0 32px var(--shadow);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .side-panel:not([hidden]),
+  .drawer:not([hidden]) {
+    animation: slide-in 150ms ease-out;
+  }
+}
+@keyframes slide-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* Sites & access layout: the sites rail, the site's libraries and setup progress. Its controls,
+   labels, tables and headings are the shared ones. */
+.ad-layout {
+  display: grid;
+  grid-template-columns: 205px minmax(0, 1fr);
+  min-height: 420px;
+}
+#ad-sites-pane {
+  padding: 16px 12px;
+  background: var(--canvas);
+  border-right: 1px solid var(--line);
+}
+#ad-filter {
+  margin-top: 12px;
+}
+.ad-main {
+  min-width: 0;
+  padding: 0 18px 16px;
+  background: var(--surface);
+}
+.ad-main > .page-header {
+  margin: 0 -18px 12px;
+}
+.ad-main > .panel:first-child {
+  margin-top: 16px;
+}
+.ad-layout .row:not(.page-actions) {
+  flex-wrap: wrap;
+}
+.ad-layout .row > .confirm {
+  flex-basis: 100%;
+}
+.ad-main [data-actions] {
   position: relative;
 }
-#access .menu {
+.ad-main .menu {
   top: 100%;
   right: 0;
 }
-#access .menu [role='menuitem'] {
+.ad-site {
   display: block;
   width: 100%;
-  border: 0;
-  background: none;
+  margin: 8px 0;
+  padding: 10px;
+  text-align: left;
+  background: transparent;
 }
-#access .menu [role='menuitem']:hover,
-#access .menu [role='menuitem']:focus {
+.ad-site small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ad-site[aria-pressed='true'],
+.ad-library[aria-pressed='true'] {
   background: var(--tint);
+  border-color: var(--teal);
 }
-#access .menu .reason {
-  padding: 0 12px 6px;
+.ad-libraries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
 }
-#access .ad-row > .confirm {
-  flex-basis: 100%;
-}
-#access #ad-site-header {
-  align-items: flex-start;
-}
-#access #ad-sites-empty {
-  padding: 12px 0;
-}
-#access #ad-sites-empty p {
-  margin-bottom: 8px;
-}
-#access #ad-libraries-empty {
-  padding: 18px 0;
-}
-#access #ad-libraries-empty p {
-  margin-bottom: 8px;
-  color: var(--ink);
-}
-#access .ad-libraries > div {
+.ad-libraries > div {
   display: contents;
 }
-#access .ad-apply-row {
+#ad-libraries-heading {
+  margin-top: 16px;
+}
+.ad-issue {
+  color: var(--warning);
+}
+.ad-empty {
+  padding: 12px 0;
+  color: var(--muted);
+}
+.ad-access-notices {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ad-apply-row {
   justify-content: flex-end;
 }
-#access .is-removed td:first-child {
+#ad-team-caption {
+  caption-side: top;
+  padding-bottom: 6px;
+  text-align: left;
+  font-weight: 650;
+}
+#ad-teams .is-removed td:first-child {
   text-decoration: line-through;
 }
-#access #ad-native-list {
+#ad-native-list {
   margin: 6px 0 0;
   padding: 4px;
   max-height: 260px;
@@ -2479,60 +2078,135 @@ input[type='checkbox'] {
   background: var(--surface);
   list-style: none;
 }
-#access #ad-native-list [role='option'] {
+#ad-native-list [role='option'] {
   min-height: 28px;
   padding: 4px 8px;
   border-radius: 6px;
   cursor: pointer;
 }
-#access #ad-native-list [role='option']:hover,
-#access #ad-native-list [aria-selected='true'] {
+#ad-native-list [role='option']:hover,
+#ad-native-list [aria-selected='true'] {
   background: var(--tint);
 }
-#access #ad-native-list .ad-native-more {
+#ad-native-list .ad-native-more {
   color: var(--teal);
   font-weight: 650;
 }
-#access #ad-native-list .ad-native-empty {
-  padding: 4px 8px;
+.ad-progress-card {
+  margin: 16px 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--canvas);
 }
-#access #ad-native-list a {
+.ad-progress-attention {
+  border-color: var(--warning);
+}
+.ad-progress-badge {
   color: var(--teal);
+  font-size: 12px;
+  font-weight: 650;
 }
-#access .candidates {
-  margin: 0 0 12px;
-  padding-left: 18px;
+.ad-progress-attention .ad-progress-badge {
+  color: var(--warning);
 }
-#access .candidates li + li {
-  margin-top: 6px;
+.ad-progress-card progress {
+  display: block;
+  width: calc(100% - 100% / var(--stage-count));
+  height: 7px;
+  margin: 18px calc(50% / var(--stage-count)) 14px;
+  border: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  appearance: none;
+  background: var(--line);
+  accent-color: var(--teal);
 }
-#access .ad-progress-card > .ad-row {
+.ad-progress-card progress::-webkit-progress-bar {
+  background: var(--line);
+  border-radius: 8px;
+}
+.ad-progress-card progress::-webkit-progress-value {
+  background: var(--teal);
+  border-radius: 8px;
+}
+.ad-progress-card progress::-moz-progress-bar {
+  background: var(--teal);
+  border-radius: 8px;
+}
+.ad-progress-card > .row {
   margin-top: 12px;
 }
-/* Every target at least 24×24 (WCAG 2.5.8), links too. */
-main a {
-  display: inline-block;
-  min-height: 24px;
-  line-height: 24px;
+.ad-progress-stages {
+  display: grid;
+  grid-template-columns: repeat(var(--stage-count), minmax(0, 1fr));
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
 }
-#access #ad-team-caption {
-  caption-side: top;
-  padding-bottom: 6px;
-  text-align: left;
+.ad-progress-stages li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 0 4px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ad-progress-stages .is-current,
+.ad-progress-stages .is-complete {
+  color: var(--teal);
   font-weight: 650;
 }
-#access button[aria-disabled='true'] {
-  background: var(--disabled-bg);
-  color: var(--muted);
-  border-color: var(--line);
-  cursor: not-allowed;
+.ad-step-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 12px;
 }
-#access .menu [role='menuitem'][aria-disabled='true'] {
-  background: none;
+.is-current .ad-step-mark,
+.is-complete .ad-step-mark {
+  border-color: var(--teal);
+  background: var(--tint);
 }
-#access #ad-libraries-heading {
-  margin-top: 16px;
+@media (prefers-reduced-motion: no-preference) {
+  .is-loading .is-current .ad-step-mark {
+    animation: ad-stage-pulse 1.8s ease-in-out infinite;
+  }
+  .is-loading progress::-webkit-progress-value {
+    background: linear-gradient(100deg, var(--teal) 20%, var(--tint) 50%, var(--teal) 80%);
+    background-size: 200% 100%;
+    animation: ad-progress-shimmer 2.6s linear infinite;
+  }
+  .is-loading progress::-moz-progress-bar {
+    background: linear-gradient(100deg, var(--teal) 20%, var(--tint) 50%, var(--teal) 80%);
+    background-size: 200% 100%;
+    animation: ad-progress-shimmer 2.6s linear infinite;
+  }
 }
-#access #ad-libraries-pane .ad-libraries {
-  margin-top: 8px;
+@media (max-width: 650px) {
+  .ad-layout {
+    grid-template-columns: 1fr;
+  }
+  #ad-sites-pane {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}
+/* At phone widths the header's actions go to their own line rather than off the screen. */
+@media (max-width: 650px) {
+  .page-header {
+    flex-wrap: wrap;
+  }
+  .page-header .page-actions {
+    flex-wrap: wrap;
+    margin-left: 0;
+  }
 }

@@ -8,719 +8,622 @@
   </head>
   <body>
     <main class="app">
-      <header class="row between top">
-        <h1 class="brand">
-          <span class="logo"
-            ><svg class="folder-icon" aria-hidden="true" viewBox="0 0 24 24">
-              <path fill="#e8b84d" stroke="#ad7b16" stroke-width="1.2" d="M2 5.5h7l2 2h11v12H2z" />
-              <path
-                fill="#f8d77e"
-                stroke="#ad7b16"
-                stroke-width="1.2"
-                d="M2 9h20l-2 10.5H2z"
-              /></svg></span
-          >Ascentix <span class="brand-light">Documents</span>
-        </h1>
-        <div id="automationChip" class="chip" hidden>
-          <span class="dot" aria-hidden="true"></span>
-          <span id="automationChipText" role="status"></span>
-          <a id="automationChipLink" href="#monitor" hidden></a>
-          <button id="automationChipAction" type="button" class="secondary" hidden>Turn on</button>
-          <p class="feedback" id="fb-chip"></p>
-        </div>
-      </header>
-      <div class="shell">
-        <div id="tabs" class="tabs" role="tablist" aria-label="Documents">
-          <button
-            id="tab-templates"
-            role="tab"
-            type="button"
-            aria-controls="templates"
-            aria-selected="false"
-            tabindex="-1"
-          >
-            Folder templates</button
-          ><button
-            id="tab-access"
-            role="tab"
-            type="button"
-            aria-controls="access"
-            aria-selected="false"
-            tabindex="-1"
-          >
-            Sites &amp; access</button
-          ><button
-            id="tab-monitor"
-            role="tab"
-            type="button"
-            aria-controls="monitor"
-            aria-selected="false"
-            tabindex="-1"
-          >
-            Monitor <span id="monitorBadge" class="badge" hidden></span></button
-          ><button
-            id="tab-settings"
-            role="tab"
-            type="button"
-            aria-controls="settings"
-            aria-selected="false"
-            tabindex="-1"
-          >
-            Settings
-          </button>
-        </div>
-        <div id="tabPrompt"></div>
-        <section
-          id="templates"
-          role="tabpanel"
-          aria-labelledby="tab-templates"
-          tabindex="-1"
-          hidden
-        >
-          <div class="template-layout">
-            <aside class="template-nav" aria-labelledby="tables-heading">
-              <div class="row between" id="tables-header">
-                <h2 id="tables-heading" tabindex="-1">Tables</h2>
-                <button id="addTable" type="button" class="secondary">＋ Add table</button>
+      <div id="leavePrompt"></div>
+      <section id="templates" class="page" aria-labelledby="templates-title" tabindex="-1" hidden>
+        <header class="page-header">
+          <h1 id="templates-title" tabindex="-1">Folder templates</h1>
+        </header>
+        <p class="feedback" id="fb-templates"></p>
+        <div class="template-layout">
+          <aside class="template-nav" aria-labelledby="tables-heading">
+            <div class="row between" id="tables-header">
+              <h2 id="tables-heading" tabindex="-1">Tables</h2>
+              <button id="addTable" type="button" class="secondary">＋ Add table</button>
+            </div>
+            <div id="tablePicker" hidden>
+              <label>Table to add<select id="enableTable"></select></label>
+            </div>
+            <div id="templateTree"></div>
+          </aside>
+          <div class="template-main">
+            <section id="template-bar" class="table-bar" hidden aria-label="Template">
+              <div class="row wrap">
+                <label>Template name<input id="templateName" maxlength="200" /></label>
+                <span
+                  id="version-chip"
+                  class="chip version"
+                  tabindex="0"
+                  aria-describedby="version-chip-desc"
+                ></span>
+                <span id="version-chip-desc" class="sr-only"></span>
               </div>
-              <div id="tablePicker" hidden>
-                <label>Table to add<select id="enableTable"></select></label>
-              </div>
-              <div id="templateTree"></div>
-            </aside>
-            <div class="template-main">
-              <section id="template-bar" class="table-bar" hidden aria-label="Template">
-                <div class="row wrap">
-                  <label>Template name<input id="templateName" maxlength="200" /></label>
-                  <span
-                    id="version-chip"
-                    class="chip version"
-                    tabindex="0"
-                    aria-describedby="version-chip-desc"
-                  ></span>
-                  <span id="version-chip-desc" class="sr-only"></span>
-                </div>
-                <div id="templateActions" class="row" data-actions>
-                  <button id="save" type="button" class="secondary">Save draft</button>
-                  <button id="publish" type="button" class="primary">Publish</button>
-                  <button
-                    id="template-menu"
-                    type="button"
-                    class="secondary"
-                    aria-haspopup="menu"
-                    aria-expanded="false"
-                    aria-controls="template-menu-list"
-                    aria-label="More actions"
-                  >
-                    ⋯
-                  </button>
-                  <ul id="template-menu-list" class="menu" role="menu" hidden>
-                    <li role="none">
-                      <button id="menu-history" type="button" role="menuitem" tabindex="-1">
-                        Version history…
-                      </button>
-                    </li>
-                    <li role="none">
-                      <button id="menu-schedule" type="button" role="menuitem" tabindex="-1">
-                        Schedule…
-                      </button>
-                    </li>
-                    <li role="none">
-                      <button id="menu-rerun" type="button" role="menuitem" tabindex="-1">
-                        Re-run for existing records…
-                      </button>
-                    </li>
-                    <li role="separator"></li>
-                    <li role="none">
-                      <button
-                        id="menu-delete"
-                        type="button"
-                        role="menuitem"
-                        tabindex="-1"
-                        class="danger"
-                      >
-                        Delete template
-                      </button>
-                    </li>
-                  </ul>
-                </div>
-              </section>
-              <p class="feedback" id="fb-templates"></p>
-              <section id="history-panel" class="panel" hidden aria-labelledby="history-title">
-                <div class="row between">
-                  <h3 id="history-title">Version history</h3>
-                  <button
-                    type="button"
-                    class="link panel-close"
-                    data-close="history-panel"
-                    aria-label="Close version history"
-                  >
-                    Close
-                  </button>
-                </div>
-                <ul id="history-list" data-actions></ul>
-              </section>
-              <section id="schedule-panel" class="panel" hidden aria-labelledby="schedule-title">
-                <div class="row between">
-                  <h3 id="schedule-title">Schedule</h3>
-                  <button
-                    type="button"
-                    class="link panel-close"
-                    data-close="schedule-panel"
-                    aria-label="Close schedule"
-                  >
-                    Close
-                  </button>
-                </div>
+              <div id="templateActions" class="row" data-actions>
+                <button id="save" type="button" class="secondary">Save draft</button>
+                <button id="publish" type="button" class="primary">Publish</button>
                 <button
-                  id="schedule-on"
+                  id="template-menu"
                   type="button"
-                  role="switch"
-                  class="switch"
-                  aria-checked="true"
-                  aria-labelledby="schedule-on-label"
+                  class="secondary"
+                  aria-haspopup="menu"
+                  aria-expanded="false"
+                  aria-controls="template-menu-list"
+                  aria-label="More actions"
                 >
-                  <span class="switch-track" aria-hidden="true"
-                    ><span class="switch-thumb"></span
-                  ></span>
-                  <span id="schedule-on-label">On</span>
+                  ⋯
                 </button>
-                <label>Start (optional)<input id="templateStart" type="datetime-local" /></label>
-                <label>End (optional)<input id="templateEnd" type="datetime-local" /></label>
-                <div class="row" data-actions>
-                  <button id="saveAvailability" type="button">Save schedule</button>
-                </div>
-                <p class="feedback" id="fb-schedule"></p>
-              </section>
-              <section id="rerun-panel" class="panel" hidden aria-labelledby="rerun-title">
-                <div class="row between">
-                  <h3 id="rerun-title">Re-run for existing records</h3>
-                  <button
-                    type="button"
-                    class="link panel-close"
-                    data-close="rerun-panel"
-                    aria-label="Close re-run for existing records"
-                  >
-                    Close
-                  </button>
-                </div>
-                <p id="rerun-progress" hidden></p>
-                <div class="row wrap" data-actions>
-                  <button id="rerun-all" type="button" class="primary">Re-run all records</button>
-                  <button id="rerun-preview" type="button" class="secondary">
-                    Preview re-run for records…
-                  </button>
-                </div>
-                <div id="rerun-impact"></div>
-                <div class="row" data-actions>
-                  <button id="rerun-these" type="button" hidden>Re-run these records</button>
-                </div>
-                <p class="feedback" id="fb-rerun"></p>
-              </section>
-              <div id="no-template" class="empty-panel"></div>
-              <div id="authorWorkspace" hidden>
-                <div class="editor">
-                  <section
-                    class="pane tree-pane"
-                    aria-labelledby="folders-heading"
-                    data-focus-scope
-                    id="folders-pane"
-                  >
-                    <div class="row between">
-                      <h2 id="folders-heading" tabindex="-1" data-focus-heading>Folders</h2>
-                      <span class="badge" id="destinationCount"></span>
-                    </div>
-                    <div id="destinations" class="stack"></div>
-                    <button id="addDestination" type="button" class="wide secondary">
-                      ＋ Add destination
+                <ul id="template-menu-list" class="menu" role="menu" hidden>
+                  <li role="none">
+                    <button id="menu-history" type="button" role="menuitem" tabindex="-1">
+                      Version history…
                     </button>
-                    <p id="no-library" hidden>
-                      No libraries are ready yet.
-                      <button id="go-access" type="button" class="link">
-                        Set one up in Sites &amp; access →
-                      </button>
-                    </p>
-                  </section>
-                  <section
-                    class="pane"
-                    aria-labelledby="folder-settings-heading"
-                    data-focus-scope
-                    id="settings-pane"
-                  >
-                    <h2 id="folder-settings-heading" tabindex="-1" data-focus-heading>
-                      Folder settings
-                    </h2>
-                    <div id="folderEditor"></div>
-                  </section>
-                  <section class="pane preview-pane" aria-labelledby="preview-heading">
-                    <div class="row between">
-                      <h2 id="preview-heading">Preview</h2>
-                      <span id="preview-stale" class="badge warning" hidden>Out of date</span>
-                    </div>
-                    <div class="row wrap" data-actions>
-                      <span class="label-text">Preview record</span>
-                      <button id="chooseRecord" type="button" class="secondary">
-                        Choose record…
-                      </button>
-                      <span id="preview-record-name"></span>
-                      <button id="refreshPreview" type="button" class="secondary" hidden>
-                        Refresh preview
-                      </button>
-                    </div>
-                    <div id="previewTrees"></div>
-                    <p id="preview-status" class="sr-only" role="status"></p>
-                  </section>
-                </div>
+                  </li>
+                  <li role="none">
+                    <button id="menu-schedule" type="button" role="menuitem" tabindex="-1">
+                      Schedule…
+                    </button>
+                  </li>
+                  <li role="none">
+                    <button id="menu-rerun" type="button" role="menuitem" tabindex="-1">
+                      Re-run for existing records…
+                    </button>
+                  </li>
+                  <li role="separator"></li>
+                  <li role="none">
+                    <button
+                      id="menu-delete"
+                      type="button"
+                      role="menuitem"
+                      tabindex="-1"
+                      class="danger"
+                    >
+                      Delete template
+                    </button>
+                  </li>
+                </ul>
+              </div>
+            </section>
+            <section id="history-panel" class="panel" hidden aria-labelledby="history-title">
+              <div class="row between">
+                <h3 id="history-title">Version history</h3>
+                <button
+                  type="button"
+                  class="link panel-close"
+                  data-close="history-panel"
+                  aria-label="Close version history"
+                >
+                  Close
+                </button>
+              </div>
+              <ul id="history-list" data-actions></ul>
+            </section>
+            <section id="schedule-panel" class="panel" hidden aria-labelledby="schedule-title">
+              <div class="row between">
+                <h3 id="schedule-title">Schedule</h3>
+                <button
+                  type="button"
+                  class="link panel-close"
+                  data-close="schedule-panel"
+                  aria-label="Close schedule"
+                >
+                  Close
+                </button>
+              </div>
+              <button
+                id="schedule-on"
+                type="button"
+                role="switch"
+                class="switch"
+                aria-checked="true"
+                aria-labelledby="schedule-on-label"
+              >
+                <span class="switch-track" aria-hidden="true"
+                  ><span class="switch-thumb"></span
+                ></span>
+                <span id="schedule-on-label">On</span>
+              </button>
+              <label>Start (optional)<input id="templateStart" type="datetime-local" /></label>
+              <label>End (optional)<input id="templateEnd" type="datetime-local" /></label>
+              <div class="row" data-actions>
+                <button id="saveAvailability" type="button">Save schedule</button>
+              </div>
+              <p class="feedback" id="fb-schedule"></p>
+            </section>
+            <section id="rerun-panel" class="panel" hidden aria-labelledby="rerun-title">
+              <div class="row between">
+                <h3 id="rerun-title">Re-run for existing records</h3>
+                <button
+                  type="button"
+                  class="link panel-close"
+                  data-close="rerun-panel"
+                  aria-label="Close re-run for existing records"
+                >
+                  Close
+                </button>
+              </div>
+              <p id="rerun-progress" hidden></p>
+              <div class="row wrap" data-actions>
+                <button id="rerun-all" type="button" class="primary">Re-run all records</button>
+                <button id="rerun-preview" type="button" class="secondary">
+                  Preview re-run for records…
+                </button>
+              </div>
+              <div id="rerun-impact"></div>
+              <div class="row" data-actions>
+                <button id="rerun-these" type="button" hidden>Re-run these records</button>
+              </div>
+              <p class="feedback" id="fb-rerun"></p>
+            </section>
+            <div id="no-template" class="empty-panel"></div>
+            <div id="authorWorkspace" hidden>
+              <div class="editor">
+                <section
+                  class="pane tree-pane"
+                  aria-labelledby="folders-heading"
+                  data-focus-scope
+                  id="folders-pane"
+                >
+                  <div class="row between">
+                    <h2 id="folders-heading" tabindex="-1" data-focus-heading>Folders</h2>
+                    <span class="badge" id="destinationCount"></span>
+                  </div>
+                  <div id="destinations" class="stack"></div>
+                  <button id="addDestination" type="button" class="wide secondary">
+                    ＋ Add destination
+                  </button>
+                  <p id="no-library" hidden>
+                    No libraries are ready yet.
+                    <button id="go-access" type="button" class="link">
+                      Set one up in Sites &amp; access →
+                    </button>
+                  </p>
+                </section>
+                <section
+                  class="pane"
+                  aria-labelledby="folder-settings-heading"
+                  data-focus-scope
+                  id="settings-pane"
+                >
+                  <h2 id="folder-settings-heading" tabindex="-1" data-focus-heading>
+                    Folder settings
+                  </h2>
+                  <div id="folderEditor"></div>
+                </section>
+                <section class="pane preview-pane" aria-labelledby="preview-heading">
+                  <div class="row between">
+                    <h2 id="preview-heading">Preview</h2>
+                    <span id="preview-stale" class="badge warning" hidden>Out of date</span>
+                  </div>
+                  <div class="row wrap" data-actions>
+                    <span class="label-text">Preview record</span>
+                    <button id="chooseRecord" type="button" class="secondary">
+                      Choose record…
+                    </button>
+                    <span id="preview-record-name"></span>
+                    <button id="refreshPreview" type="button" class="secondary" hidden>
+                      Refresh preview
+                    </button>
+                  </div>
+                  <div id="previewTrees"></div>
+                  <p id="preview-status" class="sr-only" role="status"></p>
+                </section>
               </div>
             </div>
           </div>
-        </section>
-        <section id="access" role="tabpanel" aria-labelledby="tab-access" tabindex="-1" hidden>
-          <div class="ad-layout">
-            <aside id="ad-sites-pane" aria-labelledby="ad-sites-heading" data-focus-scope>
-              <div id="ad-sites-header" class="ad-row ad-between">
-                <h3 id="ad-sites-heading" tabindex="-1" data-focus-heading>Sites</h3>
-                <button id="ad-add-site" type="button" data-focus-key="add-site">
-                  ＋ Add site
+        </div>
+      </section>
+      <section id="access" class="page" aria-labelledby="ad-site-title" tabindex="-1" hidden>
+        <div class="ad-layout">
+          <aside id="ad-sites-pane" aria-labelledby="ad-sites-heading" data-focus-scope>
+            <div id="ad-sites-header" class="row between">
+              <h3 id="ad-sites-heading" tabindex="-1" data-focus-heading>Sites</h3>
+              <button class="secondary" id="ad-add-site" type="button" data-focus-key="add-site">
+                ＋ Add site
+              </button>
+            </div>
+            <label id="ad-filter"
+              ><span class="sr-only">Find a site</span
+              ><input id="ad-search" type="search" placeholder="Search sites"
+            /></label>
+            <div id="ad-sites"></div>
+            <div id="ad-sites-empty" class="ad-empty" hidden>
+              <p id="ad-sites-empty-text">No sites yet</p>
+            </div>
+            <button class="secondary" id="ad-more-sites" type="button" hidden>More sites</button>
+          </aside>
+          <div class="ad-main">
+            <section id="ad-site-form" class="panel" hidden aria-labelledby="ad-site-form-title">
+              <div class="row between">
+                <h3 id="ad-site-form-title">Add site</h3>
+                <button class="secondary" id="ad-cancel-site" type="button">Cancel</button>
+              </div>
+              <label for="ad-native-search">SharePoint site</label>
+              <input
+                id="ad-native-search"
+                type="text"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded="false"
+                aria-controls="ad-native-list"
+                autocomplete="off"
+              />
+              <ul id="ad-native-list" role="listbox" aria-label="SharePoint sites" hidden></ul>
+              <div class="row" data-actions>
+                <button id="ad-validate" class="primary" type="button">Add and check site</button>
+              </div>
+              <p class="feedback" id="fb-access-add"></p>
+            </section>
+            <header id="ad-site-header" class="page-header">
+              <h1 id="ad-site-title" tabindex="-1">Select or add a site</h1>
+              <span id="ad-site-health" class="muted"></span>
+              <div id="ad-site-actions" class="page-actions row" data-actions hidden>
+                <button class="secondary" id="ad-existing" type="button">
+                  Add existing library
                 </button>
-              </div>
-              <label id="ad-filter"
-                ><span class="sr-only">Find a site</span
-                ><input id="ad-search" type="search" placeholder="Search sites"
-              /></label>
-              <div id="ad-sites"></div>
-              <div id="ad-sites-empty" class="ad-empty" hidden>
-                <p id="ad-sites-empty-text">No sites yet</p>
-              </div>
-              <button id="ad-more-sites" type="button" hidden>More sites</button>
-            </aside>
-            <div class="ad-main">
-              <section id="ad-site-form" class="ad-box" hidden aria-labelledby="ad-site-form-title">
-                <div class="ad-row ad-between">
-                  <h3 id="ad-site-form-title">Add site</h3>
-                  <button id="ad-cancel-site" type="button">Cancel</button>
-                </div>
-                <label for="ad-native-search">SharePoint site</label>
-                <input
-                  id="ad-native-search"
-                  type="text"
-                  role="combobox"
-                  aria-autocomplete="list"
+                <button id="ad-create" class="primary" type="button">＋ Create library</button>
+                <button
+                  class="secondary"
+                  id="ad-site-menu"
+                  type="button"
+                  aria-haspopup="menu"
                   aria-expanded="false"
-                  aria-controls="ad-native-list"
-                  autocomplete="off"
-                />
-                <ul id="ad-native-list" role="listbox" aria-label="SharePoint sites" hidden></ul>
-                <div class="row" data-actions>
-                  <button id="ad-validate" class="ad-primary" type="button">
-                    Add and check site
-                  </button>
-                </div>
-                <p class="feedback" id="fb-access-add"></p>
-              </section>
-              <div id="ad-site-header" class="ad-row ad-between">
+                  aria-controls="ad-site-menu-list"
+                  aria-label="More actions for this site"
+                >
+                  ⋯
+                </button>
+                <!-- prettier-ignore -->
+                <ul id="ad-site-menu-list" class="menu" role="menu" hidden>
+                    <li role="none"><button id="ad-repoint-site" role="menuitem" type="button" tabindex="-1">Re-point site</button></li>
+                    <li role="none"><button id="ad-remove-site" role="menuitem" type="button" tabindex="-1" class="danger">Remove site</button></li>
+                  </ul>
+              </div>
+            </header>
+            <p class="feedback" id="fb-access"></p>
+            <ul id="ad-changes" class="ad-access-notices" aria-label="What changed" hidden></ul>
+            <section id="ad-site-error" class="panel" hidden aria-labelledby="ad-site-error-title">
+              <h3 id="ad-site-error-title">Site access needs attention</h3>
+              <p>
+                The shared application cannot access this site. An administrator needs to grant it
+                access before this site can be used.
+              </p>
+              <div class="row" data-actions>
+                <button class="secondary" id="ad-recheck" type="button">Check again</button>
+              </div>
+            </section>
+            <section id="ad-existing-form" class="panel" hidden aria-labelledby="ad-existing-title">
+              <div class="row between">
+                <h3 id="ad-existing-title">Existing libraries</h3>
+                <button class="secondary" id="ad-existing-cancel" type="button">Close</button>
+              </div>
+              <div id="ad-existing-choices" class="row" data-actions></div>
+              <button class="secondary" id="ad-existing-more" type="button" hidden>
+                More libraries
+              </button>
+            </section>
+            <section
+              id="ad-library-form"
+              class="panel"
+              hidden
+              aria-labelledby="ad-library-form-title"
+            >
+              <div class="row between">
+                <h3 id="ad-library-form-title">Create library</h3>
+                <button class="secondary" id="ad-cancel-library" type="button">Cancel</button>
+              </div>
+              <label
+                >Library name<input
+                  id="ad-library-name"
+                  maxlength="80"
+                  placeholder="For example, Project documents"
+              /></label>
+              <div class="row">
+                <label
+                  >Give access to (optional)<select id="ad-initial-team">
+                    <option value="">No additional teams</option>
+                  </select></label
+                >
+                <label
+                  >Access<select id="ad-initial-access">
+                    <option>Read</option>
+                    <option>Contribute</option>
+                  </select></label
+                >
+              </div>
+              <div class="row" data-actions>
+                <button id="ad-provision" class="primary" type="button">Create library</button>
+              </div>
+            </section>
+            <button class="secondary" id="ad-more-activity" type="button" hidden>
+              More setup activity
+            </button>
+            <p id="ad-poll-status" class="muted" role="status" hidden></p>
+            <section id="ad-activity" aria-labelledby="ad-activity-heading" data-focus-scope hidden>
+              <h3 id="ad-activity-heading" class="sr-only" tabindex="-1" data-focus-heading>
+                Setup activity
+              </h3>
+              <div id="ad-provision-progress" aria-live="polite"></div>
+            </section>
+            <section
+              id="ad-libraries-pane"
+              aria-labelledby="ad-libraries-heading"
+              data-focus-scope
+              hidden
+            >
+              <h3 id="ad-libraries-heading" tabindex="-1" data-focus-heading>Libraries</h3>
+              <div id="ad-libraries" class="ad-libraries"></div>
+              <button class="secondary" id="ad-more-libraries" type="button" hidden>
+                More libraries
+              </button>
+            </section>
+            <section id="ad-library-detail" aria-labelledby="ad-library-title" hidden>
+              <div class="row between">
                 <div>
-                  <h2 id="ad-site-title" tabindex="-1">Select or add a site</h2>
-                  <span id="ad-site-health" class="ad-status"></span>
+                  <h3 id="ad-library-title">Library access</h3>
+                  <span class="row">
+                    <span id="ad-library-status" class="muted"></span>
+                    <span id="ad-library-access" class="muted"></span>
+                  </span>
                 </div>
-                <div id="ad-site-actions" class="ad-row" data-actions hidden>
-                  <button id="ad-existing" type="button">Add existing library</button>
-                  <button id="ad-create" class="ad-primary" type="button">＋ Create library</button>
+                <div class="row" data-actions>
                   <button
-                    id="ad-site-menu"
+                    class="secondary"
+                    id="ad-library-menu"
                     type="button"
                     aria-haspopup="menu"
                     aria-expanded="false"
-                    aria-controls="ad-site-menu-list"
-                    aria-label="More actions for this site"
+                    aria-controls="ad-library-menu-list"
+                    aria-label="More actions for this library"
                   >
                     ⋯
                   </button>
                   <!-- prettier-ignore -->
-                  <ul id="ad-site-menu-list" class="menu" role="menu" hidden>
-                    <li role="none"><button id="ad-repoint-site" role="menuitem" type="button" tabindex="-1">Re-point site</button></li>
-                    <li role="none"><button id="ad-remove-site" role="menuitem" type="button" tabindex="-1" class="danger">Remove site</button></li>
-                  </ul>
-                </div>
-              </div>
-              <p class="feedback" id="fb-access-site"></p>
-              <ul id="ad-changes" class="ad-access-notices" aria-label="What changed" hidden></ul>
-              <section
-                id="ad-site-error"
-                class="ad-box"
-                hidden
-                aria-labelledby="ad-site-error-title"
-              >
-                <h3 id="ad-site-error-title">Site access needs attention</h3>
-                <p class="ad-topgap">
-                  The shared application cannot access this site. An administrator needs to grant it
-                  access before this site can be used.
-                </p>
-                <div class="ad-row ad-topgap" data-actions>
-                  <button id="ad-recheck" type="button">Check again</button>
-                </div>
-              </section>
-              <section
-                id="ad-existing-form"
-                class="ad-box"
-                hidden
-                aria-labelledby="ad-existing-title"
-              >
-                <div class="ad-row ad-between">
-                  <h3 id="ad-existing-title">Existing libraries</h3>
-                  <button id="ad-existing-cancel" type="button">Close</button>
-                </div>
-                <div id="ad-existing-choices" class="ad-row" data-actions></div>
-                <p class="feedback" id="fb-access-existing"></p>
-                <button id="ad-existing-more" type="button" hidden>More libraries</button>
-              </section>
-              <section
-                id="ad-library-form"
-                class="ad-box"
-                hidden
-                aria-labelledby="ad-library-form-title"
-              >
-                <div class="ad-row ad-between">
-                  <h3 id="ad-library-form-title">Create library</h3>
-                  <button id="ad-cancel-library" type="button">Cancel</button>
-                </div>
-                <label
-                  >Library name<input
-                    id="ad-library-name"
-                    maxlength="80"
-                    placeholder="For example, Project documents"
-                /></label>
-                <div class="ad-row">
-                  <label
-                    >Give access to (optional)<select id="ad-initial-team">
-                      <option value="">No additional teams</option>
-                    </select></label
-                  >
-                  <label
-                    >Access<select id="ad-initial-access">
-                      <option>Read</option>
-                      <option>Contribute</option>
-                    </select></label
-                  >
-                </div>
-                <div class="ad-row" data-actions>
-                  <button id="ad-provision" class="ad-primary" type="button">Create library</button>
-                </div>
-                <p class="feedback" id="fb-access-create"></p>
-              </section>
-              <button id="ad-more-activity" type="button" hidden>More setup activity</button>
-              <p id="ad-poll-status" class="ad-muted" role="status" hidden></p>
-              <section
-                id="ad-activity"
-                aria-labelledby="ad-activity-heading"
-                data-focus-scope
-                hidden
-              >
-                <h3 id="ad-activity-heading" class="sr-only" tabindex="-1" data-focus-heading>
-                  Setup activity
-                </h3>
-                <div id="ad-provision-progress" aria-live="polite"></div>
-              </section>
-              <section
-                id="ad-libraries-pane"
-                aria-labelledby="ad-libraries-heading"
-                data-focus-scope
-                hidden
-              >
-                <h3 id="ad-libraries-heading" tabindex="-1" data-focus-heading>Libraries</h3>
-                <div id="ad-libraries" class="ad-libraries"></div>
-                <button id="ad-more-libraries" type="button" hidden>More libraries</button>
-              </section>
-              <section id="ad-library-detail" aria-labelledby="ad-library-title" hidden>
-                <div class="ad-row ad-between">
-                  <div>
-                    <h3 id="ad-library-title">Library access</h3>
-                    <span class="ad-row">
-                      <span id="ad-library-status" class="ad-status"></span>
-                      <span id="ad-library-access" class="ad-status"></span>
-                    </span>
-                  </div>
-                  <div class="ad-row" data-actions>
-                    <button
-                      id="ad-library-menu"
-                      type="button"
-                      aria-haspopup="menu"
-                      aria-expanded="false"
-                      aria-controls="ad-library-menu-list"
-                      aria-label="More actions for this library"
-                    >
-                      ⋯
-                    </button>
-                    <!-- prettier-ignore -->
-                    <ul id="ad-library-menu-list" class="menu" role="menu" hidden>
+                  <ul id="ad-library-menu-list" class="menu" role="menu" hidden>
                       <li role="none"><button id="ad-repoint-library" role="menuitem" type="button" tabindex="-1">Re-point library</button></li>
                       <li role="none"><button id="ad-remove-library" role="menuitem" type="button" tabindex="-1" class="danger">Remove library</button></li>
                     </ul>
+                </div>
+              </div>
+              <div id="ad-access">
+                <table id="ad-team-table" data-focus-scope>
+                  <caption id="ad-team-caption" tabindex="-1" data-focus-heading>
+                    Team access (applies to every folder in this library)
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Team</th>
+                      <th scope="col">Access</th>
+                      <th scope="col">In SharePoint</th>
+                      <th scope="col"><span class="sr-only">Action</span></th>
+                    </tr>
+                  </thead>
+                  <tbody id="ad-teams"></tbody>
+                </table>
+                <div class="row" data-actions>
+                  <button class="secondary" id="ad-add-team" type="button">＋ Add team</button>
+                </div>
+                <div id="ad-team-form" class="panel" hidden>
+                  <div class="row">
+                    <label
+                      >Team<select id="ad-team-choice">
+                        <option value="">Select a team</option>
+                      </select></label
+                    >
+                    <label
+                      >Access<select id="ad-team-access">
+                        <option>Read</option>
+                        <option>Contribute</option>
+                      </select></label
+                    >
+                    <button class="secondary" id="ad-stage-team" type="button">Add</button>
+                    <button class="secondary" id="ad-cancel-team" type="button">Cancel</button>
                   </div>
                 </div>
-                <div id="ad-access">
-                  <table id="ad-team-table" data-focus-scope>
-                    <caption id="ad-team-caption" tabindex="-1" data-focus-heading>
-                      Team access (applies to every folder in this library)
-                    </caption>
-                    <thead>
-                      <tr>
-                        <th scope="col">Team</th>
-                        <th scope="col">Access</th>
-                        <th scope="col">In SharePoint</th>
-                        <th scope="col"><span class="sr-only">Action</span></th>
-                      </tr>
-                    </thead>
-                    <tbody id="ad-teams"></tbody>
-                  </table>
-                  <div class="ad-row" data-actions>
-                    <button id="ad-add-team" type="button">＋ Add team</button>
-                  </div>
-                  <div id="ad-team-form" class="ad-box" hidden>
-                    <div class="ad-row">
-                      <label
-                        >Team<select id="ad-team-choice">
-                          <option value="">Select a team</option>
-                        </select></label
-                      >
-                      <label
-                        >Access<select id="ad-team-access">
-                          <option>Read</option>
-                          <option>Contribute</option>
-                        </select></label
-                      >
-                      <button id="ad-stage-team" type="button">Add</button>
-                      <button id="ad-cancel-team" type="button">Cancel</button>
-                    </div>
-                  </div>
-                  <div class="ad-row ad-between ad-access-footer">
-                    <p id="ad-change-status" class="ad-muted"></p>
-                    <div id="ad-run-actions" class="ad-row" data-actions hidden>
-                      <button id="ad-run-retry" type="button">Retry access run</button>
-                      <button id="ad-run-cancel" type="button">Cancel access run</button>
-                    </div>
-                  </div>
-                  <ul
-                    id="ad-access-notices"
-                    class="ad-access-notices"
-                    aria-label="Access sync notices"
-                    hidden
-                  ></ul>
-                  <div class="ad-row ad-apply-row" data-actions>
-                    <button id="ad-apply" class="ad-primary" disabled type="button">
-                      Apply access changes
+                <div class="row between ad-access-footer">
+                  <p id="ad-change-status" class="muted"></p>
+                  <div id="ad-run-actions" class="row" data-actions hidden>
+                    <button class="secondary" id="ad-run-retry" type="button">
+                      Retry access run
+                    </button>
+                    <button class="secondary" id="ad-run-cancel" type="button">
+                      Cancel access run
                     </button>
                   </div>
-                  <p class="feedback" id="fb-access-library"></p>
                 </div>
-              </section>
-              <div id="ad-libraries-empty" hidden>
-                <p>No libraries yet</p>
-                <div class="row" data-actions>
-                  <button id="ad-empty-create" type="button" class="ad-primary">
-                    ＋ Create library</button
-                  ><button id="ad-empty-existing" type="button">Add existing library</button>
+                <ul
+                  id="ad-access-notices"
+                  class="ad-access-notices"
+                  aria-label="Access sync notices"
+                  hidden
+                ></ul>
+                <div class="row ad-apply-row" data-actions>
+                  <button id="ad-apply" class="primary" disabled type="button">
+                    Apply access changes
+                  </button>
                 </div>
+                <p class="feedback" id="fb-access-library"></p>
+              </div>
+            </section>
+            <div id="ad-libraries-empty" hidden>
+              <p>No libraries yet</p>
+              <div class="row" data-actions>
+                <button id="ad-empty-create" type="button" class="primary">＋ Create library</button
+                ><button class="secondary" id="ad-empty-existing" type="button">
+                  Add existing library
+                </button>
               </div>
             </div>
           </div>
-        </section>
-        <section id="monitor" role="tabpanel" aria-labelledby="tab-monitor" tabindex="-1" hidden>
-          <div class="row between">
-            <h2 id="monitor-title" tabindex="-1">Monitor</h2>
-            <div class="row" data-actions>
-              <span id="monitor-checked" class="muted"></span>
-              <button id="monitor-refresh" type="button" class="secondary">Refresh</button>
+        </div>
+      </section>
+      <section id="monitor" class="page" aria-labelledby="monitor-title" tabindex="-1" hidden>
+        <header id="monitor-header" class="page-header">
+          <h1 id="monitor-title" tabindex="-1">Monitor</h1>
+          <span id="monitor-automation" class="pill" hidden></span>
+          <button id="monitor-settings-link" type="button" class="link">Change in Settings</button>
+          <div class="page-actions row" data-actions>
+            <span id="monitor-checked" class="muted"></span>
+            <button id="monitor-refresh" type="button" class="secondary">Refresh</button>
+          </div>
+        </header>
+        <p class="feedback" id="fb-monitor"></p>
+        <ol id="setup-checklist" class="checklist" hidden></ol>
+        <div id="monitor-tiles" class="tiles"></div>
+        <div id="monitor-lists"></div>
+        <details id="check-record" class="card">
+          <summary><h3>Check a record</h3></summary>
+          <div class="row wrap">
+            <label>Table<select id="check-table"></select></label>
+            <label>Template<select id="check-template"></select></label>
+            <div class="field">
+              <span class="label-text">Record</span>
+              <button id="check-choose" type="button" class="secondary">Choose record…</button>
+              <span id="check-record-name" role="status"></span>
             </div>
           </div>
-          <p class="feedback" id="fb-monitor"></p>
-          <section class="card status-header" aria-labelledby="automation-label-monitor">
-            <div class="row" data-actions>
-              <button
-                id="automation-switch-monitor"
-                type="button"
-                role="switch"
-                class="switch"
-                aria-checked="false"
-                aria-labelledby="automation-label-monitor"
-                aria-describedby="help-automation-monitor"
-              >
-                <span class="switch-track" aria-hidden="true"
-                  ><span class="switch-thumb"></span
-                ></span>
-                <span id="automation-label-monitor">Automation</span>
-                <span id="automation-state-monitor" class="switch-state"></span>
-              </button>
-            </div>
-            <p class="help" id="help-automation-monitor">
+          <div class="row" data-actions>
+            <button id="check-run" type="button">Check record</button>
+            <button id="check-rerun" type="button" class="secondary">
+              Re-run published template for this record
+            </button>
+          </div>
+          <p class="feedback" id="fb-check"></p>
+          <div id="check-result"></div>
+        </details>
+        <details id="advanced" class="card advanced">
+          <summary><h3>Advanced</h3></summary>
+          <h4>Recent operations</h4>
+          <table>
+            <caption class="sr-only">
+              Recent operations
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Title</th>
+                <th scope="col">Kind</th>
+                <th scope="col">Status</th>
+                <th scope="col">Since</th>
+              </tr>
+            </thead>
+            <tbody id="recent-rows"></tbody>
+          </table>
+          <button id="recent-more" type="button" class="secondary" hidden>Show 50 more</button>
+          <h4>Look up an operation</h4>
+          <label
+            >Operation ID<input id="operation-id" type="text" spellcheck="false" autocomplete="off"
+          /></label>
+          <div class="row" data-actions>
+            <button id="operation-lookup" type="button" class="secondary">Look up</button>
+          </div>
+          <p class="feedback" id="fb-advanced"></p>
+          <section id="operation-result" hidden aria-labelledby="operation-result-title">
+            <h4 id="operation-result-title">Operation</h4>
+            <dl id="operation-fields"></dl>
+            <div id="operation-actions" class="row" data-actions></div>
+          </section>
+        </details>
+      </section>
+      <section id="settings" class="page" aria-labelledby="settings-title" tabindex="-1" hidden>
+        <header class="page-header">
+          <h1 id="settings-title" tabindex="-1">Settings</h1>
+        </header>
+        <p class="feedback" id="fb-settings"></p>
+        <section
+          id="automation-settings"
+          class="card"
+          aria-labelledby="automation-settings-title"
+          aria-busy="true"
+        >
+          <h2 id="automation-settings-title">Automation settings</h2>
+          <p id="settings-readonly" hidden>
+            Only a System Administrator can change these settings.
+          </p>
+          <p id="settings-missing" role="alert" hidden>
+            No automation settings are installed. Import the Documents solution, then reopen this
+            page.
+          </p>
+          <div class="stack">
+            <label>Run as (application user)<select id="runtimeWorker" disabled></select></label>
+            <fieldset class="hosts">
+              <legend>SharePoint host names</legend>
+              <ul id="hosts-list"></ul>
+              <button id="add-host" type="button" class="secondary">＋ Add host</button>
+            </fieldset>
+            <button
+              id="automation-switch-settings"
+              type="button"
+              role="switch"
+              class="switch"
+              aria-checked="false"
+              aria-labelledby="automation-label-settings"
+              aria-describedby="help-automation-settings"
+            >
+              <span class="switch-track" aria-hidden="true"
+                ><span class="switch-thumb"></span
+              ></span>
+              <span id="automation-label-settings">Automation</span>
+              <span id="automation-state-settings" class="switch-state"></span>
+            </button>
+            <p class="help" id="help-automation-settings">
               Off pauses folder and access work. Changes keep queueing and run when you turn it back
               on.
             </p>
-            <p class="feedback" id="fb-automation-monitor"></p>
-          </section>
-          <ol id="setup-checklist" class="checklist" hidden></ol>
-          <div id="monitor-tiles" class="tiles"></div>
-          <div id="monitor-lists"></div>
-          <details id="check-record" class="card">
-            <summary><h3>Check a record</h3></summary>
-            <div class="row wrap">
-              <label>Table<select id="check-table"></select></label>
-              <label>Template<select id="check-template"></select></label>
-              <div class="field">
-                <span class="label-text">Record</span>
-                <button id="check-choose" type="button" class="secondary">Choose record…</button>
-                <span id="check-record-name" role="status"></span>
-              </div>
-            </div>
-            <div class="row" data-actions>
-              <button id="check-run" type="button">Check record</button>
-              <button id="check-rerun" type="button" class="secondary">
-                Re-run published template for this record
-              </button>
-            </div>
-            <p class="feedback" id="fb-check"></p>
-            <div id="check-result"></div>
-          </details>
-          <details id="advanced" class="card advanced">
-            <summary><h3>Advanced</h3></summary>
-            <h4>Recent operations</h4>
-            <table>
-              <caption class="sr-only">
-                Recent operations
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">Title</th>
-                  <th scope="col">Kind</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Since</th>
-                </tr>
-              </thead>
-              <tbody id="recent-rows"></tbody>
-            </table>
-            <button id="recent-more" type="button" class="secondary" hidden>Show 50 more</button>
-            <h4>Look up an operation</h4>
-            <label
-              >Operation ID<input
-                id="operation-id"
-                type="text"
-                spellcheck="false"
-                autocomplete="off"
-            /></label>
-            <div class="row" data-actions>
-              <button id="operation-lookup" type="button" class="secondary">Look up</button>
-            </div>
-            <p class="feedback" id="fb-advanced"></p>
-            <section id="operation-result" hidden aria-labelledby="operation-result-title">
-              <h4 id="operation-result-title">Operation</h4>
-              <dl id="operation-fields"></dl>
-              <div id="operation-actions" class="row" data-actions></div>
-            </section>
-          </details>
-        </section>
-        <section id="settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="-1" hidden>
-          <section
-            id="automation-settings"
-            class="card"
-            aria-labelledby="automation-settings-title"
-            aria-busy="true"
-          >
-            <h2 id="automation-settings-title">Automation settings</h2>
-            <p id="settings-readonly" hidden>
-              Only a System Administrator can change these settings.
-            </p>
-            <p id="settings-missing" role="alert" hidden>
-              No automation settings are installed. Import the Documents solution, then reopen this
-              page.
-            </p>
-            <div class="stack">
-              <label>Run as (application user)<select id="runtimeWorker" disabled></select></label>
-              <fieldset class="hosts">
-                <legend>SharePoint host names</legend>
-                <ul id="hosts-list"></ul>
-                <button id="add-host" type="button" class="secondary">＋ Add host</button>
-              </fieldset>
-              <button
-                id="automation-switch-settings"
-                type="button"
-                role="switch"
-                class="switch"
-                aria-checked="false"
-                aria-labelledby="automation-label-settings"
-                aria-describedby="help-automation-settings"
-              >
-                <span class="switch-track" aria-hidden="true"
-                  ><span class="switch-thumb"></span
-                ></span>
-                <span id="automation-label-settings">Automation</span>
-                <span id="automation-state-settings" class="switch-state"></span>
-              </button>
-              <p class="help" id="help-automation-settings">
-                Off pauses folder and access work. Changes keep queueing and run when you turn it
-                back on.
-              </p>
-              <p class="feedback" id="fb-automation-settings"></p>
-              <button
-                id="record-updates"
-                type="button"
-                role="switch"
-                class="switch"
-                aria-checked="false"
-                aria-labelledby="record-updates-label"
-                aria-describedby="help-record-updates"
-              >
-                <span class="switch-track" aria-hidden="true"
-                  ><span class="switch-thumb"></span
-                ></span>
-                <span id="record-updates-label">Update folders when records change</span>
-              </button>
-              <p class="help" id="help-record-updates">
-                Applies to records changed from now on. To apply templates to existing records,
-                re-run them.
-              </p>
-            </div>
-            <div class="row" data-actions>
-              <button id="save-settings" type="button">Save settings</button>
-            </div>
-            <p class="feedback" id="fb-settings"></p>
-          </section>
-          <section id="tracking" class="card" aria-labelledby="tracking-title" data-focus-scope>
-            <h2 id="tracking-title" tabindex="-1" data-focus-heading>Change tracking</h2>
-            <p id="tracking-error" class="error" role="alert" hidden></p>
-            <table>
-              <caption class="sr-only">
-                Change tracking per table
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">Table</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Action</th>
-                </tr>
-              </thead>
-              <tbody id="tracking-rows"></tbody>
-            </table>
-            <div class="row" data-actions>
-              <button id="repair-all" type="button" class="secondary" hidden>Repair all</button>
-            </div>
-            <p class="feedback" id="fb-tracking"></p>
-          </section>
-          <section class="card" aria-labelledby="connection-title">
-            <h2 id="connection-title">Connection</h2>
-            <ul id="connection-list"></ul>
-            <a id="open-connections" target="_blank" rel="noopener"
-              >Open connections in Power Automate</a
+            <button
+              id="record-updates"
+              type="button"
+              role="switch"
+              class="switch"
+              aria-checked="false"
+              aria-labelledby="record-updates-label"
+              aria-describedby="help-record-updates"
             >
-          </section>
-          <section id="danger-zone" class="card danger-zone" aria-labelledby="danger-title">
-            <h2 id="danger-title">Before uninstalling</h2>
-            <div class="row" data-actions>
-              <button id="stop-tracking" type="button" class="danger">Stop tracking changes</button>
-            </div>
-            <p class="feedback" id="fb-danger"></p>
-          </section>
+              <span class="switch-track" aria-hidden="true"
+                ><span class="switch-thumb"></span
+              ></span>
+              <span id="record-updates-label">Update folders when records change</span>
+            </button>
+            <p class="help" id="help-record-updates">
+              Applies to records changed from now on. To apply templates to existing records, re-run
+              them.
+            </p>
+          </div>
+          <div class="row" data-actions>
+            <button id="save-settings" type="button">Save settings</button>
+          </div>
         </section>
-      </div>
+        <section id="tracking" class="card" aria-labelledby="tracking-title" data-focus-scope>
+          <h2 id="tracking-title" tabindex="-1" data-focus-heading>Change tracking</h2>
+          <p id="tracking-error" class="error" role="alert" hidden></p>
+          <table>
+            <caption class="sr-only">
+              Change tracking per table
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Table</th>
+                <th scope="col">Status</th>
+                <th scope="col">Action</th>
+              </tr>
+            </thead>
+            <tbody id="tracking-rows"></tbody>
+          </table>
+          <div class="row" data-actions>
+            <button id="repair-all" type="button" class="secondary" hidden>Repair all</button>
+          </div>
+        </section>
+        <section class="card" aria-labelledby="connection-title">
+          <h2 id="connection-title">Connection</h2>
+          <ul id="connection-list"></ul>
+          <a id="open-connections" target="_blank" rel="noopener"
+            >Open connections in Power Automate</a
+          >
+        </section>
+        <section id="danger-zone" class="card danger-zone" aria-labelledby="danger-title">
+          <h2 id="danger-title">Before uninstalling</h2>
+          <div class="row" data-actions>
+            <button id="stop-tracking" type="button" class="danger">Stop tracking changes</button>
+          </div>
+        </section>
+      </section>
     </main>
     <script src="shell.js?v=ui20261006nav1"></script>
     <script src="admin.js?v=ui20261006nav1"></script>

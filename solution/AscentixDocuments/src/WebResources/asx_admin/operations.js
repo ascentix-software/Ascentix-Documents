@@ -1,5 +1,5 @@
 'use strict';
-// Monitor and Settings. Monitor's lists load when the tab opens; each row comes
+// Monitor and Settings. Monitor's lists load when the page opens; each row comes
 // from asx_ManageWork ListProblems with names and the actions the server allows. Settings loads
 // the automation profile at once. Text is only ever set with textContent.
 (() => {
@@ -44,13 +44,6 @@
       tile: 'Retrying',
       empty: 'Nothing waiting to retry.',
     },
-  ];
-  const PROBLEMS = [
-    'NotCaptured',
-    'BlockedRecords',
-    'WaitingRecords',
-    'BlockedJobs',
-    'RetryingJobs',
   ];
   const COLUMNS = {
     TemplateRuns: ['Template', 'Progress', 'State', 'Started', 'Actions'],
@@ -144,17 +137,18 @@
     monitor.summary?.Capped?.includes(list)
       ? '5,000+'
       : number(monitor.summary?.[list] ?? monitor.lists.get(list)?.rows.length ?? 0);
-  const plural = (n, one, many) => number(n) + ' ' + (n === 1 ? one : many);
+  const plural = ui.plural;
 
   // Monitor -----------------------------------------------------------------------------------
 
   async function openMonitor() {
     renderLists();
-    renderSwitch('monitor');
+    renderPill();
     ui.onRuntime(() => {
-      renderSwitch('monitor');
+      renderPill();
       renderSetup();
     });
+    $('monitor-settings-link').onclick = () => ui.navigate('settings');
     $('monitor-refresh').onclick = () =>
       ui.busy($('monitor-refresh'), 'Refreshing…', 'monitor', () => refresh(true));
     $('advanced').ontoggle = () => ($('advanced').open ? ensureRecent() : undefined);
@@ -207,7 +201,6 @@
       monitor.summary = null;
     }
     renderTiles();
-    renderBadge(monitor.summary);
     renderSetup();
     return monitor.summary;
   }
@@ -268,39 +261,21 @@
     );
   }
 
-  // The badge on the Monitor tab: the five problem lists, refreshed every 60 s while visible.
-  function renderBadge(summary) {
-    const badge = $('monitorBadge');
-    const tab = $('tab-monitor');
-    if (!summary) {
-      badge.hidden = true;
-      tab.removeAttribute('aria-label');
-      return;
-    }
-    const total = PROBLEMS.reduce((sum, list) => sum + (summary[list] || 0), 0);
-    const capped = PROBLEMS.some((list) => summary.Capped?.includes(list));
-    badge.hidden = total === 0;
-    badge.textContent = capped ? '5,000+' : number(total);
-    if (total === 0) tab.removeAttribute('aria-label');
-    else
-      tab.setAttribute(
-        'aria-label',
-        'Monitor, ' + badge.textContent + (total === 1 ? ' problem' : ' problems'),
-      );
-  }
-  async function badgeOnly() {
-    if (!xrm?.WebApi || !ui.can(OPERATOR)) return;
-    try {
-      renderBadge((await work({ Command: 'Summary' })).Summary);
-    } catch {
-      renderBadge(null);
-    }
+  // Automation as a pill in the Monitor header: running or paused, from the runtime Get or, for
+  // roles that cannot make it, the Default runtime row. The switch itself is in Settings.
+  async function renderPill() {
+    const pill = $('monitor-automation');
+    const state = await ui.automation();
+    pill.hidden = !state;
+    if (!state) return;
+    pill.textContent = state.Enabled ? 'Automation running' : 'Automation paused';
+    pill.dataset.tone = state.Enabled ? 'ok' : 'warning';
   }
 
-  // While Monitor is the open tab, the 60-second tick re-reads the counts, the re-runs and the
-  // blocked jobs. Progress updates silently. A re-run that reaches Done or Needs
-  // attention is announced in the Monitor feedback line, and a library setup that leaves
-  // "Checking SharePoint…" announces its finding sentence once in its list's feedback line.
+  // While Monitor is the open page, the 60-second tick re-reads the counts, the re-runs and the
+  // blocked jobs. Progress updates silently. A re-run that reaches Done or Needs attention, and
+  // a library setup that leaves "Checking SharePoint…", are announced once in the Monitor
+  // feedback line.
   async function watch() {
     const before = new Map(
       ['TemplateRuns', 'BlockedJobs'].flatMap((id) =>
@@ -308,17 +283,20 @@
       ),
     );
     await Promise.all([loadSummary(), reread('TemplateRuns'), reread('BlockedJobs')]);
+    // One line holds every announcement of the tick, so none replaces another.
+    const said = [];
     for (const row of monitor.lists.get('TemplateRuns')?.rows || []) {
       const was = before.get(row.Key)?.Run?.State;
       const now = row.Run?.State;
       if (was && was !== now && (now === 'Done' || now === 'Blocked'))
-        ui.feedback('monitor', 'Re-run of ' + row.Run.TemplateName + ': ' + RUN_STATE[now] + '.');
+        said.push('Re-run of ' + row.Run.TemplateName + ': ' + RUN_STATE[now] + '.');
     }
     for (const row of monitor.lists.get('BlockedJobs')?.rows || []) {
       const was = before.get(row.Key)?.Recovery?.State;
       if (was === 'Checking' && row.Recovery && row.Recovery.State !== 'Checking')
-        ui.feedback('list-BlockedJobs', ui.recoverySentence(row.Title, row.Recovery));
+        said.push(ui.recoverySentence(row.Title, row.Recovery));
     }
+    if (said.length) ui.feedback('monitor', said.join(' '));
   }
   // The watch's re-read of a list's first page, with no skeleton. The fresh page replaces the
   // first page, so a row that was retried, cancelled or resolved and has left the list is gone;
@@ -364,9 +342,7 @@
         heading.setAttribute('data-focus-heading', '');
         const body = el('div');
         body.id = 'body-' + list.id;
-        const feedback = el('p', null, 'feedback');
-        feedback.id = 'fb-list-' + list.id;
-        section.append(heading, body, feedback);
+        section.append(heading, body);
         // extra: keys of rows that "Show 50 more" appended, which the tick's re-read keeps.
         monitor.lists.set(list.id, {
           rows: [],
@@ -489,7 +465,7 @@
     parts.push(table);
     if (state.next) {
       const more = button('Show 50 more', () =>
-        ui.busy(more, 'Loading…', 'list-' + id, () => loadList(id, true)),
+        ui.busy(more, 'Loading…', 'monitor', () => loadList(id, true)),
       );
       more.id = 'more-' + id;
       more.dataset.focusKey = 'more:' + id;
@@ -881,7 +857,7 @@
       place.remove();
       if (!ok) return;
     }
-    const area = list === 'advanced' ? 'advanced' : 'list-' + list;
+    const area = list === 'advanced' ? 'advanced' : 'monitor';
     let result = null;
     await ui.busy(control, BUSY[action], area, async () => {
       result = await send(row, action, candidate);
@@ -918,7 +894,7 @@
         (b) => b.checked,
       );
       if (!picked.length) return undefined;
-      return ui.busy(run, 'Re-running…', 'list-NotCaptured', async () => {
+      return ui.busy(run, 'Re-running…', 'monitor', async () => {
         const rows = monitor.lists.get('NotCaptured').rows;
         let queued = 0;
         const failed = [];
@@ -936,13 +912,10 @@
           }
         }
         if (!failed.length)
-          ui.feedback(
-            'list-NotCaptured',
-            'Re-run queued for ' + plural(queued, 'record', 'records') + '.',
-          );
+          ui.feedback('monitor', 'Re-run queued for ' + plural(queued, 'record', 'records') + '.');
         else
           ui.feedback(
-            'list-NotCaptured',
+            'monitor',
             'Queued ' +
               number(queued) +
               '; ' +
@@ -1245,64 +1218,54 @@
   const listOf = (id) => document.getElementById('list-' + id);
   const rowsOf = (id) => document.getElementById('rows-' + id);
 
-  // Automation switch (Monitor and Settings): SetEnabled, never a whole-profile save. The
-  // switch keeps its label and state spans while it works: its state text says what it is doing.
-  function renderSwitch(where) {
+  // Automation switch (Settings): SetEnabled, never a whole-profile save. The switch keeps its
+  // label and state spans while it works: its state text says what it is doing.
+  function renderSwitch() {
     const runtime = ui.runtime();
-    const control = $('automation-switch-' + where);
+    const control = $('automation-switch-settings');
     control.hidden = !runtime;
     if (!runtime) return;
     if (!control.dataset.busy) {
       control.setAttribute('aria-checked', String(!!runtime.Enabled));
-      $('automation-state-' + where).textContent = runtime.Enabled ? 'Running' : 'Paused';
+      $('automation-state-settings').textContent = runtime.Enabled ? 'Running' : 'Paused';
     }
     ui.disable(
       control,
-      'automation-reason-' + where,
+      'automation-reason-settings',
       runtime.CanChange === false
         ? 'Only a System Administrator can pause or resume automation.'
         : null,
     );
-    control.onclick = () => toggleAutomation(where);
+    control.onclick = toggleAutomation;
   }
-  async function toggleAutomation(where) {
-    const control = $('automation-switch-' + where);
+  async function toggleAutomation() {
+    const control = $('automation-switch-settings');
     if (ui.blocked(control) || control.dataset.busy || !ui.runtime()) return;
     const turnOn = !ui.runtime().Enabled;
-    const area = 'automation-' + where;
     control.dataset.busy = '1';
     control.setAttribute('aria-busy', 'true');
-    $('automation-state-' + where).textContent = turnOn ? 'Turning on…' : 'Pausing…';
-    ui.clearFeedback(area);
+    $('automation-state-settings').textContent = turnOn ? 'Turning on…' : 'Pausing…';
+    ui.clearFeedback('settings');
     try {
-      // setAutomation shares the result through setRuntime: the chip, both switches and the
-      // Settings form's row version follow it. The chip's status text announces the new state,
-      // as for Turn on in the chip; the feedback line only adds what still needs work.
+      // setAutomation shares the result through setRuntime: the switch, the Monitor pill and the
+      // form's row version follow it. The state text says the new state; the feedback line only
+      // adds what still needs work.
       const result = await ui.setAutomation(turnOn);
       const problem = turnOn ? result.Registration?.Error : null;
-      if (problem)
-        ui.feedback(
-          area,
-          'Automation running. ' + problem,
-          'error',
-          where === 'monitor'
-            ? { label: 'Open Settings', onClick: () => ui.navigate('settings') }
-            : null,
-        );
+      if (problem) ui.feedback('settings', 'Automation running. ' + problem, 'error');
     } catch (error) {
-      ui.feedback(area, error.message || String(error), 'error');
+      ui.feedback('settings', error.message || String(error), 'error');
     } finally {
       delete control.dataset.busy;
       control.removeAttribute('aria-busy');
-      renderSwitch(where);
+      renderSwitch();
     }
   }
 
   // Settings ----------------------------------------------------------------------------------
 
-  // The tab starts before the shell's runtime Get may be back: the form stays busy
-  // until it is, then follows every runtime change (Turn on in the chip, the switches, Save,
-  // Repair). A refused Get shows the missing-settings alert.
+  // The page starts before the shell's runtime Get may be back: the form stays busy
+  // until it is, then follows every runtime change (the switch, Save, Repair). A refused Get shows the missing-settings alert.
   async function openSettings() {
     $('automation-settings').setAttribute('aria-busy', 'true');
     $('add-host').onclick = () => {
@@ -1324,7 +1287,7 @@
     // Once Repair all ends, the button shows what is still pending, not its progress text.
     $('repair-all').onclick = async () => {
       if (ui.blocked($('repair-all'))) return;
-      await ui.busy($('repair-all'), 'Repairing…', 'tracking', repairAll);
+      await ui.busy($('repair-all'), 'Repairing…', 'settings', repairAll);
       if (ui.runtime()) renderTracking(ui.runtime());
     };
     $('stop-tracking').onclick = async () => {
@@ -1336,9 +1299,9 @@
         danger: true,
       });
       if (!ok) return;
-      await ui.busy($('stop-tracking'), 'Stopping…', 'danger', async () => {
+      await ui.busy($('stop-tracking'), 'Stopping…', 'settings', async () => {
         ui.setRuntime(await runtimeApi({ Command: 'Unregister' }));
-        ui.feedback('danger', 'Change tracking stopped for every table.');
+        ui.feedback('settings', 'Change tracking stopped for every table.');
       });
     };
     [settings.workers] = await Promise.all([workers(), loadConnections(), ui.runtimeReady()]);
@@ -1425,7 +1388,7 @@
       .forEach((n) => (n.disabled = !editable));
     ui.disable($('record-updates'), 'record-updates-reason', editable ? null : ADMIN_ONLY);
     ui.disable($('stop-tracking'), 'stop-tracking-reason', editable ? null : ADMIN_ONLY);
-    renderSwitch('settings');
+    renderSwitch();
     renderTracking(runtime);
     $('automation-settings').removeAttribute('aria-busy');
   }
@@ -1505,7 +1468,7 @@
         if (repairable) {
           const repair = button('Repair', () => {
             if (ui.blocked(repair)) return undefined;
-            return ui.busy(repair, 'Repairing…', 'tracking', async () => {
+            return ui.busy(repair, 'Repairing…', 'settings', async () => {
               const result = await runtimeApi({
                 Command: 'Register',
                 Table: r.Scope,
@@ -1561,7 +1524,7 @@
       $('repair-all').textContent = 'Repaired ' + (total - after) + ' of ' + total;
       if (after >= before) {
         ui.feedback(
-          'tracking',
+          'settings',
           'Repair made no progress. ' +
             plural(after, 'table still needs', 'tables still need') +
             ' repair.',
@@ -1571,7 +1534,7 @@
       }
       before = after;
     }
-    ui.feedback('tracking', 'Change tracking repaired for every table.');
+    ui.feedback('settings', 'Change tracking repaired for every table.');
   }
 
   async function loadConnections() {
@@ -1607,15 +1570,13 @@
   ui.onTab('monitor', openMonitor);
   ui.onTab('settings', openSettings);
   ui.onLink('monitor', focusLink);
-  // The badge shows on every tab; it refreshes every 60 s while the page is visible. On Monitor
-  // the same tick also re-reads the re-runs and blocked jobs and announces state changes (watch).
+  // While Monitor is the open page and the page is visible, the 60-second tick re-reads its
+  // counts, re-runs and blocked jobs and announces state changes (watch).
   document.addEventListener('DOMContentLoaded', () => {
-    if (ui.activeTab() !== 'monitor') badgeOnly();
     setInterval(() => {
       if (document.visibilityState !== 'visible') return undefined;
-      return ui.activeTab() === 'monitor' && xrm?.WebApi && ui.can(OPERATOR)
-        ? watch()
-        : badgeOnly();
+      if (ui.activeTab() !== 'monitor' || !xrm?.WebApi || !ui.can(OPERATOR)) return undefined;
+      return watch();
     }, 60000);
   });
 })();

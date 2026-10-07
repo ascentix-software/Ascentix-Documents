@@ -1,7 +1,7 @@
 'use strict';
-// The admin page shell: which tab a load shows, tab clicks that reload the page so the
-// app's left menu follows, deep links between tabs, the automation chip, and the helpers
-// every tab uses through window.AsxdUi. Text is only ever set with textContent.
+// The admin page shell: which page a load shows (the app's left menu opens each page at its own
+// address), deep links between pages, the unsaved-changes prompt, and the helpers every page
+// uses through window.AsxdUi. Text is only ever set with textContent.
 (() => {
   const BUILD = 'ui20261006nav1';
   const TABS = ['templates', 'access', 'monitor', 'settings'];
@@ -11,7 +11,7 @@
     administration: 'monitor',
     author: 'templates',
   };
-  const KEYS = { launched: 'asxd.launched', focus: 'asxd.focusTab', link: 'asxd.deeplink' };
+  const KEYS = { launched: 'asxd.launched', link: 'asxd.deeplink' };
   const PARAMS = ['library', 'operation', 'record', 'table', 'run', 'template'];
   const EMPTY = '00000000-0000-0000-0000-000000000000';
   // The server's bounds (Ascentix.Documents.Domain.Bounds, with their reasons); verify-admin.cjs
@@ -333,9 +333,13 @@
     hour: '2-digit',
     minute: '2-digit',
   });
+  // A server time ("/Date(ms)/" or ISO) as epoch milliseconds; NaN when unreadable.
+  function ms(value) {
+    const legacy = /^\/Date\((-?\d+)/.exec(value || '');
+    return legacy ? Number(legacy[1]) : new Date(value || NaN).getTime();
+  }
   function time(value) {
-    const ms = /^\/Date\((-?\d+)/.exec(value || '');
-    const date = new Date(ms ? Number(ms[1]) : value || NaN);
+    const date = new Date(ms(value));
     const node = el('time', isNaN(date) ? '' : formatter.format(date));
     if (!isNaN(date)) node.setAttribute('datetime', date.toISOString().replace(/\.\d{3}Z$/, 'Z'));
     return node;
@@ -454,7 +458,7 @@
   }
   function setRuntime(result) {
     state.runtime = result;
-    renderChip();
+    automationCache = null;
     runtimeListeners.forEach((fn) => fn(result));
   }
   async function setAutomation(enabled) {
@@ -470,95 +474,41 @@
     return result;
   }
 
-  // What a runtime result says still needs work in change tracking, or null when nothing does.
-  function registrationProblem(result) {
-    const registration = result?.Registration;
-    if (registration?.Error)
-      return 'Turned on, but change tracking needs attention: ' + registration.Error;
-    const scopes = (registration?.Readiness || []).filter((r) => r.Status !== 'Ready');
-    if (!scopes.length) return null;
-    return (
-      'Turned on, but change tracking is not ready for ' +
-      scopes.map((r) => r.Scope).join(', ') +
-      '. Repair it in Settings.'
-    );
-  }
-  // The automation chip. Its text is a status region and is set only when it changes.
-  function renderChip() {
-    const runtime = state.runtime;
-    const chip = $('automationChip');
-    if (!runtime) {
-      chip.hidden = true;
-      return;
-    }
-    const unset = !runtime.WorkerId || runtime.WorkerId === EMPTY;
-    const attention =
-      (runtime.Registration?.Readiness || []).some((r) => r.Status !== 'Ready') ||
-      !!runtime.Registration?.Error;
-    const view = unset
-      ? { text: 'Automation not set up', tone: 'warning', tab: 'settings', label: 'Settings' }
-      : !runtime.Enabled
-        ? { text: 'Automation paused', tone: 'warning', turnOn: true }
-        : attention
-          ? {
-              text: 'Automation running · needs attention',
-              tone: 'warning',
-              tab: 'settings',
-              label: 'Settings',
-            }
-          : { text: 'Automation running', tone: 'ok', tab: 'monitor', label: 'Monitor' };
-    const text = $('automationChipText');
-    if (text.textContent !== view.text) text.textContent = view.text;
-    chip.dataset.tone = view.tone;
-    const link = $('automationChipLink');
-    link.hidden = !view.tab;
-    if (view.tab) {
-      link.textContent = view.label;
-      link.onclick = (event) => {
-        event?.preventDefault?.();
-        navigate(view.tab);
-      };
-    }
-    const action = $('automationChipAction');
-    action.hidden = !view.turnOn;
-    disable(
-      action,
-      'automationChipReason',
-      view.turnOn && runtime.CanChange === false
-        ? 'Only a System Administrator can turn automation on.'
-        : null,
-    );
-    chip.hidden = false;
-  }
-
   function show(tab, link) {
     state.tab = tab;
     state.link = link;
-    for (const name of TABS) {
-      const active = name === tab;
-      const control = $('tab-' + name);
-      control.setAttribute('aria-selected', String(active));
-      control.tabIndex = active ? 0 : -1;
-      control.classList.toggle('active', active);
-      $(name).hidden = !active;
-    }
+    for (const name of TABS) $(name).hidden = name !== tab;
   }
-  async function go(tab, link, focus) {
+  async function go(tab, link) {
     if (link) write(KEYS.link, JSON.stringify({ ...link, tab }));
-    if (focus) write(KEYS.focus, tab);
-    // The same address the left menu uses, so the app highlights this tab's menu item.
+    // The same address the left menu uses, so the app highlights this page's menu item.
     await xrm.Navigation.navigateTo({
       pageType: 'webresource',
       webresourceName: 'asx_admin/index.html?data=' + tab + '-' + BUILD,
     });
   }
-  // Leaving the tab reloads the page, so unsaved template edits ask first: Save draft,
-  // Discard changes or Stay. Resolves true when the page may go.
-  async function leave() {
+  // The h1 a page shows: one inside a hidden part of the page (the editor while the overview
+  // shows) does not count.
+  function pageHeading(tab) {
+    const page = $(tab);
+    return (
+      [...(page?.querySelectorAll('h1') || [])].find((h) => {
+        const hidden = h.closest('[hidden]');
+        return !hidden || hidden === page;
+      }) || null
+    );
+  }
+  // Leaving reloads the page, so unsaved template edits ask first, at the top of the page
+  // content: Save draft, Discard changes or Stay. Resolves true when the page may go.
+  async function confirmLeave() {
     const guard = state.dirty?.();
     if (!guard) return true;
-    const choice = await ask($('tab-' + state.tab), {
-      host: $('tabPrompt'),
+    const active = document.activeElement;
+    const anchor =
+      active && active !== document.body ? active : pageHeading(state.tab) || $(state.tab);
+    const host = $('leavePrompt');
+    const asking = ask(anchor, {
+      host,
       text: 'You have unsaved changes to ' + guard.template + '.',
       keep: 'stay',
       choices: [
@@ -567,6 +517,9 @@
         { value: 'stay', label: 'Stay' },
       ],
     });
+    // The prompt sits above the content; bring it into view with its focused message.
+    host.querySelector('.confirm-text')?.scrollIntoView?.({ block: 'nearest' });
+    const choice = await asking;
     if (choice === 'stay') return false;
     if (choice === 'discard') {
       guard.discard();
@@ -580,37 +533,12 @@
       return false;
     }
   }
+  const leave = () => confirmLeave();
   async function navigate(tab, link = null) {
     if (tab === state.tab && link) return links.get(tab)?.({ ...link, tab });
     if (tab === state.tab) return undefined;
     if (!(await leave())) return undefined;
-    return go(tab, link, false);
-  }
-  async function activate(tab) {
-    if (tab === state.tab) return;
-    if (await leave()) await go(tab, null, true);
-  }
-  function wireTabs() {
-    const controls = TABS.map((name) => $('tab-' + name));
-    controls.forEach((control, index) => {
-      control.onclick = () => activate(TABS[index]);
-    });
-    // Manual activation: arrows, Home and End move focus only; the native click of
-    // Enter and Space activates.
-    $('tabs').addEventListener('keydown', (event) => {
-      const index = controls.indexOf(document.activeElement);
-      const target = {
-        ArrowRight: index + 1,
-        ArrowLeft: index - 1,
-        Home: 0,
-        End: controls.length - 1,
-      }[event.key];
-      if (index < 0 || target === undefined) return;
-      event.preventDefault();
-      const next = controls[(target + controls.length) % controls.length];
-      controls.forEach((c) => (c.tabIndex = c === next ? 0 : -1));
-      next.focus();
-    });
+    return go(tab, link);
   }
 
   async function landing() {
@@ -665,33 +593,192 @@
     const data = fromData(window.location.search);
     const tab = link?.tab || hashed?.tab || data || 'templates';
     state.runtimePromise = loadRuntime();
-    const privileges = loadPrivileges();
+    const privileges = (state.privileges = loadPrivileges());
     // The app launch opens its first entry, Folder templates; only that load lands elsewhere.
     if (first && !link && !hashed && tab === 'templates') {
       const target = await landing();
-      if (target !== 'templates') return go(target, null, false);
+      if (target !== 'templates') return go(target, null);
     }
     show(tab, link || hashed);
-    wireTabs();
-    // The tab starts once the privilege checks are in; the chip is drawn, and onRuntime
-    // listeners hear the result (null when Get is refused), whenever the runtime Get returns.
+    // The page starts once the privilege checks are in; onRuntime listeners hear the result
+    // (null when Get is refused) whenever the runtime Get returns.
     state.runtimePromise.then(setRuntime);
     await privileges;
-    $('automationChipAction').onclick = () => {
-      const action = $('automationChipAction');
-      if (blocked(action)) return undefined;
-      return busy(action, 'Turning on…', 'chip', async () => {
-        // The chip's status text announces the new state; the feedback line only adds what
-        // the resume reported as still needing work.
-        const problem = registrationProblem(await setAutomation(true));
-        if (problem) feedback('chip', problem, 'error');
-      });
-    };
-    if (read(KEYS.focus) === tab) {
-      forget(KEYS.focus);
-      $('tab-' + tab).focus();
-    }
     return inits.get(tab)?.();
+  }
+
+  // A count with its noun: "1 problem", "1,214 problems".
+  const plural = (n, one, many) =>
+    Number(n || 0).toLocaleString('en-US') + ' ' + (n === 1 ? one : many);
+
+  // An 8px status dot. It always sits next to text that says the same thing.
+  function dot(tone) {
+    const node = el('span', null, 'dot');
+    node.dataset.tone = tone;
+    node.setAttribute('aria-hidden', 'true');
+    return node;
+  }
+  const status = (tone, text) => {
+    const node = el('span', null, 'status');
+    node.append(dot(tone), text);
+    return node;
+  };
+  const pill = (text, tone) => {
+    const node = el('span', text, 'pill');
+    node.dataset.tone = tone;
+    return node;
+  };
+  // A stored name such as "P-{root.projectnumber}" with each field token as a chip. A token
+  // labelOf does not know stays as its literal text. Nothing is parsed as markup.
+  function tokens(text, labelOf) {
+    const node = el('span', null, 'name');
+    const value = String(text ?? '');
+    let at = 0;
+    for (const match of value.matchAll(/\{([a-z0-9_]+)\.([a-z0-9_]+)\}/gi)) {
+      if (match.index > at) node.append(value.slice(at, match.index));
+      const label = labelOf(match[1], match[2]);
+      node.append(label ? el('span', label, 'token') : match[0]);
+      at = match.index + match[0].length;
+    }
+    if (at < value.length) node.append(value.slice(at));
+    return node;
+  }
+  // A section card: a head row with the title, a muted summary and an optional link pushed
+  // right, then the body.
+  function card({ id = null, title, summary = null, action = null, level = 2 }) {
+    const box = el('section', null, 'section-card');
+    const head = el('div', null, 'card-head');
+    const heading = el('h' + level, title);
+    if (id) {
+      box.id = id;
+      heading.id = id + '-title';
+      box.setAttribute('aria-labelledby', heading.id);
+    }
+    head.append(heading);
+    if (summary) head.append(el('span', summary, 'muted'));
+    if (action) {
+      const link = button(action.label, action.onClick, 'link card-action');
+      if (action.key) link.dataset.focusKey = action.key;
+      head.append(link);
+    }
+    const body = el('div', null, 'card-body');
+    box.append(head, body);
+    return { card: box, head, body };
+  }
+
+  // A right-side panel or drawer as a dialog named by its heading. Focus moves to the heading;
+  // Escape closes it unless a confirmation, menu or popover inside it took that Escape; focus
+  // goes back to the invoker, or to the control that replaced it (same data-focus-key). One
+  // panel is open at a time.
+  let openPanel = null;
+  function sidePanel(panel, invoker, { onClose = null } = {}) {
+    openPanel?.close(false);
+    const heading = panel.querySelector('h1, h2, h3');
+    if (!heading.id) heading.id = (panel.id || 'panel') + '-title';
+    heading.tabIndex = -1;
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-labelledby', heading.id);
+    panel.hidden = false;
+    const key = invoker?.dataset?.focusKey;
+    const onKey = (event) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (event.target?.closest?.('.confirm, .menu, .popover')) return;
+      event.preventDefault();
+      handle.close();
+    };
+    panel.addEventListener('keydown', onKey);
+    const handle = {
+      close(focus = true) {
+        if (panel.hidden) return;
+        panel.hidden = true;
+        panel.removeEventListener('keydown', onKey);
+        if (openPanel === handle) openPanel = null;
+        onClose?.();
+        if (!focus) return;
+        const back = invoker?.isConnected
+          ? invoker
+          : key && document.querySelector('[data-focus-key="' + key + '"]');
+        back?.focus();
+      },
+    };
+    openPanel = handle;
+    heading.focus();
+    return handle;
+  }
+
+  // Whether automation runs and whether it follows record changes. A System Administrator's
+  // runtime Get answers it; other roles read the Default runtime row, which every Documents
+  // role may read. A row that was read is kept until the runtime changes; a failed or missing
+  // read is tried again on the next call.
+  let automationCache = null;
+  async function automation() {
+    const runtime = await Promise.resolve(state.runtimePromise).then(() => state.runtime);
+    if (runtime)
+      return { Enabled: !!runtime.Enabled, ProcessRecordUpdates: !!runtime.ProcessRecordUpdates };
+    if (!automationCache)
+      automationCache = xrm.WebApi.retrieveMultipleRecords(
+        'asx_runtime',
+        "?$select=asx_enabled,asx_processrecordupdates&$filter=asx_name eq 'Default'&$top=2",
+      ).then((rows) =>
+        rows.entities.length === 1
+          ? {
+              Enabled: !!rows.entities[0].asx_enabled,
+              ProcessRecordUpdates: !!rows.entities[0].asx_processrecordupdates,
+            }
+          : null,
+      );
+    const reading = automationCache;
+    try {
+      const result = await reading;
+      if (!result && automationCache === reading) automationCache = null;
+      return result;
+    } catch {
+      if (automationCache === reading) automationCache = null;
+      return null;
+    }
+  }
+
+  // The problem count other pages show as "Monitor · N problems": the five problem lists of one
+  // Summary per page load (a page change reloads), shared by every header that asks. Re-runs are
+  // not problems. Null when the caller lacks the Operator role or the read fails.
+  const PROBLEMS = [
+    'NotCaptured',
+    'BlockedRecords',
+    'WaitingRecords',
+    'BlockedJobs',
+    'RetryingJobs',
+  ];
+  let problemsPromise = null;
+  function problems() {
+    problemsPromise ??= (async () => {
+      await state.privileges;
+      if (!can('prvCreateasx_operatorcommand')) return null;
+      try {
+        const summary = (await api('asx_ManageWork', { Command: 'Summary' })).Summary;
+        if (!summary) return null;
+        return {
+          total: PROBLEMS.reduce((sum, list) => sum + (summary[list] || 0), 0),
+          capped: PROBLEMS.some((list) => summary.Capped?.includes(list)),
+        };
+      } catch {
+        return null;
+      }
+    })();
+    return problemsPromise;
+  }
+  function problemPill(host) {
+    const link = button('', () => navigate('monitor'), 'pill problem-pill');
+    link.dataset.tone = 'warning';
+    link.hidden = true;
+    host.replaceChildren(link);
+    problems().then((count) => {
+      if (!count || count.total === 0) return;
+      link.textContent =
+        'Monitor · ' +
+        (count.capped ? '5,000+ problems' : plural(count.total, 'problem', 'problems'));
+      link.hidden = false;
+    });
+    return link;
   }
 
   window.AsxdUi = {
@@ -715,6 +802,17 @@
     recoverySentence,
     candidateChecks,
     time,
+    ms,
+    plural,
+    dot,
+    status,
+    pill,
+    tokens,
+    card,
+    sidePanel,
+    automation,
+    problemPill,
+    confirmLeave,
     details,
     busy,
     disable,
@@ -724,8 +822,8 @@
     can,
     needs,
     runtime: () => state.runtime,
-    // Resolves once the load's runtime Get is back (null when refused), after the chip and the
-    // onRuntime listeners have heard it: for a tab that must tell "not back yet" from "refused".
+    // Resolves once the load's runtime Get is back (null when refused), after the onRuntime
+    // listeners have heard it: for a page that must tell "not back yet" from "refused".
     runtimeReady: () => Promise.resolve(state.runtimePromise).then(() => state.runtime),
     onRuntime: (fn) => runtimeListeners.push(fn),
     setRuntime,

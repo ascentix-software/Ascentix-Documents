@@ -10,6 +10,7 @@ const { createDocument, FakeEvent } = require('./fake-dom.cjs');
 const base = path.resolve(__dirname, '../../client/admin');
 const html = fs.readFileSync(path.join(base, 'index.html'), 'utf8');
 const read = (name) => fs.readFileSync(path.join(base, name), 'utf8');
+const BUILD = /const BUILD = '([^']+)'/.exec(read('shell.js'))[1];
 const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const TEMPLATE = '11111111-0000-0000-0000-000000000001';
 const OTHER = '33333333-0000-0000-0000-000000000003';
@@ -295,7 +296,7 @@ async function boot({
   const session = new Map([['asxd.launched', '1']]);
   const window = {
     parent: { Xrm: xrm },
-    location: { search: '?data=templates-ui20261006nav1', hash: '' },
+    location: { search: '?data=templates-' + BUILD, hash: '' },
     sessionStorage: {
       getItem: (k) => session.get(k) ?? null,
       setItem: (k, v) => session.set(k, v),
@@ -398,12 +399,15 @@ async function boot({
     assert.equal(t.$('version-chip').textContent, 'Draft v2 · unsaved changes');
     assert.equal(t.$('save').getAttribute('aria-label'), 'Save draft, unsaved changes');
     assert.equal(t.$('publish-reason').textContent, 'Save your changes first');
-    // Leaving the tab with unsaved edits asks first (the shell owns the prompt).
-    t.$('tab-monitor').click();
+    // Leaving the page with unsaved edits asks first (the shell owns the prompt).
+    t.document.track(t.window.AsxdUi.navigate('monitor'));
     await t.document.settle();
-    assert.match(t.$('tabPrompt').visibleText, /You have unsaved changes to Account onboarding\./);
+    assert.match(
+      t.$('leavePrompt').visibleText,
+      /You have unsaved changes to Account onboarding\./,
+    );
     // Save draft, then Publish with its confirmation (kept text #3).
-    await t.press(t.find(t.$('tabPrompt'), 'Stay'));
+    await t.press(t.find(t.$('leavePrompt'), 'Stay'));
     await t.press(t.$('save'));
     assert.equal(t.last('asx_CreateDraft').Destinations[0].Folders[1].Name, 'General documents');
     assert.equal(t.$('version-chip').textContent, 'Draft v2');
@@ -420,30 +424,30 @@ async function boot({
     assert.ok(t.find(t.$('fb-templates'), 'Re-run existing records…'));
   }
   {
-    // Unsaved edits ask before the library link leaves the tab too (ruling 3): Save draft saves
-    // and then goes; a tab change with Discard changes goes without saving.
+    // Unsaved edits ask before the library link leaves the page too: Save draft saves and then
+    // goes; a page change with Discard changes goes without saving.
     const t = await boot();
     await t.open();
     await t.press(t.find(t.$('destinations'), 'General'));
     await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Renamed');
     await t.press(t.find(t.$('folderEditor'), 'View this library’s team access →'));
-    assert.match(t.$('tabPrompt').visibleText, /You have unsaved changes to Account onboarding\./);
+    assert.match(
+      t.$('leavePrompt').visibleText,
+      /You have unsaved changes to Account onboarding\./,
+    );
     assert.equal(t.sent.filter(([k]) => k === 'navigate').length, 0, 'Nothing leaves yet');
-    await t.press(t.find(t.$('tabPrompt'), 'Save draft'));
+    await t.press(t.find(t.$('leavePrompt'), 'Save draft'));
     assert.equal(t.last('asx_CreateDraft').Destinations[0].Folders[1].Name, 'Renamed');
-    assert.equal(t.sent.filter(([k]) => k === 'navigate').at(-1)[1].data, 'access-ui20261006nav1');
+    assert.equal(t.sent.filter(([k]) => k === 'navigate').at(-1)[1].data, 'access-' + BUILD);
     const d = await boot();
     await d.open();
     await d.press(d.find(d.$('destinations'), 'General'));
     await d.change(d.labelled(d.$('folderEditor'), 'Folder name'), 'Dropped');
-    d.$('tab-settings').click();
+    d.document.track(d.window.AsxdUi.navigate('settings'));
     await d.document.settle();
-    await d.press(d.find(d.$('tabPrompt'), 'Discard changes'));
+    await d.press(d.find(d.$('leavePrompt'), 'Discard changes'));
     assert.equal(d.last('asx_CreateDraft'), undefined, 'Discard saves nothing');
-    assert.equal(
-      d.sent.filter(([k]) => k === 'navigate').at(-1)[1].data,
-      'settings-ui20261006nav1',
-    );
+    assert.equal(d.sent.filter(([k]) => k === 'navigate').at(-1)[1].data, 'settings-' + BUILD);
   }
   {
     // Paused automation adds a sentence to the Publish confirmation; no Publisher role disables it.
@@ -560,7 +564,7 @@ async function boot({
     await broken.press(broken.find(broken.$('templateTree'), 'Needs repair'));
     assert.deepEqual(
       broken.sent.filter(([k]) => k === 'navigate').at(-1)[1].data,
-      'settings-ui20261006nav1',
+      'settings-' + BUILD,
     );
     const t = await boot();
     const remove = t
@@ -871,7 +875,7 @@ async function boot({
     assert.match(t.$('fb-rerun').textContent, /^Re-run started\./);
     await t.press(t.find(t.$('fb-rerun'), 'Follow it in Monitor →'));
     const nav = t.sent.filter(([k]) => k === 'navigate').at(-1)[1];
-    assert.equal(nav.data, 'monitor-ui20261006nav1');
+    assert.equal(nav.data, 'monitor-' + BUILD);
     // CountRecords reads Dataverse's daily snapshot, so its total is usually "about N" (ruling 5).
     const about = await boot({
       handle: (api, b) =>

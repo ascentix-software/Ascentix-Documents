@@ -45,7 +45,7 @@
   const ui = window.AsxdUi;
   // The rail's ＋ Add table moves into the rail's empty state and back to the rail header.
   const addTableButton = $('addTable');
-  // Results of an action show in the feedback line of the tab that ran it.
+  // Results of an action show in the feedback line under the header of the page that ran it.
   const message = (text, error = false) =>
     ui.feedback(ui.activeTab(), text, error ? 'error' : 'success');
   const el = (tag, text, css) => {
@@ -84,7 +84,7 @@
     node.dataset.focusKey = key;
     return node;
   };
-  const plural = (n, one, many) => n.toLocaleString('en-US') + ' ' + (n === 1 ? one : many);
+  const plural = ui.plural;
 
   // The version chip: from the loaded revision's number and status and the schedule.
   function versionText() {

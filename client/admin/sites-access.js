@@ -1,7 +1,7 @@
 'use strict';
 // Sites & access: sites, their libraries, each library's team access, and the setup
-// activity on them. Each area reports in its own feedback line; every command asks in the page,
-// next to what asked. Text is only ever set with textContent.
+// activity on them. Results report in the line under the page header, or in the Add site or
+// library access line; every command asks in the page, next to what asked. Text is only ever set with textContent.
 (() => {
   const root = document.getElementById('access'),
     $ = (id) => document.getElementById(id),
@@ -22,8 +22,8 @@
     site: null,
     library: null,
     busy: false,
-    // The feedback area of the action that runs: access-site, access-add, access-create,
-    // access-existing or access-library.
+    // The feedback area of the action that runs: access (under the page header), access-add
+    // (Add site) or access-library (the library's access).
     area: 'access-library',
     // Where focus goes when the action that runs closes or hides what was focused: element IDs,
     // the first one shown wins.
@@ -74,7 +74,7 @@
     o.value = value;
     return o;
   };
-  const control = (text, key, onClick, css) => {
+  const control = (text, key, onClick, css = 'secondary') => {
     const b = node('button', text, css);
     b.type = 'button';
     if (key) b.dataset.focusKey = key;
@@ -353,7 +353,7 @@
           }),
         );
         issue(said);
-      }, 'access-site');
+      }, 'access');
     const named = (b) => {
       b.setAttribute('aria-label', b.textContent + ' for ' + o.name);
       return b;
@@ -370,7 +370,7 @@
           node('span', checks ? ' · ' + checks : ''),
         );
         if (c.IsLibrary && c.CatalogEntry !== 'Conflict') {
-          const row = node('span', null, 'ad-row');
+          const row = node('span', null, 'row');
           row.setAttribute('data-actions', '');
           const use = control('Use this one', 'card:' + key + ':use:' + c.ListId, async () => {
             const ok = await cardAsk(use, {
@@ -407,7 +407,7 @@
                   recovery.Candidates[0].ListId,
                   'Using the existing library. Setup continues.',
                 ),
-              'ad-primary',
+              'primary',
             ),
           ),
         );
@@ -418,7 +418,7 @@
               'Create it again',
               'card:' + key + ':create',
               () => resolve('CreateAgain', null, 'Creating the library again.'),
-              'ad-primary',
+              'primary',
             ),
           ),
         );
@@ -429,7 +429,7 @@
               action(async () => {
                 settled(o, await catalog({ Command: 'RecheckSetup', Key: key }));
                 issue('Checking SharePoint again.');
-              }, 'access-site'),
+              }, 'access'),
             ),
           ),
         );
@@ -450,7 +450,7 @@
         if (ok)
           await action(
             () => runConfirmed({ kind: 'CancelSetup', id: key, name: o.name }),
-            'access-site',
+            'access',
           );
       },
       'danger',
@@ -485,11 +485,11 @@
       }
       const p = progressState(o),
         card = node('section'),
-        heading = node('div', null, 'ad-row ad-between'),
+        heading = node('div', null, 'row between'),
         badge = node('span', p.label, 'ad-progress-badge'),
         bar = node('progress'),
         list = node('ol', null, 'ad-progress-stages'),
-        actions = node('div', null, 'ad-row');
+        actions = node('div', null, 'row');
       card.className =
         'ad-progress-card' + (p.stopped ? ' ad-progress-attention' : p.done ? '' : ' is-loading');
       card.setAttribute('style', '--stage-count:' + p.stages.length);
@@ -515,7 +515,7 @@
         item.append(mark, node('span', name));
         list.append(item);
       });
-      const message = node('p', p.message, p.stopped ? 'ad-issue' : 'ad-muted');
+      const message = node('p', p.message, p.stopped ? 'ad-issue' : 'muted');
       card.append(heading, bar, list, message);
       const observed = o.result?.Observation;
       const recovery = o.kind === 'LibrarySetup' ? o.result?.Recovery : null;
@@ -539,7 +539,7 @@
               );
               state.operations.delete(key);
               state.completed.delete(key);
-            }, 'access-site'),
+            }, 'access'),
           ),
         );
       } else if (p.status === 'Blocked' && o.kind === 'Repoint') {
@@ -552,7 +552,7 @@
                 state.operations.delete(key);
                 state.completed.delete(key);
                 await runConfirmed({ kind: o.command, id: o.id, name: o.name });
-              }, 'access-site'),
+              }, 'access'),
             ),
           );
       } else if (
@@ -566,7 +566,7 @@
           action(async () => {
             settled(o, await catalog({ Command: 'RetrySetup', Key: key }));
             issue('Setup queued again.');
-          }, 'access-site'),
+          }, 'access'),
         );
         retry.setAttribute('aria-label', 'Retry setup of ' + o.name);
         actions.append(retry, cancelSetupButton(key, o), monitorLink(key, o));
@@ -576,7 +576,7 @@
             await api('asx_ManageWork', { Command: 'Retry', Key: o.result?.RecoveryKey || key });
             settled(o, { Status: 'Pending' });
             issue('Retry queued.');
-          }, 'access-site'),
+          }, 'access'),
         );
         retry.setAttribute('aria-label', 'Retry ' + o.name);
         actions.append(retry, monitorLink(key, o));
@@ -592,7 +592,7 @@
       if (actions.children.length) card.append(actions);
       area.append(card);
     }
-    if (loading) area.append(node('p', 'Loading…', 'ad-muted'));
+    if (loading) area.append(node('p', 'Loading…', 'muted'));
     $('ad-activity').hidden = area.children.length === 0;
   }
   // A team row: its access, or Removed · Undo until Apply, and what SharePoint has.
@@ -669,7 +669,7 @@
       const b = control(
         null,
         'site:' + s.asx_siteid,
-        () => action(() => selectSite(s), 'access-site'),
+        () => action(() => selectSite(s), 'access'),
         'ad-site',
       );
       b.setAttribute('aria-pressed', String(s.asx_siteid === state.site?.asx_siteid));
@@ -693,7 +693,7 @@
             state.library = null;
             state.libraries = [];
             render();
-            action(refreshOperations, 'access-site');
+            action(refreshOperations, 'access');
           },
           'ad-site',
         ),
@@ -816,7 +816,7 @@
       (inherits(p) && !running) ||
       (incomplete && p?.result.Status === 'Applied' && !running && !changed(p))
         ? 'ad-issue'
-        : 'ad-muted';
+        : 'muted';
     $('ad-run-actions').hidden = !stuck;
     $('ad-run-retry').disabled = state.busy;
     $('ad-run-cancel').disabled = state.busy;
@@ -945,7 +945,7 @@
       await window.AsxdAdmin?.refreshCatalog();
       // The library section is gone with the library, so the site's line reports it, and focus
       // goes to the Libraries heading, or the site's when none is left; for a site, to Sites.
-      issue(c.name + ' was removed from Documents.', false, 'access-site');
+      issue(c.name + ' was removed from Documents.', false, 'access');
       state.focusAfter =
         c.kind === 'RemoveSite' ? ['ad-sites-heading'] : ['ad-libraries-heading', 'ad-site-title'];
       return;
@@ -1007,9 +1007,7 @@
     state.library = null;
     state.librariesLoaded = false;
     ['ad-library-form', 'ad-team-form', 'ad-existing-form'].forEach((id) => ($(id).hidden = true));
-    ['access-library', 'access-create', 'access-existing'].forEach((area) =>
-      ui.clearFeedback(area),
-    );
+    ['access-library', 'access'].forEach((area) => ui.clearFeedback(area));
     await libraries();
     if (state.libraries.length) await selectLibrary(state.libraries[0]);
   }
@@ -1234,7 +1232,7 @@
         if (site) state.site = site;
         if (state.site) await libraries();
         await window.AsxdAdmin?.refreshCatalog();
-        issue(o.name + ' re-pointed.', false, 'access-site');
+        issue(o.name + ' re-pointed.', false, 'access');
         continue;
       }
       if (['Ready', 'Approved', 'Applied'].includes(result.Status)) {
@@ -1247,11 +1245,7 @@
         } else if (state.site) await libraries();
         await window.AsxdAdmin?.refreshCatalog();
         state.operations.delete(key);
-        issue(
-          result.Issue ? o.name + ': ' + result.Issue : o.name + ' is ready.',
-          false,
-          'access-site',
-        );
+        issue(result.Issue ? o.name + ': ' + result.Issue : o.name + ' is ready.', false, 'access');
       }
     }
     for (const l of state.libraries) {
@@ -1275,7 +1269,7 @@
       // and reports it.
       render();
       await refreshOperations().catch(() => {});
-    }, 'access-site').finally(() => {
+    }, 'access').finally(() => {
       state.startPromise = null;
     });
     return state.startPromise;
@@ -1303,7 +1297,7 @@
         await selectSite(s);
         if (!state.libraries.some((v) => v.asx_libraryid === id)) state.libraries.push(l);
         await selectLibrary(l);
-      }, 'access-site');
+      }, 'access');
     },
     // Tracks a setup or other operation as a card and reads it at once (as a reload finds one).
     trackOperation: async (key, name, kind) => {
@@ -1323,10 +1317,10 @@
     action(async () => {
       await discoverActivity(true);
       await refreshOperations();
-    }, 'access-site');
-  $('ad-search').oninput = debounce(() => action(() => loadSites(), 'access-site'), 300);
-  $('ad-more-sites').onclick = () => action(() => loadSites(true), 'access-site');
-  $('ad-more-libraries').onclick = () => action(() => libraries(true), 'access-site');
+    }, 'access');
+  $('ad-search').oninput = debounce(() => action(() => loadSites(), 'access'), 300);
+  $('ad-more-sites').onclick = () => action(() => loadSites(true), 'access');
+  $('ad-more-libraries').onclick = () => action(() => libraries(true), 'access');
 
   // Add site: a combobox that searches the SharePoint sites of Dataverse document management
   // as the admin types (300 ms after the last key), 20 at a time.
@@ -1481,7 +1475,7 @@
       state.libraries = [];
       $('ad-site-form').hidden = true;
       closeNative();
-      issue('Checking ' + pick.name + '.', false, 'access-site');
+      issue('Checking ' + pick.name + '.', false, 'access');
       state.focusAfter = ['ad-add-site', 'ad-sites-heading'];
     }, 'access-add');
   $('ad-recheck').onclick = () =>
@@ -1499,7 +1493,7 @@
         kind: 'SiteValidation',
         url: state.site.asx_url,
       });
-    }, 'access-site');
+    }, 'access');
   // Adds an existing library; breakInheritance carries the admin's consent for an inheriting one.
   async function addLibrary(siteId, listId, name, url, breakInheritance) {
     const result = await catalog({
@@ -1512,7 +1506,7 @@
     });
     track(result.Key, { name, kind: 'LibraryValidation', url });
     $('ad-existing-form').hidden = true;
-    issue('Checking ' + name + ' and setting up its navigation.', false, 'access-site');
+    issue('Checking ' + name + ' and setting up its navigation.', false, 'access');
     state.focusAfter = ['ad-existing', 'ad-site-title'];
   }
   // An inheriting library is added only after the admin confirms, in the page, that Documents
@@ -1530,7 +1524,7 @@
       return;
     await action(
       () => addLibrary(d.Observation.SiteId, l.Id, l.Title, d.Observation.WebUrl, inheriting),
-      'access-existing',
+      'access',
     );
   }
   function showDiscovery() {
@@ -1569,8 +1563,8 @@
         kind: 'LibraryDiscovery',
         url: state.site.asx_url,
       });
-      issue('Finding document libraries…', false, 'access-site');
-    }, 'access-site');
+      issue('Finding document libraries…', false, 'access');
+    }, 'access');
   $('ad-existing-more').onclick = () =>
     action(async () => {
       const d = state.discovery;
@@ -1585,8 +1579,8 @@
         url: d.Observation.WebUrl,
       });
       $('ad-existing-form').hidden = true;
-      issue('Loading more libraries…', false, 'access-site');
-    }, 'access-existing');
+      issue('Loading more libraries…', false, 'access');
+    }, 'access');
   $('ad-existing-cancel').onclick = () => {
     $('ad-existing-form').hidden = true;
     $('ad-existing').focus();
@@ -1594,7 +1588,7 @@
   $('ad-create').onclick = () => {
     $('ad-library-form').hidden = false;
     $('ad-library-name').value = '';
-    ui.clearFeedback('access-create');
+    ui.clearFeedback('access');
     $('ad-library-name').focus();
   };
   $('ad-cancel-library').onclick = () => {
@@ -1607,7 +1601,7 @@
   $('ad-provision').onclick = async () => {
     const name = $('ad-library-name').value.trim();
     if (!name) {
-      issue('Enter a library name.', true, 'access-create');
+      issue('Enter a library name.', true, 'access');
       $('ad-library-name').focus();
       return;
     }
@@ -1635,9 +1629,9 @@
       track(result.Key, { name, kind: 'LibrarySetup', url: state.site.asx_url });
       $('ad-library-form').hidden = true;
       // The form closes, so the site's line reports it and focus returns to ＋ Create library.
-      issue('Creating ' + name + '.', false, 'access-site');
+      issue('Creating ' + name + '.', false, 'access');
       state.focusAfter = ['ad-create', 'ad-site-title'];
-    }, 'access-create');
+    }, 'access');
   };
   $('ad-add-team').onclick = () => {
     $('ad-team-form').hidden = false;
@@ -1753,7 +1747,7 @@
     command(
       { kind: 'RepointSite', id: state.site.asx_siteid, name: state.site.asx_name },
       $('ad-site-menu'),
-      'access-site',
+      'access',
     );
   };
   $('ad-remove-site').onclick = () => {
@@ -1761,7 +1755,7 @@
     command(
       { kind: 'RemoveSite', id: state.site.asx_siteid, name: state.site.asx_name },
       $('ad-site-menu'),
-      'access-site',
+      'access',
     );
   };
   $('ad-repoint-library').onclick = () => {

@@ -10,6 +10,7 @@ const { createDocument } = require('./fake-dom.cjs');
 const base = path.resolve(__dirname, '../../client/admin');
 const html = fs.readFileSync(path.join(base, 'index.html'), 'utf8');
 const read = (name) => fs.readFileSync(path.join(base, name), 'utf8');
+const BUILD = /const BUILD = '([^']+)'/.exec(read('shell.js'))[1];
 const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 function row(overrides) {
@@ -84,7 +85,15 @@ async function boot({
   };
   const xrm = {
     Navigation: {
-      navigateTo: async () => {},
+      // Recorded like an API call: ['navigate', { ...page, data }].
+      navigateTo: async (page) =>
+        sent.push([
+          'navigate',
+          {
+            ...page,
+            data: new URLSearchParams(page.webresourceName.split('?')[1] || '').get('data'),
+          },
+        ]),
       // A copy: objects made inside the vm context have its Object prototype, which deepEqual refuses.
       openForm: async (options) => opened.push({ ...options }),
     },
@@ -162,7 +171,7 @@ async function boot({
   const session = new Map([['asxd.launched', '1']]);
   const window = {
     parent: { Xrm: xrm },
-    location: { search: '?data=' + tab + '-ui20261006nav1', hash: '' },
+    location: { search: '?data=' + tab + '-' + BUILD, hash: '' },
     sessionStorage: {
       getItem: (k) => session.get(k) ?? null,
       setItem: (k, v) => session.set(k, v),
@@ -246,9 +255,6 @@ async function boot({
     assert.equal(tile.textContent, 'Blocked jobs 1');
     await m.press(tile);
     assert.equal(m.document.activeElement.id, 'h-BlockedJobs');
-    // The badge counts the five problem lists.
-    assert.equal(m.$('monitorBadge').textContent, '1');
-    assert.equal(m.$('tab-monitor').getAttribute('aria-label'), 'Monitor, 1 problem');
   }
   {
     // Rows show names, local times and server actions; keys only inside Details.
@@ -291,7 +297,7 @@ async function boot({
     );
     assert.equal(m.buttons(list).find((b) => b.textContent === 'Open record').disabled, false);
     assert.equal(
-      m.$('fb-list-BlockedJobs').textContent,
+      m.$('fb-monitor').textContent,
       'Queued again. It blocks again if the cause remains.',
     );
     // Cancel job confirms in the page first, with no key in its text.
@@ -579,8 +585,11 @@ async function boot({
     lists.TemplateRuns = [runRow('Running', 200)];
     await m.tick();
     assert.match(m.$('list-TemplateRuns').visibleText, /200 of 40,000/);
-    assert.equal(m.$('fb-monitor').textContent, '', 'Progress alone is not announced');
-    assert.equal(m.$('fb-list-BlockedJobs').textContent, '', 'Still checking: nothing to announce');
+    assert.equal(
+      m.$('fb-monitor').textContent,
+      '',
+      'Progress alone and a setup still checking are not announced',
+    );
     lists.TemplateRuns = [runRow('Done', 40000)];
     lists.BlockedJobs = [
       setupRow(
@@ -589,22 +598,21 @@ async function boot({
       ),
     ];
     await m.tick();
-    assert.equal(m.$('fb-monitor').textContent, 'Re-run of TEST Account Documents: Done.');
-    assert.equal(m.$('fb-monitor').getAttribute('role'), 'status');
+    // Both announcements of the tick share the one Monitor line.
     assert.equal(
-      m.$('fb-list-BlockedJobs').textContent,
-      "SharePoint has no library named Project documents. The creation didn't happen.",
+      m.$('fb-monitor').textContent,
+      'Re-run of TEST Account Documents: Done. ' +
+        "SharePoint has no library named Project documents. The creation didn't happen.",
     );
+    assert.equal(m.$('fb-monitor').getAttribute('role'), 'status');
     assert.ok(
       m.buttons(m.$('list-BlockedJobs')).find((b) => b.textContent === 'Create it again'),
       'The finding brings its choices',
     );
     // Once: an unchanged tick announces nothing again.
     m.$('fb-monitor').textContent = '';
-    m.$('fb-list-BlockedJobs').textContent = '';
     await m.tick();
     assert.equal(m.$('fb-monitor').textContent, '');
-    assert.equal(m.$('fb-list-BlockedJobs').textContent, '');
   }
   {
     // Recovery rows: each finding shows its sentence and its choices; no input asks for evidence.
@@ -685,10 +693,7 @@ async function boot({
         RowVersion: 'rv-3',
       },
     ]);
-    assert.equal(
-      found.$('fb-list-BlockedJobs').textContent,
-      'Using the existing library. Setup continues.',
-    );
+    assert.equal(found.$('fb-monitor').textContent, 'Using the existing library. Setup continues.');
     const notFound = await boot({
       summary: { BlockedJobs: 1 },
       lists: {
@@ -715,7 +720,7 @@ async function boot({
       Choice: 'CreateAgain',
       RowVersion: 'rv-3',
     });
-    assert.equal(notFound.$('fb-list-BlockedJobs').textContent, 'Creating the library again.');
+    assert.equal(notFound.$('fb-monitor').textContent, 'Creating the library again.');
     const recheck = await boot({
       summary: { BlockedJobs: 1 },
       lists: {
@@ -806,40 +811,34 @@ async function boot({
     );
   }
   {
-    // Automation switch: SetEnabled with the row version; a non-administrator sees the reason.
-    const m = await boot();
-    const toggle = m.$('automation-switch-monitor');
-    assert.equal(toggle.getAttribute('aria-checked'), 'true');
-    assert.equal(toggle.getAttribute('aria-describedby'), 'help-automation-monitor');
-    await m.press(toggle);
-    assert.deepEqual(m.sent.at(-1), [
-      'asx_RuntimeAdmin',
-      { Command: 'SetEnabled', Enabled: false, RowVersion: '7' },
-    ]);
-    // The chip's status text announces the new state; the feedback line stays empty (fix round 1).
-    assert.equal(m.$('fb-automation-monitor').textContent, '');
-    assert.equal(m.$('automationChipText').textContent, 'Automation paused');
-    // A refused change is reported next to the switch.
-    const stale = await boot({
-      handle: (api, b) =>
-        b.Command === 'SetEnabled'
-          ? new Error('Automation settings changed. Reopen the page and try again.')
-          : null,
-    });
-    await stale.press(stale.$('automation-switch-monitor'));
+    // Monitor shows automation as a pill with a link to Settings; the switch lives only in Settings.
+    const m = await boot({ runtime: { Enabled: false } });
+    assert.equal(m.$('automation-switch-monitor'), null);
+    assert.equal(m.$('help-automation-monitor'), null);
+    assert.equal(m.$('monitor-automation').textContent, 'Automation paused');
+    assert.equal(m.$('monitor-automation').dataset.tone, 'warning');
+    assert.equal(m.$('monitor-settings-link').textContent, 'Change in Settings');
+    await m.press(m.$('monitor-settings-link'));
     assert.equal(
-      stale.$('fb-automation-monitor').textContent,
-      'Automation settings changed. Reopen the page and try again.',
+      m.sent
+        .filter(([k]) => k === 'navigate')
+        .at(-1)[1]
+        .data.split('-')[0],
+      'settings',
     );
-    assert.equal(stale.$('fb-automation-monitor').getAttribute('role'), 'alert');
-    assert.equal(stale.$('automation-switch-monitor').getAttribute('aria-checked'), 'true');
-    const viewer = await boot({ runtime: { CanChange: false } });
-    const off = viewer.$('automation-switch-monitor');
-    assert.equal(off.getAttribute('aria-disabled'), 'true');
-    assert.match(off.getAttribute('aria-describedby'), /help-automation-monitor/);
-    assert.equal(
-      viewer.document.getElementById('automation-reason-monitor').textContent,
-      'Only a System Administrator can pause or resume automation.',
+    const running = await boot();
+    assert.equal(running.$('monitor-automation').textContent, 'Automation running');
+    assert.equal(running.$('monitor-automation').dataset.tone, 'ok');
+  }
+  {
+    // Row results report in the one Monitor feedback line; there are no per-list lines.
+    const m = await boot({ summary: { BlockedJobs: 1 }, lists: { BlockedJobs: [row()] } });
+    assert.deepEqual(
+      m.document
+        .querySelectorAll('.feedback')
+        .map((n) => n.id)
+        .filter((id) => id.startsWith('fb-list-')),
+      [],
     );
   }
   {
@@ -1119,30 +1118,29 @@ async function boot({
     await s.press(s.$('repair-all'));
     assert.equal(s.sent.filter(([, b]) => b.Command === 'Register').length, 1);
     assert.equal(
-      s.$('fb-tracking').textContent,
+      s.$('fb-settings').textContent,
       'Repair made no progress. 2 tables still need repair.',
     );
     assert.equal(s.$('repair-all').textContent, 'Repair all (2)');
   }
   {
-    // Shared runtime state: pausing from Settings updates the chip.
+    // Shared runtime state: pausing from Settings updates the switch and its state text.
     const s = await boot({ tab: 'settings' });
     await s.press(s.$('automation-switch-settings'));
     assert.deepEqual(s.sent.at(-1), [
       'asx_RuntimeAdmin',
       { Command: 'SetEnabled', Enabled: false, RowVersion: '7' },
     ]);
-    assert.equal(s.$('automationChipText').textContent, 'Automation paused');
     assert.equal(s.$('automation-switch-settings').getAttribute('aria-checked'), 'false');
     assert.equal(s.$('automation-state-settings').textContent, 'Paused');
-    assert.equal(s.$('fb-automation-settings').textContent, '');
-    // Turning on from the chip gives the Settings form the new row version and keeps its
-    // unsaved edits; Save then sends that version and the running state.
+    assert.equal(s.$('fb-settings').textContent, '');
+    // Turning on gives the Settings form the new row version and keeps its unsaved edits; Save
+    // then sends that version and the running state.
     const c = await boot({ tab: 'settings', runtime: { Enabled: false } });
     const host = c.$('hosts-list').querySelector('input');
     host.value = 'fabrikam.sharepoint.com';
     host.oninput();
-    await c.press(c.$('automationChipAction'));
+    await c.press(c.$('automation-switch-settings'));
     assert.deepEqual(c.sent.at(-1)[1], { Command: 'SetEnabled', Enabled: true, RowVersion: '7' });
     assert.equal(c.$('automation-switch-settings').getAttribute('aria-checked'), 'true');
     assert.equal(
@@ -1157,8 +1155,43 @@ async function boot({
     assert.deepEqual(save.SharePointHosts, ['fabrikam.sharepoint.com']);
   }
   {
-    // The shell starts the tab before its runtime Get returns (Task 1 fix round): Settings and
-    // the Monitor switch draw when it arrives, and a refused Get shows the missing-settings alert.
+    // The Settings switch reports a refused change in the Settings line and keeps its state; a
+    // non-administrator sees the reason.
+    const stale = await boot({
+      tab: 'settings',
+      handle: (api, b) =>
+        b.Command === 'SetEnabled'
+          ? new Error('Automation settings changed. Reopen the page and try again.')
+          : null,
+    });
+    await stale.press(stale.$('automation-switch-settings'));
+    assert.equal(
+      stale.$('fb-settings').textContent,
+      'Automation settings changed. Reopen the page and try again.',
+    );
+    assert.equal(stale.$('fb-settings').getAttribute('role'), 'alert');
+    assert.equal(stale.$('automation-switch-settings').getAttribute('aria-checked'), 'true');
+    const viewer = await boot({ tab: 'settings', runtime: { CanChange: false } });
+    const off = viewer.$('automation-switch-settings');
+    assert.equal(off.getAttribute('aria-disabled'), 'true');
+    assert.equal(
+      viewer.$('automation-reason-settings').textContent,
+      'Only a System Administrator can pause or resume automation.',
+    );
+    await viewer.press(off);
+    assert.equal(viewer.sent.filter(([, b]) => b.Command === 'SetEnabled').length, 0);
+  }
+  {
+    // The 60-second tick reads nothing off Monitor: the problem count elsewhere is read once.
+    const s = await boot({ tab: 'settings' });
+    const before = s.sent.length;
+    await s.tick();
+    assert.equal(s.sent.length, before);
+  }
+  {
+    // The shell starts the page before its runtime Get returns (Task 1 fix round): Settings and
+    // the Monitor automation pill draw when it arrives, and a refused Get shows the
+    // missing-settings alert.
     let open;
     const s = await boot({ tab: 'settings', getGate: new Promise((resolve) => (open = resolve)) });
     assert.equal(s.$('automation-settings').getAttribute('aria-busy'), 'true');
@@ -1169,11 +1202,11 @@ async function boot({
     assert.equal(s.$('automation-settings').hasAttribute('aria-busy'), false);
     let release;
     const m = await boot({ getGate: new Promise((resolve) => (release = resolve)) });
-    assert.equal(m.$('automation-switch-monitor').hidden, true);
+    assert.equal(m.$('monitor-automation').hidden, true);
     release();
     await m.document.settle();
-    assert.equal(m.$('automation-switch-monitor').hidden, false);
-    assert.equal(m.$('automation-switch-monitor').getAttribute('aria-checked'), 'true');
+    assert.equal(m.$('monitor-automation').hidden, false);
+    assert.equal(m.$('monitor-automation').textContent, 'Automation running');
     const refused = await boot({
       tab: 'settings',
       handle: (api, b) =>
@@ -1229,7 +1262,7 @@ async function boot({
     });
     await m.press(m.$('more-BlockedJobs'));
     assert.equal(m.$('list-BlockedJobs').querySelectorAll('tbody tr').length, 1);
-    assert.equal(m.$('fb-list-BlockedJobs').textContent, 'The list changed. Refresh it.');
+    assert.equal(m.$('fb-monitor').textContent, 'The list changed. Refresh it.');
     assert.ok(m.$('more-BlockedJobs'), 'Show 50 more stays to try again');
   }
   {
@@ -1324,10 +1357,10 @@ async function boot({
     await m.press(m.buttons(list).find((b) => b.textContent.startsWith('Re-run selected')));
     assert.equal(m.sent.filter(([, b]) => b.Command === 'RerunRecord').length, 2);
     assert.equal(
-      m.$('fb-list-NotCaptured').textContent,
+      m.$('fb-monitor').textContent,
       "Queued 1; 1 couldn't be re-run: Beta: Enable account in Folder templates first.",
     );
-    assert.equal(m.$('fb-list-NotCaptured').getAttribute('role'), 'alert');
+    assert.equal(m.$('fb-monitor').getAttribute('role'), 'alert');
   }
   {
     // Refresh says "5,000+" for a capped list.
@@ -1371,7 +1404,7 @@ async function boot({
     assert.equal(s.document.activeElement.id, 'tracking-title');
   }
   console.log(
-    'PASS Monitor and Settings: lists on open, names and Details, row actions, Retry now, re-runs, 60-second re-read announcements, recovery choices (lists and Advanced), load errors, Refresh, switch, checklist, Check a record, Advanced, Settings, Repair all, danger zone, runtime shared with the chip, a late or refused Get; fix round 1: the tick keeps appended rows and drops removed ones, defers redraws under confirmations, Details and focus; checkboxes only on re-runnable rows with per-row reasons; Show 50 more once, and its errors; capped Refresh text; recent lookup errors; Repair focus and text; one announcement for the switch. Fake DOM; browser QA separate.',
+    'PASS Monitor and Settings: lists on open, names and Details, row actions, Retry now, re-runs, 60-second re-read announcements, recovery choices (lists and Advanced), load errors, Refresh, the automation pill and its Settings link, checklist, Check a record, Advanced, Settings, Repair all, danger zone, the Settings switch and its refusals, runtime shared with the form, no tick off Monitor, a late or refused Get; fix round 1: the tick keeps appended rows and drops removed ones, defers redraws under confirmations, Details and focus; checkboxes only on re-runnable rows with per-row reasons; Show 50 more once, and its errors; capped Refresh text; recent lookup errors; Repair focus and text; one announcement for the switch, one Monitor line for every announcement of a tick. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

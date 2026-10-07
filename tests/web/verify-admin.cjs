@@ -22,19 +22,32 @@ for (const match of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
 assert.doesNotMatch(html, /id="status"/, 'The global banner is removed');
 assert.doesNotMatch(html, /<footer/, 'The footer is removed');
 assert.equal((html.match(/<main\b/g) || []).length, 1, 'Exactly one main');
-assert.equal((html.match(/<h1\b/g) || []).length, 1, 'Exactly one h1');
-const tabs = [...html.matchAll(/<button[^>]*\brole="tab"[^>]*>/g)].map((m) => m[0]);
+const css = read('client/admin/admin.css');
+const h1s = [...html.matchAll(/<h1\b[^>]*\bid="([^"]+)"/g)].map((m) => m[1]);
+assert.deepEqual(h1s, ['templates-title', 'ad-site-title', 'monitor-title', 'settings-title']);
+assert.equal((html.match(/<h1\b/g) || []).length, h1s.length, 'Every h1 has an id');
+assert.doesNotMatch(html, /\brole="tab(list|panel)?"/, 'No in-page tab bar');
+assert.doesNotMatch(html, /class="[^"]*\bshell\b|automationChip|monitorBadge|tabPrompt/);
+assert.doesNotMatch(css, /#access\b/, 'Sites & access uses the shared controls');
+assert.doesNotMatch(html + js, /\bad-primary\b/, 'One primary button class');
+const FEEDBACK = [
+  'fb-templates',
+  'fb-schedule',
+  'fb-rerun',
+  'fb-access',
+  'fb-access-add',
+  'fb-access-library',
+  'fb-monitor',
+  'fb-check',
+  'fb-advanced',
+  'fb-settings',
+];
 assert.deepEqual(
-  tabs.map((t) => /\bid="([^"]+)"/.exec(t)[1]),
-  ['tab-templates', 'tab-access', 'tab-monitor', 'tab-settings'],
+  [...html.matchAll(/\bid="(fb-[^"]+)"/g)].map((m) => m[1]).sort(),
+  [...FEEDBACK].sort(),
+  'One feedback line per page header, plus panel and footer lines',
 );
-for (const tab of tabs) {
-  const panel = /aria-controls="([^"]+)"/.exec(tab)[1];
-  assert.match(
-    html,
-    new RegExp('id="' + panel + '"[^>]*role="tabpanel"|role="tabpanel"[^>]*id="' + panel + '"'),
-  );
-}
+assert.doesNotMatch(js, /\.id\s*=\s*'fb-/, 'Feedback lines are page markup, not made by script');
 assert.doesNotMatch(html, /aria-pressed/);
 assert.doesNotMatch(
   js,
@@ -86,7 +99,6 @@ for (const [, name, value] of bounds.matchAll(/public const int (\w+) = (\d+);/g
 }
 // Helper-text budget (spec 4.3, 4.4, decision D9): exactly these elements have class "help".
 const KEPT = [
-  'help-automation-monitor',
   'help-automation-settings',
   'help-record-updates',
   'help-publish',
@@ -131,5 +143,5 @@ for (const removed of [
 console.log(
   'PASS admin static contract: ' +
     ids.length +
-    ' unique IDs, tabs, no banner, sitemap and build, the helper-text budget. Visual/connected QA NOT RUN.',
+    ' unique IDs, one h1 per page, no tab bar or banner, shared controls, the feedback budget, sitemap and build, the helper-text budget. Visual/connected QA NOT RUN.',
 );

@@ -9,6 +9,9 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
 const root = path.resolve(__dirname, '../../client/admin');
 const evidence =
   process.env.ASXD_BROWSER_EVIDENCE_DIR || path.resolve(__dirname, '../../artifacts/browser');
+const BUILD = /const BUILD = '([^']+)'/.exec(
+  fs.readFileSync(path.join(root, 'shell.js'), 'utf8'),
+)[1];
 const types = {
   '.html': 'text/html',
   '.js': 'text/javascript',
@@ -20,7 +23,7 @@ fs.mkdirSync(evidence, { recursive: true });
 // As test-admin-a11y-browser.cjs: the page from client/admin, mock-xrm.js before it loads.
 const settle = (page) =>
   page.waitForFunction(() => {
-    const panel = document.querySelector('[role=tabpanel]:not([hidden])');
+    const panel = document.querySelector('section.page:not([hidden])');
     return !!panel && !panel.querySelector('[aria-busy=true]') && window.__mockIdle?.();
   });
 async function open(context, tab, extra = '') {
@@ -38,7 +41,7 @@ async function open(context, tab, extra = '') {
   await page.addInitScript({ path: path.join(__dirname, 'mock-xrm.js') });
   await page.addInitScript(() => sessionStorage.setItem('asxd.launched', '1'));
   if (extra) await page.addInitScript(extra);
-  await page.goto('https://asxd.test/index.html?data=' + tab + '-ui20261006nav1');
+  await page.goto('https://asxd.test/index.html?data=' + tab + '-' + BUILD);
   await settle(page);
   return page;
 }

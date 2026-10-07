@@ -1,5 +1,5 @@
 'use strict';
-// Every tab in light and dark: axe-core (WCAG 2.2 AA), keyboard flows, computed contrast, text
+// Every page in light and dark: axe-core (WCAG 2.2 AA), keyboard flows, computed contrast, text
 // size and target size, and screenshots for the review. Mocked Dataverse; Edge.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -8,6 +8,9 @@ const { chromium } = require(process.env.ASXD_PLAYWRIGHT_MODULE || 'playwright')
 const root = path.resolve(__dirname, '../../client/admin');
 const axe = require.resolve(process.env.ASXD_AXE_MODULE || 'axe-core');
 const shots = path.resolve(__dirname, '../artifacts/browser');
+const BUILD = /const BUILD = '([^']+)'/.exec(
+  fs.readFileSync(path.join(root, 'shell.js'), 'utf8'),
+)[1];
 const types = {
   '.html': 'text/html',
   '.js': 'text/javascript',
@@ -16,12 +19,12 @@ const types = {
 };
 fs.mkdirSync(shots, { recursive: true });
 
-// Waits until the shown tab has loaded: a panel is visible, nothing in it is aria-busy, and the
-// mocked Dataverse has had no call in flight for a moment. (Only the shown panel counts: the
-// Settings form is aria-busy until Settings opens, also while another tab is shown.)
+// Waits until the shown page has loaded: a page is visible, nothing in it is aria-busy, and the
+// mocked Dataverse has had no call in flight for a moment. (Only the shown page counts: the
+// Settings form is aria-busy until Settings opens, also while another page is shown.)
 const settle = (page) =>
   page.waitForFunction(() => {
-    const panel = document.querySelector('[role=tabpanel]:not([hidden])');
+    const panel = document.querySelector('section.page:not([hidden])');
     return !!panel && !panel.querySelector('[aria-busy=true]') && window.__mockIdle?.();
   });
 
@@ -40,7 +43,7 @@ async function open(context, tab, extra = '') {
   await page.addInitScript({ path: path.join(__dirname, 'mock-xrm.js') });
   await page.addInitScript(() => sessionStorage.setItem('asxd.launched', '1'));
   if (extra) await page.addInitScript(extra);
-  await page.goto('https://asxd.test/index.html?data=' + tab + '-ui20261006nav1');
+  await page.goto('https://asxd.test/index.html?data=' + tab + '-' + BUILD);
   await settle(page);
   return page;
 }
@@ -68,7 +71,7 @@ const computed = () => {
     return 'rgb(255,255,255)';
   };
   const shown = (e) => e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden';
-  const panel = document.querySelector('[role=tabpanel]:not([hidden])');
+  const panel = document.querySelector('section.page:not([hidden])');
   const controls = [
     ...document.querySelectorAll('input,select,textarea,button,[role=switch],[role=tab],summary,a'),
   ].filter(shown);
@@ -140,22 +143,21 @@ async function openTemplate(page) {
       }
     // Keyboard flows (spec 5.6).
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-    const page = await open(context, 'templates');
-    const focused = () =>
-      page.evaluate(
-        () =>
-          document.activeElement.id ||
-          document.activeElement.getAttribute('data-focus-key') ||
-          document.activeElement.textContent.trim(),
-      );
-    await page.locator('#tab-templates').focus();
-    await page.keyboard.press('ArrowRight');
-    assert.equal(await focused(), 'tab-access');
-    await page.keyboard.press('End');
-    assert.equal(await focused(), 'tab-settings');
-    await page.keyboard.press('Enter');
-    await page.waitForURL(/data=settings-/);
-    await page.waitForFunction(() => document.activeElement?.id === 'tab-settings');
+    // Tab from the top of Settings reaches the automation switch; Space toggles it.
+    const settings = await open(context, 'settings');
+    const settingsFocus = () => settings.evaluate(() => document.activeElement?.id);
+    for (let i = 0; i < 20 && (await settingsFocus()) !== 'automation-switch-settings'; i++)
+      await settings.keyboard.press('Tab');
+    assert.equal(await settingsFocus(), 'automation-switch-settings');
+    const before = await settings
+      .locator('#automation-switch-settings')
+      .getAttribute('aria-checked');
+    await settings.keyboard.press('Space');
+    await settings.waitForFunction(
+      (was) =>
+        document.getElementById('automation-switch-settings').getAttribute('aria-checked') !== was,
+      before,
+    );
     const templates = await open(context, 'templates');
     await openTemplate(templates);
     await templates.locator('#destinations').getByRole('button', { name: 'General' }).focus();
@@ -203,7 +205,7 @@ async function openTemplate(page) {
       });
     }
     console.log(
-      'PASS accessibility in Edge: axe WCAG 2.2 AA on four tabs in light and dark, computed borders, text and targets, keyboard flows, screenshots. Mocked Dataverse.',
+      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark, computed borders, text and targets, keyboard flows, screenshots. Mocked Dataverse.',
     );
   } finally {
     await browser.close();

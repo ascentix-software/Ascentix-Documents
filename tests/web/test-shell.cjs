@@ -1,7 +1,7 @@
 'use strict';
-// Shell contract with a fake DOM and mocked Dataverse: which tab a load shows, landing, deep
-// links, tab clicks that reload, the unsaved-changes prompt, keyboard focus, the automation chip,
-// feedback lines and the inline confirmation. Not a browser test.
+// Shell contract with a fake DOM and mocked Dataverse: which page a load shows, landing, deep
+// links, the unsaved-changes prompt, the shared helpers (side panel, tokens, status, automation,
+// problem pill), feedback lines and the inline confirmation. Not a browser test.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -10,7 +10,7 @@ const { createDocument, FakeEvent } = require('./fake-dom.cjs');
 const base = path.resolve(__dirname, '../../client/admin');
 const html = fs.readFileSync(path.join(base, 'index.html'), 'utf8');
 const shell = fs.readFileSync(path.join(base, 'shell.js'), 'utf8');
-const BUILD = 'ui20261006nav1';
+const BUILD = /const BUILD = '([^']+)'/.exec(shell)[1];
 const EMPTY = '00000000-0000-0000-0000-000000000000';
 
 function storage(initial = {}, broken = false) {
@@ -53,6 +53,10 @@ async function boot(options = {}) {
     profile = runtime(),
     privileges = {},
     register = () => {},
+    // Rows a table read returns, by table; other tables return the landing counts.
+    rows = {},
+    // The asx_ManageWork Summary counts, or null for none.
+    summary = null,
     // A promise the runtime Get waits for, to model a slow server.
     getGate = null,
   } = options;
@@ -79,6 +83,7 @@ async function boot(options = {}) {
     WebApi: {
       retrieveMultipleRecords: async (table, query) => {
         calls.push([table, query]);
+        if (rows[table]) return { entities: rows[table] };
         return { entities: Array.from({ length: counts[table] ?? 0 }, (_, i) => ({ i })) };
       },
       online: {
@@ -87,6 +92,13 @@ async function boot(options = {}) {
           const body = JSON.parse(request.Request);
           calls.push([name, body]);
           if (body.Command === 'Get' && getGate) await getGate;
+          if (name === 'asx_ManageWork' && body.Command === 'Summary')
+            return {
+              ok: true,
+              json: async () => ({
+                Result: JSON.stringify({ Status: 'Summary', Summary: summary || {} }),
+              }),
+            };
           if (current === null)
             return {
               ok: false,
@@ -135,10 +147,16 @@ async function boot(options = {}) {
   await document.fire('DOMContentLoaded');
   return { window, document, navigations, calls, session, xrm, ui: window.AsxdUi };
 }
-const selected = (d) =>
-  d.querySelectorAll('[role=tab]').find((t) => t.getAttribute('aria-selected') === 'true')?.id;
 const visible = (d) =>
   ['templates', 'access', 'monitor', 'settings'].filter((id) => !d.getElementById(id).hidden);
+const selected = (d) => visible(d)[0];
+// The h1s a page shows: a hidden ancestor inside the page (the editor while the overview
+// shows) hides its h1; the page section's own hidden does not count.
+const shownH1s = (section) =>
+  section.querySelectorAll('h1').filter((h) => {
+    const hidden = h.closest('[hidden]');
+    return !hidden || hidden === section;
+  });
 
 (async () => {
   {
@@ -161,7 +179,7 @@ const visible = (d) =>
     assert.equal(access.navigations[0].data, 'access-' + BUILD);
     const templates = await boot({ setup: { asx_template: 0 } });
     assert.deepEqual(templates.navigations, [], 'No published template stays on Folder templates');
-    assert.equal(selected(templates.document), 'tab-templates');
+    assert.equal(selected(templates.document), 'templates');
     assert.deepEqual(visible(templates.document), ['templates'], 'Only the active panel is shown');
     // A caller who cannot read the runtime skips the worker condition.
     const refused = await boot({ profile: null });
@@ -171,11 +189,11 @@ const visible = (d) =>
     // Later loads, and loads where storage fails, never redirect.
     const later = await boot({ session: storage({ 'asxd.launched': '1' }) });
     assert.deepEqual(later.navigations, []);
-    assert.equal(selected(later.document), 'tab-templates');
+    assert.equal(selected(later.document), 'templates');
     // Review Focus 4: storage that throws counts as "already launched".
     const broken = await boot({ session: storage({}, true) });
     assert.deepEqual(broken.navigations, []);
-    assert.equal(selected(broken.document), 'tab-templates');
+    assert.equal(selected(broken.document), 'templates');
     const inaccessible = storage();
     inaccessible.throwOnAccess = true;
     const blocked = await boot({ session: inaccessible });
@@ -188,21 +206,21 @@ const visible = (d) =>
       hash: '#settings',
       session: storage({ 'asxd.deeplink': JSON.stringify({ tab: 'access', library: 'lib-1' }) }),
     });
-    assert.equal(selected(link.document), 'tab-access');
+    assert.equal(selected(link.document), 'access');
     assert.deepEqual({ ...link.ui.deeplink() }, { tab: 'access', library: 'lib-1' });
     assert.equal(link.session.data.has('asxd.deeplink'), false);
     const hash = await boot({ search: '?data=monitor-' + BUILD, hash: '#settings' });
-    assert.equal(selected(hash.document), 'tab-settings');
+    assert.equal(selected(hash.document), 'settings');
     const data = await boot({
       search: '?data=monitor-' + BUILD,
       session: storage({ 'asxd.launched': '1' }),
     });
-    assert.equal(selected(data.document), 'tab-monitor');
+    assert.equal(selected(data.document), 'monitor');
     for (const [legacy, tab] of [
-      ['#runtime', 'tab-settings'],
-      ['#operations', 'tab-monitor'],
-      ['#administration', 'tab-monitor'],
-      ['#author', 'tab-templates'],
+      ['#runtime', 'settings'],
+      ['#operations', 'monitor'],
+      ['#administration', 'monitor'],
+      ['#author', 'templates'],
     ])
       assert.equal(selected((await boot({ hash: legacy })).document), tab, legacy);
     const params = await boot({ hash: '#monitor?operation=folderjob:abc&record=account:r-1' });
@@ -221,31 +239,76 @@ const visible = (d) =>
       search: '?data=settings-' + BUILD,
       session: storage({ 'asxd.launched': '1', 'asxd.deeplink': '{not json' }),
     });
-    assert.equal(selected(malformed.document), 'tab-settings');
+    assert.equal(selected(malformed.document), 'settings');
     const unknown = await boot({
       hash: '#bogus',
       search: '?data=bogus-x',
       session: storage({ 'asxd.launched': '1' }),
     });
-    assert.equal(selected(unknown.document), 'tab-templates');
+    assert.equal(selected(unknown.document), 'templates');
   }
   {
-    // A tab click reloads to that tab's menu entry and asks for focus on it after the reload.
+    // No in-page header, tab bar, shell card or chip; each page is a plain section with one h1.
     const run = await boot({ session: storage({ 'asxd.launched': '1' }) });
-    run.document.getElementById('tab-monitor').click();
-    await run.document.settle();
-    assert.equal(run.navigations.at(-1).data, 'monitor-' + BUILD);
-    assert.equal(run.session.data.get('asxd.focusTab'), 'monitor');
-    // After the reload the selected tab has focus and the flag is cleared.
-    const after = await boot({
-      search: '?data=monitor-' + BUILD,
-      session: storage({ 'asxd.launched': '1', 'asxd.focusTab': 'monitor' }),
-    });
-    assert.equal(after.document.activeElement.id, 'tab-monitor');
-    assert.equal(after.session.data.has('asxd.focusTab'), false);
+    const d = run.document;
+    for (const id of ['tabs', 'tabPrompt', 'automationChip', 'monitorBadge'])
+      assert.equal(d.getElementById(id), null, id + ' is gone');
+    assert.equal(d.querySelectorAll('.shell').length, 0);
+    assert.equal(d.querySelectorAll('[role=tab]').length, 0);
+    for (const page of ['templates', 'access', 'monitor', 'settings']) {
+      const section = d.getElementById(page);
+      assert.equal(section.getAttribute('role'), null, page);
+      assert.equal(shownH1s(section).length, 1, page);
+      const name = d.getElementById(section.getAttribute('aria-labelledby'));
+      assert.equal(name, shownH1s(section)[0], page + ' is named by the h1 it shows');
+      assert.equal(name.getAttribute('tabindex'), '-1', page + ' h1 takes focus');
+    }
+    assert.deepEqual(visible(d), ['templates']);
   }
   {
-    // Unsaved template edits: the prompt takes focus; Stay, Discard changes and Save draft.
+    // Pages still open from ?data=, #hash and a stored link (routing unchanged).
+    for (const [search, hash, page] of [
+      ['?data=monitor-' + BUILD, '', 'monitor'],
+      ['', '#settings', 'settings'],
+      ['', '#runtime', 'settings'],
+    ]) {
+      const run = await boot({ search, hash, session: storage({ 'asxd.launched': '1' }) });
+      assert.deepEqual(visible(run.document), [page], search + hash);
+    }
+  }
+  {
+    // Unsaved template edits ask at the top of the page content before another page opens.
+    const choices = [];
+    const run = await boot({
+      session: storage({ 'asxd.launched': '1' }),
+      register: (ui) =>
+        ui.setDirtyGuard(() => ({
+          template: 'Account onboarding',
+          save: async () => choices.push('save'),
+          discard: () => choices.push('discard'),
+        })),
+    });
+    const d = run.document;
+    const going = run.ui.navigate('settings');
+    await d.settle();
+    const prompt = d.getElementById('leavePrompt');
+    assert.equal(d.querySelector('main').firstElementChild, prompt);
+    assert.match(prompt.visibleText, /You have unsaved changes to Account onboarding\./);
+    assert.deepEqual(
+      prompt.querySelectorAll('button').map((b) => b.textContent),
+      ['Save draft', 'Discard changes', 'Stay'],
+    );
+    prompt
+      .querySelectorAll('button')
+      .find((b) => b.textContent === 'Stay')
+      .click();
+    await going;
+    assert.deepEqual(run.navigations, []);
+    assert.deepEqual(choices, []);
+  }
+  {
+    // The prompt takes focus; Stay returns it to the page's h1, Discard changes and Save draft
+    // go, Escape keeps, and a link to another page asks the same question.
     let saved = 0,
       discarded = 0;
     const run = await boot({
@@ -258,59 +321,49 @@ const visible = (d) =>
         })),
     });
     const d = run.document;
-    d.getElementById('tab-settings').click();
-    await d.settle();
-    const prompt = d.getElementById('tabPrompt').querySelector('.confirm');
-    assert(prompt, 'The prompt renders next to the tab bar');
-    assert.equal(d.activeElement.textContent, 'You have unsaved changes to Account onboarding.');
     const choose = (label) =>
-      prompt.querySelectorAll('button').find((b) => b.textContent === label);
-    choose('Stay').click();
+      d
+        .getElementById('leavePrompt')
+        .querySelectorAll('button')
+        .find((b) => b.textContent === label)
+        .click();
+    d.track(run.ui.navigate('settings'));
+    await d.settle();
+    assert.equal(d.activeElement.textContent, 'You have unsaved changes to Account onboarding.');
+    choose('Stay');
     await d.settle();
     assert.deepEqual(run.navigations, []);
-    assert.equal(d.activeElement.id, 'tab-templates');
-    d.getElementById('tab-settings').click();
+    assert.equal(d.activeElement.id, 'templates-title', 'Focus returns to the page heading');
+    d.track(run.ui.navigate('settings'));
     await d.settle();
-    d.getElementById('tabPrompt')
-      .querySelectorAll('button')
-      .find((b) => b.textContent === 'Discard changes')
-      .click();
+    choose('Discard changes');
     await d.settle();
     assert.equal(discarded, 1);
     assert.equal(run.navigations.at(-1).data, 'settings-' + BUILD);
-    d.getElementById('tab-monitor').click();
+    d.track(run.ui.navigate('monitor'));
     await d.settle();
-    d.getElementById('tabPrompt')
-      .querySelectorAll('button')
-      .find((b) => b.textContent === 'Save draft')
-      .click();
+    choose('Save draft');
     await d.settle();
     assert.equal(saved, 1);
     assert.equal(run.navigations.at(-1).data, 'monitor-' + BUILD);
     // Escape in the prompt keeps the page.
-    d.getElementById('tab-access').click();
+    d.track(run.ui.navigate('access'));
     await d.settle();
     d.activeElement.key('Escape');
     await d.settle();
     assert.equal(run.navigations.length, 2);
-    // A link to another tab (the library link in the template editor) asks the same question:
+    // A link to another page (the library link in the template editor) asks the same question:
     // the reload would lose the edits. Stay keeps the page; Discard changes follows the link.
     d.track(run.ui.navigate('access', { library: 'lib-1' }));
     await d.settle();
     assert.equal(d.activeElement.textContent, 'You have unsaved changes to Account onboarding.');
-    d.getElementById('tabPrompt')
-      .querySelectorAll('button')
-      .find((b) => b.textContent === 'Stay')
-      .click();
+    choose('Stay');
     await d.settle();
     assert.equal(run.navigations.length, 2);
     assert.equal(run.session.data.has('asxd.deeplink'), false, 'Stay stores no link');
     d.track(run.ui.navigate('access', { library: 'lib-1' }));
     await d.settle();
-    d.getElementById('tabPrompt')
-      .querySelectorAll('button')
-      .find((b) => b.textContent === 'Discard changes')
-      .click();
+    choose('Discard changes');
     await d.settle();
     assert.equal(discarded, 2);
     assert.equal(run.navigations.at(-1).data, 'access-' + BUILD);
@@ -318,72 +371,207 @@ const visible = (d) =>
       run.session.data.get('asxd.deeplink'),
       JSON.stringify({ library: 'lib-1', tab: 'access' }),
     );
+    // A failed save reports in the Folder templates feedback line and stays.
+    const failing = await boot({
+      session: storage({ 'asxd.launched': '1' }),
+      register: (ui) =>
+        ui.setDirtyGuard(() => ({
+          template: 'Account onboarding',
+          save: async () => {
+            throw new Error('Draft changed; reload before publishing.');
+          },
+          discard: () => {},
+        })),
+    });
+    const answer = failing.ui.confirmLeave();
+    await failing.document.settle();
+    failing.document
+      .getElementById('leavePrompt')
+      .querySelectorAll('button')
+      .find((b) => b.textContent === 'Save draft')
+      .click();
+    assert.equal(await answer, false);
+    assert.equal(
+      failing.document.getElementById('fb-templates').textContent,
+      'Draft changed; reload before publishing.',
+    );
+    // Without unsaved edits there is nothing to ask.
+    const clean = await boot({ session: storage({ 'asxd.launched': '1' }) });
+    assert.equal(await clean.ui.confirmLeave(), true);
+    assert.equal(clean.document.getElementById('leavePrompt').children.length, 0);
   }
   {
-    // Arrow keys, Home and End move focus only; the selected tab does not change.
+    // sidePanel: a dialog named by its heading; focus in; an Escape that starts inside a popover
+    // or menu in it does not close it (the guard itself: nothing else handles that Escape);
+    // Escape closes it and focus returns to the invoker. The confirmation case is proven in the
+    // browser test: here the confirmation removes itself before the event bubbles.
     const run = await boot({ session: storage({ 'asxd.launched': '1' }) });
-    const d = run.document;
-    d.getElementById('tab-templates').focus();
-    d.activeElement.key('ArrowRight');
-    assert.equal(d.activeElement.id, 'tab-access');
-    d.activeElement.key('End');
-    assert.equal(d.activeElement.id, 'tab-settings');
-    d.activeElement.key('ArrowRight');
-    assert.equal(d.activeElement.id, 'tab-templates', 'Arrow keys wrap');
-    d.activeElement.key('Home');
-    assert.equal(d.activeElement.id, 'tab-templates');
-    assert.equal(d.getElementById('tab-templates').getAttribute('tabindex'), '0');
-    assert.deepEqual(run.navigations, []);
-    assert.equal(selected(d), 'tab-templates');
+    const { document: d, ui } = run;
+    const host = d.getElementById('monitor');
+    const invoker = ui.button('Tools', () => {});
+    host.append(invoker);
+    const panel = d.createElement('aside');
+    panel.hidden = true;
+    const heading = ui.el('h2', 'Check a record');
+    heading.id = 'test-panel-title';
+    const popover = ui.el('div', null, 'popover');
+    const field = ui.button('Account Name', () => {});
+    popover.append(field);
+    const menu = ui.el('ul', null, 'menu');
+    const item = ui.button('Copy ID', () => {});
+    menu.append(item);
+    panel.append(heading, popover, menu);
+    host.append(panel);
+    const closed = [];
+    invoker.focus();
+    ui.sidePanel(panel, invoker, { onClose: () => closed.push('closed') });
+    assert.equal(panel.hidden, false);
+    assert.equal(panel.getAttribute('role'), 'dialog');
+    assert.equal(panel.getAttribute('aria-labelledby'), 'test-panel-title');
+    assert.equal(d.activeElement, heading);
+    field.key('Escape');
+    assert.equal(panel.hidden, false, 'An Escape inside a popover belongs to the popover');
+    item.key('Escape');
+    assert.equal(panel.hidden, false, 'An Escape inside a menu belongs to the menu');
+    heading.key('Escape');
+    assert.equal(panel.hidden, true);
+    assert.equal(d.activeElement, invoker);
+    assert.deepEqual(closed, ['closed']);
+    // Opening another panel closes the open one without moving focus back; close() on a
+    // closed panel does nothing; a redrawn invoker is found again by its focus key.
+    const first = ui.sidePanel(panel, invoker);
+    const other = d.createElement('aside');
+    other.id = 'other-panel';
+    other.hidden = true;
+    other.append(ui.el('h3', 'Look up an operation'));
+    host.append(other);
+    const keyed = ui.button('Look up', () => {});
+    keyed.dataset.focusKey = 'tools:lookup';
+    host.append(keyed);
+    const second = ui.sidePanel(other, keyed);
+    assert.equal(panel.hidden, true, 'Opening a panel closes the open one');
+    assert.equal(other.getAttribute('aria-labelledby'), 'other-panel-title');
+    assert.equal(d.activeElement.id, 'other-panel-title');
+    first.close();
+    assert.equal(d.activeElement.id, 'other-panel-title', 'A closed panel stays closed');
+    keyed.remove();
+    const again = ui.button('Look up', () => {});
+    again.dataset.focusKey = 'tools:lookup';
+    host.append(again);
+    second.close();
+    assert.equal(d.activeElement, again);
   }
   {
-    // Automation chip: five states (spec 2.5).
-    const chip = async (profile) => {
-      const run = await boot({ profile, session: storage({ 'asxd.launched': '1' }) });
-      const d = run.document;
-      return {
-        run,
-        d,
-        text: d.getElementById('automationChipText').textContent,
-        hidden: d.getElementById('automationChip').hidden,
-      };
+    // tokens: field tokens render as chips; an unknown token stays as text; no markup is parsed.
+    const run = await boot({ session: storage({ 'asxd.launched': '1' }) });
+    const label = (alias, column) =>
+      alias === 'root' && column === 'projectnumber' ? 'Project Number' : null;
+    const name = run.ui.tokens('P-{root.projectnumber} <b>', label);
+    assert.equal(name.className, 'name');
+    assert.equal(name.visibleText, 'P-Project Number <b>');
+    assert.equal(name.querySelector('.token').textContent, 'Project Number');
+    const unknown = run.ui.tokens('{root.gone}', label);
+    assert.equal(unknown.visibleText, '{root.gone}');
+    assert.equal(unknown.querySelector('.token'), null);
+    // status pairs a dot with text; pills carry a tone.
+    const ok = run.ui.status('ok', 'Ready');
+    assert.equal(ok.querySelector('.dot').dataset.tone, 'ok');
+    assert.equal(ok.querySelector('.dot').getAttribute('aria-hidden'), 'true');
+    assert.equal(ok.visibleText, 'Ready');
+    assert.equal(run.ui.pill('Live v3', 'ok').dataset.tone, 'ok');
+    // plural counts with separators; ms reads "/Date(…)/" and ISO, NaN otherwise.
+    assert.equal(run.ui.plural(1, 'problem', 'problems'), '1 problem');
+    assert.equal(run.ui.plural(1214, 'problem', 'problems'), '1,214 problems');
+    assert.equal(run.ui.plural(0, 'problem', 'problems'), '0 problems');
+    assert.equal(run.ui.ms('/Date(1700000000000)/'), 1700000000000);
+    assert.equal(run.ui.ms('2023-11-14T22:13:20Z'), 1700000000000);
+    assert(Number.isNaN(run.ui.ms('not a date')));
+    assert(Number.isNaN(run.ui.ms(null)));
+  }
+  {
+    // automation(): the runtime Get when the caller may make it, else the Default runtime row.
+    const admin = await boot({ session: storage({ 'asxd.launched': '1' }) });
+    assert.deepEqual(
+      { ...(await admin.ui.automation()) },
+      { Enabled: true, ProcessRecordUpdates: false },
+    );
+    const operator = await boot({
+      profile: null,
+      session: storage({ 'asxd.launched': '1' }),
+      rows: { asx_runtime: [{ asx_enabled: false, asx_processrecordupdates: true }] },
+    });
+    assert.deepEqual(
+      { ...(await operator.ui.automation()) },
+      { Enabled: false, ProcessRecordUpdates: true },
+    );
+    const read = operator.calls.find(([table]) => table === 'asx_runtime');
+    assert.match(read[1], /\$filter=asx_name eq 'Default'/);
+    assert.match(read[1], /\$top=2/);
+    // A row that was read is kept: the next call reads nothing.
+    await operator.ui.automation();
+    assert.equal(operator.calls.filter(([table]) => table === 'asx_runtime').length, 1);
+    // A read that finds no single Default row gives null and is not kept: the next call reads again.
+    const missing = await boot({
+      profile: null,
+      session: storage({ 'asxd.launched': '1' }),
+      rows: { asx_runtime: [] },
+    });
+    assert.equal(await missing.ui.automation(), null);
+    assert.equal(await missing.ui.automation(), null);
+    assert.equal(missing.calls.filter(([table]) => table === 'asx_runtime').length, 2);
+  }
+  {
+    // problemPill: one Summary per page load, the five problem lists summed (re-runs are not
+    // problems); hidden at 0 and without the Operator role; "1 problem", "{N} problems", and
+    // "5,000+ problems" when a list is capped; a click opens Monitor.
+    const pillFor = async (summary, privileges = {}) => {
+      const run = await boot({ session: storage({ 'asxd.launched': '1' }), summary, privileges });
+      const host = run.ui.el('span');
+      run.document.getElementById('templates').append(host);
+      const pill = run.ui.problemPill(host);
+      await run.document.settle();
+      return { run, host, pill };
     };
-    assert.equal((await chip(runtime())).text, 'Automation running');
-    assert.equal((await chip(runtime({ Enabled: false }))).text, 'Automation paused');
-    assert.equal(
-      (
-        await chip(
-          runtime({
-            Registration: { Readiness: [{ Scope: 'account', Status: 'Pending' }], Error: null },
-          }),
-        )
-      ).text,
-      'Automation running · needs attention',
-    );
-    assert.equal((await chip(runtime({ WorkerId: EMPTY }))).text, 'Automation not set up');
-    assert.equal(
-      (await chip(null)).hidden,
-      true,
-      'A caller who cannot read the runtime sees no chip',
-    );
-    // Turn on sends the stored row version and updates the chip.
-    const paused = await chip(runtime({ Enabled: false }));
-    const turnOn = paused.d.getElementById('automationChipAction');
-    assert.equal(turnOn.hidden, false);
-    turnOn.click();
-    await paused.d.settle();
-    const save = paused.run.calls.filter(([name]) => name === 'asx_RuntimeAdmin').at(-1)[1];
-    assert.deepEqual(save, { Command: 'SetEnabled', Enabled: true, RowVersion: '7' });
-    assert.equal(paused.d.getElementById('automationChipText').textContent, 'Automation running');
-    // Not a System Administrator: Turn on is reachable but disabled, with the reason linked.
-    const viewer = await chip(runtime({ Enabled: false, CanChange: false }));
-    const off = viewer.d.getElementById('automationChipAction');
-    assert.equal(off.getAttribute('aria-disabled'), 'true');
-    const reason = viewer.d.getElementById(off.getAttribute('aria-describedby'));
-    assert.equal(reason.textContent, 'Only a System Administrator can turn automation on.');
-    off.click();
-    await viewer.d.settle();
-    assert.equal(viewer.run.calls.filter(([, b]) => b?.Command === 'SetEnabled').length, 0);
+    const summaries = (run) => run.calls.filter(([, body]) => body?.Command === 'Summary').length;
+    const zero = await pillFor({
+      BlockedRecords: 0,
+      WaitingRecords: 0,
+      BlockedJobs: 0,
+      RetryingJobs: 0,
+      NotCaptured: 0,
+      TemplateRuns: 2,
+    });
+    assert.equal(zero.host.firstElementChild, zero.pill);
+    assert.equal(zero.pill.hidden, true, 'Hidden at 0');
+    const one = await pillFor({ BlockedJobs: 1, TemplateRuns: 3 });
+    assert.equal(one.pill.tagName, 'BUTTON');
+    assert.ok(one.pill.classList.contains('problem-pill'));
+    assert.equal(one.pill.hidden, false);
+    assert.equal(one.pill.textContent, 'Monitor · 1 problem');
+    const many = await pillFor({
+      BlockedRecords: 3,
+      WaitingRecords: 6,
+      BlockedJobs: 1,
+      RetryingJobs: 4,
+      NotCaptured: 1200,
+    });
+    assert.equal(many.pill.textContent, 'Monitor · 1,214 problems');
+    const capped = await pillFor({
+      BlockedRecords: 5000,
+      WaitingRecords: 2,
+      Capped: ['BlockedRecords'],
+    });
+    assert.equal(capped.pill.textContent, 'Monitor · 5,000+ problems');
+    const second = many.run.ui.problemPill(many.run.ui.el('span'));
+    await many.run.document.settle();
+    assert.equal(second.textContent, 'Monitor · 1,214 problems');
+    assert.equal(summaries(many.run), 1, 'One Summary per page load');
+    const none = await pillFor({ BlockedJobs: 4 }, { prvCreateasx_operatorcommand: false });
+    assert.equal(none.pill.hidden, true, 'Hidden without the Operator role');
+    assert.equal(summaries(none.run), 0, 'No Summary without the Operator role');
+    many.pill.click();
+    await many.run.document.settle();
+    assert.equal(many.run.navigations.at(-1).data, 'monitor-' + BUILD);
   }
   {
     // Feedback lines replace the banner: success is a status, an error an alert.
@@ -457,8 +645,8 @@ const visible = (d) =>
     assert.equal(alert.textContent, 'Open this page from the Ascentix Documents app to connect.');
   }
   {
-    // Fix round 1, item 1: a slow runtime Get does not hold back the tab's start. The chip is drawn
-    // when Get returns, onRuntime listeners hear it, and the page sends Get once.
+    // Fix round 1, item 1: a slow runtime Get does not hold back the page's start. onRuntime
+    // listeners hear it when Get returns, and the page sends Get once.
     let release;
     const gate = new Promise((resolve) => (release = resolve));
     let started = 0;
@@ -472,12 +660,10 @@ const visible = (d) =>
       },
     });
     const d = run.document;
-    assert.equal(started, 1, 'The tab starts while Get is still running');
-    assert.equal(d.getElementById('automationChip').hidden, true, 'No chip before Get returns');
+    assert.equal(started, 1, 'The page starts while Get is still running');
     assert.equal(run.ui.runtime(), null);
     release();
     await d.settle();
-    assert.equal(d.getElementById('automationChipText').textContent, 'Automation running');
     assert.equal(run.ui.runtime().WorkerId, 'worker-1');
     assert.deepEqual(heard, ['worker-1']);
     assert.equal(run.calls.filter(([, b]) => b?.Command === 'Get').length, 1, 'One Get per load');
@@ -681,54 +867,6 @@ const visible = (d) =>
     assert.equal(area.querySelectorAll('.confirm[role=group]').length, 0);
   }
   {
-    // Fix round 1, item 4: Turn on reports what the resume returned, and "Automation running" is
-    // announced once, by the chip's status text, not again in its feedback line.
-    const clean = await boot({
-      profile: runtime({ Enabled: false }),
-      session: storage({ 'asxd.launched': '1' }),
-    });
-    clean.document.getElementById('automationChipAction').click();
-    await clean.document.settle();
-    assert.equal(
-      clean.document.getElementById('automationChipText').textContent,
-      'Automation running',
-    );
-    assert.equal(clean.document.getElementById('fb-chip').textContent, '');
-    const failing = await boot({
-      profile: runtime({
-        Enabled: false,
-        Registration: {
-          Readiness: [{ Scope: 'account', Status: 'Ready' }],
-          Error: 'The worker application user cannot read System Jobs.',
-        },
-      }),
-      session: storage({ 'asxd.launched': '1' }),
-    });
-    failing.document.getElementById('automationChipAction').click();
-    await failing.document.settle();
-    const line = failing.document.getElementById('fb-chip');
-    assert.equal(
-      failing.document.getElementById('automationChipText').textContent,
-      'Automation running · needs attention',
-    );
-    assert.doesNotMatch(line.textContent, /Automation running/);
-    assert.match(line.textContent, /cannot read System Jobs/);
-    assert.equal(line.getAttribute('role'), 'alert');
-    const pending = await boot({
-      profile: runtime({
-        Enabled: false,
-        Registration: { Readiness: [{ Scope: 'contact', Status: 'Missing' }], Error: null },
-      }),
-      session: storage({ 'asxd.launched': '1' }),
-    });
-    pending.document.getElementById('automationChipAction').click();
-    await pending.document.settle();
-    const notice = pending.document.getElementById('fb-chip').textContent;
-    assert.doesNotMatch(notice, /Automation running/);
-    assert.match(notice, /contact/);
-    assert.match(notice, /Settings/);
-  }
-  {
     // Task 9 fix round 1: a ⋯ menu closes when focus leaves both its button and its list (Tab
     // out of it), and stays open while focus moves between them.
     const run = await boot({ session: storage({ 'asxd.launched': '1' }) });
@@ -754,7 +892,7 @@ const visible = (d) =>
     assert.equal(list.hidden, false);
   }
   console.log(
-    'PASS shell contract: tab order, landing, deep links, menu sync, unsaved prompt, keyboard, chip, feedback, confirmation (a replaced one answers keep), offline, a slow Get that does not delay the tab, withFocus, time, help, busy, api errors, Turn on feedback and the ⋯ menu closing when focus leaves it. Fake DOM; browser QA separate.',
+    'PASS shell contract: pages without tabs, landing, deep links, unsaved prompt at the top, side panel, tokens, status, plural, ms, automation, problem pill, feedback, confirmation (a replaced one answers keep), offline, a slow Get that does not delay the page, withFocus, time, help, busy, api errors and the ⋯ menu closing when focus leaves it. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);
