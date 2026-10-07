@@ -8,7 +8,8 @@ Use the managed solution package for evaluation. Review the [preview limitations
 2. Create the Dataverse application user and the Dataverse application connection in the target environment. Create the SharePoint certificate HTTP connection in Power Automate. Enter certificates, passwords, and secrets directly in the platform.
 3. Generate deployment settings from the managed ZIP with `pac solution create-settings`. Map all packaged connection references to the target connections. Use all reference names from the package, including any additional references carried by packaged flows.
 4. Import the managed solution using those settings. For an existing installation from 0.1.0.3, follow the [0.1.0.4 upgrade notes](upgrade-0.1.0.4.md). Pause runtime and flows and preserve the runtime, roles, registrations, connection mappings, and retained document identities before applying the upgrade. For a managed upgrade, the package has been exercised with `--stage-and-upgrade --publish-changes --async`.
-5. Confirm the installed solution is managed, its version and signed assembly match the intended package, alternate keys are Active, custom APIs and guard steps exist, and connection references point to the target connections. Use application-user mappings from the destination environment.
+5. Publish all customizations (Power Apps › Solutions › Publish all customizations), then reload the Documents admin page. Do this after every import, including an upgrade: `--publish-changes` does not always refresh the admin page's scripts, so the app can keep serving the previous version until everything is published.
+6. Confirm the installed solution is managed, its version and signed assembly match the intended package, alternate keys are Active, custom APIs and guard steps exist, and connection references point to the target connections. Use application-user mappings from the destination environment.
 
 ## Configure and enable
 
@@ -22,6 +23,5 @@ Use the managed solution package for evaluation. Review the [preview limitations
 ## Recovery and upgrade record
 
 Retain the package hash, import operation, worker application/user IDs, connection-reference mapping, enabled-event list, configuration, and sample physical folder IDs. Keep credentials in the platform. Before an upgrade or connection rotation, drain active writers and pause runtime/flows; verify the same mappings and retained documents afterward.
-
 
 Do not use solution uninstall to clear document state. See the [operations guide](operations.md) for recovery and decommissioning procedures.

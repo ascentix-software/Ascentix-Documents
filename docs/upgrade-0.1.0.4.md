@@ -2,16 +2,17 @@
 
 Version 0.1.0.4 moves event capture into the application. Documents now registers and verifies its own event steps from Runtime administration. Read this page before you upgrade from 0.1.0.3.
 
-Requires a System Administrator for step 3.
+Requires a System Administrator for step 4.
 
 ## Steps
 
 1. Let the work queue drain with the runtime on. Then turn the runtime off and turn both flows off. A paused runtime does not drain the queue.
 2. Import 0.1.0.4 managed with `--stage-and-upgrade`. This removes the old packaged event steps.
-3. As a System Administrator, open Runtime administration. Check the table list and click **Save**. Every table should show Ready.
-4. Check the solution layers of both flows (**Dispatch durable work** and **Provision requested record**). If either has an active unmanaged layer, for example because it was edited in the environment, remove that active customization. Otherwise it stays on top of the upgraded flow and hides its retries, failure handling and write guard.
-5. Turn the flows and runtime back on.
-6. Records saved between steps 2 and 3 have no event. Replan them (filter by modified date).
+3. Publish all customizations (Power Apps › Solutions › Publish all customizations), then reload the Documents admin page. The import's `--publish-changes` does not always refresh the admin page's scripts: until everything is published, the app can keep serving the previous version.
+4. As a System Administrator, open Runtime administration. Check the table list and click **Save**. Every table should show Ready.
+5. Check the solution layers of both flows (**Dispatch durable work** and **Provision requested record**). If either has an active unmanaged layer, for example because it was edited in the environment, remove that active customization. Otherwise it stays on top of the upgraded flow and hides its retries, failure handling and write guard.
+6. Turn the flows and runtime back on.
+7. Records saved between steps 2 and 4 have no event. Replan them (filter by modified date).
 
 Use stage-and-upgrade. A plain update leaves the removed components behind.
 
