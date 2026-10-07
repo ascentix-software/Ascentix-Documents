@@ -2965,8 +2965,30 @@ public sealed class DurableWorkerTests
         /// </summary>
         public Dictionary<string, long> SnapshotCounts { get; } = new Dictionary<string, long>();
 
-        /// <summary>Lookup columns by "table.column", with the table each one targets.</summary>
+        /// <summary>
+        /// Lookup columns by "table.column", with the tables each one targets, separated by
+        /// commas ("account,contact" for a customer lookup).
+        /// </summary>
         public Dictionary<string, string> Lookups { get; } = new Dictionary<string, string>();
+
+        /// <summary>
+        /// Columns deleted from their table, by "table.column": RetrieveAttribute faults for them
+        /// and RetrieveMetadataChanges leaves them out.
+        /// </summary>
+        public HashSet<string> MissingColumns { get; } = new HashSet<string>();
+
+        /// <summary>
+        /// Tables the caller holds no Read privilege on: querying them faults, as Dataverse does,
+        /// and RetrieveUserPrivilegeByPrivilegeId answers no privilege for their Read privilege.
+        /// </summary>
+        public HashSet<string> CallerCannotRead { get; } = new HashSet<string>();
+
+        /// <summary>The caller WhoAmI names.</summary>
+        public Guid CallerId { get; } = Guid.NewGuid();
+
+        /// <summary>A table's Read privilege, as its metadata names it.</summary>
+        public static Guid ReadPrivilegeId(string table) => StepService.ReadPrivilegeId(table);
+
         private long version = 1;
 
         private static Entity Copy(Entity row, ColumnSet? columns = null)
@@ -3061,6 +3083,24 @@ public sealed class DurableWorkerTests
                 ),
                 new LocalizedLabel[0]
             );
+            typeof(EntityMetadata)
+                .GetProperty("Privileges")!
+                .SetValue(metadata, new[] { StepService.ReadPrivilege(table) }, null);
+            return metadata;
+        }
+
+        /// <summary>The column's metadata: a lookup when Lookups lists it, else text.</summary>
+        private AttributeMetadata Attribute(string table, string column)
+        {
+            AttributeMetadata metadata = Lookups.TryGetValue(table + "." + column, out var targets)
+                ? new LookupAttributeMetadata
+                {
+                    LogicalName = column,
+                    IsSecured = false,
+                    Targets = targets.Split(','),
+                }
+                : new StringAttributeMetadata { LogicalName = column, IsSecured = false };
+            typeof(AttributeMetadata).GetProperty("IsValidForRead")!.SetValue(metadata, true, null);
             return metadata;
         }
 
@@ -3198,7 +3238,27 @@ public sealed class DurableWorkerTests
                 string table = (string)condition.Value;
                 var found = new EntityMetadataCollection();
                 if (!MissingTables.Contains(table))
-                    found.Add(Metadata(table));
+                {
+                    var metadata = Metadata(table);
+                    // An attribute query by LogicalName: the column, or nothing once deleted.
+                    var column =
+                        changes
+                            .Query.AttributeQuery?.Criteria.Conditions.Single(c =>
+                                c.PropertyName == "LogicalName"
+                            )
+                            .Value as string;
+                    if (column != null)
+                        typeof(EntityMetadata)
+                            .GetProperty("Attributes")!
+                            .SetValue(
+                                metadata,
+                                MissingColumns.Contains(table + "." + column)
+                                    ? new AttributeMetadata[0]
+                                    : new[] { Attribute(table, column) },
+                                null
+                            );
+                    found.Add(metadata);
+                }
                 var response = new RetrieveMetadataChangesResponse();
                 response.Results["EntityMetadata"] = found;
                 return response;
@@ -3220,26 +3280,48 @@ public sealed class DurableWorkerTests
             }
             if (request is RetrieveAttributeRequest attribute)
             {
-                AttributeMetadata metadata = Lookups.TryGetValue(
-                    attribute.EntityLogicalName + "." + attribute.LogicalName,
-                    out var target
+                if (
+                    MissingColumns.Contains(
+                        attribute.EntityLogicalName + "." + attribute.LogicalName
+                    )
                 )
-                    ? new LookupAttributeMetadata
-                    {
-                        LogicalName = attribute.LogicalName,
-                        IsSecured = false,
-                        Targets = new[] { target },
-                    }
-                    : new StringAttributeMetadata
-                    {
-                        LogicalName = attribute.LogicalName,
-                        IsSecured = false,
-                    };
-                typeof(AttributeMetadata)
-                    .GetProperty("IsValidForRead")!
-                    .SetValue(metadata, true, null);
+                    throw new System.ServiceModel.FaultException<OrganizationServiceFault>(
+                        new OrganizationServiceFault
+                        {
+                            Message = "Could not find an attribute " + attribute.LogicalName + ".",
+                        }
+                    );
                 var response = new RetrieveAttributeResponse();
-                response.Results["AttributeMetadata"] = metadata;
+                response.Results["AttributeMetadata"] = Attribute(
+                    attribute.EntityLogicalName,
+                    attribute.LogicalName
+                );
+                return response;
+            }
+            if (request is Microsoft.Crm.Sdk.Messages.WhoAmIRequest)
+            {
+                var response = new Microsoft.Crm.Sdk.Messages.WhoAmIResponse();
+                response.Results["UserId"] = CallerId;
+                return response;
+            }
+            if (
+                request is Microsoft.Crm.Sdk.Messages.RetrieveUserPrivilegeByPrivilegeIdRequest held
+            )
+            {
+                var response =
+                    new Microsoft.Crm.Sdk.Messages.RetrieveUserPrivilegeByPrivilegeIdResponse();
+                response.Results["RolePrivileges"] = CallerCannotRead.Any(t =>
+                    ReadPrivilegeId(t) == held.PrivilegeId
+                )
+                    ? new Microsoft.Crm.Sdk.Messages.RolePrivilege[0]
+                    : new[]
+                    {
+                        new Microsoft.Crm.Sdk.Messages.RolePrivilege(
+                            (int)Microsoft.Crm.Sdk.Messages.PrivilegeDepth.Global,
+                            held.PrivilegeId,
+                            Guid.Empty
+                        ),
+                    };
                 return response;
             }
             throw new NotSupportedException(request.RequestName);
@@ -3251,6 +3333,13 @@ public sealed class DurableWorkerTests
                 return FetchHook?.Invoke(fetch)
                     ?? throw new NotSupportedException("Set FetchHook to answer FetchXML.");
             var query = (QueryExpression)raw;
+            if (CallerCannotRead.Contains(query.EntityName))
+                throw new System.ServiceModel.FaultException<OrganizationServiceFault>(
+                    new OrganizationServiceFault
+                    {
+                        Message = "Principal user is missing prvRead" + query.EntityName + ".",
+                    }
+                );
             var intercepted = QueryHook?.Invoke(query);
             if (intercepted != null)
                 return intercepted;

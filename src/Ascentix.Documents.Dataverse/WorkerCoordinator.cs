@@ -439,9 +439,15 @@ public sealed class WorkerCoordinator
                     Candidate = intent.Name,
                 })
                 .ToArray();
-            if (folders.Length == 0 || folders.Length > 100 || folders[0].ParentBinding != null)
+            if (
+                folders.Length == 0
+                || folders.Length > Bounds.FoldersPerDestination
+                || folders[0].ParentBinding != null
+            )
                 throw new EvaluationBlockedException(
-                    "A destination job requires one root and at most 100 folders."
+                    "A destination job requires one root and at most "
+                        + Bounds.FoldersPerDestination
+                        + " folders."
                 );
             var location = new NativeLocations(service).Find(
                 folders[0],

@@ -184,7 +184,7 @@ public sealed class LibraryProvisioning
             throw new EvaluationBlockedException("Select a site and provide a request identity.");
         if (
             request.Entries == null
-            || request.Entries.Length > 10
+            || request.Entries.Length > Domain.Bounds.TeamEntries
             || request.Entries.Any(e =>
                 e.TeamId == Guid.Empty || !new[] { "Read", "Contribute" }.Contains(e.Access)
             )

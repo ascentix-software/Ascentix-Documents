@@ -74,6 +74,16 @@ for (const removed of [
 ])
   if (html.includes(removed) || js.includes(removed))
     throw new Error('Evidence recovery is removed: ' + removed);
+const planning = read('src/Ascentix.Documents.Domain/Planning.cs');
+const bounds = /public static class Bounds\s*\{([\s\S]*?)\n\}/.exec(planning)[1];
+const shellBounds = /const BOUNDS = \{([\s\S]*?)\};/.exec(read('client/admin/shell.js'))?.[1];
+assert(shellBounds, 'AsxdUi.BOUNDS is missing from shell.js');
+for (const [, name, value] of bounds.matchAll(/public const int (\w+) = (\d+);/g)) {
+  const key = name[0].toLowerCase() + name.slice(1);
+  const client = new RegExp('\\b' + key + ':\\s*(\\d+)').exec(shellBounds);
+  assert(client, 'AsxdUi.BOUNDS lacks ' + key);
+  assert.equal(client[1], value, 'AsxdUi.BOUNDS.' + key + ' differs from Bounds.' + name);
+}
 console.log(
   'PASS admin static contract: ' +
     ids.length +

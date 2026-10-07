@@ -43,6 +43,63 @@ public static class TableInfo
         ).EntityMetadata.FirstOrDefault();
     }
 
+    /// <summary>
+    /// The tables a lookup column targets, or none when the table or column no longer exists or
+    /// the column is not a lookup. RetrieveAttribute would fault for a deleted column.
+    /// </summary>
+    public static string[] LookupTargets(IOrganizationService service, string table, string column)
+    {
+        var query = new EntityQueryExpression
+        {
+            Criteria = new MetadataFilterExpression(LogicalOperator.And),
+            Properties = new MetadataPropertiesExpression("LogicalName", "Attributes"),
+            AttributeQuery = new AttributeQueryExpression
+            {
+                Criteria = new MetadataFilterExpression(LogicalOperator.And),
+                Properties = new MetadataPropertiesExpression("LogicalName", "Targets"),
+            },
+        };
+        query.Criteria.Conditions.Add(
+            new MetadataConditionExpression("LogicalName", MetadataConditionOperator.Equals, table)
+        );
+        query.AttributeQuery.Criteria.Conditions.Add(
+            new MetadataConditionExpression("LogicalName", MetadataConditionOperator.Equals, column)
+        );
+        var metadata = (
+            (RetrieveMetadataChangesResponse)
+                service.Execute(new RetrieveMetadataChangesRequest { Query = query })
+        ).EntityMetadata.FirstOrDefault();
+        return (
+                metadata?.Attributes?.FirstOrDefault(a => a.LogicalName == column)
+                as LookupAttributeMetadata
+            )?.Targets
+            ?? Array.Empty<string>();
+    }
+
+    /// <summary>
+    /// Whether the user holds the table's Read privilege at any depth, so that a query of it
+    /// returns the rows they may see instead of faulting. Find must have returned the metadata.
+    /// </summary>
+    public static bool CanRead(IOrganizationService service, EntityMetadata metadata, Guid user)
+    {
+        var read = metadata
+            .Privileges?.FirstOrDefault(p => p.PrivilegeType == PrivilegeType.Read)
+            ?.PrivilegeId;
+        return read.HasValue
+            && (
+                (RetrieveUserPrivilegeByPrivilegeIdResponse)
+                    service.Execute(
+                        new RetrieveUserPrivilegeByPrivilegeIdRequest
+                        {
+                            UserId = user,
+                            PrivilegeId = read.Value,
+                        }
+                    )
+            )
+                .RolePrivileges
+                ?.Length > 0;
+    }
+
     /// <summary>The table's display name in the caller's language, else its logical name.</summary>
     public static string Label(IOrganizationService service, string table) =>
         Label(Find(service, table), table);

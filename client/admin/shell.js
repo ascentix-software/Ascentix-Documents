@@ -14,6 +14,16 @@
   const KEYS = { launched: 'asxd.launched', focus: 'asxd.focusTab', link: 'asxd.deeplink' };
   const PARAMS = ['library', 'operation', 'record', 'table', 'run', 'template'];
   const EMPTY = '00000000-0000-0000-0000-000000000000';
+  // The server's bounds (Ascentix.Documents.Domain.Bounds, with their reasons); verify-admin.cjs
+  // fails when these differ from it.
+  const BOUNDS = {
+    relatedRecords: 5,
+    destinations: 10,
+    foldersPerDestination: 100,
+    configurationRows: 1216,
+    teamEntries: 10,
+    previewRecords: 5,
+  };
   const ROLES = {
     prvCreateasx_publication: 'Documents Publisher',
     prvCreateasx_operatorcommand: 'Documents Operator',
@@ -598,6 +608,7 @@
 
   window.AsxdUi = {
     BUILD,
+    BOUNDS,
     TABS,
     activeTab: () => state.tab,
     onTab: (tab, init) => inits.set(tab, init),

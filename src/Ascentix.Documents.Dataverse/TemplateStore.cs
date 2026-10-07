@@ -67,7 +67,7 @@ public sealed class TemplateStore
         var usedGroups = new HashSet<string>(StringComparer.Ordinal);
         Predicate Group(string key, HashSet<string> path)
         {
-            if (path.Count >= 10 || !path.Add(key) || !byGroup.TryGetValue(key, out var row))
+            if (!path.Add(key) || !byGroup.TryGetValue(key, out var row))
                 throw new EvaluationBlockedException("Invalid condition tree.");
             if (!usedGroups.Add(key))
                 throw new EvaluationBlockedException(
@@ -96,44 +96,7 @@ public sealed class TemplateStore
             var libraryRef =
                 row.GetAttributeValue<EntityReference>("asx_libraryid")
                 ?? throw new EvaluationBlockedException("Destination has no approved library.");
-            var library = service.Retrieve(
-                "asx_library",
-                libraryRef.Id,
-                new ColumnSet(
-                    "asx_siteid",
-                    "asx_listid",
-                    "asx_entryid",
-                    "asx_entryurl",
-                    "asx_approved"
-                )
-            );
-            var siteRef =
-                library.GetAttributeValue<EntityReference>("asx_siteid")
-                ?? throw new EvaluationBlockedException("Library has no site.");
-            var site = service.Retrieve(
-                "asx_site",
-                siteRef.Id,
-                new ColumnSet("asx_webid", "asx_url", "asx_approved")
-            );
-            var entryUrl = Text(library, "asx_entryurl");
-            var siteUrl = new Uri(Text(site, "asx_url")).AbsoluteUri.TrimEnd('/');
-            if (!entryUrl.StartsWith(siteUrl + "/", StringComparison.OrdinalIgnoreCase))
-                throw new EvaluationBlockedException("Library entry is outside approved web.");
-            var section = new DestinationSection
-            {
-                Key = key,
-                Library = new ApprovedLibrary
-                {
-                    ApprovalId = library.Id,
-                    WebId = Guid.Parse(Text(site, "asx_webid")),
-                    ListId = Guid.Parse(Text(library, "asx_listid")),
-                    EntryId = Guid.Parse(Text(library, "asx_entryid")),
-                    EntryUrl = entryUrl,
-                    Approved =
-                        site.GetAttributeValue<bool>("asx_approved")
-                        && library.GetAttributeValue<bool>("asx_approved"),
-                },
-            };
+            var section = Destination(key, libraryRef.Id);
             foreach (var folder in folders.Where(f => Text(f, "asx_sectionkey") == key))
             {
                 var groupKey = folder.GetAttributeValue<string>("asx_groupkey");
@@ -169,20 +132,73 @@ public sealed class TemplateStore
         return template;
     }
 
+    /// <summary>The destination for an approved library, checked against its site.</summary>
+    /// <param name="key">The destination's section key.</param>
+    /// <param name="libraryId">The asx_library row the destination files into.</param>
+    /// <returns>The destination without its folders.</returns>
+    internal DestinationSection Destination(string key, Guid libraryId)
+    {
+        var library = service.Retrieve(
+            "asx_library",
+            libraryId,
+            new ColumnSet("asx_siteid", "asx_listid", "asx_entryid", "asx_entryurl", "asx_approved")
+        );
+        var siteRef =
+            library.GetAttributeValue<EntityReference>("asx_siteid")
+            ?? throw new EvaluationBlockedException("Library has no site.");
+        var site = service.Retrieve(
+            "asx_site",
+            siteRef.Id,
+            new ColumnSet("asx_webid", "asx_url", "asx_approved")
+        );
+        var entryUrl = Text(library, "asx_entryurl");
+        var siteUrl = new Uri(Text(site, "asx_url")).AbsoluteUri.TrimEnd('/');
+        if (!entryUrl.StartsWith(siteUrl + "/", StringComparison.OrdinalIgnoreCase))
+            throw new EvaluationBlockedException("Library entry is outside approved web.");
+        return new DestinationSection
+        {
+            Key = key,
+            Library = new ApprovedLibrary
+            {
+                ApprovalId = library.Id,
+                WebId = Guid.Parse(Text(site, "asx_webid")),
+                ListId = Guid.Parse(Text(library, "asx_listid")),
+                EntryId = Guid.Parse(Text(library, "asx_entryid")),
+                EntryUrl = entryUrl,
+                Approved =
+                    site.GetAttributeValue<bool>("asx_approved")
+                    && library.GetAttributeValue<bool>("asx_approved"),
+            },
+        };
+    }
+
+    /// <summary>
+    /// Every row of a revision's configuration table. It reads page after page at Dataverse's
+    /// largest page size (5,000), so a revision of any size reads completely.
+    /// </summary>
+    /// <param name="table">The configuration table (asx_source, asx_folder, ...).</param>
+    /// <param name="revision">The revision whose rows are read.</param>
+    /// <param name="columns">The columns to read.</param>
+    /// <returns>The rows in primary key order.</returns>
     public IReadOnlyList<Entity> Children(string table, Guid revision, params string[] columns)
     {
+        var rows = new List<Entity>();
         var query = new QueryExpression(table)
         {
             ColumnSet = new ColumnSet(columns),
-            PageInfo = new PagingInfo { Count = 1000, PageNumber = 1 },
+            PageInfo = new PagingInfo { Count = 5000, PageNumber = 1 },
         };
         query.Criteria.AddCondition("asx_revisionid", ConditionOperator.Equal, revision);
-        var result = service.RetrieveMultiple(query);
-        if (result.MoreRecords || result.Entities.Count >= 1000)
-            throw new EvaluationBlockedException(
-                "Configuration query exceeded the completeness bound."
-            );
-        return result.Entities.ToArray();
+        query.AddOrder(table + "id", OrderType.Ascending);
+        while (true)
+        {
+            var page = service.RetrieveMultiple(query);
+            rows.AddRange(page.Entities);
+            if (!page.MoreRecords)
+                return rows;
+            query.PageInfo.PageNumber++;
+            query.PageInfo.PagingCookie = page.PagingCookie;
+        }
     }
 
     internal static string Text(Entity entity, string column) =>

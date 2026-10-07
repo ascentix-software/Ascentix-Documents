@@ -48,11 +48,14 @@ public abstract class Predicate
     public abstract IEnumerable<FieldReference> Fields { get; }
     internal abstract int Validate(int depth);
 
-    public void Validate()
-    {
-        if (Validate(0) > 100)
-            throw new EvaluationBlockedException("Condition leaf limit exceeded.");
-    }
+    /// <summary>
+    /// Checks the tree's shape. Its size is bounded where it is saved (Bounds.ConfigurationRows,
+    /// one row per group and condition). Its depth (groups nested at most 9 below a folder's
+    /// group, conditions at depth 10) keeps the draft that carries it inside JsonWire's 32-level
+    /// nesting quota, which refuses a save or a preview with groups nested 12 deep
+    /// (CapTraceTests.TheDeepestConditionTreeAPreviewCarriesFitsTheWireNestingQuota).
+    /// </summary>
+    public void Validate() => Validate(0);
 }
 
 public sealed class Condition : Predicate

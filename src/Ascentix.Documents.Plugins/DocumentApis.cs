@@ -20,7 +20,15 @@ public sealed class PreviewTemplateApi : IPlugin
         try
         {
             var request = JsonWire.Read<PreviewRequest>((string)context.InputParameters["Request"]);
-            var template = new TemplateStore(service).Read(Guid.Parse(request.RevisionId));
+            if ((request.Draft == null) == string.IsNullOrEmpty(request.RevisionId))
+                throw new EvaluationBlockedException(
+                    "Send either the saved revision or the unsaved draft."
+                );
+            // Unsaved edits are validated and converted as Save does, and nothing is written.
+            var template =
+                request.Draft != null
+                    ? DraftTemplate.Build(service, request.Draft)
+                    : new TemplateStore(service).Read(Guid.Parse(request.RevisionId));
             var recordId = Guid.Parse(request.RecordId);
             var snapshot = new SnapshotReader(service).Read(template, recordId);
             context.OutputParameters["Result"] = JsonWire.Write(

@@ -157,7 +157,7 @@ internal sealed class StepService : IOrganizationService
     public void Disassociate(string n, Guid id, Relationship r, EntityReferenceCollection e) =>
         throw new NotSupportedException();
 
-    private static SecurityPrivilegeMetadata ReadPrivilege(string table)
+    internal static SecurityPrivilegeMetadata ReadPrivilege(string table)
     {
         var privilege = (SecurityPrivilegeMetadata)
             System.Runtime.Serialization.FormatterServices.GetUninitializedObject(

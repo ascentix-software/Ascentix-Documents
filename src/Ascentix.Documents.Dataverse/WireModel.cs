@@ -140,6 +140,14 @@ public sealed class ConditionDto
     [DataMember]
     public string? RightColumn { get; set; }
 
+    /// <summary>Output only (LoadDraft): the name of the record a lookup condition compares with.</summary>
+    [DataMember]
+    public string? LiteralLabel { get; set; }
+
+    /// <summary>Output only (LoadDraft): the table of that record.</summary>
+    [DataMember]
+    public string? LiteralTable { get; set; }
+
     public Condition ToModel()
     {
         Value? value = null;
@@ -214,8 +222,13 @@ public sealed class ConditionDto
 [DataContract]
 public sealed class PreviewRequest
 {
+    /// <summary>The saved revision to preview; send it or Draft, not both.</summary>
     [DataMember]
     public string RevisionId { get; set; } = "";
+
+    /// <summary>The editor's unsaved draft to preview; send it or RevisionId, not both.</summary>
+    [DataMember]
+    public DraftDto? Draft { get; set; }
 
     [DataMember]
     public string RecordId { get; set; } = "";

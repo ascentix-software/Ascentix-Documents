@@ -492,7 +492,7 @@ public sealed class SecurityAdministration
     {
         if (
             entries == null
-            || entries.Length > 10
+            || entries.Length > Domain.Bounds.TeamEntries
             || entries.Any(e =>
                 e.TeamId == Guid.Empty || !new[] { "None", "Read", "Contribute" }.Contains(e.Access)
             )

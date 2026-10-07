@@ -134,6 +134,194 @@ public sealed class LookupSourceTests
         Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_operation");
     }
 
+    [Theory]
+    [InlineData("contact")]
+    [InlineData("account,contact")]
+    public void LoadDraftNamesTheRecordALookupConditionComparesWith(string targets)
+    {
+        var f = LookupTemplate();
+        var contact = Guid.NewGuid();
+        f.Service.Seed(new Entity("contact", contact) { ["fullname"] = "Jane Smith" });
+        f.Service.PrimaryNames["contact"] = "fullname";
+        f.Service.Lookups["account.primarycontactid"] = targets;
+        var draft = new DraftReader(f.Service).Read(f.RevisionId);
+        Assert.Equal(1, draft.Version);
+        var condition = new GroupDto
+        {
+            Conditions = new[]
+            {
+                new ConditionDto
+                {
+                    Column = "primarycontactid",
+                    Operator = "Equal",
+                    LiteralKind = "Lookup",
+                    Literal = contact.ToString("D"),
+                },
+            },
+        };
+        var root = draft.Draft.Sources.Single(s => s.Alias == "root");
+        root.Columns = root
+            .Columns.Concat(
+                new[]
+                {
+                    new ColumnDto { Name = "primarycontactid", Kind = "Lookup" },
+                }
+            )
+            .ToArray();
+        draft.Draft.Destinations[0].Folders[0].Condition = condition;
+        Save(f, draft.Draft);
+        var loaded = new DraftReader(f.Service)
+            .Read(LatestRevision(f))
+            .Draft.Destinations[0]
+            .Folders[0]
+            .Condition!.Conditions[0];
+        Assert.Equal("Jane Smith", loaded.LiteralLabel);
+        Assert.Equal("contact", loaded.LiteralTable);
+        Assert.Equal(contact.ToString("D"), loaded.Literal);
+    }
+
+    [Fact]
+    public void ARecordTheCallerCannotFindHasNoLabelAndSaveIgnoresTheLabels()
+    {
+        var f = LookupTemplate();
+        f.Service.Lookups["account.primarycontactid"] = "contact";
+        var draft = new DraftReader(f.Service).Read(f.RevisionId).Draft;
+        var root = draft.Sources.Single(s => s.Alias == "root");
+        root.Columns = root
+            .Columns.Concat(
+                new[]
+                {
+                    new ColumnDto { Name = "primarycontactid", Kind = "Lookup" },
+                }
+            )
+            .ToArray();
+        draft.Destinations[0].Folders[0].Condition = new GroupDto
+        {
+            Conditions = new[]
+            {
+                new ConditionDto
+                {
+                    Column = "primarycontactid",
+                    Operator = "Equal",
+                    LiteralKind = "Lookup",
+                    Literal = Guid.NewGuid().ToString("D"),
+                    LiteralLabel = "Forged",
+                    LiteralTable = "systemuser",
+                },
+            },
+        };
+        Save(f, draft);
+        var loaded = new DraftReader(f.Service)
+            .Read(LatestRevision(f))
+            .Draft.Destinations[0]
+            .Folders[0]
+            .Condition!.Conditions[0];
+        Assert.Null(loaded.LiteralLabel);
+        Assert.Null(loaded.LiteralTable);
+        Assert.DoesNotContain(
+            f.Service.Rows.Values,
+            r =>
+                r.LogicalName == "asx_condition"
+                && r.GetAttributeValue<string>("asx_payload").Contains("Forged")
+        );
+    }
+
+    [Fact]
+    public void ARecordInATableTheCallerCannotReadHasNoLabelAndTheLoadStillSucceeds()
+    {
+        var f = LookupTemplate();
+        var contact = Guid.NewGuid();
+        f.Service.Seed(new Entity("contact", contact) { ["fullname"] = "Jane Smith" });
+        f.Service.PrimaryNames["contact"] = "fullname";
+        Save(f, WithLookupCondition(f, contact));
+        // Querying a table without its Read privilege faults, and inside LoadDraft's transaction
+        // even a caught fault would end it, so the label is left out without that call.
+        f.Service.CallerCannotRead.Add("contact");
+        var loaded = f
+            .Service.Transaction(() => new DraftReader(f.Service).Read(LatestRevision(f)))
+            .Draft.Destinations[0]
+            .Folders[0]
+            .Condition!.Conditions[0];
+        Assert.Null(loaded.LiteralLabel);
+        Assert.Null(loaded.LiteralTable);
+        Assert.Equal(contact.ToString("D"), loaded.Literal);
+    }
+
+    [Fact]
+    public void ALookupColumnDeletedFromTheTableHasNoLabelAndTheLoadStillSucceeds()
+    {
+        var f = LookupTemplate();
+        var contact = Guid.NewGuid();
+        f.Service.Seed(new Entity("contact", contact) { ["fullname"] = "Jane Smith" });
+        Save(f, WithLookupCondition(f, contact));
+        // RetrieveAttribute faults for a deleted column; the load reads metadata without faulting.
+        f.Service.MissingColumns.Add("account.primarycontactid");
+        var loaded = f
+            .Service.Transaction(() => new DraftReader(f.Service).Read(LatestRevision(f)))
+            .Draft.Destinations[0]
+            .Folders[0]
+            .Condition!.Conditions[0];
+        Assert.Null(loaded.LiteralLabel);
+        Assert.Equal(contact.ToString("D"), loaded.Literal);
+    }
+
+    /// <summary>The template's draft with its root folder kept only when the primary contact is the given one.</summary>
+    private static DraftDto WithLookupCondition(DurableWorkerTests.Fixture f, Guid contact)
+    {
+        var draft = new DraftReader(f.Service).Read(f.RevisionId).Draft;
+        var root = draft.Sources.Single(s => s.Alias == "root");
+        root.Columns = root
+            .Columns.Concat(
+                new[]
+                {
+                    new ColumnDto { Name = "primarycontactid", Kind = "Lookup" },
+                }
+            )
+            .ToArray();
+        draft.Destinations[0].Folders[0].Condition = new GroupDto
+        {
+            Conditions = new[]
+            {
+                new ConditionDto
+                {
+                    Column = "primarycontactid",
+                    Operator = "Equal",
+                    LiteralKind = "Lookup",
+                    Literal = contact.ToString("D"),
+                },
+            },
+        };
+        return draft;
+    }
+
+    private static DraftResult Save(DurableWorkerTests.Fixture f, DraftDto draft)
+    {
+        var context = GuardTests.ContextProxy.Create(
+            new Dictionary<string, object>
+            {
+                ["IsInTransaction"] = true,
+                ["InitiatingUserId"] = Guid.NewGuid(),
+                ["InputParameters"] = new ParameterCollection
+                {
+                    ["Request"] = JsonWire.Write(draft),
+                },
+                ["OutputParameters"] = new ParameterCollection(),
+            }
+        );
+        return f.Service.Transaction(() =>
+        {
+            new CreateDraftApi().Execute(new Provider(context, f.Service));
+            return JsonWire.Read<DraftResult>((string)context.OutputParameters["Result"]);
+        });
+    }
+
+    private static Guid LatestRevision(DurableWorkerTests.Fixture f) =>
+        f
+            .Service.Rows.Values.Where(r => r.LogicalName == "asx_revision")
+            .OrderByDescending(r => r.GetAttributeValue<int>("asx_version"))
+            .First()
+            .Id;
+
     /// <summary>
     /// An account template whose root folder name also uses the primary contact's full name.
     /// </summary>

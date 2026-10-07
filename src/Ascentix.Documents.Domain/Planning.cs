@@ -215,6 +215,70 @@ public static class FolderNames
     }
 }
 
+/// <summary>
+/// The limits Documents enforces, each traced to the platform constraint it protects (spec 6.9).
+/// The admin page shows the same values (client/admin/shell.js, AsxdUi.BOUNDS); verify-admin.cjs
+/// fails when they differ.
+/// </summary>
+public static class Bounds
+{
+    /// <summary>
+    /// Related records per template. Record plans index each related record in asx_source0 to
+    /// asx_source5 (DocumentStore.Index), so a change to one re-runs the records that use it.
+    /// </summary>
+    public const int RelatedRecords = 5;
+
+    /// <summary>The root record and its related records.</summary>
+    public const int Sources = RelatedRecords + 1;
+
+    /// <summary>
+    /// Destinations per template. Each destination is planned inside one worker Plan call, which
+    /// Dataverse stops after 2 minutes. Counted in tests on 2026-10-07: 10 fixed queries plus 2
+    /// per destination (CapTraceTests.PlanningCostsAFixedNumberOfCallsPlusSomePerDestination), so
+    /// 10 destinations cost 30 queries. The per-query time in DEV that turns this into a bound at
+    /// half the limit is not measured yet (spec 6.9; the 0.1.0.4 DEV check), so the value in use
+    /// before the trace stays.
+    /// </summary>
+    public const int Destinations = 10;
+
+    /// <summary>
+    /// Folders per destination. A destination's folders are one folder job, stored in one
+    /// asx_payload column of at most 500,000 characters. Measured in tests on 2026-10-07: 852
+    /// characters plus 1,957 per worst-case folder (CapTraceTests
+    /// .AFolderJobStaysInsideItsPayloadAtTheFolderBound), so 255 folders fit and 100 take
+    /// 196,552 characters. The job is also planned inside one Plan call; its time per folder in
+    /// DEV is not measured yet, so the value in use before the trace stays.
+    /// </summary>
+    public const int FoldersPerDestination = 100;
+
+    /// <summary>
+    /// Configuration rows one draft save writes (sources, destinations, folders, condition groups
+    /// and conditions), all inside one CreateDraft call, which Dataverse stops after 2 minutes.
+    /// It replaces the separate caps of 100 condition groups and 100 conditions per template:
+    /// 6 + 10 + 10 × 100 + 100 + 100 is the most a save could write under them. Revisions are
+    /// read back page by page (TemplateStore.Children), so reading sets no lower bound. The
+    /// save time per row in DEV is not measured yet, so that most stays.
+    /// </summary>
+    public const int ConfigurationRows = 1216;
+
+    /// <summary>
+    /// Teams per library. A library's access is applied for every team entry inside one access
+    /// run call, which Dataverse stops after 2 minutes; an entry's payload (a team ID and an
+    /// access level) is too small to bind. The time per team in DEV is not measured yet, so the
+    /// value in use before the trace stays.
+    /// </summary>
+    public const int TeamEntries = 10;
+
+    /// <summary>
+    /// Records per batch preview. Each record's preview reads the record and its related records
+    /// inside one PreviewBatch call, which Dataverse stops after 2 minutes, and the batch keeps
+    /// every record's planned paths in one 500,000-character asx_payload row (BatchReplan also
+    /// stops at 1,000 planned folders). The time per record in DEV is not measured yet, so the
+    /// value in use before the trace stays.
+    /// </summary>
+    public const int PreviewRecords = 5;
+}
+
 public static class TemplateValidator
 {
     internal static void Key(string key)
@@ -235,9 +299,9 @@ public static class TemplateValidator
             throw new EvaluationBlockedException("Invalid template identity.");
         if (
             template.Destinations.Count < 1
-            || template.Destinations.Count > 10
+            || template.Destinations.Count > Bounds.Destinations
             || template.Sources.Count < 1
-            || template.Sources.Count > 6
+            || template.Sources.Count > Bounds.Sources
         )
             throw new EvaluationBlockedException("Template exceeds destination/source limits.");
         var sources = new Dictionary<string, ValueSource>(StringComparer.Ordinal);
@@ -269,7 +333,6 @@ public static class TemplateValidator
         if (!sources.ContainsKey("root"))
             throw new EvaluationBlockedException("Root source is required.");
         var sectionKeys = new HashSet<string>(StringComparer.Ordinal);
-        int leaves = 0;
         foreach (var section in template.Destinations)
         {
             Key(section.Key);
@@ -296,7 +359,7 @@ public static class TemplateValidator
                 || url.UserInfo.Length != 0
             )
                 throw new EvaluationBlockedException("Invalid approved entry URL.");
-            if (section.Nodes.Count < 1 || section.Nodes.Count > 100)
+            if (section.Nodes.Count < 1 || section.Nodes.Count > Bounds.FoldersPerDestination)
                 throw new EvaluationBlockedException("Folder count exceeds bounds.");
             var nodes = new Dictionary<string, FolderNode>(StringComparer.Ordinal);
             foreach (var node in section.Nodes)
@@ -326,12 +389,11 @@ public static class TemplateValidator
                 if (node.Condition != null)
                 {
                     node.Condition.Validate();
-                    leaves += ValidatePredicate(sources, node.Condition);
+                    ValidatePredicate(sources, node.Condition);
                 }
             }
         }
-        if (leaves > 100)
-            throw new EvaluationBlockedException("Template condition leaf limit exceeded.");
+        // The number of conditions is bounded where a draft is saved (Bounds.ConfigurationRows).
     }
 
     private static ValueKind RequireField(

@@ -64,12 +64,14 @@ public sealed class BatchReplan
                 || request.TemplateId == Guid.Empty
                 || request.RecordIds == null
                 || request.RecordIds.Length < 1
-                || request.RecordIds.Length > 5
+                || request.RecordIds.Length > Bounds.PreviewRecords
                 || request.RecordIds.Any(id => id == Guid.Empty)
                 || request.RecordIds.Distinct().Count() != request.RecordIds.Length
             )
                 throw new EvaluationBlockedException(
-                    "Select one to five unique records for a bounded batch review."
+                    "Select one to "
+                        + Bounds.PreviewRecords
+                        + " unique records for a bounded batch review."
                 );
             string key = "batch:" + request.RequestId.ToString("N");
             var old = store.Find<BatchDocument>("asx_outbox", key);
