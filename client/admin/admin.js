@@ -57,6 +57,8 @@
   };
   const OPERATOR = 'prvCreateasx_operatorcommand';
   const READ_ONLY = 'Viewing an earlier version.';
+  // The states of a re-run that has not ended.
+  const ACTIVE = ['Running', 'Waiting', 'Retrying', 'Paused', 'Blocked'];
   // The open side panel (Schedule, Version history or Re-run): one at a time.
   let panel = null;
   // Dataverse IDs compare without case.
@@ -1571,7 +1573,8 @@
           (published[BY] ? ' by ' + published[BY] : '')
         : '');
     $('overview-menu').setAttribute('aria-label', 'More actions for ' + name);
-    $('menu-rerun').hidden = !t._asx_publishedrevisionid_value;
+    // Re-run needs a published version; its separator goes with it.
+    $('menu-rerun').hidden = $('menu-rerun-separator').hidden = !t._asx_publishedrevisionid_value;
     $('overview-edit').textContent = s.draft ? 'Continue Draft v' + s.draft : 'Edit template';
     $('overview-cards').replaceChildren(
       destinationsCard(o),
@@ -1689,7 +1692,7 @@
     if (run) {
       const row = el('div', null, 'card-row run-row');
       row.append(
-        el('span', 'Last re-run'),
+        el('span', ACTIVE.includes(run.State) ? 'Re-run in progress' : 'Last re-run'),
         el(
           'strong',
           (run.StartedUtc ? day(run.StartedUtc) + ' · ' : '') +
@@ -2136,7 +2139,11 @@
       resetEditor();
     }
     $('new-template-table').hidden = true;
+    // The list redraws with the overview; focus moves to the redrawn row it was on.
+    const focused = document.activeElement === control;
     await task(() => showOverview(t.asx_templateid));
+    if (focused)
+      document.querySelector('[data-focus-key="template:' + t.asx_templateid + '"]')?.focus();
   }
   // The list's tables in order: enabled tables by name, then tables no longer enabled.
   function listTables() {
@@ -2214,8 +2221,17 @@
     tablePicker.focus();
     return undefined;
   };
-  tablePicker.addEventListener('pointerdown', () => (browsing = false));
+  // Leaving the picker ends a keyboard browse, so a later pick with the pointer opens.
+  for (const type of ['pointerdown', 'focusout'])
+    tablePicker.addEventListener(type, () => (browsing = false));
   tablePicker.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      browsing = false;
+      tablePicker.hidden = true;
+      $('new-template').focus();
+      return;
+    }
     browsing = event.key !== 'Enter';
     if (event.key !== 'Enter') return;
     event.preventDefault();
@@ -2404,9 +2420,7 @@
     ]);
     state.run =
       (runs?.Problems || []).find(
-        (p) =>
-          same(p.Run?.TemplateId, t.asx_templateid) &&
-          ['Running', 'Waiting', 'Retrying', 'Paused', 'Blocked'].includes(p.Run.State),
+        (p) => same(p.Run?.TemplateId, t.asx_templateid) && ACTIVE.includes(p.Run.State),
       ) || null;
     const total = count?.Run
       ? (count.Run.TotalEstimated ? 'about ' : '') + count.Run.Total.toLocaleString('en-US')

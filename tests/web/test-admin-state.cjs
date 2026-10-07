@@ -916,6 +916,126 @@ async function boot({
     assert.equal(first.$('overview-title').textContent, 'Account onboarding');
   }
   {
+    // Fix round 1: a row chosen with the keyboard keeps focus once the list redraws.
+    const t = await boot({
+      templates: [
+        { asx_templateid: TEMPLATE, asx_name: 'Account onboarding', asx_table: 'account' },
+        { asx_templateid: OTHER, asx_name: 'Contract documents', asx_table: 'account' },
+      ],
+    });
+    const before = t.row('Contract documents');
+    before.focus();
+    await t.press(before);
+    assert.equal(t.$('overview-title').textContent, 'Contract documents');
+    assert.ok(
+      t.document.activeElement === t.row('Contract documents'),
+      'Focus is on the chosen row',
+    );
+    assert.ok(t.document.activeElement.isConnected, 'Focus is on a row in the page');
+  }
+  {
+    // Fix round 1: a re-run still under way reads "Re-run in progress", an ended one "Last re-run".
+    const run = (State) => ({
+      Status: 'Page',
+      Problems: [
+        {
+          Key: 'templaterun:1',
+          Kind: 'TemplateRun',
+          Run: {
+            TemplateId: TEMPLATE,
+            State,
+            Planned: 500,
+            Total: 1240,
+            StartedUtc: '2026-10-01T10:00:00Z',
+          },
+        },
+      ],
+      Next: null,
+    });
+    for (const [State, label] of [
+      ['Running', 'Re-run in progress'],
+      ['Paused', 'Re-run in progress'],
+      ['Done', 'Last re-run'],
+    ]) {
+      const t = await boot({
+        handle: (api, b) => (b.Command === 'ListProblems' ? run(State) : null),
+      });
+      await t.overview();
+      const row = t.$('overview-cards').querySelector('.run-row');
+      assert.equal(row.querySelector('span').textContent, label, State);
+      assert.match(row.textContent, / · 500 of 1,240 records$/);
+    }
+  }
+  {
+    // Fix round 1: the ⋯ menu's separator hides with Re-run for existing records.
+    const draftOnly = await boot({
+      templates: [
+        {
+          asx_templateid: TEMPLATE,
+          asx_name: 'Account onboarding',
+          asx_table: 'account',
+          _asx_publishedrevisionid_value: null,
+        },
+      ],
+    });
+    await draftOnly.overview();
+    const separator = (t) => t.$('overview-menu-list').querySelector('[role=separator]');
+    assert.equal(draftOnly.$('menu-rerun').hidden, true);
+    assert.equal(separator(draftOnly).hidden, true);
+    const live = await boot();
+    await live.overview();
+    assert.equal(live.$('menu-rerun').hidden, false);
+    assert.equal(separator(live).hidden, false);
+  }
+  {
+    // Fix round 1: arrow keys move through the table picker without opening a template; leaving
+    // it forgets that, so a later pick opens one; Escape hides it and returns to ＋ New.
+    const t = await boot({ enabled: ['account', 'contact'] });
+    const picker = t.$('new-template-table');
+    await t.press(t.$('new-template'));
+    picker.key('ArrowDown');
+    await t.change(picker, 'account');
+    assert.equal(t.$('template-editor').hidden, true, 'An arrow key opens nothing');
+    assert.equal(picker.hidden, false);
+    picker.key('Escape');
+    assert.equal(picker.hidden, true);
+    assert.ok(t.document.activeElement === t.$('new-template'), 'Focus returns to ＋ New');
+    await t.press(t.$('new-template'));
+    picker.key('ArrowDown');
+    picker.dispatchEvent(new FakeEvent('focusout'));
+    await t.change(picker, 'contact');
+    assert.equal(t.$('template-editor').hidden, false, 'A pick after leaving the picker opens');
+    assert.equal(t.$('editor-title').textContent, 'New template');
+    // Enter opens the table the picker shows.
+    const e = await boot({ enabled: ['account', 'contact'] });
+    await e.press(e.$('new-template'));
+    e.$('new-template-table').key('ArrowDown');
+    e.$('new-template-table').value = 'contact';
+    e.$('new-template-table').key('Enter');
+    await e.document.settle();
+    assert.equal(e.$('template-editor').hidden, false);
+  }
+  {
+    // Fix round 1: ＋ New with unsaved edits in the editor asks first; Keep editing keeps them.
+    const t = await boot();
+    await t.open();
+    await t.press(t.find(t.$('destinations'), 'General'));
+    await t.change(t.labelled(t.$('folderEditor'), 'Folder name'), 'Kept');
+    await t.press(t.$('new-template'));
+    assert.equal(
+      t.document.activeElement.textContent,
+      'Open a new template? Your unsaved changes to Account onboarding are discarded.',
+    );
+    await t.press(t.find(t.$('templates-list'), 'Keep editing'));
+    assert.equal(t.$('version-chip').textContent, 'Draft v2 · unsaved changes');
+    assert.equal(t.$('templateName').value, 'Account onboarding');
+    await t.press(t.$('new-template'));
+    await t.press(t.find(t.$('templates-list'), 'Open a new template'));
+    assert.equal(t.$('templateName').value, 'New template');
+    assert.equal(t.$('version-chip').textContent, 'Draft v1');
+    assert.equal(t.last('asx_CreateDraft'), undefined, 'Nothing was saved');
+  }
+  {
     // ＋ New: with more than one table it asks which; the choice opens a new template's editor.
     const t = await boot({ enabled: ['account', 'contact'] });
     await t.press(t.$('new-template'));
@@ -1746,7 +1866,7 @@ async function boot({
     assert.equal(t.looked.length, picks, 'A blocked preview opens no picker');
   }
   console.log(
-    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, version chip, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload. Fake DOM; browser QA separate.',
+    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, version chip, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);
