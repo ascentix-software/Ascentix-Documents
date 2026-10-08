@@ -107,6 +107,43 @@ async function openTemplate(page) {
   await page.locator('#step-1 .destination-card').waitFor();
   await settle(page);
 }
+// At 1920px a page's content is --content-max (1280px) wide, plus `slack` where its own padding
+// lines it up, and centered in its area, the space beside any rail. The contents of its header and
+// footer bars line up with it. A box is the element's content box, or its border box for an
+// element placed by its margins.
+const CONTENT_MAX = 1280;
+async function assertCentered(page, label, content, area, bars = [], slack = 0) {
+  const m = await page.evaluate(
+    ([content, area, bars]) => {
+      const box = ([sel, kind = 'content']) => {
+        const e = document.querySelector(sel);
+        const r = e.getBoundingClientRect();
+        const s = getComputedStyle(e);
+        const inset = (side) =>
+          kind === 'border'
+            ? 0
+            : parseFloat(s['border' + side + 'Width']) + parseFloat(s['padding' + side]);
+        return { left: r.left + inset('Left'), right: r.right - inset('Right') };
+      };
+      return { content: box(content), area: box([area, 'border']), bars: bars.map(box) };
+    },
+    [content, area, bars],
+  );
+  const width = m.content.right - m.content.left;
+  assert(
+    width >= CONTENT_MAX - 0.5 && width <= CONTENT_MAX + slack + 0.5,
+    label + ' width ' + width,
+  );
+  const before = m.content.left - m.area.left,
+    after = m.area.right - m.content.right;
+  assert(Math.abs(before - after) <= 1, label + ' centered ' + before + '/' + after);
+  m.bars.forEach((bar, i) =>
+    assert(
+      Math.abs(bar.left - m.content.left) <= 1 && Math.abs(bar.right - m.content.right) <= 1,
+      label + ' ' + bars[i][0] + ' lines up ' + JSON.stringify([bar, m.content]),
+    ),
+  );
+}
 // axe-core (WCAG 2.2 AA), page errors and the computed checks for the page as it is shown.
 async function check(page, label) {
   // A panel that is still sliding in is part transparent; contrast is read once it has landed.
@@ -404,10 +441,11 @@ async function check(page, label) {
     const line = await narrowSettings.locator('#settings-meta').boundingBox();
     assert.ok(line.y >= heading.y + heading.height - 1, 'The meta line is under the title');
     await narrow.close();
-    // Every page at 1440, 1000, 800 and 400 in light and dark: nothing scrolls sideways, and
-    // a Monitor row's ⋯ menu opens without being cut off.
+    // Every page at 1920, 1440, 1000, 800 and 400 in light and dark: nothing scrolls sideways,
+    // and a Monitor row's ⋯ menu opens without being cut off. At 1920 each page's content is
+    // centered at its maximum width.
     for (const scheme of ['light', 'dark'])
-      for (const width of [1440, 1000, 800, 400]) {
+      for (const width of [1920, 1440, 1000, 800, 400]) {
         const sized = await browser.newContext({
           viewport: { width, height: 900 },
           colorScheme: scheme,
@@ -416,13 +454,63 @@ async function check(page, label) {
           const page = await open(sized, tab);
           const wide = () => page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
           assert.equal(await wide(), false, tab + ' overflow ' + width + ' ' + scheme);
+          const big = width === 1920;
+          const editorBars = [['.editor-header'], ['#editor-footer']];
           if (tab === 'templates') {
+            if (big)
+              await assertCentered(page, 'Overview', ['#overview-cards'], '.templates-main', [
+                ['#overview-header'],
+              ]);
             await openTemplate(page);
+            if (big)
+              await assertCentered(page, 'Step 1', ['#step-1'], '.templates-main', editorBars);
             for (const n of [2, 3]) {
+              if (big)
+                await page.screenshot({
+                  path: path.join(shots, `responsive-templates-step-${n - 1}-1920-${scheme}.png`),
+                  fullPage: true,
+                });
               await page.locator('#step-tab-' + n).click();
               await settle(page);
               assert.equal(await wide(), false, 'step ' + n + ' overflow ' + width + ' ' + scheme);
             }
+            if (big) {
+              await assertCentered(page, 'Step 3', ['#step-3'], '.templates-main', editorBars);
+              await page.locator('#step-tab-2').click();
+              await settle(page);
+              // The tree and the folder panel are centered together; the tree's 24px padding
+              // lines its content up with the other steps.
+              await assertCentered(page, 'Step 2', ['#step-2'], '.templates-main', [], 48);
+              const start = (e) =>
+                e.getBoundingClientRect().left + parseFloat(getComputedStyle(e).paddingLeft);
+              const tree = await page.locator('.tree-side').evaluate(start);
+              const header = await page.locator('.editor-header').evaluate(start);
+              assert(Math.abs(tree - header) <= 1, 'Step 2 tree lines up ' + tree + '/' + header);
+              await page.locator('#step-tab-3').click();
+              await settle(page);
+            }
+          }
+          if (big && tab === 'access')
+            await assertCentered(page, 'Sites & access', ['.ad-main'], '.ad-main', [
+              ['#ad-site-header'],
+            ]);
+          if (big && tab === 'monitor')
+            await assertCentered(page, 'Monitor', ['#problem-table-card', 'border'], '#monitor', [
+              ['#monitor > .page-header'],
+            ]);
+          if (big && tab === 'settings') {
+            await assertCentered(page, 'Settings', ['#settings .page-body'], '#settings', [
+              ['#settings > .page-header'],
+              ['#settings .section-card', 'border'],
+            ]);
+            // The save bar's buttons line up with the cards.
+            await page.locator('#record-updates').click();
+            await page.locator('#settings-footer').waitFor();
+            await settle(page);
+            await assertCentered(page, 'Settings', ['#settings .page-body'], '#settings', [
+              ['#settings-footer'],
+            ]);
+            assert.equal(await wide(), false, 'settings save bar overflow ' + scheme);
           }
           if (tab === 'monitor') {
             // The rows laid out as cards still read as a table.
@@ -458,7 +546,7 @@ async function check(page, label) {
       });
     }
     console.log(
-      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel, the editor, step 2 with a condition, a test record and the ＋ Field popover, and step 3 Review and publish; Sites & access with its access drawer open; Monitor with Check a record open; Settings with its save bar), computed borders, text and targets, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the steps, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel, Escape in the access drawer confirmation and then the drawer), below 1000px (the templates select, the folder panel under the tree, the full-width drawer with Tab kept inside it, the header meta line under the title), and every page and step at 1440/1000/800/400 in light and dark without sideways scrolling and with a whole Monitor row menu, screenshots. Mocked Dataverse.',
+      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel, the editor, step 2 with a condition, a test record and the ＋ Field popover, and step 3 Review and publish; Sites & access with its access drawer open; Monitor with Check a record open; Settings with its save bar), computed borders, text and targets, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the steps, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel, Escape in the access drawer confirmation and then the drawer), below 1000px (the templates select, the folder panel under the tree, the full-width drawer with Tab kept inside it, the header meta line under the title), every page and step at 1920/1440/1000/800/400 in light and dark without sideways scrolling and with a whole Monitor row menu, the content of each page centered at 1280px at 1920 with its header and footer lined up, screenshots. Mocked Dataverse.',
     );
   } finally {
     await browser.close();

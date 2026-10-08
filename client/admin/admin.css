@@ -25,6 +25,12 @@
   --warning-bg: light-dark(#fdf3e7, #3d3320);
   --radius: 8px;
   --shadow: light-dark(#1b1c3314, #0000004d);
+  /* Every page's content is at most this wide, centered in the space beside any rail. */
+  --content-max: 1280px;
+  /* The side space that centers the content: half of what the containing block has beyond
+     --content-max. 100% resolves where it is used, so each rule writes
+     max(<its own padding>, var(--gutter)) and keeps its padding on narrower screens. */
+  --gutter: calc((100% - var(--content-max)) / 2);
 }
 * {
   box-sizing: border-box;
@@ -852,7 +858,7 @@ button.filter-chip[aria-pressed='true'] {
     'meta meta meta meta actions';
   align-items: center;
   gap: 4px 10px;
-  padding: 12px 20px;
+  padding: 12px max(20px, var(--gutter));
 }
 #overview-title {
   grid-area: title;
@@ -885,7 +891,7 @@ button.filter-chip[aria-pressed='true'] {
   grid-column: 1 / -1;
 }
 #overview-cards {
-  padding: 20px 28px;
+  padding: 20px max(28px, var(--gutter));
 }
 .dest-row {
   display: grid;
@@ -1001,7 +1007,7 @@ button.filter-chip[aria-pressed='true'] {
   border-top: 1px solid var(--line);
 }
 #fb-templates {
-  margin: 12px 20px 0;
+  margin: 12px max(20px, var(--gutter)) 0;
 }
 #rerun-progress,
 .impact h4 {
@@ -1060,7 +1066,7 @@ main a {
   gap: 12px;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
-  padding: 14px 24px;
+  padding: 14px max(24px, var(--gutter));
   white-space: nowrap;
 }
 .page-header > * {
@@ -1112,8 +1118,7 @@ main a {
   padding: 0 0 24px;
 }
 #monitor > :not(.page-header, .side-panel) {
-  margin-left: 24px;
-  margin-right: 24px;
+  margin-inline: max(24px, var(--gutter));
 }
 #monitor > .side-panel {
   margin: 0;
@@ -1165,7 +1170,7 @@ main a {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 24px;
+  padding: 12px max(24px, var(--gutter));
   background: var(--surface);
   border-top: 1px solid var(--line);
 }
@@ -1358,7 +1363,7 @@ button.problem-pill:hover {
 .ad-main {
   grid-area: main;
   min-width: 0;
-  padding: 16px 24px 24px;
+  padding: 16px max(24px, var(--gutter)) 24px;
 }
 .ad-main > .feedback {
   margin: 0 0 12px;
@@ -1770,15 +1775,13 @@ button.icon:hover {
 /* Settings: one column of cards, and a save bar that shows while there are unsaved changes. */
 #settings > .feedback,
 #settings > #settings-missing {
-  margin: 12px 28px 0;
+  margin: 12px max(28px, var(--gutter)) 0;
 }
 .page-body.one-column {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  /* 760px of cards inside the side padding. */
-  max-width: 816px;
-  padding: 22px 28px;
+  padding: 22px max(28px, var(--gutter));
 }
 .problem-host:empty {
   display: none;
@@ -1925,7 +1928,7 @@ button.danger-outline {
   color: var(--danger);
 }
 #settings-footer {
-  padding: 12px 28px;
+  padding: 12px max(28px, var(--gutter));
 }
 #settings-footer .feedback {
   margin: 0;
@@ -1977,7 +1980,7 @@ button.danger-outline {
   min-height: 100vh;
 }
 .editor-header {
-  padding: 14px 24px 0;
+  padding: 14px max(24px, var(--gutter)) 0;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
 }
@@ -2107,7 +2110,7 @@ button.danger-outline {
   flex: 1;
 }
 #step-1 {
-  padding: 20px 24px;
+  padding: 20px max(24px, var(--gutter));
   background: var(--canvas);
 }
 #help-destinations {
@@ -2238,9 +2241,12 @@ button.danger-outline {
     padding: 12px 14px;
   }
 }
-/* Step 2, Folders: the destination's folder tree beside the selected folder's panel. */
+/* Step 2, Folders: the destination's folder tree beside the selected folder's panel. The two
+   are centered together; the tree's own padding lines its content up with the other steps. */
 #step-2 {
   display: flex;
+  padding-inline: max(0px, var(--gutter) - 24px);
+  background: var(--canvas);
 }
 .folders-layout {
   display: grid;
@@ -2386,7 +2392,7 @@ button.danger-outline {
   gap: 12px;
   min-width: 0;
   padding: 20px;
-  border-left: 1px solid var(--line);
+  border-inline: 1px solid var(--line);
   background: var(--surface);
 }
 .panel-top {
@@ -2687,7 +2693,7 @@ button.danger-outline {
   }
   .folder-panel {
     border-top: 1px solid var(--line);
-    border-left: 0;
+    border-inline: 0;
   }
 }
 @media (max-width: 700px) {
@@ -2709,7 +2715,7 @@ button.danger-outline {
   grid-template-columns: minmax(0, 1fr) 400px;
   align-items: start;
   gap: 20px;
-  padding: 20px 24px;
+  padding: 20px max(24px, var(--gutter));
   background: var(--canvas);
 }
 #step-3 .section-card {
