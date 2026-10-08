@@ -1786,7 +1786,6 @@
         ...(runtime?.Registration?.Readiness || []).map((r) => r.Scope),
       ].filter((t) => t && t !== 'team'),
     );
-  const tableLabel = (scope) => (scope === 'team' ? 'Team access events' : label(scope));
 
   function renderPicker() {
     const enabled = enabledTables(ui.runtime());
@@ -1805,8 +1804,9 @@
     else $('add-chosen-table').setAttribute('aria-disabled', 'true');
   }
 
-  // One row per enabled table, by name, with team access events last: its template count, its
-  // change tracking, and Repair and Remove for an administrator.
+  // One row per enabled table, by name: its template count, its change tracking, and Repair and
+  // Remove for an administrator. Team access events are not a table: every registration keeps
+  // them, so they have no row, and Repair all appears whenever they need repairing.
   function renderTables(runtime) {
     const rows = $('tables-rows');
     // Never under an open confirmation (as Monitor's lists): removeTable redraws when it closes.
@@ -1818,22 +1818,25 @@
     const editable = runtime.CanChange !== false;
     const status = new Map((registration.Readiness || []).map((r) => [r.Scope, r.Status]));
     const scopes = [...new Set([...(runtime.Tables || []), ...status.keys()])]
-      .filter(Boolean)
-      .sort(
-        (a, b) => (a === 'team') - (b === 'team') || tableLabel(a).localeCompare(tableLabel(b)),
-      );
+      .filter((scope) => scope && scope !== 'team')
+      .sort((a, b) => label(a).localeCompare(label(b)));
     rows.replaceChildren(...scopes.map((s) => tableRow(s, status.get(s), editable)));
     const pending =
       registration.Pending ??
       (registration.Readiness || []).filter((r) => TRACKING[r.Status]?.[1]).length;
+    const team = status.get('team');
+    // As a table's row: a state not listed is offered for repair.
+    const teamNeedsRepair = !!team && (TRACKING[team]?.[1] ?? true);
+    // The count is of the rows shown; the team access events it also repairs have none.
+    const shown = Math.max(0, pending - (teamNeedsRepair ? 1 : 0));
     if (!$('repair-all').dataset.busy) {
-      $('repair-all').hidden = pending < 2 || !editable;
-      $('repair-all').textContent = 'Repair all (' + pending + ')';
+      $('repair-all').hidden = (shown < 2 && !teamNeedsRepair) || !editable;
+      $('repair-all').textContent = shown ? 'Repair all (' + shown + ')' : 'Repair all';
     }
   }
 
   function tableRow(scope, state, editable) {
-    const name = tableLabel(scope);
+    const name = label(scope);
     const row = el('div', null, 'card-row tables-grid');
     row.dataset.table = scope;
     row.setAttribute('data-focus-row', '');
@@ -1843,11 +1846,7 @@
       el('span', name, 'table-name'),
       el(
         'span',
-        scope === 'team'
-          ? 'Keeps library access in step with team membership'
-          : settings.counts
-            ? plural(settings.counts.get(scope) || 0, 'template', 'templates')
-            : '',
+        settings.counts ? plural(settings.counts.get(scope) || 0, 'template', 'templates') : '',
         'sub',
       ),
     );
@@ -1876,13 +1875,10 @@
         });
       });
       repair.dataset.focusKey = 'tracking:' + scope;
-      repair.setAttribute(
-        'aria-label',
-        'Repair ' + (scope === 'team' ? 'team access events' : name),
-      );
+      repair.setAttribute('aria-label', 'Repair ' + name);
       actions.append(repair);
     }
-    if (editable && scope !== 'team') {
+    if (editable) {
       const remove = button('Remove', () => removeTable(scope, remove), 'link muted');
       remove.dataset.focusKey = 'remove:' + scope;
       remove.setAttribute('aria-label', 'Remove ' + name);
@@ -1977,6 +1973,9 @@
     ui.feedback('settings', 'Change tracking repaired for every table.');
   }
 
+  // The connection references the flows use, by name. The package also carries two references
+  // that no flow uses, kept from 0.1.0.3; they are not listed.
+  const CONNECTIONS = { asx_documentsdataverse: 'Dataverse', asx_documentshttp: 'SharePoint' };
   async function loadConnections() {
     const environment = xrm.Utility.getGlobalContext().organizationSettings?.bapEnvironmentId;
     $('open-connections').setAttribute(
@@ -1988,20 +1987,28 @@
     try {
       const rows = await xrm.WebApi.retrieveMultipleRecords(
         'connectionreference',
-        "?$select=connectionreferencedisplayname,connectionid,connectorid&$filter=startswith(connectionreferencelogicalname,'asx_')",
+        '?$select=connectionreferencelogicalname,connectionid&$filter=' +
+          Object.keys(CONNECTIONS)
+            .map((name) => "connectionreferencelogicalname eq '" + name + "'")
+            .join(' or '),
       );
+      const order = Object.keys(CONNECTIONS);
+      const index = (r) => order.indexOf(r.connectionreferencelogicalname);
       $('connection-list').replaceChildren(
-        ...rows.entities.map((r) => {
-          const item = el('li', null, 'card-row');
-          item.append(
-            el('span', r.connectionreferencedisplayname),
-            ui.status(
-              r.connectionid ? 'ok' : 'attention',
-              r.connectionid ? 'Connected' : 'Not connected',
-            ),
-          );
-          return item;
-        }),
+        ...rows.entities
+          .filter((r) => index(r) >= 0)
+          .sort((a, b) => index(a) - index(b))
+          .map((r) => {
+            const item = el('li', null, 'card-row');
+            item.append(
+              el('span', CONNECTIONS[r.connectionreferencelogicalname]),
+              ui.status(
+                r.connectionid ? 'ok' : 'attention',
+                r.connectionid ? 'Connected' : 'Not connected',
+              ),
+            );
+            return item;
+          }),
       );
     } catch (error) {
       // A caller who cannot read the connections does not see the card at all.

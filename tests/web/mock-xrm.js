@@ -376,11 +376,8 @@
         ];
       case 'connectionreference':
         return [
-          {
-            connectionreferencedisplayname: 'Ascentix Documents SharePoint',
-            connectionid: 'connected',
-            connectorid: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline',
-          },
+          { connectionreferencelogicalname: 'asx_documentsdataverse', connectionid: 'connected' },
+          { connectionreferencelogicalname: 'asx_documentshttp', connectionid: 'connected' },
         ];
       default:
         return [];

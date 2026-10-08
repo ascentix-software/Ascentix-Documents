@@ -144,9 +144,12 @@ async function boot({
                     ]
                   : table === 'connectionreference'
                     ? [
-                        { connectionreferencedisplayname: 'Documents HTTP', connectionid: 'c-1' },
                         {
-                          connectionreferencedisplayname: 'Documents Dataverse',
+                          connectionreferencelogicalname: 'asx_documentshttp',
+                          connectionid: 'c-1',
+                        },
+                        {
+                          connectionreferencelogicalname: 'asx_documentsdataverse',
                           connectionid: null,
                         },
                       ]
@@ -1546,8 +1549,11 @@ async function boot({
     );
     await s.press(s.buttons(s.$('danger-zone')).find((b) => b.textContent === 'Keep tracking'));
     assert.equal(s.commands().includes('Unregister'), false);
-    assert.match(s.$('connection-list').visibleText, /Documents HTTP.*Connected/);
-    assert.match(s.$('connection-list').visibleText, /Documents Dataverse.*Not connected/);
+    // The flows' two connections, by name, Dataverse first.
+    assert.match(
+      s.$('connection-list').visibleText,
+      /^Dataverse.*Not connected.*SharePoint.*Connected/s,
+    );
     assert.equal(
       s.$('open-connections').getAttribute('href'),
       'https://make.powerautomate.com/environments/env-1/connections',
@@ -1769,7 +1775,7 @@ async function boot({
     const rows = [...s.$('tables-rows').querySelectorAll('[data-table]')];
     assert.deepEqual(
       rows.map((r) => r.dataset.table),
-      ['account', 'contact', 'lead', 'team'],
+      ['account', 'contact', 'lead'],
     );
     assert.equal(rows[0].querySelector('.sub').textContent, '2 templates');
     assert.equal(rows[1].querySelector('.sub').textContent, '1 template');
@@ -1779,12 +1785,6 @@ async function boot({
     assert.equal(rows[1].querySelector('.dot').dataset.tone, 'attention');
     assert.ok([...rows[1].querySelectorAll('button')].some((b) => b.textContent === 'Repair'));
     assert.equal(rows[2].querySelector('a').textContent, 'How to grant access');
-    assert.equal(rows[3].querySelector('.table-name').textContent, 'Team access events');
-    assert.equal(
-      rows[3].querySelector('.sub').textContent,
-      'Keeps library access in step with team membership',
-    );
-    assert.ok(![...rows[3].querySelectorAll('button')].some((b) => b.textContent === 'Remove'));
     assert.equal(s.$('repair-all').hidden, true, 'Repair all needs two or more');
     const remove = [...rows[0].querySelectorAll('button')].find((b) => b.textContent === 'Remove');
     await s.press(remove);
@@ -1798,6 +1798,24 @@ async function boot({
       Table: 'account',
     });
     assert.match(s.$('fb-settings').textContent, / removed\. Its templates are kept\.$/);
+  }
+  {
+    // Team access events have no row: when only they need repairing, Repair all appears.
+    const s = await boot({
+      tab: 'settings',
+      runtime: {
+        Registration: {
+          Readiness: [
+            { Scope: 'account', Status: 'Ready' },
+            { Scope: 'team', Status: 'Outdated' },
+          ],
+          Pending: 1,
+          Error: null,
+        },
+      },
+    });
+    assert.equal(s.$('repair-all').hidden, false);
+    assert.equal(s.$('repair-all').textContent, 'Repair all');
   }
   {
     // ＋ Add table offers the document-enabled tables not enabled yet, and adds one.
