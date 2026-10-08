@@ -28,12 +28,12 @@ Ascentix Documents provisions SharePoint folders from Dataverse records and mana
 - SharePoint hosts may be on any Microsoft cloud: worldwide and GCC, GCC High, DoD and 21Vianet. There is no host-count limit.
 - **Re-run for existing records** re-runs a template for every existing record in the background, with progress, **Pause**, **Resume** and **Cancel re-run** in Monitor.
 - A template's on/off switch and its **Active from** and **Active until** dates are its **Status**.
-- A record's document location is named after its root folder. Documents repairs locations that the Documents tab could not list because Dynamics left their site collection empty.
+- A record's document location is named after its root folder. Documents repairs locations that the Documents tab could not list because Dynamics left their site collection empty, when the record's folders are planned again.
 - Sites & access waits for Dynamics to validate a SharePoint site before you add or create its libraries, and says so.
 - A form script, `asx_form/documents-tab.js`, hides a record's Documents tab until its folders exist, so Dynamics does not create its own folder first.
 - A library creation whose answer was lost is resolved by looking the library up in SharePoint; the paste-in recovery is gone.
 - The ◐ **Appearance** button in each page header chooses Match browser, Light or Dark.
-- Update folders when records change is not in this release. An environment that had it on stops capturing record updates after Repair all.
+- Update folders when records change is not in this release. An environment that had it on no longer captures record updates; Repair all removes the leftover Update steps.
 
 To upgrade from 0.1.0.3, follow the [upgrade notes](upgrade-0.1.0.4.md). The upgrade has a breaking change: the `asx_PublishTemplate` result is now JSON.
 
@@ -60,6 +60,7 @@ Official packages use a stable assembly signing identity. Local builds use a dev
 - Operators see approximate record counts for template re-runs, from Dataverse's daily row count, even without read access to that table.
 - The re-run option when publishing is not blocked for a template that is off or past its Active until date; the re-run then stops at once and Monitor says why.
 - Bookmarks to the old `#access`, `#runtime` and `#operations` addresses open the default page.
+- Records whose folders were made before their SharePoint site was validated don't appear in the Documents tab (and stay hidden with the form script) until their folders are planned again: use **Re-run for existing records…** on their template.
 - Opening a record's Documents tab before its folders exist makes Dynamics create its own folder, unless the form has the Documents form script. See [Hide the Documents tab until folders exist](customer-installation.md#hide-the-documents-tab-until-folders-exist).
 
 See [operations](operations.md) for ongoing administration and [record changes](record-update-processing.md) for applying a template to existing records.

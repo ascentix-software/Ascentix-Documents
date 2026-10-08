@@ -4,4 +4,4 @@ Record changes don't update folders in this release. **Update folders when recor
 
 To apply a template to existing records, use **Re-run for existing records…** (Folder templates › **⋯**, or the re-run offered when you publish), or **Re-run** on a record in Monitor.
 
-An environment that had the setting on stops capturing record updates after **Repair all** in Settings › Tables (step 4 of the [upgrade notes](upgrade-0.1.0.4.md)).
+An environment that had the setting on no longer captures record updates; **Repair all** in Settings › Tables removes the leftover Update steps (step 4 of the [upgrade notes](upgrade-0.1.0.4.md)).

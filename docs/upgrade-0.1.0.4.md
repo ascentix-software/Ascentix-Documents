@@ -54,7 +54,7 @@ These change what Documents does with existing data. Review them before you upgr
 - The Documents Security Administrator role no longer has write access to the Automation settings row. Automation changes stay System Administrator only.
 - The runtime-row guard plug-in is removed. The solution has 57 guard steps.
 - The outbox has a new column, `asx_nextattempt`. It holds the time of the next automatic attempt.
-- Update folders when records change is not in this release. An environment that had it on stops capturing record updates after Repair all. See [record changes](record-update-processing.md).
+- Update folders when records change is not in this release. An environment that had it on no longer captures record updates; Repair all removes the leftover Update steps. See [record changes](record-update-processing.md).
 - Tables are enabled in Settings › Tables (**＋ Add table**), not in a fixed list. There is no table-count limit.
 - The admin app's left navigation now lists Folder templates, Sites & access, Monitor and Settings. Runtime is now Settings; Operations is now Monitor. The admin page has no tab bar of its own: use the app's left menu to move between them.
 - **Remove** hides a site or library from Documents: it leaves the pickers, planning and access sync, and its unfinished work is cancelled. If anything refers to it, Documents keeps its catalog row for history. For a library that means template revisions, access settings (including the inheritance confirmation) or record folders. For a site it means libraries or library setups. Otherwise the row is deleted. Either way nothing in SharePoint changes, and adding it again works: a kept row is reactivated, and a deleted one is created again.
@@ -62,6 +62,7 @@ These change what Documents does with existing data. Review them before you upgr
 ## After you upgrade
 
 - Open **Settings** and check the **Tables** card: repair every table that does not show Ready, with **Repair all** (or **Repair** on its row). This registers the event steps.
+- If a record's folders are missing from its Documents tab menu, they were probably made before their SharePoint site was validated. Use **Re-run for existing records…** on its template: planning the record again repairs its document locations.
 - Records that were Blocked before the upgrade can be retried from Monitor › **Blocked records**.
 - Folder jobs queued before the upgrade carry on by themselves.
 - The flow-details page can show a notice about dispatcher concurrency. This is expected. See the [operations guide](operations.md#automation-and-pausing).

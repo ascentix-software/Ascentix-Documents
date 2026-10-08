@@ -25,7 +25,7 @@ Ascentix Documents provisions SharePoint folder structures from Dataverse record
 - Monitor lists blocked jobs and library setups, records waiting for data, and jobs retrying automatically, with **Retry**, **Cancel job** or **Re-run**; a stuck access run has **Retry access run** and **Cancel access run** in Sites & access.
 - Team access can be edited while it is being applied, and customized Read and Contribute permission levels are accepted.
 - SharePoint hosts in every Microsoft cloud, including GCC High, DoD and 21Vianet.
-- Update folders when records change is not in this release. An environment that had it on stops capturing record updates after Repair all.
+- Update folders when records change is not in this release. An environment that had it on no longer captures record updates; Repair all removes the leftover Update steps.
 
 Upgrading from 0.1.0.3? Read the [upgrade notes](docs/upgrade-0.1.0.4.md).
 
