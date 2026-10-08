@@ -12,6 +12,7 @@
   --muted: light-dark(#565b6b, #b2bfc4);
   --line: light-dark(#e7e8f0, #3b474e);
   --teal: light-dark(#0f766e, #79d5c5);
+  --teal-strong: light-dark(#0b5d57, #a6e8dc);
   --tint: light-dark(#e6f4f2, #253e3c);
   --canvas: light-dark(#f5f6fb, #222c31);
   --surface: light-dark(#fff, #1b2226);
@@ -76,8 +77,11 @@ select:focus-visible {
   color: var(--on-accent);
   border-color: var(--teal);
 }
-.primary:hover {
-  filter: brightness(0.94);
+/* Hovered, a primary button keeps its text readable on a stronger teal; button:hover's tint
+   would otherwise win over .primary. A disabled one keeps its disabled look. */
+.primary:not(:disabled, [aria-disabled='true']):hover {
+  background: var(--teal-strong);
+  border-color: var(--teal-strong);
 }
 .danger {
   color: var(--danger);
@@ -357,6 +361,11 @@ table {
   color: var(--muted);
   border-color: var(--line);
   cursor: not-allowed;
+}
+/* A disabled button keeps its disabled look on hover. */
+button:disabled:hover,
+button[aria-disabled='true']:hover {
+  background: var(--disabled-bg);
 }
 button.link {
   min-height: 24px;

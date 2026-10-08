@@ -187,6 +187,41 @@ async function check(page, label) {
           await page.locator('#overview-title', { hasText: 'Account onboarding' }).waitFor();
           await settle(page);
           await check(page, 'templates-overview ' + scheme);
+          // A hovered primary button keeps its text readable (at least 4.5:1 against its fill),
+          // and a disabled one keeps its disabled fill on hover.
+          await page.locator('#overview-edit').hover();
+          const hovered = await page.evaluate(() => {
+            const lum = (c) => {
+              const v = (c.match(/\d+(\.\d+)?/g) || [])
+                .slice(0, 3)
+                .map((n) => n / 255)
+                .map((n) => (n <= 0.03928 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4));
+              return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+            };
+            const edit = document.getElementById('overview-edit');
+            const style = getComputedStyle(edit);
+            const [a, b] = [lum(style.color), lum(style.backgroundColor)];
+            const result = {
+              hover: edit.matches(':hover'),
+              color: style.color,
+              background: style.backgroundColor,
+              ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05),
+            };
+            edit.setAttribute('aria-disabled', 'true');
+            const probe = document.createElement('div');
+            probe.style.background = 'var(--disabled-bg)';
+            document.body.append(probe);
+            result.disabled = getComputedStyle(edit).backgroundColor;
+            result.disabledBg = getComputedStyle(probe).backgroundColor;
+            probe.remove();
+            edit.removeAttribute('aria-disabled');
+            return result;
+          });
+          const hoverLabel = 'hovered primary ' + scheme + ' ' + JSON.stringify(hovered);
+          assert(hovered.hover, hoverLabel + ': not hovered');
+          assert(hovered.ratio >= 4.5, hoverLabel + ': contrast');
+          assert.equal(hovered.disabled, hovered.disabledBg, hoverLabel + ': disabled look');
+          await page.mouse.move(0, 0);
           await page.getByRole('button', { name: 'Edit schedule' }).click();
           await page.getByRole('dialog', { name: 'Schedule' }).waitFor();
           await check(page, 'templates-schedule ' + scheme);
@@ -612,7 +647,7 @@ async function check(page, label) {
       });
     }
     console.log(
-      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel, the editor, step 2 with a condition, a test record and the ＋ Field popover, and step 3 Review and publish; Sites & access with its access drawer open; Monitor with Check a record open; Settings with its save bar), computed borders, text and targets, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the steps, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel, Escape in the access drawer confirmation and then the drawer), below 1000px (the templates select, the folder panel under the tree, the full-width drawer with Tab kept inside it, the header meta line under the title), every page and step at 1920/1440/1000/800/400 in light and dark without sideways scrolling and with a whole Monitor row menu, Look up an operation at least 700px wide from 1000px with no column squeezed or narrower than its header, the content of each page centered at 1280px at 1920 with its header and footer lined up, screenshots. Mocked Dataverse.',
+      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel, the editor, step 2 with a condition, a test record and the ＋ Field popover, and step 3 Review and publish; Sites & access with its access drawer open; Monitor with Check a record open; Settings with its save bar), computed borders, text and targets, a hovered primary button readable and a disabled one unchanged, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the steps, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel, Escape in the access drawer confirmation and then the drawer), below 1000px (the templates select, the folder panel under the tree, the full-width drawer with Tab kept inside it, the header meta line under the title), every page and step at 1920/1440/1000/800/400 in light and dark without sideways scrolling and with a whole Monitor row menu, Look up an operation at least 700px wide from 1000px with no column squeezed or narrower than its header, the content of each page centered at 1280px at 1920 with its header and footer lined up, screenshots. Mocked Dataverse.',
     );
   } finally {
     await browser.close();
