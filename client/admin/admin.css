@@ -35,6 +35,8 @@
   /* Right-side panels: a form, and the wider panel that holds a table. */
   --panel-width: 400px;
   --panel-wide: min(760px, 100vw - 48px);
+  /* The left list of Folder templates and of Sites & access. */
+  --rail-width: 260px;
 }
 * {
   box-sizing: border-box;
@@ -797,7 +799,7 @@ button.filter-chip[aria-pressed='true'] {
    bar, version chip, tree, folder settings, condition builder and preview). */
 .templates-layout {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: var(--rail-width) minmax(0, 1fr);
   min-height: 100vh;
 }
 #templates-list {
@@ -1411,7 +1413,7 @@ button.problem-pill:hover {
    Its controls, labels, tables and headings are the shared ones. */
 .ad-layout {
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-columns: var(--rail-width) minmax(0, 1fr);
   grid-template-rows: auto 1fr;
   grid-template-areas:
     'rail header'
@@ -1430,7 +1432,7 @@ button.problem-pill:hover {
 }
 #ad-sites-pane {
   grid-area: rail;
-  padding: 16px 12px;
+  padding: 16px 10px;
   background: var(--surface);
   border-right: 1px solid var(--line);
 }
@@ -1439,6 +1441,7 @@ button.problem-pill:hover {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  padding: 0 6px;
 }
 .rail-head h2 {
   margin: 0;
