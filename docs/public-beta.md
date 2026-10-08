@@ -19,13 +19,20 @@ Ascentix Documents provisions SharePoint folders from Dataverse records and mana
 - Admin stops always work: turning automation off, suspending, approving, and Remove take effect while folder jobs run.
 - A redesigned admin page. Folder templates opens on an overview and edits in three steps (Destinations, Folders, Review and publish) with autosave and a list of changes before you publish. Monitor shows every problem in one filtered list. Sites & access edits team access in a side panel. Settings holds automation, tables and change tracking in one place.
 - Support for B2B guests, Entra and Microsoft 365 group teams, and government clouds is built in. Further testing is ongoing, as these are more complex areas.
-- Re-point follows a moved or renamed library. Remove retires a destination that no template uses.
+- Re-point follows a moved or renamed library. Remove hides a destination from Documents and changes nothing in SharePoint.
 - Blocked records can be retried, and changes not captured can be re-run.
 - A library whose access run stopped or waits shows **Needs attention** with **Retry access run** and **Cancel access run**, and a library setup that needs attention has **Retry** and **Cancel setup**. Blocked jobs have **Cancel job** next to **Retry**, and jobs waiting after a temporary error are listed in Monitor under **Retrying**.
 - Folders that wait for a value, a usable name or a shorter path are listed in Monitor under **Waiting for data**, with **Re-run**. Folder paths up to SharePoint's 400-character limit are created, with a notice above 300 characters.
 - Teams can be edited while their access is being applied; the newer change replaces the queued run or waits for it.
 - Customized Read and Contribute permission levels are accepted unless they carry administrative rights.
 - SharePoint hosts may be on any Microsoft cloud: worldwide and GCC, GCC High, DoD and 21Vianet. There is no host-count limit.
+- **Re-run for existing records** re-runs a template for every existing record in the background, with progress, **Pause**, **Resume** and **Cancel re-run** in Monitor.
+- A template's on/off switch and its **Active from** and **Active until** dates are its **Status**.
+- A record's document location is named after its root folder. Documents repairs locations that the Documents tab could not list because Dynamics left their site collection empty.
+- Sites & access waits for Dynamics to validate a SharePoint site before you add or create its libraries, and says so.
+- A form script, `asx_form/documents-tab.js`, hides a record's Documents tab until its folders exist, so Dynamics does not create its own folder first.
+- A library creation whose answer was lost is resolved by looking the library up in SharePoint; the paste-in recovery is gone.
+- The ◐ **Appearance** button in each page header chooses Match browser, Light or Dark.
 - Update folders when records change is not in this release. An environment that had it on stops capturing record updates after Repair all.
 
 To upgrade from 0.1.0.3, follow the [upgrade notes](upgrade-0.1.0.4.md). The upgrade has a breaking change: the `asx_PublishTemplate` result is now JSON.
