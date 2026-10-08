@@ -2074,11 +2074,13 @@ button.danger-outline {
   min-width: 0;
   white-space: nowrap;
 }
+/* The table reads as the first part of the title, at the same size. */
 .editor-table {
   flex-shrink: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 20px;
   font-weight: 600;
+  letter-spacing: -0.4px;
 }
 #editor-title {
   display: flex;
