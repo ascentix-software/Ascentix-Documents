@@ -180,7 +180,7 @@ public sealed class BatchReplan
         var current = TemplateLifecycle.Find(service, batch.Value.TemplateId);
         if (!TemplateLifecycle.Active(current, clock()))
             throw new EvaluationBlockedException(
-                "Template is deleted, deactivated or outside its schedule."
+                "Template is deleted, off or outside its active dates."
             );
         if (
             current!.GetAttributeValue<EntityReference>("asx_publishedrevisionid")?.Id

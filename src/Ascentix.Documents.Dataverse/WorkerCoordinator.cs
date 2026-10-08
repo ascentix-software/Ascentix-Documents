@@ -222,7 +222,7 @@ public sealed class WorkerCoordinator
             return new WorkerResult
             {
                 Status = "Inactive",
-                Notices = new[] { "Template is deleted, deactivated or outside its schedule." },
+                Notices = new[] { "Template is deleted, off or outside its active dates." },
             };
         var revision =
             template!.GetAttributeValue<EntityReference>("asx_publishedrevisionid")
@@ -305,7 +305,7 @@ public sealed class WorkerCoordinator
             job.Value.Status = "Cancelled";
             job.Value.Notices = new[]
             {
-                "Template is deleted, deactivated or outside its schedule. Existing SharePoint content is unchanged.",
+                "Template is deleted, off or outside its active dates. Existing SharePoint content is unchanged.",
             };
             store.Save(job);
             EndWait(job.Value);
@@ -1335,7 +1335,7 @@ public sealed class WorkerCoordinator
         return Stop(
             request,
             "TemplateUnavailable",
-            "Template is deleted, deactivated or outside its schedule. Existing SharePoint content is unchanged."
+            "Template is deleted, off or outside its active dates. Existing SharePoint content is unchanged."
         );
     }
 

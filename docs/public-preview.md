@@ -51,7 +51,7 @@ Official packages use a stable assembly signing identity. Local builds use a dev
 - Leaving the template editor through the app's left menu or the browser's Back button does not ask about unsaved edits. Edits autosave about 1.5 seconds after you stop typing; edits that cannot be saved yet (an incomplete condition, or a new template without a name) are lost.
 - Monitor refuses a whole list when you cannot read the table of one of its records, and **Not captured** shows 0 unless you can read System Jobs at organization level.
 - Operators see approximate record counts for template re-runs, from Dataverse's daily row count, even without read access to that table.
-- The re-run option when publishing is not blocked for a template that is off or past its end date; the re-run then stops at once and Monitor says why.
+- The re-run option when publishing is not blocked for a template that is off or past its Active until date; the re-run then stops at once and Monitor says why.
 - Bookmarks to the old `#access`, `#runtime` and `#operations` addresses open the default page.
 - Opening a record's Documents tab before its folders exist makes Dynamics create its own folder, unless the form has the Documents form script. See [Hide the Documents tab until folders exist](customer-installation.md#hide-the-documents-tab-until-folders-exist).
 

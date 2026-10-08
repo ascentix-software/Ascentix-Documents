@@ -1,5 +1,5 @@
 'use strict';
-// Folder templates: the templates list, the read-first overview of a template with its Schedule
+// Folder templates: the templates list, the read-first overview of a template with its Status
 // and Versions panels, and the editor (its header and steps; the destinations; the folder tree
 // with the folder panel, the field picker, the condition builder and test records; Review and
 // publish with the changes, a test record's result, what publishing does and the optional
@@ -105,7 +105,7 @@
   const OPERATOR = 'prvCreateasx_operatorcommand';
   // The states of a re-run that has not ended.
   const ACTIVE = ['Running', 'Waiting', 'Retrying', 'Paused', 'Blocked'];
-  // The open side panel (Schedule, Version history or Re-run): one at a time.
+  // The open side panel (Status, Version history or Re-run): one at a time.
   let panel = null;
   // Dataverse IDs compare without case.
   const same = (a, b) => !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
@@ -2891,7 +2891,7 @@
     if (!response.ok) throw new Error(body.error?.message || 'Server operation failed.');
     return body.Result;
   }
-  // The template row as the list, the overview, the bar, the chip and Schedule read it. The one
+  // The template row as the list, the overview, the bar, the chip and Status read it. The one
   // copy of this $select.
   const TEMPLATE_SELECT =
     '?$select=asx_templateid,asx_name,asx_table,asx_disabled,asx_startsutc,asx_endsutc,_asx_publishedrevisionid_value';
@@ -3154,7 +3154,7 @@
     return changes;
   }
 
-  // The overview: one template read top to bottom (destinations, folders, schedule, versions),
+  // The overview: one template read top to bottom (destinations, folders, status, versions),
   // with Edit template to open the editor.
   async function showOverview(templateId) {
     state.view = 'overview';
@@ -3332,7 +3332,7 @@
   function scheduleCard(o) {
     const made = card(
       {
-        title: 'Schedule and runs',
+        title: 'Status and runs',
         summary: scheduleText(o.template),
         action: {
           label: 'Edit',
@@ -3340,7 +3340,7 @@
           key: 'overview:schedule',
         },
       },
-      'Edit schedule',
+      'Edit status',
     );
     const run = o.run;
     if (run) {
@@ -3557,19 +3557,21 @@
     panel = ui.sidePanel($('history-panel'), invoker);
   }
 
+  // The Status panel's switch names the state it shows: "Template is on" or "Template is off".
+  function setTemplateOn(on) {
+    $('schedule-on').setAttribute('aria-checked', String(on));
+    $('schedule-on-label').textContent = on ? 'Template is on' : 'Template is off';
+  }
   function openSchedule(invoker) {
     const t = state.overview.template;
-    $('schedule-on').setAttribute('aria-checked', String(!t.asx_disabled));
+    setTemplateOn(!t.asx_disabled);
     $('templateStart').value = localTime(t.asx_startsutc);
     $('templateEnd').value = localTime(t.asx_endsutc);
     ui.clearFeedback('schedule');
     panel = ui.sidePanel($('schedule-panel'), invoker);
   }
   $('schedule-on').onclick = () =>
-    $('schedule-on').setAttribute(
-      'aria-checked',
-      String($('schedule-on').getAttribute('aria-checked') !== 'true'),
-    );
+    setTemplateOn($('schedule-on').getAttribute('aria-checked') !== 'true');
   $('saveAvailability').onclick = () => {
     if (ui.blocked($('saveAvailability'))) return undefined;
     return ui.busy($('saveAvailability'), 'Saving…', 'schedule', async () => {
@@ -3577,7 +3579,7 @@
         ? new Date($('templateStart').value).toISOString()
         : null;
       const end = $('templateEnd').value ? new Date($('templateEnd').value).toISOString() : null;
-      if (start && end && end <= start) throw new Error('The end must be after the start.');
+      if (start && end && end <= start) throw new Error('Active until must be after Active from.');
       const id = state.overview.template.asx_templateid;
       await xrm.WebApi.updateRecord('asx_template', id, {
         asx_disabled: $('schedule-on').getAttribute('aria-checked') !== 'true',
@@ -3592,7 +3594,7 @@
       renderList();
       renderOverview();
       chrome();
-      ui.feedback('schedule', 'Schedule saved.');
+      ui.feedback('schedule', 'Status saved.');
     });
   };
 

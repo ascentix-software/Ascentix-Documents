@@ -333,10 +333,8 @@
         </div>
         <aside id="schedule-panel" class="side-panel" hidden>
           <div class="panel-head">
-            <h2 id="schedule-title">Schedule</h2>
-            <button type="button" class="link panel-close" aria-label="Close schedule">
-              Close
-            </button>
+            <h2 id="schedule-title">Status</h2>
+            <button type="button" class="link panel-close" aria-label="Close status">Close</button>
           </div>
           <div class="panel-body">
             <button
@@ -350,12 +348,12 @@
               <span class="switch-track" aria-hidden="true"
                 ><span class="switch-thumb"></span
               ></span>
-              <span id="schedule-on-label">On</span>
+              <span id="schedule-on-label">Template is on</span>
             </button>
-            <label>Start (optional)<input id="templateStart" type="datetime-local" /></label>
-            <label>End (optional)<input id="templateEnd" type="datetime-local" /></label>
+            <label>Active from (optional)<input id="templateStart" type="datetime-local" /></label>
+            <label>Active until (optional)<input id="templateEnd" type="datetime-local" /></label>
             <div class="row" data-actions>
-              <button id="saveAvailability" type="button">Save schedule</button>
+              <button id="saveAvailability" type="button">Save status</button>
             </div>
             <p class="feedback" id="fb-schedule"></p>
           </div>

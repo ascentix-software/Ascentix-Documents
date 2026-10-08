@@ -182,7 +182,7 @@ async function check(page, label) {
           colorScheme: scheme,
         });
         const page = await open(context, tab);
-        // Folder templates: the overview, with its Schedule panel open, then the editor.
+        // Folder templates: the overview, with its Status panel open, then the editor.
         if (tab === 'templates') {
           await page.locator('#overview-title', { hasText: 'Account onboarding' }).waitFor();
           await settle(page);
@@ -222,9 +222,10 @@ async function check(page, label) {
           assert(hovered.ratio >= 4.5, hoverLabel + ': contrast');
           assert.equal(hovered.disabled, hovered.disabledBg, hoverLabel + ': disabled look');
           await page.mouse.move(0, 0);
-          await page.getByRole('button', { name: 'Edit schedule' }).click();
-          await page.getByRole('dialog', { name: 'Schedule' }).waitFor();
-          await check(page, 'templates-schedule ' + scheme);
+          await page.getByRole('button', { name: 'Edit status' }).click();
+          await page.getByRole('dialog', { name: 'Status' }).waitFor();
+          await page.getByRole('switch', { name: 'Template is on' }).waitFor();
+          await check(page, 'templates-status ' + scheme);
           await page.keyboard.press('Escape');
           await openTemplate(page);
         }
@@ -647,7 +648,7 @@ async function check(page, label) {
       });
     }
     console.log(
-      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel, the editor, step 2 with a condition, a test record and the ＋ Field popover, and step 3 Review and publish; Sites & access with its access drawer open; Monitor with Check a record open; Settings with its save bar), computed borders, text and targets, a hovered primary button readable and a disabled one unchanged, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the steps, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel, Escape in the access drawer confirmation and then the drawer), below 1000px (the templates select, the folder panel under the tree, the full-width drawer with Tab kept inside it, the header meta line under the title), every page and step at 1920/1440/1000/800/400 in light and dark without sideways scrolling and with a whole Monitor row menu, Look up an operation at least 700px wide from 1000px with no column squeezed or narrower than its header, the content of each page centered at 1280px at 1920 with its header and footer lined up, screenshots. Mocked Dataverse.',
+      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Status panel, the editor, step 2 with a condition, a test record and the ＋ Field popover, and step 3 Review and publish; Sites & access with its access drawer open; Monitor with Check a record open; Settings with its save bar), computed borders, text and targets, a hovered primary button readable and a disabled one unchanged, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the steps, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel, Escape in the access drawer confirmation and then the drawer), below 1000px (the templates select, the folder panel under the tree, the full-width drawer with Tab kept inside it, the header meta line under the title), every page and step at 1920/1440/1000/800/400 in light and dark without sideways scrolling and with a whole Monitor row menu, Look up an operation at least 700px wide from 1000px with no column squeezed or narrower than its header, the content of each page centered at 1280px at 1920 with its header and footer lined up, screenshots. Mocked Dataverse.',
     );
   } finally {
     await browser.close();

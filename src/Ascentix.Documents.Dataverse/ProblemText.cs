@@ -76,7 +76,7 @@ public static class ProblemText
             "The library was removed from Documents.",
             "Cancel the job, or add the library again."
         ),
-        ["TemplateUnavailable"] = ("The template is off or outside its schedule.", null),
+        ["TemplateUnavailable"] = ("The template is off or outside its active dates.", null),
         ["TableNotEnabled"] = (
             "The table is no longer enabled in Documents.",
             "Enable the table, then re-run the record."

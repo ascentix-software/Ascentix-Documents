@@ -663,8 +663,8 @@ const shownH1s = (section) =>
     const d = run.document;
     assert.equal(d.getElementById('status'), null, 'No global banner');
     assert.equal(d.querySelectorAll('footer').length, 0);
-    run.ui.feedback('templates', 'Schedule saved.');
-    assert.equal(d.getElementById('fb-templates').textContent, 'Schedule saved.');
+    run.ui.feedback('templates', 'Status saved.');
+    assert.equal(d.getElementById('fb-templates').textContent, 'Status saved.');
     assert.equal(d.getElementById('fb-templates').getAttribute('role'), 'status');
     run.ui.feedback('templates', 'Save failed: the draft changed.', 'error');
     assert.equal(d.getElementById('fb-templates').getAttribute('role'), 'alert');

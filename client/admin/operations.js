@@ -1018,7 +1018,7 @@
         return result.Status === 'Inactive'
           ? row.Kind === 'CaptureJob'
             ? 'Not queued: no template for this table is on.'
-            : 'Not queued: the template is off or outside its scheduled dates.'
+            : 'Not queued: the template is off or outside its active dates.'
           : ['Re-run queued for ' + name + '.', ...(result.Notices || [])].join(' ');
       case 'Dismiss':
         return 'Dismissed.';
@@ -1211,7 +1211,7 @@
         ui.feedback(
           'check',
           result.Status === 'Inactive'
-            ? 'Not queued: the template is off or outside its scheduled dates.'
+            ? 'Not queued: the template is off or outside its active dates.'
             : 'Re-run queued for ' + monitor.record.name + '.',
         );
       });
