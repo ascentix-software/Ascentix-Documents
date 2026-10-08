@@ -889,10 +889,10 @@ button.filter-chip[aria-pressed='true'] {
 }
 #overview-header {
   display: grid;
-  grid-template-columns: minmax(0, max-content) auto auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, max-content) auto auto minmax(0, 1fr) auto auto;
   grid-template-areas:
-    'title pill problems . actions'
-    'meta meta meta meta actions';
+    'title pill problems . actions appearance'
+    'meta meta meta meta actions appearance';
   align-items: center;
   gap: 4px 10px;
   padding: 12px max(20px, var(--gutter));
@@ -923,6 +923,9 @@ button.filter-chip[aria-pressed='true'] {
 #overview-actions {
   grid-area: actions;
   gap: 8px;
+}
+#overview-header > .appearance {
+  grid-area: appearance;
 }
 #overview-header > .confirm {
   grid-column: 1 / -1;
@@ -1006,11 +1009,11 @@ button.filter-chip[aria-pressed='true'] {
     grid-template-columns: 36px 64px minmax(0, 1fr) auto;
   }
   #overview-header {
-    grid-template-columns: minmax(0, max-content) auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, max-content) auto minmax(0, 1fr) auto;
     grid-template-areas:
-      'title pill problems'
-      'meta meta meta'
-      'actions actions actions';
+      'title pill problems appearance'
+      'meta meta meta meta'
+      'actions actions actions actions';
   }
   #overview-actions {
     justify-content: flex-start;
@@ -1028,7 +1031,8 @@ button.filter-chip[aria-pressed='true'] {
   box-shadow: 0 8px 24px var(--shadow);
   list-style: none;
 }
-.menu [role='menuitem'] {
+.menu [role='menuitem'],
+.menu [role='menuitemradio'] {
   width: 100%;
   min-height: 28px;
   border: 0;
@@ -1036,8 +1040,21 @@ button.filter-chip[aria-pressed='true'] {
   text-align: left;
 }
 .menu [role='menuitem']:hover,
-.menu [role='menuitem']:focus {
+.menu [role='menuitem']:focus,
+.menu [role='menuitemradio']:hover,
+.menu [role='menuitemradio']:focus {
   background: var(--tint);
+}
+/* A choice in a menu: the checked one carries a check mark in the space every choice keeps. */
+.menu [role='menuitemradio'] {
+  position: relative;
+  padding-left: 30px;
+}
+.menu [role='menuitemradio'][aria-checked='true']::before {
+  content: '✓' / '';
+  position: absolute;
+  left: 11px;
+  color: var(--teal);
 }
 .menu [role='separator'] {
   margin: 4px 0;
@@ -1115,9 +1132,10 @@ main a {
   letter-spacing: -0.4px;
   margin: 0;
 }
-/* Secondary header text shrinks first; header items never wrap. */
+/* Secondary header text shrinks first, before a title that can shorten too; header items never
+   wrap. */
 .page-header .page-meta {
-  flex-shrink: 1;
+  flex-shrink: 1000;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1126,6 +1144,20 @@ main a {
 }
 .page-actions {
   margin-left: auto;
+}
+/* The ◐ Appearance control is the last item of every page header, at the content's right edge:
+   it takes the free space before it unless the page's actions already did. */
+.page-header > .appearance {
+  margin-left: auto;
+}
+.page-header > .page-actions:not([hidden]) ~ .appearance {
+  margin-left: 0;
+}
+.appearance > button.icon {
+  font-size: 16px;
+}
+.appearance > .menu {
+  min-width: 170px;
 }
 .page-header:has(> .confirm) {
   flex-wrap: wrap;
@@ -3083,13 +3115,20 @@ button.danger-outline {
     flex-wrap: wrap;
     margin-left: 0;
   }
+  /* The ◐ control stays at the right end of the first row, before the actions' row. */
+  .page-header > .page-actions {
+    order: 1;
+  }
+  .page-header > .page-actions:not([hidden]) ~ .appearance {
+    margin-left: auto;
+  }
   #overview-header {
-    grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+    grid-template-columns: minmax(0, max-content) minmax(0, 1fr) auto;
     grid-template-areas:
-      'title pill'
-      'problems problems'
-      'meta meta'
-      'actions actions';
+      'title pill appearance'
+      'problems problems problems'
+      'meta meta meta'
+      'actions actions actions';
   }
   #overview-pill,
   #overview-problems {

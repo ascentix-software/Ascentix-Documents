@@ -66,6 +66,8 @@ async function boot(options = {}) {
     search = '?data=templates-' + BUILD,
     hash = '',
     session = storage(),
+    // localStorage: the appearance choice lives there.
+    local = storage(),
     setup = {},
     profile = runtime(),
     privileges = {},
@@ -143,6 +145,12 @@ async function boot(options = {}) {
   };
   const window = { parent: { Xrm: xrm }, location: { search, hash } };
   if (top) window.top = top;
+  Object.defineProperty(window, 'localStorage', {
+    get: () => {
+      if (local.throwOnAccess) throw new Error('SecurityError');
+      return local;
+    },
+  });
   Object.defineProperty(window, 'sessionStorage', {
     get: () => {
       if (session.throwOnAccess) throw new Error('SecurityError');
@@ -166,7 +174,7 @@ async function boot(options = {}) {
   vm.runInContext(shell, context);
   register(window.AsxdUi, context);
   await document.fire('DOMContentLoaded');
-  return { window, document, navigations, calls, session, xrm, ui: window.AsxdUi };
+  return { window, document, navigations, calls, session, local, xrm, ui: window.AsxdUi };
 }
 const visible = (d) =>
   ['templates', 'access', 'monitor', 'settings'].filter((id) => !d.getElementById(id).hidden);
@@ -211,6 +219,115 @@ const shownH1s = (section) =>
     });
     const other = await boot({ search: '?data=monitor-' + BUILD, top: sealed });
     assert.equal(other.document.title, 'Monitor · Ascentix Documents');
+  }
+  {
+    // Appearance: one ◐ control at the right end of every page header opens a menu of Match
+    // browser, Light and Dark. Match browser is the default and leaves the color scheme to the
+    // browser; a choice applies at once, is kept in localStorage and comes back on the next load
+    // before the page starts.
+    const pages = ['templates', 'access', 'monitor', 'settings'];
+    const headers = (d) => pages.map((tab) => d.getElementById(tab).querySelector('.page-header'));
+    const control = (header) => header.querySelector('[aria-label=Appearance]');
+    const items = (header) =>
+      [...header.querySelectorAll('[role=menuitemradio]')].map((item) => ({
+        text: item.textContent,
+        checked: item.getAttribute('aria-checked'),
+      }));
+    const checked = (d) =>
+      headers(d).map((h) => items(h).find((item) => item.checked === 'true')?.text);
+    const choose = (header, text) => {
+      control(header).click();
+      [...header.querySelectorAll('[role=menuitemradio]')]
+        .find((item) => item.textContent === text)
+        .click();
+    };
+    const scheme = (d) => d.documentElement.style.colorScheme || '';
+    const listOf = (header) =>
+      header.ownerDocument.getElementById(control(header).getAttribute('aria-controls'));
+
+    const run = await boot({ session: storage({ 'asxd.launched': '1' }) });
+    const d = run.document;
+    for (const header of headers(d)) {
+      const trigger = control(header);
+      assert.ok(trigger, 'Every page header has the Appearance control');
+      assert.equal(trigger.tagName, 'BUTTON');
+      assert.ok(trigger.classList.contains('icon'));
+      assert.equal(trigger.textContent.trim(), '◐');
+      assert.equal(trigger.getAttribute('aria-haspopup'), 'menu');
+      assert.ok(
+        header.lastElementChild.contains(trigger),
+        'The control sits after the other header items',
+      );
+      const list = d.getElementById(trigger.getAttribute('aria-controls'));
+      assert.ok(list && list.getAttribute('role') === 'menu' && list.hidden);
+      assert.deepEqual(items(header), [
+        { text: 'Match browser', checked: 'true' },
+        { text: 'Light', checked: 'false' },
+        { text: 'Dark', checked: 'false' },
+      ]);
+    }
+    assert.equal(scheme(d), '', 'Match browser leaves the color scheme to the browser');
+    assert.equal(run.ui.appearance(), 'browser');
+
+    // Choosing Light applies it at once, stores it and checks it in every header's menu.
+    const [first] = headers(d);
+    control(first).key('ArrowDown');
+    assert.equal(listOf(first).hidden, false, 'The menu opens');
+    assert.equal(d.activeElement.textContent, 'Match browser', 'Focus is on the checked item');
+    choose(first, 'Light');
+    assert.equal(scheme(d), 'light');
+    assert.equal(run.local.data.get('asxd.appearance'), 'light');
+    assert.deepEqual(checked(d), ['Light', 'Light', 'Light', 'Light']);
+    assert.equal(listOf(first).hidden, true, 'Choosing closes the menu');
+    assert.ok(d.activeElement === control(first), 'Focus goes back to the control');
+    choose(headers(d)[2], 'Dark');
+    assert.equal(scheme(d), 'dark');
+    assert.equal(run.local.data.get('asxd.appearance'), 'dark');
+    assert.deepEqual(checked(d), ['Dark', 'Dark', 'Dark', 'Dark']);
+    // Match browser removes the inline scheme and the stored choice.
+    choose(first, 'Match browser');
+    assert.equal(scheme(d), '');
+    assert.equal(run.local.data.has('asxd.appearance'), false);
+    assert.deepEqual(checked(d), Array(4).fill('Match browser'));
+
+    // A reload applies the stored choice when shell.js runs, before the page starts.
+    let early = null;
+    const reload = await boot({
+      session: storage({ 'asxd.launched': '1' }),
+      local: storage({ 'asxd.appearance': 'dark' }),
+      register: (ui, context) => (early = context.document.documentElement.style.colorScheme),
+    });
+    assert.equal(early, 'dark', 'Applied before DOMContentLoaded');
+    assert.equal(scheme(reload.document), 'dark');
+    assert.equal(reload.ui.appearance(), 'dark');
+    assert.deepEqual(checked(reload.document), ['Dark', 'Dark', 'Dark', 'Dark']);
+    // A stored value it does not know reads as Match browser.
+    const odd = await boot({
+      session: storage({ 'asxd.launched': '1' }),
+      local: storage({ 'asxd.appearance': 'sepia' }),
+    });
+    assert.equal(scheme(odd.document), '');
+    assert.deepEqual(checked(odd.document), Array(4).fill('Match browser'));
+
+    // Storage that throws, or cannot be reached at all, still works: Match browser at load, and
+    // a choice still applies for this page.
+    const throwing = await boot({
+      session: storage({ 'asxd.launched': '1' }),
+      local: storage({}, true),
+    });
+    assert.equal(scheme(throwing.document), '');
+    assert.deepEqual(checked(throwing.document), Array(4).fill('Match browser'));
+    choose(headers(throwing.document)[1], 'Dark');
+    assert.equal(scheme(throwing.document), 'dark');
+    assert.deepEqual(checked(throwing.document), ['Dark', 'Dark', 'Dark', 'Dark']);
+    choose(headers(throwing.document)[1], 'Match browser');
+    assert.equal(scheme(throwing.document), '');
+    const unreachable = storage({ 'asxd.appearance': 'dark' });
+    unreachable.throwOnAccess = true;
+    const blocked = await boot({ session: storage({ 'asxd.launched': '1' }), local: unreachable });
+    assert.equal(scheme(blocked.document), '');
+    choose(headers(blocked.document)[3], 'Light');
+    assert.equal(scheme(blocked.document), 'light');
   }
   {
     // First launch with setup complete lands on Monitor through the same navigation as a tab click.
@@ -1031,7 +1148,7 @@ const shownH1s = (section) =>
     );
   }
   console.log(
-    'PASS shell contract: pages without tabs, landing, deep links, unsaved prompt at the top, side panel, tokens, status, plural, ms, automation, problem pill, feedback, confirmation (a replaced one answers keep), offline, a slow Get that does not delay the page, withFocus, time, busy, api errors, the ⋯ menu closing when focus leaves it, a redrawn-away menu letting go of its document listener, a blocked menu item handing focus back to its button, a side panel making the rest of the page inert and answering its confirmation when it closes, and rule sentences. Fake DOM; browser QA separate.',
+    'PASS shell contract: pages without tabs, landing, deep links, unsaved prompt at the top, side panel, tokens, status, plural, ms, automation, problem pill, feedback, confirmation (a replaced one answers keep), offline, a slow Get that does not delay the page, withFocus, time, busy, api errors, the ⋯ menu closing when focus leaves it, a redrawn-away menu letting go of its document listener, a blocked menu item handing focus back to its button, a side panel making the rest of the page inert and answering its confirmation when it closes, rule sentences, and the Appearance menu in every page header (Match browser by default, a choice applied at once and stored, a reload applying it before the page starts, storage that throws). Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

@@ -416,6 +416,57 @@ async function check(page, label) {
     await access.keyboard.press('Escape');
     assert.equal(await access.locator('#ad-drawer').isHidden(), true);
     assert.match(await access.evaluate(() => document.activeElement.dataset.focusKey), /^library:/);
+    // Appearance: with the browser in light, choosing Dark from a page header's ◐ menu turns the
+    // page dark at once (the body takes the dark canvas token), and the page passes axe in that
+    // state. The choice is kept for the next page; Match browser returns to the browser's light.
+    const canvas = /--canvas:\s*light-dark\((#\w+),\s*(#\w+)\)/.exec(
+      fs.readFileSync(path.join(root, 'admin.css'), 'utf8'),
+    );
+    const rgb = (hex) => {
+      const n = hex.length === 4 ? [...hex.slice(1)].map((c) => c + c) : hex.slice(1).match(/../g);
+      return 'rgb(' + n.map((h) => parseInt(h, 16)).join(', ') + ')';
+    };
+    const [lightCanvas, darkCanvas] = [rgb(canvas[1]), rgb(canvas[2])];
+    const lit = await browser.newContext({
+      viewport: { width: 1440, height: 1000 },
+      colorScheme: 'light',
+    });
+    const background = (p) => p.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    for (const tab of ['templates', 'access', 'monitor', 'settings']) {
+      const page = await open(lit, tab);
+      if (tab === 'templates')
+        await page.locator('#overview-title', { hasText: 'Account onboarding' }).waitFor();
+      const header = page.locator('#' + tab + ' .page-header');
+      const control = header.getByRole('button', { name: 'Appearance' });
+      if (tab === 'templates') {
+        assert.equal(await background(page), lightCanvas, 'The browser is in light');
+        await control.focus();
+        await page.keyboard.press('ArrowDown');
+        assert.equal(
+          await page.evaluate(() => document.activeElement.getAttribute('aria-checked')),
+          'true',
+          'The menu opens on the checked item',
+        );
+        await header.getByRole('menuitemradio', { name: 'Dark' }).click();
+        assert.equal(await control.getAttribute('aria-expanded'), 'false');
+      }
+      assert.equal(await background(page), darkCanvas, tab + ': Dark applies');
+      assert.equal(
+        await header
+          .getByRole('menuitemradio', { name: 'Dark', includeHidden: true })
+          .getAttribute('aria-checked'),
+        'true',
+      );
+      await settle(page);
+      await check(page, tab + ' chosen-dark');
+      if (tab === 'settings') {
+        await control.click();
+        await header.getByRole('menuitemradio', { name: 'Match browser' }).click();
+        assert.equal(await background(page), lightCanvas, 'Match browser follows the browser');
+      }
+      await page.close();
+    }
+    await lit.close();
     // Below 1000px the page area stacks: the templates list is a select under its heading and
     // ＋ New, step 2's panel sits under the tree, and the access drawer takes the full width.
     const narrow = await browser.newContext({ viewport: { width: 900, height: 800 } });
@@ -487,6 +538,27 @@ async function check(page, label) {
           const wide = () => page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
           assert.equal(await wide(), false, tab + ' overflow ' + width + ' ' + scheme);
           const big = width === 1920;
+          // The ◐ control sits at the right end of the header, at the content's right edge.
+          if (tab !== 'templates') await page.locator('#' + tab + ' .page-header').waitFor();
+          else await page.locator('#overview-title', { hasText: 'Account onboarding' }).waitFor();
+          const edge = await page.evaluate((tab) => {
+            const header = document.querySelector('#' + tab + ' .page-header');
+            const control = header.querySelector('[aria-label=Appearance]');
+            const h = header.getBoundingClientRect();
+            const c = control.getBoundingClientRect();
+            const right = h.right - parseFloat(getComputedStyle(header).paddingRight);
+            return {
+              right,
+              control: c.right,
+              top: c.top - h.top,
+              width: c.width,
+              inner: innerWidth,
+            };
+          }, tab);
+          const edgeLabel = tab + ' appearance ' + width + ' ' + JSON.stringify(edge);
+          assert(edge.width >= 24, edgeLabel + ': shown');
+          assert(Math.abs(edge.control - edge.right) <= 1, edgeLabel + ': right edge');
+          assert(edge.control <= edge.inner, edgeLabel + ': in view');
           const editorBars = [['.editor-header'], ['#editor-footer']];
           if (tab === 'templates') {
             if (big)
@@ -648,7 +720,7 @@ async function check(page, label) {
       });
     }
     console.log(
-      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Status panel, the editor, step 2 with a condition, a test record and the ＋ Field popover, and step 3 Review and publish; Sites & access with its access drawer open; Monitor with Check a record open; Settings with its save bar), computed borders, text and targets, a hovered primary button readable and a disabled one unchanged, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the steps, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel, Escape in the access drawer confirmation and then the drawer), below 1000px (the templates select, the folder panel under the tree, the full-width drawer with Tab kept inside it, the header meta line under the title), every page and step at 1920/1440/1000/800/400 in light and dark without sideways scrolling and with a whole Monitor row menu, Look up an operation at least 700px wide from 1000px with no column squeezed or narrower than its header, the content of each page centered at 1280px at 1920 with its header and footer lined up, screenshots. Mocked Dataverse.',
+      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Status panel, the editor, step 2 with a condition, a test record and the ＋ Field popover, and step 3 Review and publish; Sites & access with its access drawer open; Monitor with Check a record open; Settings with its save bar), computed borders, text and targets, a hovered primary button readable and a disabled one unchanged, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the steps, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel, Escape in the access drawer confirmation and then the drawer), the Appearance menu choosing Dark while the browser is light on every page (dark canvas, axe clean) and Match browser going back, below 1000px (the templates select, the folder panel under the tree, the full-width drawer with Tab kept inside it, the header meta line under the title), every page and step at 1920/1440/1000/800/400 in light and dark without sideways scrolling and with a whole Monitor row menu and the ◐ control at the right edge of the header, Look up an operation at least 700px wide from 1000px with no column squeezed or narrower than its header, the content of each page centered at 1280px at 1920 with its header and footer lined up, screenshots. Mocked Dataverse.',
     );
   } finally {
     await browser.close();

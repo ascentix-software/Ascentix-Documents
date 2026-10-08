@@ -213,15 +213,18 @@
       ],
     });
 
-  // A "⋯" menu: Enter, Space or Down opens and focuses the first item; Up and Down
-  // move; Escape closes and returns focus to the trigger. Choosing an item closes it, and so do
-  // Tab out of it and a click anywhere else. A busy trigger (AsxdUi.busy) does not open.
+  // A "⋯" menu: Enter, Space or Down opens and focuses the first item (in a menu of choices, the
+  // checked one); Up and Down move; Escape closes and returns focus to the trigger. Choosing an
+  // item closes it, and so do Tab out of it and a click anywhere else. A busy trigger
+  // (AsxdUi.busy) does not open.
   function menu(trigger, list) {
-    const items = () => [...list.querySelectorAll('[role=menuitem]')].filter((i) => !i.hidden);
+    const items = () =>
+      [...list.querySelectorAll('[role=menuitem], [role=menuitemradio]')].filter((i) => !i.hidden);
     const open = () => {
       list.hidden = false;
       trigger.setAttribute('aria-expanded', 'true');
-      items()[0]?.focus();
+      const all = items();
+      (all.find((i) => i.getAttribute('aria-checked') === 'true') || all[0])?.focus();
     };
     const close = (focus = true) => {
       list.hidden = true;
@@ -270,6 +273,75 @@
     };
     document.addEventListener('click', outside);
   }
+
+  // Appearance: Match browser (the default), Light or Dark. A choice sets the root's color-scheme,
+  // which every light-dark() token follows; Match browser removes it, so the stylesheet's
+  // "light dark" follows the browser again. The choice is this browser's own, kept in
+  // localStorage under one key that the four pages share. Storage that is missing or throws reads
+  // as Match browser, and a choice still applies to the page that is open.
+  const APPEARANCE_KEY = 'asxd.appearance';
+  const APPEARANCES = [
+    ['browser', 'Match browser'],
+    ['light', 'Light'],
+    ['dark', 'Dark'],
+  ];
+  const appearanceItems = [];
+  let appearanceChoice = 'browser';
+  function local(action) {
+    try {
+      return action(window.localStorage);
+    } catch {
+      return undefined;
+    }
+  }
+  const knownAppearance = (value) => (value === 'light' || value === 'dark' ? value : 'browser');
+  function applyAppearance(choice) {
+    appearanceChoice = knownAppearance(choice);
+    document.documentElement.style.colorScheme =
+      appearanceChoice === 'browser' ? '' : appearanceChoice;
+    for (const item of appearanceItems)
+      item.setAttribute('aria-checked', String(item.dataset.appearance === appearanceChoice));
+  }
+  function setAppearance(choice) {
+    applyAppearance(choice);
+    local((s) =>
+      appearanceChoice === 'browser'
+        ? s.removeItem(APPEARANCE_KEY)
+        : s.setItem(APPEARANCE_KEY, appearanceChoice),
+    );
+  }
+  // The ◐ button at the right end of a page header and its menu of the three choices.
+  function appearanceControl(header, tab) {
+    const anchor = el('div', null, 'menu-anchor appearance');
+    const trigger = button('◐', null, 'icon');
+    const list = el('ul', null, 'menu');
+    list.id = 'appearance-' + tab;
+    list.setAttribute('role', 'menu');
+    list.setAttribute('aria-label', 'Appearance');
+    list.hidden = true;
+    trigger.setAttribute('aria-label', 'Appearance');
+    trigger.setAttribute('aria-haspopup', 'menu');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-controls', list.id);
+    for (const [value, label] of APPEARANCES) {
+      const item = button(label, () => setAppearance(value), null);
+      item.setAttribute('role', 'menuitemradio');
+      item.tabIndex = -1;
+      item.dataset.appearance = value;
+      item.setAttribute('aria-checked', String(value === appearanceChoice));
+      appearanceItems.push(item);
+      const row = el('li');
+      row.setAttribute('role', 'none');
+      row.append(item);
+      list.append(row);
+    }
+    anchor.append(trigger, list);
+    header.append(anchor);
+    menu(trigger, list);
+  }
+  // Applied as soon as shell.js runs, from the page's head, so the page never paints in the
+  // other scheme first.
+  applyAppearance(local((s) => s.getItem(APPEARANCE_KEY)));
 
   // What Documents' SharePoint check found for a library setup whose create answer was lost,
   // as one sentence for Monitor and Sites & access.
@@ -619,6 +691,10 @@
   }
 
   async function start() {
+    for (const tab of TABS) {
+      const header = $(tab).querySelector('.page-header');
+      if (header) appearanceControl(header, tab);
+    }
     if (!xrm?.WebApi || !xrm?.Utility) return offline();
     const first = read(KEYS.launched) === null;
     write(KEYS.launched, '1');
@@ -902,6 +978,8 @@
     onRuntime: (fn) => runtimeListeners.push(fn),
     setRuntime,
     setAutomation,
+    appearance: () => appearanceChoice,
+    setAppearance,
   };
   document.addEventListener('DOMContentLoaded', start);
 })();
