@@ -148,7 +148,8 @@ assert.doesNotMatch(
   /<(input|select|textarea|button)[^>]*\stitle=/,
   'No title tooltips on controls',
 );
-assert.doesNotMatch(js, /\.title\s*=/, 'No title tooltips set from script');
+// The page's own title (document.title) names the browser tab; any other .title is a tooltip.
+assert.doesNotMatch(js, /(?!document|doc)\w+\.title\s*=/, 'No title tooltips set from script');
 for (const removed of [
   'recoveryRun',
   'recoveryToken',

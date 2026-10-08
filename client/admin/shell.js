@@ -480,6 +480,38 @@
     state.tab = tab;
     state.link = link;
     for (const name of TABS) $(name).hidden = name !== tab;
+    nameTab(tab);
+  }
+  // Dynamics names the browser tab after the web resource's address ("asx_admin/index.html?…").
+  // The page names it after itself instead, and puts its name back if Dynamics sets the address
+  // again while this page is open.
+  const PAGE_NAMES = {
+    templates: 'Folder templates',
+    access: 'Sites & access',
+    monitor: 'Monitor',
+    settings: 'Settings',
+  };
+  let tabTitle = null;
+  function nameTab(tab) {
+    const text = PAGE_NAMES[tab] + ' · Ascentix Documents';
+    document.title = text;
+    let doc;
+    try {
+      doc = window.top && window.top !== window ? window.top.document : null;
+    } catch {
+      doc = null; // Another origin: the tab keeps Dynamics' name.
+    }
+    if (!doc) return;
+    doc.title = text;
+    if (tabTitle || !doc.querySelector || typeof MutationObserver !== 'function') return;
+    const element = doc.querySelector('title');
+    if (!element) return;
+    tabTitle = new MutationObserver(() => {
+      const name = PAGE_NAMES[state.tab] + ' · Ascentix Documents';
+      if (doc.title.startsWith('asx_admin/')) doc.title = name;
+    });
+    tabTitle.observe(element, { childList: true, characterData: true, subtree: true });
+    window.addEventListener?.('pagehide', () => tabTitle.disconnect());
   }
   async function go(tab, link) {
     if (link) write(KEYS.link, JSON.stringify({ ...link, tab }));

@@ -44,6 +44,23 @@ function runtime(overrides = {}) {
 
 // Loads index.html and shell.js the way the page does, fires DOMContentLoaded and returns what
 // happened. `setup` sets how many rows the landing queries find; runtime null means Get refused.
+// A <title> element stand-in: the shell observes it; changed() runs the observer.
+const observers = [];
+function document0() {
+  return { changed: () => observers.forEach((o) => o.callback()) };
+}
+class FakeObserver {
+  constructor(callback) {
+    this.callback = callback;
+  }
+  observe() {
+    observers.push(this);
+  }
+  disconnect() {
+    observers.splice(observers.indexOf(this), 1);
+  }
+}
+
 async function boot(options = {}) {
   const {
     search = '?data=templates-' + BUILD,
@@ -57,6 +74,8 @@ async function boot(options = {}) {
     rows = {},
     // The asx_ManageWork Summary counts, or null for none.
     summary = null,
+    // The Dynamics page around the web resource, when a test needs its document.
+    top = null,
     // A promise the runtime Get waits for, to model a slow server.
     getGate = null,
   } = options;
@@ -123,6 +142,7 @@ async function boot(options = {}) {
     };
   };
   const window = { parent: { Xrm: xrm }, location: { search, hash } };
+  if (top) window.top = top;
   Object.defineProperty(window, 'sessionStorage', {
     get: () => {
       if (session.throwOnAccess) throw new Error('SecurityError');
@@ -141,6 +161,7 @@ async function boot(options = {}) {
     clearTimeout,
     setInterval: () => 0,
     clearInterval: () => {},
+    MutationObserver: FakeObserver,
   });
   vm.runInContext(shell, context);
   register(window.AsxdUi, context);
@@ -159,6 +180,38 @@ const shownH1s = (section) =>
   });
 
 (async () => {
+  {
+    // The browser tab is named after the page, not the web resource's address, and keeps that
+    // name when Dynamics sets the address again; another origin leaves Dynamics' name alone.
+    const element = document0();
+    const top = {
+      document: {
+        title: 'asx_admin/index.html?data=settings-' + BUILD,
+        querySelector: () => element,
+      },
+    };
+    const run = await boot({ search: '?data=settings-' + BUILD, top });
+    assert.equal(top.document.title, 'Settings · Ascentix Documents');
+    assert.equal(run.document.title, 'Settings · Ascentix Documents');
+    top.document.title = 'asx_admin/index.html?data=settings-' + BUILD;
+    element.changed();
+    assert.equal(top.document.title, 'Settings · Ascentix Documents');
+    top.document.title = 'Accounts - Power Apps';
+    element.changed();
+    assert.equal(
+      top.document.title,
+      'Accounts - Power Apps',
+      'A title Dynamics chose for another page stays',
+    );
+    const sealed = {};
+    Object.defineProperty(sealed, 'document', {
+      get: () => {
+        throw new Error('SecurityError');
+      },
+    });
+    const other = await boot({ search: '?data=monitor-' + BUILD, top: sealed });
+    assert.equal(other.document.title, 'Monitor · Ascentix Documents');
+  }
   {
     // First launch with setup complete lands on Monitor through the same navigation as a tab click.
     const run = await boot();
