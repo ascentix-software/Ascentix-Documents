@@ -838,6 +838,21 @@ button.filter-chip[aria-pressed='true'] {
 #template-groups .rail-group {
   margin: 8px 0 0;
 }
+/* Table names head their templates: section headings, not rows, so they don't look clickable. */
+#template-groups .group-label,
+#template-groups .rail-group {
+  margin-bottom: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: default;
+}
+#template-groups .list-group + .list-group,
+#template-groups .rail-group {
+  margin-top: 14px;
+}
 #template-groups .empty {
   padding: 8px 10px;
   text-align: left;
