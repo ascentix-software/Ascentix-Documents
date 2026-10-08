@@ -113,6 +113,8 @@
     Outdated: ['Out of date', true],
     WorkerCannotRead: ["Run-as user can't read this table", false],
   };
+  // An operation in one of these states is finished: there is nothing left to retry or cancel.
+  const FINISHED = ['Applied', 'Approved', 'Discovered', 'Ready', 'Cancelled', 'Superseded'];
   const OPERATION_PREFIXES = ['folderjob:', 'librarycreate:', 'catalogprobe:', 'policywork:'];
   const INSTALL_DOCS =
     'https://github.com/ascentix-software/Ascentix-Documents/blob/main/docs/customer-installation.md';
@@ -1389,7 +1391,7 @@
         );
       }
       if (result.Recovery.State === 'Ambiguous') actions.append(candidates(row, 'advanced'));
-    } else {
+    } else if (!FINISHED.includes(result.Status)) {
       for (const action of result.Status === 'Blocked' || result.Status === 'RetryWait'
         ? ['Retry', 'Cancel']
         : ['Cancel'])

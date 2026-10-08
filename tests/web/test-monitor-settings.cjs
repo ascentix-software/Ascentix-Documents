@@ -1339,6 +1339,16 @@ async function boot({
     assert.deepEqual(m.sent.at(-1)[1], { Command: 'Inspect', Key: 'folderjob:abc' });
     assert.equal(m.$('operation-result').hidden, false);
     assert.equal(m.document.getElementById('recoveryPanel'), null);
+    // A finished operation has nothing to retry or cancel.
+    const done = await boot({
+      handle: (api, b) =>
+        b.Command === 'Inspect' ? { Key: b.Key, Status: 'Applied', Notices: [] } : null,
+    });
+    await openTool(done, 1);
+    done.$('operation-id').value = 'folderjob:done';
+    await done.press(done.$('operation-lookup'));
+    assert.equal(done.$('operation-result').hidden, false);
+    assert.deepEqual(done.buttons(done.$('operation-actions')), []);
     // A library setup with a SharePoint finding offers its recovery choices here too.
     const finding = {
       State: 'NotFound',
