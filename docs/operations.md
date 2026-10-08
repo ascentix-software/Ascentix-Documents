@@ -1,6 +1,6 @@
 # Operations and retention runbook
 
-Keep Automation and flows off during installation. Follow the [installation procedure](customer-installation.md). Review the [preview limitations](public-preview.md#preview-limitations), including recovery scenarios that have not yet been rehearsed live.
+Keep Automation and flows off during installation. Follow the [installation procedure](customer-installation.md). Review the [beta limitations](public-beta.md#beta-limitations), including recovery scenarios that have not yet been rehearsed live.
 
 ## Enable after verification
 

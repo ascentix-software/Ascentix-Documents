@@ -233,4 +233,4 @@ These are the implementation entry points used for this guide. Source links are 
 | Native navigation | [NativeLocations.cs](../src/Ascentix.Documents.Dataverse/NativeLocations.cs) |
 | Concurrency and retention | [WorkCoordination.cs](../src/Ascentix.Documents.Dataverse/WorkCoordination.cs), [WorkRetention.cs](../src/Ascentix.Documents.Dataverse/WorkRetention.cs) |
 
-For operational procedures see [operations](operations.md). See the [preview release notes](public-preview.md) for evaluation limits.
+For operational procedures see [operations](operations.md). See the [beta release notes](public-beta.md) for evaluation limits.

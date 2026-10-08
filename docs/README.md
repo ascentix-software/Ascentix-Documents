@@ -2,7 +2,7 @@
 
 ## Install and operate
 
-- [Preview release notes and limitations](public-preview.md)
+- [Beta release notes and limitations](public-beta.md)
 - [Managed installation](customer-installation.md)
 - [Worker identity and connections](worker-installation.md)
 - [Operations and retention](operations.md)

@@ -1,8 +1,8 @@
-# Public preview — 0.1.0.4
+# Public beta — 0.1.0.4
 
 Ascentix Documents provisions SharePoint folders from Dataverse records and manages library access through Dataverse teams. Source is available under Apache 2.0.
 
-## Included in this preview
+## Included in this beta
 
 - Conditional folder templates with draft, preview, and publication workflows.
 - Multiple document destinations and reuse of existing managed folders during replay or a re-run.
@@ -36,7 +36,7 @@ Use `AscentixDocuments_0.1.0.4_managed.zip` for evaluation. The unmanaged soluti
 
 Official packages use a stable assembly signing identity. Local builds use a development key and cannot replace an officially signed assembly in place. The release manifest and SHA-256 checksums identify the supplied artifacts; checksums are not a signed release attestation.
 
-## Preview limitations
+## Beta limitations
 
 - Sustained high-volume capacity has not been established. Start with a small template and disposable records in an evaluation environment.
 - Managed import and upgrade have been exercised; a fresh installation of this version in an isolated empty environment remains unverified.

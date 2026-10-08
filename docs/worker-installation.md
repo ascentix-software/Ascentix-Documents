@@ -32,4 +32,4 @@ Enable document management for the selected business tables. A template can use 
 
 Publish a small template. Documents registers each enabled table's event steps for the configured worker when you click **Save settings** in Settings › Automation settings or add the table with **＋ Add table** in Settings › Tables. The **Tables** card shows whether every table is Ready; **Repair all** (or **Repair** on a row) fixes one that is not.
 
-Enable runtime and worker flows, then provision a disposable record and verify the resulting folders. Confirm replay reuses them and that the worker roles are sufficient. Consult [preview limitations](public-preview.md#preview-limitations) before expanding the workload.
+Enable runtime and worker flows, then provision a disposable record and verify the resulting folders. Confirm replay reuses them and that the worker roles are sufficient. Consult [beta limitations](public-beta.md#beta-limitations) before expanding the workload.

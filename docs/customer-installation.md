@@ -1,6 +1,6 @@
 # Managed customer installation
 
-Use the managed solution package for evaluation. Review the [preview limitations](public-preview.md#preview-limitations) before setup.
+Use the managed solution package for evaluation. Review the [beta limitations](public-beta.md#beta-limitations) before setup.
 
 ## Prepare and import
 

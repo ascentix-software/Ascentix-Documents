@@ -2,7 +2,7 @@
 
 Ascentix Documents provisions SharePoint folder structures from Dataverse records and manages library access through Dataverse teams. Define folder templates, publish them, and let the worker apply the resulting folder and access changes. It runs independently of Ascentix Rules Engine.
 
-**Version 0.1.0.4 is a public preview.** Read the [release notes](docs/public-preview.md) for features and known limitations. The managed solution is the intended evaluation download. Source is licensed under [Apache 2.0](LICENSE).
+**Version 0.1.0.4 is a public beta.** Read the [release notes](docs/public-beta.md) for features and known limitations. The managed solution is the intended evaluation download. Source is licensed under [Apache 2.0](LICENSE).
 
 ## What it does
 
@@ -35,7 +35,7 @@ Use a dedicated Dataverse and SharePoint evaluation environment. Follow the [man
 
 The [operations guide](docs/operations.md) covers work recovery, access changes, upgrades, and retention. [Record changes](docs/record-update-processing.md) explains how to apply a template to existing records.
 
-This preview has bounded live validation. Sustained high-volume capacity, advanced recovery, a fresh installation, and uninstall remain unverified. Support for B2B guests, Entra and Microsoft 365 group teams, and government clouds is built in, and further testing is ongoing. See the release notes for the remaining limitations.
+This beta has bounded live validation. Sustained high-volume capacity, advanced recovery, a fresh installation, and uninstall remain unverified. Support for B2B guests, Entra and Microsoft 365 group teams, and government clouds is built in, and further testing is ongoing. See the release notes for the remaining limitations.
 
 ## Build from source
 
