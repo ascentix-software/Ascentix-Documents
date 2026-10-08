@@ -278,8 +278,6 @@
     renderPublish();
     const add = $('add-destination');
     add.hidden = state.readOnly || !state.libraries.length;
-    $('destination-limit-note').hidden = add.hidden;
-    $('destination-limit-note').textContent = 'Up to ' + ui.BOUNDS.destinations + ' per template';
     $('no-library').hidden = !!state.libraries.length || state.readOnly;
     ui.disable(
       add,

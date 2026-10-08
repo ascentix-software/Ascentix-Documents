@@ -2231,9 +2231,6 @@ button.danger-outline {
   gap: 10px;
   margin-top: 14px;
 }
-#destination-limit-note {
-  font-size: 12px;
-}
 #step-1 > [data-actions] .reason {
   margin: 0;
 }

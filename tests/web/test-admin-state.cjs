@@ -2516,7 +2516,6 @@ async function boot({
     // says what is needed.
     const t = await boot({ privileges: { prvCreateasx_policy: false } });
     await t.open();
-    assert.equal(t.$('destination-limit-note').textContent, 'Up to 10 per template');
     await t.press(t.$('add-destination'));
     assert.equal(t.$('step-1').querySelectorAll('.destination-card').length, 1);
     const row = t.$('step-1').querySelector('.destination-row');
