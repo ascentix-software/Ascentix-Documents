@@ -5,8 +5,8 @@ namespace Ascentix.Documents.Dataverse;
 /// <summary>
 /// Whether Documents offers "Update folders when records change". Off in 0.1.0.4: Documents never
 /// renames existing folders, so planning a record again after it changes creates only the folders
-/// that are newly called for, which confuses users. The setting returns in a later release with a
-/// choice to rename folders; turning this switch on brings back the code kept for it.
+/// that are newly called for, which confuses users. Turning this switch on brings back the code kept
+/// for it.
 /// While off, a stored "on" reads as off, Save stores off, record Update events are not captured,
 /// and the record Update steps are not registered: Repair removes any that remain.
 /// </summary>
