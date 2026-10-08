@@ -67,7 +67,7 @@ sequenceDiagram
     participant Flow as Power Automate dispatcher
     participant API as Worker API + planner
     participant SP as SharePoint
-    User->>DV: Create or update a business record
+    User->>DV: Create a business record
     DV->>Queue: Queue relevant active-template work
     DV-->>User: Complete record save
     Flow->>API: ListOutbox / Plan
@@ -90,7 +90,7 @@ sequenceDiagram
     DV-->>User: Link to the SharePoint folder
 ```
 
-Saving the business record queues work; SharePoint provisioning happens afterward. The event path requires configured registrations and an active published template. Updates are filtered for fields used by the template. Ordinary record editing does not require the user to manually write product queue rows.
+Saving the business record queues work; SharePoint provisioning happens afterward. The event path requires configured registrations and an active published template. Changes to an existing record don't queue folder work in this release; use Re-run for existing records. Ordinary record editing does not require the user to manually write product queue rows.
 
 One table can have multiple named templates. Each template can produce folders in several destinations simultaneously. For example, an Account template can produce a General folder in one library and a Sensitive folder in another. If one destination fails, another can already have completed; the overall record can therefore be partially provisioned.
 
