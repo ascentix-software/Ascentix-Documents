@@ -3,7 +3,7 @@
 // address), deep links between pages, the unsaved-changes prompt, and the helpers every page
 // uses through window.AsxdUi. Text is only ever set with textContent.
 (() => {
-  const BUILD = 'ui20261007design1';
+  const BUILD = 'ui20261008rc1';
   const TABS = ['templates', 'access', 'monitor', 'settings'];
   const LEGACY = {
     runtime: 'settings',
@@ -72,7 +72,7 @@
     for (const key of PARAMS) if (params.get(key)) link[key] = params.get(key);
     return link;
   }
-  // '?data=monitor-ui20261007design1' → 'monitor'.
+  // '?data=monitor-ui20261008rc1' → 'monitor'.
   const fromData = (search) =>
     known((new URLSearchParams(String(search || '')).get('data') || '').split('-')[0]);
   function storedLink() {

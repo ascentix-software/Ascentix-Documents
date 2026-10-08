@@ -795,11 +795,12 @@
     return row;
   }
   // A setup's four stages as a small bar; its Access cell says the same in words.
+  // One segment per stage, lit up to and including the current one, so "step 3 of 4" lights 3.
   function miniProgress(s) {
     const bar = node('div', null, 'mini-progress');
     bar.setAttribute('aria-hidden', 'true');
     s.stages.forEach((_, i) =>
-      bar.append(node('span', null, i < s.step || s.done ? 'done' : null)),
+      bar.append(node('span', null, i <= s.step || s.done ? 'done' : null)),
     );
     return bar;
   }

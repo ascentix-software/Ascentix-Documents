@@ -8,10 +8,10 @@
   <SiteMap>
     <Area Id="asx_documents" Title="Ascentix Documents" ShowGroups="true">
       <Group Id="asx_security" Title="Documents">
-        <SubArea Id="asx_studio" Title="Folder templates" Url="$webresource:asx_admin/index.html?data=templates-ui20261007design1" />
-        <SubArea Id="asx_policyadmin" Title="Sites &amp; access" Url="$webresource:asx_admin/index.html?data=access-ui20261007design1" />
-        <SubArea Id="asx_operationsadmin" Title="Monitor" Url="$webresource:asx_admin/index.html?data=monitor-ui20261007design1" />
-        <SubArea Id="asx_runtimeadmin" Title="Settings" Url="$webresource:asx_admin/index.html?data=settings-ui20261007design1" />
+        <SubArea Id="asx_studio" Title="Folder templates" Url="$webresource:asx_admin/index.html?data=templates-ui20261008rc1" />
+        <SubArea Id="asx_policyadmin" Title="Sites &amp; access" Url="$webresource:asx_admin/index.html?data=access-ui20261008rc1" />
+        <SubArea Id="asx_operationsadmin" Title="Monitor" Url="$webresource:asx_admin/index.html?data=monitor-ui20261008rc1" />
+        <SubArea Id="asx_runtimeadmin" Title="Settings" Url="$webresource:asx_admin/index.html?data=settings-ui20261008rc1" />
       </Group>
     </Area>
   </SiteMap>

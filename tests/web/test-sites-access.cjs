@@ -1757,8 +1757,8 @@ const stage = (team, access) => {
     await trackSetup('librarycreate:board', 'Board papers');
     const setup = rowNamed('Board papers');
     assert.equal(setup.querySelectorAll('.mini-progress span').length, 4);
-    assert.equal(setup.querySelectorAll('.mini-progress .done').length, 2);
-    assert.match(setup.querySelector('.access').visibleText, / · step \d of 4$/);
+    assert.equal(setup.querySelectorAll('.mini-progress .done').length, 3);
+    assert.match(setup.querySelector('.access').visibleText, / · step 3 of 4$/);
     assert.equal(setup.querySelector('.used-by').textContent, 'Not used');
     await press(setup.querySelector('button'));
     assert.ok(nodes['ad-drawer-progress'].querySelector('.ad-progress-card'));
