@@ -31,6 +31,9 @@
      --content-max. 100% resolves where it is used, so each rule writes
      max(<its own padding>, var(--gutter)) and keeps its padding on narrower screens. */
   --gutter: calc((100% - var(--content-max)) / 2);
+  /* Right-side panels: a form, and the wider panel that holds a table. */
+  --panel-width: 400px;
+  --panel-wide: min(760px, 100vw - 48px);
 }
 * {
   box-sizing: border-box;
@@ -748,6 +751,31 @@ button.filter-chip[aria-pressed='true'] {
   text-align: left;
   vertical-align: top;
 }
+/* Recent operations: words stay whole; only the title breaks a long word, and the kind, status
+   and time stay on one line in the wide panel. The full operation ID wraps, with Copy under
+   Details. */
+#recent-table th,
+#recent-table td {
+  overflow-wrap: normal;
+  /* The title link's 24px target sets the line, so every cell's first line lines up. */
+  line-height: 24px;
+}
+#recent-table td:first-child {
+  overflow-wrap: anywhere;
+}
+#recent-table button.link {
+  padding: 0;
+  text-align: left;
+}
+@media (min-width: 1000px) {
+  #recent-table td:not(:first-child) {
+    white-space: nowrap;
+  }
+}
+#operation-fields dd,
+#operation-fields code {
+  overflow-wrap: anywhere;
+}
 @media (max-width: 700px) {
   .run-card {
     grid-template-columns: minmax(0, 1fr);
@@ -1294,13 +1322,17 @@ button.problem-pill:hover {
   top: 0;
   right: 0;
   bottom: 0;
-  width: 400px;
+  width: var(--panel-width);
   max-width: 100%;
   overflow: auto;
   z-index: 20;
   background: var(--surface);
   border-left: 1px solid var(--line);
   box-shadow: -12px 0 32px var(--shadow);
+}
+/* A side panel that holds a table is wider, so its columns are not squeezed. */
+.side-panel.wide {
+  width: var(--panel-wide);
 }
 @media (prefers-reduced-motion: no-preference) {
   .side-panel:not([hidden]),
@@ -2937,6 +2969,7 @@ button.danger-outline {
     padding: 14px;
   }
   .side-panel,
+  .side-panel.wide,
   .drawer {
     width: 100%;
   }

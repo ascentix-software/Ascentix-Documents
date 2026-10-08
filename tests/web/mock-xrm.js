@@ -262,6 +262,33 @@
         },
         ...(window.__recovery ? [recoveryRow(window.__recovery)] : []),
       ];
+    if (list === 'RecentOperations')
+      return [
+        {
+          Key: 'folderjob:' + IDS.record,
+          Kind: 'FolderJob',
+          KindLabel: 'Folder job',
+          Title: 'Contoso Ltd · General',
+          Status: 'Blocked',
+          SinceUtc: ago(90),
+        },
+        {
+          Key: 'librarycreate:' + IDS.candidate,
+          Kind: 'LibrarySetup',
+          KindLabel: 'Library setup',
+          Title: 'Northwind Traders Customer Correspondence And Signed Agreements 2026',
+          Status: 'ExternalUnknown',
+          SinceUtc: ago(120),
+        },
+        {
+          Key: 'policywork:' + IDS.library,
+          Kind: 'PolicyWork',
+          KindLabel: 'Library access',
+          Title: 'General',
+          Status: 'Succeeded',
+          SinceUtc: ago(60 * 24 * 3),
+        },
+      ];
     return [];
   }
   const summary = () => ({

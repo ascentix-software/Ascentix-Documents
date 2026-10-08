@@ -514,6 +514,56 @@ async function check(page, label) {
             await assertCentered(page, 'Monitor', ['#problem-table-card', 'border'], '#monitor', [
               ['#monitor > .page-header'],
             ]);
+          // Look up an operation holds the recent operations table: from 1000px up its panel is
+          // at least 700px wide and every column at least 80px, below it the panel takes the
+          // full width; nothing in it scrolls sideways and no column is narrower than its header.
+          if (tab === 'monitor') {
+            await page.locator('#monitor-tools').click();
+            await page.getByRole('menuitem', { name: 'Look up an operation' }).click();
+            await page.locator('#recent-rows tr').first().waitFor();
+            await settle(page);
+            const lookup = await page.evaluate(() => {
+              const panel = document.getElementById('lookup-panel');
+              const range = document.createRange();
+              const content = (e) => {
+                const style = getComputedStyle(e);
+                return (
+                  e.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+                );
+              };
+              return {
+                width: panel.getBoundingClientRect().width,
+                overflow: panel.scrollWidth - panel.clientWidth,
+                columns: [...panel.querySelectorAll('thead th')].map((th) => {
+                  range.selectNodeContents(th);
+                  return {
+                    name: th.textContent.trim(),
+                    width: th.getBoundingClientRect().width,
+                    content: content(th),
+                    text: range.getBoundingClientRect().width,
+                  };
+                }),
+                spilled: [...panel.querySelectorAll('#recent-rows td')].filter(
+                  (td) => td.scrollWidth > td.clientWidth,
+                ).length,
+              };
+            });
+            const label =
+              'Look up an operation ' + width + ' ' + scheme + ' ' + JSON.stringify(lookup);
+            if (width >= 1000) assert(lookup.width >= 700, label + ': panel width');
+            else assert(Math.abs(lookup.width - width) <= 1, label + ': full width');
+            assert(lookup.overflow <= 0, label + ': sideways scroll');
+            assert.equal(lookup.spilled, 0, label + ': a cell spills');
+            for (const column of lookup.columns) {
+              assert(column.content + 0.5 >= column.text, label + ': ' + column.name + ' header');
+              if (width >= 1000) assert(column.width >= 80, label + ': ' + column.name + ' width');
+            }
+            if (width === 1440)
+              await page.screenshot({
+                path: path.join(shots, `responsive-lookup-1440-${scheme}.png`),
+              });
+            await page.locator('#lookup-close').click();
+          }
           if (big && tab === 'settings') {
             await assertCentered(page, 'Settings', ['#settings .page-body'], '#settings', [
               ['#settings > .page-header'],
@@ -562,7 +612,7 @@ async function check(page, label) {
       });
     }
     console.log(
-      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel, the editor, step 2 with a condition, a test record and the ＋ Field popover, and step 3 Review and publish; Sites & access with its access drawer open; Monitor with Check a record open; Settings with its save bar), computed borders, text and targets, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the steps, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel, Escape in the access drawer confirmation and then the drawer), below 1000px (the templates select, the folder panel under the tree, the full-width drawer with Tab kept inside it, the header meta line under the title), every page and step at 1920/1440/1000/800/400 in light and dark without sideways scrolling and with a whole Monitor row menu, the content of each page centered at 1280px at 1920 with its header and footer lined up, screenshots. Mocked Dataverse.',
+      'PASS accessibility in Edge: axe WCAG 2.2 AA on four pages in light and dark (Folder templates as the overview, its Schedule panel, the editor, step 2 with a condition, a test record and the ＋ Field popover, and step 3 Review and publish; Sites & access with its access drawer open; Monitor with Check a record open; Settings with its save bar), computed borders, text and targets, keyboard flows (the overview ⋯ menu, All versions, Edit template and Close, the steps, the step 2 tree, Only when… and ＋ Field, Monitor chips, a row menu and its confirmation, the Tools panel, Escape in the access drawer confirmation and then the drawer), below 1000px (the templates select, the folder panel under the tree, the full-width drawer with Tab kept inside it, the header meta line under the title), every page and step at 1920/1440/1000/800/400 in light and dark without sideways scrolling and with a whole Monitor row menu, Look up an operation at least 700px wide from 1000px with no column squeezed or narrower than its header, the content of each page centered at 1280px at 1920 with its header and footer lined up, screenshots. Mocked Dataverse.',
     );
   } finally {
     await browser.close();
