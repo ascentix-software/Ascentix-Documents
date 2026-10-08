@@ -107,12 +107,11 @@ async function openTemplate(page) {
   await page.locator('#step-1 .destination-card').waitFor();
   await settle(page);
 }
-// At 1920px a page's content is --content-max (1280px) wide, plus `slack` where its own padding
-// lines it up, and centered in its area, the space beside any rail. The contents of its header and
-// footer bars line up with it. A box is the element's content box, or its border box for an
-// element placed by its margins.
+// At 1920px a page's content is --content-max (1280px) wide and centered in its area, the space
+// beside any rail. The contents of its header and footer bars line up with it. A box is the
+// element's content box, or its border box for an element placed by its margins.
 const CONTENT_MAX = 1280;
-async function assertCentered(page, label, content, area, bars = [], slack = 0) {
+async function assertCentered(page, label, content, area, bars = []) {
   const m = await page.evaluate(
     ([content, area, bars]) => {
       const box = ([sel, kind = 'content']) => {
@@ -130,10 +129,7 @@ async function assertCentered(page, label, content, area, bars = [], slack = 0) 
     [content, area, bars],
   );
   const width = m.content.right - m.content.left;
-  assert(
-    width >= CONTENT_MAX - 0.5 && width <= CONTENT_MAX + slack + 0.5,
-    label + ' width ' + width,
-  );
+  assert(width >= CONTENT_MAX - 0.5 && width <= CONTENT_MAX + 0.5, label + ' width ' + width);
   const before = m.content.left - m.area.left,
     after = m.area.right - m.content.right;
   assert(Math.abs(before - after) <= 1, label + ' centered ' + before + '/' + after);
@@ -478,14 +474,34 @@ async function check(page, label) {
               await assertCentered(page, 'Step 3', ['#step-3'], '.templates-main', editorBars);
               await page.locator('#step-tab-2').click();
               await settle(page);
-              // The tree and the folder panel are centered together; the tree's 24px padding
-              // lines its content up with the other steps.
-              await assertCentered(page, 'Step 2', ['#step-2'], '.templates-main', [], 48);
-              const start = (e) =>
-                e.getBoundingClientRect().left + parseFloat(getComputedStyle(e).paddingLeft);
-              const tree = await page.locator('.tree-side').evaluate(start);
-              const header = await page.locator('.editor-header').evaluate(start);
-              assert(Math.abs(tree - header) <= 1, 'Step 2 tree lines up ' + tree + '/' + header);
+              // The tree's content and the folder panel's border span the same 1280px as the
+              // other steps: the tree's text starts at the header's, and the panel ends where
+              // the footer's Next button does.
+              const edges = await page.evaluate(() => {
+                const start = (sel) => {
+                  const e = document.querySelector(sel);
+                  return (
+                    e.getBoundingClientRect().left + parseFloat(getComputedStyle(e).paddingLeft)
+                  );
+                };
+                const right = (sel) => document.querySelector(sel).getBoundingClientRect().right;
+                const area = document.querySelector('.templates-main').getBoundingClientRect();
+                return {
+                  tree: start('.tree-side'),
+                  header: start('.editor-header'),
+                  panel: right('.folder-panel'),
+                  next: right('#step-next'),
+                  area: { left: area.left, right: area.right },
+                };
+              });
+              const label = 'Step 2 ' + JSON.stringify(edges);
+              assert(Math.abs(edges.tree - edges.header) <= 1, label + ' tree lines up');
+              assert(Math.abs(edges.panel - edges.next) <= 1, label + ' panel lines up');
+              assert(Math.abs(edges.panel - edges.tree - CONTENT_MAX) <= 1, label + ' width');
+              assert(
+                Math.abs(edges.tree - edges.area.left - (edges.area.right - edges.panel)) <= 1,
+                label + ' centered',
+              );
               await page.locator('#step-tab-3').click();
               await settle(page);
             }

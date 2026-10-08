@@ -2241,11 +2241,13 @@ button.danger-outline {
     padding: 12px 14px;
   }
 }
-/* Step 2, Folders: the destination's folder tree beside the selected folder's panel. The two
-   are centered together; the tree's own padding lines its content up with the other steps. */
+/* Step 2, Folders: the destination's folder tree beside the selected folder's panel. The tree
+   starts its 24px padding early so its content lines up with the other steps; the panel ends at
+   the content edge. */
 #step-2 {
   display: flex;
-  padding-inline: max(0px, var(--gutter) - 24px);
+  padding-left: max(0px, var(--gutter) - 24px);
+  padding-right: max(0px, var(--gutter));
   background: var(--canvas);
 }
 .folders-layout {
