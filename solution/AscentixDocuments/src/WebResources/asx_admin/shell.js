@@ -787,26 +787,20 @@
     return handle;
   }
 
-  // Whether automation runs and whether it follows record changes. A System Administrator's
+  // Whether automation runs. A System Administrator's
   // runtime Get answers it; other roles read the Default runtime row, which every Documents
   // role may read. A row that was read is kept until the runtime changes; a failed or missing
   // read is tried again on the next call.
   let automationCache = null;
   async function automation() {
     const runtime = await Promise.resolve(state.runtimePromise).then(() => state.runtime);
-    if (runtime)
-      return { Enabled: !!runtime.Enabled, ProcessRecordUpdates: !!runtime.ProcessRecordUpdates };
+    if (runtime) return { Enabled: !!runtime.Enabled };
     if (!automationCache)
       automationCache = xrm.WebApi.retrieveMultipleRecords(
         'asx_runtime',
-        "?$select=asx_enabled,asx_processrecordupdates&$filter=asx_name eq 'Default'&$top=2",
+        "?$select=asx_enabled&$filter=asx_name eq 'Default'&$top=2",
       ).then((rows) =>
-        rows.entities.length === 1
-          ? {
-              Enabled: !!rows.entities[0].asx_enabled,
-              ProcessRecordUpdates: !!rows.entities[0].asx_processrecordupdates,
-            }
-          : null,
+        rows.entities.length === 1 ? { Enabled: !!rows.entities[0].asx_enabled } : null,
       );
     const reading = automationCache;
     try {

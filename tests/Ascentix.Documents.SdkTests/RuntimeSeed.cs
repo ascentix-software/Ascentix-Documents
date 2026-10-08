@@ -27,7 +27,9 @@ internal static class RuntimeSeed
             {
                 ["asx_name"] = "Default",
                 ["asx_enabled"] = false,
-                ["asx_processrecordupdates"] = true,
+                // Off, as 0.1.0.4 stores it; tests of an environment upgraded with the
+                // setting on store true themselves (RecordUpdatesStoredOn).
+                ["asx_processrecordupdates"] = false,
                 ["asx_workeruserid"] = worker.ToString(),
                 ["asx_allowedtables"] =
                     "[" + string.Join(",", tables.Select(t => "\"" + t + "\"")) + "]",
@@ -45,4 +47,13 @@ internal static class RuntimeSeed
             );
         return runtime;
     }
+
+    /// <summary>
+    /// Stores "Update folders when records change" as on in the Default runtime profile, as an
+    /// environment that had it on before 0.1.0.4 has it.
+    /// </summary>
+    internal static void RecordUpdatesStoredOn(DurableWorkerTests.MemoryService service) =>
+        service.Rows.Values.Single(r => r.LogicalName == "asx_runtime")[
+            "asx_processrecordupdates"
+        ] = true;
 }

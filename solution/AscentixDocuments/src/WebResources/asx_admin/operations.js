@@ -1494,14 +1494,6 @@
       inputs[inputs.length - 1].focus();
     };
     $('runtimeWorker').onchange = markEdited;
-    $('record-updates').onclick = () => {
-      if (ui.blocked($('record-updates'))) return;
-      $('record-updates').setAttribute(
-        'aria-checked',
-        String($('record-updates').getAttribute('aria-checked') !== 'true'),
-      );
-      markEdited();
-    };
     $('save-settings').onclick = () =>
       ui.busy($('save-settings'), 'Saving…', 'settings-save', save);
     $('settings-discard').onclick = () => {
@@ -1681,15 +1673,11 @@
       $('hosts-list').replaceChildren();
       if (editable) for (const host of hosts.length ? hosts : ['']) addHost(host, host);
       else $('hosts-list').append(...hosts.map((host) => el('li', host, 'host')));
-      $('record-updates').setAttribute('aria-checked', String(!!runtime.ProcessRecordUpdates));
     }
     // Read-only: the values as text, and no control that changes anything.
     $('runtimeWorker').hidden = $('runtimeWorker').disabled = !editable;
     $('worker-text').hidden = editable;
     $('worker-text').textContent = workerName(runtime);
-    $('record-updates').hidden = !editable;
-    $('record-updates-text').hidden = editable;
-    $('record-updates-text').textContent = runtime.ProcessRecordUpdates ? 'On' : 'Off';
     for (const id of ['add-host', 'add-table', 'stop-tracking']) $(id).hidden = !editable;
     if (!editable) $('table-picker').hidden = true;
     renderSwitch();
@@ -1725,17 +1713,12 @@
     $('hosts-list').append(item);
   }
 
-  // Changes not saved yet: the run-as user, record updates, and each host row that differs from
+  // Changes not saved yet: the run-as user and each host row that differs from
   // the saved host it was drawn for, is new, or is gone. Changed and new rows are tinted.
   function unsavedCount(runtime) {
     if (!runtime || runtime.CanChange === false) return 0;
     let count = 0;
     if ($('runtimeWorker').value !== (hasWorker(runtime) ? runtime.WorkerId : '')) count++;
-    if (
-      ($('record-updates').getAttribute('aria-checked') === 'true') !==
-      !!runtime.ProcessRecordUpdates
-    )
-      count++;
     const kept = new Set();
     for (const field of $('hosts-list').querySelectorAll('input')) {
       const value = field.value.trim().toLowerCase();
@@ -1788,7 +1771,6 @@
       WorkerId: $('runtimeWorker').value,
       SharePointHosts: fields.map((f) => f.value.trim().toLowerCase()).filter(Boolean),
       Enabled: current.Enabled,
-      ProcessRecordUpdates: $('record-updates').getAttribute('aria-checked') === 'true',
     });
     settings.edited = false;
     ui.setRuntime(result);

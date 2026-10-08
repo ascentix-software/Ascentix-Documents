@@ -2327,9 +2327,8 @@
       };
     return state.count.read;
   }
-  // What publishing does, as three bullets: new records, changed records (when automation can
-  // be read), and existing records with the table's count. The paused warning follows
-  // automation.
+  // What publishing does, as two bullets: new records, and existing records with the table's
+  // count. The paused warning follows automation.
   let reviewReads = 0;
   async function renderConsequences() {
     const seq = ++reviewReads;
@@ -2344,16 +2343,8 @@
       item.append(ui.dot(tone), text);
       return item;
     };
-    const setting = '“Update folders when records change”';
     $('consequences').replaceChildren(
       line('ok', 'New ' + table + ' records', ' get v' + draftVersion() + ' folders from now on.'),
-      ...(automation
-        ? [
-            automation.ProcessRecordUpdates
-              ? line('ok', 'Changed records', ' are updated, because ' + setting + ' is on.')
-              : line('ok', 'Changed records', ' are not updated, because ' + setting + ' is off.'),
-          ]
-        : []),
       line(
         'pending',
         (count == null ? 'Existing ' : 'About ' + count.toLocaleString('en-US') + ' existing ') +

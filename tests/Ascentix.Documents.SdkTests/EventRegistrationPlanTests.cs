@@ -49,6 +49,8 @@ public sealed class EventRegistrationPlanTests
     [Fact]
     public void DesiredCoversTablesTeamAndMembershipWithUpdateFlag()
     {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
         var c = Catalog("account", "contact");
         var off = EventRegistrationPlan.Desired(c, new[] { "account", "contact" }, false);
         Assert.Equal(2 * EventRegistrationPlan.RecordMessages.Length + 3, off.Count);
@@ -67,6 +69,8 @@ public sealed class EventRegistrationPlanTests
     [Fact]
     public void DiffCreatesUpdatesAndDeletes()
     {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
         var c = Catalog("account", "contact");
         var desired = EventRegistrationPlan.Desired(c, new[] { "account" }, false);
         var existing = new List<ExistingStep>
@@ -97,6 +101,8 @@ public sealed class EventRegistrationPlanTests
     [Fact]
     public void UnchangedRegistrationsProduceNoChanges()
     {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
         var c = Catalog("account");
         var desired = EventRegistrationPlan.Desired(c, new[] { "account" }, true);
         var existing = desired.Select(s => Matching(s)).ToList();
@@ -106,6 +112,8 @@ public sealed class EventRegistrationPlanTests
     [Fact]
     public void ReadinessReportsEachScope()
     {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
         var c = Catalog("account", "contact", "lead");
         var desired = EventRegistrationPlan.Desired(
             c,
@@ -133,5 +141,39 @@ public sealed class EventRegistrationPlanTests
                 .Status
         );
         Assert.Equal(0, EventRegistrationPlan.Extra(desired, existing));
+    }
+
+    /// <summary>
+    /// "Update folders when records change" is out of 0.1.0.4: no record Update step is wanted,
+    /// one registered before the upgrade is deleted and makes its table need repair.
+    /// </summary>
+    [Fact]
+    public void RecordUpdateStepsAreRetiredWhileTheSettingIsOutOfTheRelease()
+    {
+        var c = Catalog("account");
+        var desired = EventRegistrationPlan.Desired(c, new[] { "account" }, true);
+        var update = desired.Single(s => s.Name == "Ascentix Documents: event Update account");
+        Assert.True(update.Retired);
+        Assert.All(desired.Where(s => s != update), s => Assert.False(s.Retired));
+        var live = desired.Where(s => !s.Retired).Select(s => Matching(s)).ToList();
+        Assert.True(EventRegistrationPlan.Diff(desired, live, Worker).IsEmpty);
+        Assert.All(
+            EventRegistrationPlan.Readiness(desired, live, Worker),
+            r => Assert.Equal("Ready", r.Status)
+        );
+        var old = Matching(update);
+        var existing = live.Concat(new[] { old }).ToList();
+        var changes = EventRegistrationPlan.Diff(desired, existing, Worker);
+        Assert.Empty(changes.Create);
+        Assert.Empty(changes.Update);
+        Assert.Equal(new[] { old.Id }, changes.Delete);
+        Assert.Equal(
+            "Outdated",
+            EventRegistrationPlan
+                .Readiness(desired, existing, Worker)
+                .Single(r => r.Scope == "account")
+                .Status
+        );
+        Assert.Equal(1, EventRegistrationPlan.Extra(desired, existing));
     }
 }

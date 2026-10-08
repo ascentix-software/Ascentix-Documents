@@ -211,7 +211,7 @@ async function check(page, label) {
         }
         // Settings: with a change, so the save bar shows.
         if (tab === 'settings') {
-          await page.locator('#record-updates').click();
+          await page.locator('#hosts-list input').first().fill('fabrikam.sharepoint.com');
           await page.locator('#settings-footer').waitFor();
           await settle(page);
         }
@@ -238,7 +238,7 @@ async function check(page, label) {
           await page.locator('#folder-name').fill('Projects');
           await page.locator('#step-tab-3').click();
           await page.locator('#change-list .change-row').first().waitFor();
-          await page.locator('#consequences li').nth(2).waitFor();
+          await page.locator('#consequences li').nth(1).waitFor();
           await page.locator('#previewTrees .preview-card').waitFor();
           await settle(page);
           await check(page, 'templates-review ' + scheme);
@@ -520,7 +520,7 @@ async function check(page, label) {
               ['#settings .section-card', 'border'],
             ]);
             // The save bar's buttons line up with the cards.
-            await page.locator('#record-updates').click();
+            await page.locator('#hosts-list input').first().fill('fabrikam.sharepoint.com');
             await page.locator('#settings-footer').waitFor();
             await settle(page);
             await assertCentered(page, 'Settings', ['#settings .page-body'], '#settings', [

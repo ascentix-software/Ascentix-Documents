@@ -2242,6 +2242,8 @@ public sealed class DurableWorkerTests
     )
     {
         var f = new Fixture(seedBinding: false) { RecordUpdates = updates };
+        // Kept code: "Update folders when records change" is out of 0.1.0.4, so the worker API
+        // passes false; true covers the wording kept for when it returns.
         f.SeedTemplate();
         f.Service.Rows[f.RecordId]["name"] = null;
         Assert.Equal(
@@ -2253,6 +2255,8 @@ public sealed class DurableWorkerTests
     [Fact]
     public void WaitingOnARelatedRecordsFieldNeedsAReplanEvenWithRecordUpdatesOn()
     {
+        // Kept code: "Update folders when records change" is out of 0.1.0.4, so the worker API
+        // passes false; true covers the wording kept for when it returns.
         // Only the record's own Update event plans it again; a related record's change does not.
         var wait = new Ascentix.Documents.Domain.FolderWait(
             "general",
@@ -2324,6 +2328,8 @@ public sealed class DurableWorkerTests
     [Fact]
     public void DuplicateSiblingWaitsAndIsPlannedWhenTheRecordChanges()
     {
+        // Kept code: "Update folders when records change" is out of 0.1.0.4, so the worker API
+        // passes false; true covers the wording kept for when it returns.
         var f = new Fixture(seedBinding: false) { RecordUpdates = true };
         f.SeedTemplate();
         foreach (

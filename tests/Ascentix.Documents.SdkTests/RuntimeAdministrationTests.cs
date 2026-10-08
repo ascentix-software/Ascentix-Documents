@@ -119,7 +119,8 @@ public sealed class RuntimeAdministrationTests
         Assert.Equal(new[] { "account", "contact" }, got.Tables.OrderBy(t => t).ToArray());
         Assert.Equal(new[] { "account", "contact" }, e.Rows());
         Assert.Equal(accountSteps, e.StepsFor("account"));
-        Assert.Equal(EventRegistrationPlan.RecordMessages.Length, e.StepsFor("contact"));
+        // No Update step: "Update folders when records change" is out of 0.1.0.4.
+        Assert.Equal(EventRegistrationPlan.RecordMessages.Length - 1, e.StepsFor("contact"));
         Assert.DoesNotContain(
             e.Org.S.Writes,
             w => w.EndsWith("sdkmessageprocessingstep") && w.StartsWith("Delete")
@@ -331,7 +332,10 @@ public sealed class RuntimeAdministrationTests
     [Fact]
     public void RecordUpdatesToggleOnlyTheUpdateStepsWhileAWriterIsActive()
     {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
         var e = new Env("account", "contact");
+        RuntimeSeed.RecordUpdatesStoredOn(e.Org.S.Memory);
         e.Save(e.Get());
         Assert.True(e.UpdateStepActive("account"));
         e.ActiveWriter();
@@ -666,7 +670,10 @@ public sealed class RuntimeAdministrationTests
     [Fact]
     public void SetEnabledPausesWithoutWaitingAndResumeReportsProblems()
     {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
         var e = new Env("account");
+        RuntimeSeed.RecordUpdatesStoredOn(e.Org.S.Memory);
         e.Save(e.Get());
         e.ActiveWriter();
         var paused = RuntimeAdministration.Execute(
@@ -930,5 +937,105 @@ public sealed class RuntimeAdministrationTests
         );
         Assert.Equal(leadSteps, e.StepsFor("lead"));
         Assert.All(repaired.Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+    }
+
+    // "Update folders when records change" is out of 0.1.0.4 (RecordUpdates.Available). These
+    // tests cover the release default; tests marked "Kept code" turn the switch on.
+
+    [Fact]
+    public void SaveWithRecordUpdatesOnStoresOffWithoutAnError()
+    {
+        var e = new Env("account");
+        RuntimeSeed.RecordUpdatesStoredOn(e.Org.S.Memory);
+        var request = e.Get();
+        request.ProcessRecordUpdates = true;
+        request.Enabled = true;
+        var saved = e.Save(request);
+        Assert.False(saved.ProcessRecordUpdates);
+        Assert.True(saved.Enabled);
+        Assert.False(
+            e.Org.S.Memory.Rows[e.Runtime].GetAttributeValue<bool>("asx_processrecordupdates")
+        );
+        Assert.DoesNotContain(
+            e.Org.Steps,
+            s => s.GetAttributeValue<string>("name").StartsWith("Ascentix Documents: event Update")
+        );
+        // A settings-only Save with the switch still sent as on stores off too.
+        var again = e.Get();
+        again.ProcessRecordUpdates = true;
+        again.Enabled = false;
+        Assert.False(e.Save(again).ProcessRecordUpdates);
+    }
+
+    [Fact]
+    public void AStoredRecordUpdatesOnIsReportedOff()
+    {
+        var e = new Env("account");
+        RuntimeSeed.RecordUpdatesStoredOn(e.Org.S.Memory);
+        Assert.True(
+            e.Org.S.Memory.Rows[e.Runtime].GetAttributeValue<bool>("asx_processrecordupdates")
+        );
+        Assert.False(e.Get().ProcessRecordUpdates);
+        Assert.False(RuntimeProfile.Read(e.Org.S).ProcessRecordUpdates);
+        Assert.False(RuntimeProfile.ReadCapture(e.Org.S).ProcessRecordUpdates);
+        Assert.False(RuntimeProfile.ProcessesRecordUpdates(e.Org.S));
+    }
+
+    [Fact]
+    public void SaveTurnsOffUpdateStepsStoredOnAndRepairAllRemovesThem()
+    {
+        var e = new Env("account", "contact");
+        RuntimeSeed.RecordUpdatesStoredOn(e.Org.S.Memory);
+        using (RecordUpdatesSwitch.On())
+            e.Save(e.Get());
+        Assert.True(e.UpdateStepActive("account"));
+        // After the upgrade the tables need repair, and Save still turns the steps off.
+        var upgraded = e.Get();
+        Assert.Equal(
+            "Outdated",
+            upgraded.Registration!.Readiness.Single(r => r.Scope == "account").Status
+        );
+        Assert.Equal(2, upgraded.Registration.Pending);
+        upgraded.ProcessRecordUpdates = true;
+        upgraded.Enabled = true;
+        var saved = e.Save(upgraded);
+        Assert.False(saved.ProcessRecordUpdates);
+        Assert.False(e.UpdateStepActive("account"));
+        Assert.False(e.UpdateStepActive("contact"));
+        var repaired = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest { Command = "Register", RowVersion = saved.RowVersion },
+            true,
+            e.Admin
+        );
+        Assert.DoesNotContain(
+            e.Org.Steps,
+            s => s.GetAttributeValue<string>("name").StartsWith("Ascentix Documents: event Update")
+        );
+        Assert.All(repaired.Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+        Assert.Equal(0, repaired.Registration.Pending);
+        Assert.Equal(0, repaired.Registration.ExtraSteps);
+    }
+
+    [Fact]
+    public void RepairingOneTableRemovesItsUpdateStepAndKeepsTheOthers()
+    {
+        var e = new Env("account", "contact");
+        RuntimeSeed.RecordUpdatesStoredOn(e.Org.S.Memory);
+        using (RecordUpdatesSwitch.On())
+            e.Save(e.Get());
+        int contactSteps = e.StepsFor("contact");
+        var repaired = e.Change("Register", "account");
+        Assert.DoesNotContain(
+            e.Org.Steps,
+            s => s.GetAttributeValue<string>("name") == "Ascentix Documents: event Update account"
+        );
+        Assert.Equal(
+            "Ready",
+            repaired.Registration!.Readiness.Single(r => r.Scope == "account").Status
+        );
+        // Every table given to the repair is reconciled, so contact loses only its Update step.
+        Assert.Equal(contactSteps - 1, e.StepsFor("contact"));
+        Assert.All(repaired.Registration.Readiness, r => Assert.Equal("Ready", r.Status));
     }
 }

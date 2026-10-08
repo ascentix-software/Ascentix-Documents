@@ -580,22 +580,17 @@ const shownH1s = (section) =>
   {
     // automation(): the runtime Get when the caller may make it, else the Default runtime row.
     const admin = await boot({ session: storage({ 'asxd.launched': '1' }) });
-    assert.deepEqual(
-      { ...(await admin.ui.automation()) },
-      { Enabled: true, ProcessRecordUpdates: false },
-    );
+    assert.deepEqual({ ...(await admin.ui.automation()) }, { Enabled: true });
     const operator = await boot({
       profile: null,
       session: storage({ 'asxd.launched': '1' }),
       rows: { asx_runtime: [{ asx_enabled: false, asx_processrecordupdates: true }] },
     });
-    assert.deepEqual(
-      { ...(await operator.ui.automation()) },
-      { Enabled: false, ProcessRecordUpdates: true },
-    );
+    assert.deepEqual({ ...(await operator.ui.automation()) }, { Enabled: false });
     const read = operator.calls.find(([table]) => table === 'asx_runtime');
     assert.match(read[1], /\$filter=asx_name eq 'Default'/);
     assert.match(read[1], /\$top=2/);
+    assert.doesNotMatch(read[1], /processrecordupdates/);
     // A row that was read is kept: the next call reads nothing.
     await operator.ui.automation();
     assert.equal(operator.calls.filter(([table]) => table === 'asx_runtime').length, 1);

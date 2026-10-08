@@ -1823,11 +1823,6 @@ button.icon:hover {
 .sub:empty {
   display: none;
 }
-/* A switch setting: the label and its help across the row, the switch at the right. */
-.card-row.setting.toggle {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-}
 #hosts-list {
   display: grid;
   gap: 8px;

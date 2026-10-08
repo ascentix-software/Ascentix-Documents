@@ -13,6 +13,13 @@ public sealed class StepSpec
     public Guid MessageId { get; set; }
     public Guid? FilterId { get; set; }
     public bool Active { get; set; }
+
+    /// <summary>
+    /// A step that must not exist: a record Update step while "Update folders when records
+    /// change" is out of the release (RecordUpdates.Available). Register deletes it, and a table
+    /// that still has one needs repair.
+    /// </summary>
+    public bool Retired { get; set; }
 }
 
 public sealed class ExistingStep
@@ -80,6 +87,8 @@ public static class EventRegistrationPlan
         var specs = new List<StepSpec>();
         foreach (var table in tables)
         foreach (var message in RecordMessages)
+        {
+            bool update = message.StartsWith("Update", StringComparison.Ordinal);
             specs.Add(
                 new StepSpec
                 {
@@ -88,10 +97,11 @@ public static class EventRegistrationPlan
                     HandlerId = catalog.RecordHandler,
                     MessageId = catalog.Messages[message],
                     FilterId = catalog.Filters[message + "|" + table],
-                    Active =
-                        !message.StartsWith("Update", StringComparison.Ordinal) || processUpdates,
+                    Active = !update || processUpdates,
+                    Retired = update && !RecordUpdates.Available,
                 }
             );
+        }
         specs.Add(
             new StepSpec
             {
@@ -131,10 +141,16 @@ public static class EventRegistrationPlan
             var match = unmatched.FirstOrDefault(s => Same(s, spec));
             if (match == null)
             {
-                changes.Create.Add(spec);
+                if (!spec.Retired)
+                    changes.Create.Add(spec);
                 continue;
             }
             unmatched.Remove(match);
+            if (spec.Retired)
+            {
+                changes.Delete.Add(match.Id);
+                continue;
+            }
             if (!Correct(match, spec, worker))
                 changes.Update.Add(new KeyValuePair<Guid, StepSpec>(match.Id, spec));
         }
@@ -168,7 +184,7 @@ public static class EventRegistrationPlan
     public static int Extra(
         IReadOnlyList<StepSpec> desired,
         IReadOnlyList<ExistingStep> existing
-    ) => existing.Count(s => !desired.Any(spec => Same(s, spec)));
+    ) => existing.Count(s => !desired.Any(spec => !spec.Retired && Same(s, spec)));
 
     private static string Status(
         List<StepSpec> specs,
@@ -176,11 +192,13 @@ public static class EventRegistrationPlan
         Guid worker
     )
     {
+        bool retired = specs.Any(spec => spec.Retired && existing.Any(s => Same(s, spec)));
         var pairs = specs
+            .Where(spec => !spec.Retired)
             .Select(spec => new { Spec = spec, Step = existing.FirstOrDefault(s => Same(s, spec)) })
             .ToList();
         if (pairs.All(p => p.Step == null))
-            return "Pending";
+            return retired ? "Missing" : "Pending";
         if (pairs.Any(p => p.Step == null))
             return "Missing";
         if (pairs.Any(p => p.Step!.ImpersonatingUserId != worker))
@@ -189,7 +207,9 @@ public static class EventRegistrationPlan
             return "WrongMode";
         if (pairs.Any(p => p.Step!.Active != p.Spec.Active))
             return "WrongState";
-        if (pairs.Any(p => !Correct(p.Step!, p.Spec, worker)))
+        // A step that must no longer exist, such as a record Update step registered before
+        // 0.1.0.4, makes the table need repair; Register deletes it.
+        if (retired || pairs.Any(p => !Correct(p.Step!, p.Spec, worker)))
             return "Outdated";
         return "Ready";
     }

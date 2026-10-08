@@ -117,7 +117,6 @@ for (const [, name, value] of bounds.matchAll(/public const int (\w+) = (\d+);/g
 // Helper-text budget (spec 4.3, 4.4, decision D9): exactly these elements have class "help".
 const KEPT = [
   'help-automation-settings',
-  'help-record-updates',
   'help-stop-tracking',
   'help-include-root',
   'help-destinations',

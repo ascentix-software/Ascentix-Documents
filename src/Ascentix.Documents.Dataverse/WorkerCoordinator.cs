@@ -64,7 +64,7 @@ public sealed class WorkerCoordinator
         waiting = Array.Empty<string>();
         if (plan.Waits.Count == 0)
             return plan.Notices.ToArray();
-        bool updates = recordUpdates ?? RuntimeProfile.RecordUpdates(service);
+        bool updates = recordUpdates ?? RuntimeProfile.ProcessesRecordUpdates(service);
         var followed = plan
             .Waits.GroupBy(w => w.Notice, StringComparer.Ordinal)
             .ToDictionary(

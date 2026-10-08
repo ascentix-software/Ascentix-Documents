@@ -3607,7 +3607,8 @@ async function boot({
     assert.equal(r.document.activeElement.dataset.focusKey, 'dest:general:name');
   }
   {
-    // Publishing: the three consequences, the re-run box with generated text, Starts, the
+    // Publishing: the two consequences (no changed-records line, even for a runtime that still
+    // reports record updates on: the setting is out of 0.1.0.4), the re-run box with generated text, Starts, the
     // paused warning, and Publish v2 and re-run, which returns to the overview.
     const t = await boot({ runtime: { Enabled: false, ProcessRecordUpdates: true } });
     await t.open();
@@ -3623,7 +3624,6 @@ async function boot({
       [...t.$('consequences').querySelectorAll('li')].map((li) => li.visibleText),
       [
         'New Account records get v2 folders from now on.',
-        'Changed records are updated, because “Update folders when records change” is on.',
         'About 1,240 existing Account records keep their v1 folders until they are re-run. Folders are never removed.',
       ],
     );
@@ -3631,7 +3631,7 @@ async function boot({
       [...t.$('consequences').querySelectorAll('li')].map(
         (li) => li.querySelector('.dot').dataset.tone,
       ),
-      ['ok', 'ok', 'pending'],
+      ['ok', 'pending'],
     );
     assert.equal(
       t.$('consequences').querySelectorAll('li')[0].querySelector('strong').textContent,
@@ -3672,16 +3672,19 @@ async function boot({
     assert.equal(t.document.activeElement, t.$('overview-title'));
     await t.press(t.find(t.$('fb-templates'), 'Follow it in Monitor →'));
     assert.equal(t.sent.filter(([k]) => k === 'navigate').at(-1)[1].data, 'monitor-' + BUILD);
-    // Changed records are not updated when record updates are off; the line goes when automation
-    // cannot be read.
+    // With record updates off there is still no changed-records line.
     const off = await boot({ runtime: { ProcessRecordUpdates: false } });
     await off.open();
     await off.change(off.labelled(off.$('step-1'), 'Name'), 'Client files');
     await off.step(3);
-    assert.equal(
-      off.$('consequences').querySelectorAll('li')[1].visibleText,
-      'Changed records are not updated, because “Update folders when records change” is off.',
+    assert.deepEqual(
+      [...off.$('consequences').querySelectorAll('li')].map((li) => li.visibleText),
+      [
+        'New Account records get v2 folders from now on.',
+        'About 1,240 existing Account records keep their v1 folders until they are re-run. Folders are never removed.',
+      ],
     );
+    assert.doesNotMatch(off.$('consequences').visibleText, /Changed records|records change/);
     assert.equal(off.$('publish-paused').hidden, true);
   }
   {
@@ -3804,14 +3807,14 @@ async function boot({
     assert.equal(p.sent.filter(([k]) => k === 'update').length, 0);
   }
   {
-    // Without the Operator role: no count in the third line and the re-run box is disabled.
+    // Without the Operator role: no count in the existing-records line and the re-run box is disabled.
     const t = await boot({ privileges: { prvCreateasx_operatorcommand: false } });
     await t.open();
     await t.change(t.labelled(t.$('step-1'), 'Name'), 'Client files');
     await t.flush();
     await t.step(3);
     assert.equal(
-      t.$('consequences').querySelectorAll('li')[2].visibleText,
+      t.$('consequences').querySelectorAll('li')[1].visibleText,
       'Existing Account records keep their v1 folders until they are re-run. Folders are never removed.',
     );
     assert.equal(t.$('publish-rerun').checked, false);
@@ -3830,7 +3833,7 @@ async function boot({
     await n.change(n.labelled(n.$('step-1'), 'Name'), 'Client files');
     await n.step(3);
     assert.match(
-      n.$('consequences').querySelectorAll('li')[2].visibleText,
+      n.$('consequences').querySelectorAll('li')[1].visibleText,
       /^Existing Account records keep their v1 folders/,
     );
     assert.equal(n.$('publish-rerun').checked, true);
@@ -3959,7 +3962,7 @@ async function boot({
     assert.equal(t.$('change-list').hidden, true, 'No change list');
     assert.equal(t.$('publishing-title').textContent, 'Publishing v1');
     assert.equal(
-      t.$('consequences').querySelectorAll('li')[2].visibleText,
+      t.$('consequences').querySelectorAll('li')[1].visibleText,
       'About 1,240 existing Account records get folders when they are re-run.',
     );
     assert.equal(t.$('publish').textContent, 'Publish v1 and re-run');
@@ -4007,7 +4010,7 @@ async function boot({
     assert.equal(t.$('review-title').textContent, 'Changes since v1');
     assert.equal(t.$('change-list').textContent, 'The published version could not be read.');
     assert.match(
-      t.$('consequences').querySelectorAll('li')[2].visibleText,
+      t.$('consequences').querySelectorAll('li')[1].visibleText,
       /keep their v1 folders until they are re-run/,
     );
     assert.equal(t.$('publish').hasAttribute('aria-disabled'), false);
@@ -4090,7 +4093,7 @@ async function boot({
     assert.equal(t.$('template-editor').hidden, false);
   }
   console.log(
-    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step; Task 6 fix round 1: a new template unnamed until named and not saved mid-name, saving before switching or closing, a late save answer kept out of a new template, an edit during Publish kept and saved next, a published read retried and its failure, a failed policy read, trimmed destination names, problems not announced twice, and Save draft refusing a nameless template; Task 7: the folder tree with destination pills, rules, New, edited and Removed with Undo (aliases mapped, a removed parent first), ＋ Folder and ＋ Subfolder with their bound, the folder panel and its ⋯ menu, ＋ Field inserting at the caret, Create this folder, the condition sentence with Another field…, debounced test-record previews with Created or Skipped and the failing value, their bound, Out of date and failures, and links to Sites & access that save first; Task 7 fix round 1: conditions kept across Always and back, Undo at the folder bound counting removed parents, and ＋ Subfolder at the folder depth; Task 8: Review and publish (the change list with every kind in words and links to its step, Result for with Choose record…, the consequences with the record count, record updates and the first-publish wording, a published version that could not be read, the re-run box and its role and Later reasons, Starts with a stored start, the paused warning, Publish and re-run ending on the overview, a refused publish, a refused re-run after a publish, edits made during Publish saved or kept) and the narrow-screen Template select; final fixes: Delete against real NodeLists, no Saved while invalid edits wait, Close and links waiting for Publish, a failed read-back after Publish shown and a late edit kept, the new name locked during its first save, and Manage tables landing on the Tables card. Fake DOM; browser QA separate.',
+    'PASS Folder templates: empty states, the templates list with states and search, the overview (pill, meta, cards, chips, rule sentences, versions, last re-run, team counts, problem pill, roles), Edit template and Close, View read-only, ＋ New, the editor header and its Draft pill, Publish and its reasons, unsaved-changes prompts, the ⋯ menu, Delete and focus after it, Schedule and All versions side panels, Manage tables, focus after a keyboard pick, Re-run in progress or Last re-run, the ⋯ separator, the ＋ New table picker and its unsaved-changes prompt, folders and focus, Insert field, condition builder and its depth bound, lookup labels, preview of edits, Re-run all with exact and estimated totals; fix round 1: Save after Publish, related tables loaded four at a time after the first render with a retry and unavailable groups, saved version numbers, no second template after a failed reload, unavailable fields unnamed, numbers as typed, the Operator reason on every re-run action; Task 9: stale pickers redraw once focus leaves the field, and a template switch stops the old preload; Task 6: the stepper and its keys, single-flight autosave with the saved row version, one new template under an edit in flight, a failed save and Retry, invalid conditions blocking the autosave, the unsaved-changes prompt over an unsaved or in-flight save, changesSince and nextKey, change dots and counts, step 1 cards, rows, team panel, library setup option, Add destination and its bound, a link to a step; Task 6 fix round 1: a new template unnamed until named and not saved mid-name, saving before switching or closing, a late save answer kept out of a new template, an edit during Publish kept and saved next, a published read retried and its failure, a failed policy read, trimmed destination names, problems not announced twice, and Save draft refusing a nameless template; Task 7: the folder tree with destination pills, rules, New, edited and Removed with Undo (aliases mapped, a removed parent first), ＋ Folder and ＋ Subfolder with their bound, the folder panel and its ⋯ menu, ＋ Field inserting at the caret, Create this folder, the condition sentence with Another field…, debounced test-record previews with Created or Skipped and the failing value, their bound, Out of date and failures, and links to Sites & access that save first; Task 7 fix round 1: conditions kept across Always and back, Undo at the folder bound counting removed parents, and ＋ Subfolder at the folder depth; Task 8: Review and publish (the change list with every kind in words and links to its step, Result for with Choose record…, the consequences with the record count, no changed-records line and the first-publish wording, a published version that could not be read, the re-run box and its role and Later reasons, Starts with a stored start, the paused warning, Publish and re-run ending on the overview, a refused publish, a refused re-run after a publish, edits made during Publish saved or kept) and the narrow-screen Template select; final fixes: Delete against real NodeLists, no Saved while invalid edits wait, Close and links waiting for Publish, a failed read-back after Publish shown and a late edit kept, the new name locked during its first save, and Manage tables landing on the Tables card. Fake DOM; browser QA separate.',
   );
 })().catch((e) => {
   console.error(e);

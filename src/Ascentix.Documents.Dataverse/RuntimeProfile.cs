@@ -65,7 +65,9 @@ public sealed class RuntimeProfile
         {
             WorkerId = worker,
             Enabled = row.GetAttributeValue<bool>("asx_enabled"),
-            ProcessRecordUpdates = row.GetAttributeValue<bool>("asx_processrecordupdates"),
+            // Off while the setting is out of the release, whatever is stored.
+            ProcessRecordUpdates =
+                row.GetAttributeValue<bool>("asx_processrecordupdates") && RecordUpdates.Available,
             Tables = tables,
             SharePointHosts = siteHosts,
             service = service,
@@ -93,9 +95,10 @@ public sealed class RuntimeProfile
 
     /// <summary>
     /// Whether record updates are processed, read alone. Used only to word what a waiting
-    /// folder needs, so a missing profile reads as Off: a replan works either way.
+    /// folder needs, so a missing profile reads as Off: a replan works either way. Off while the
+    /// setting is out of the release (RecordUpdates.Available).
     /// </summary>
-    public static bool RecordUpdates(IOrganizationService service)
+    public static bool ProcessesRecordUpdates(IOrganizationService service)
     {
         var query = new QueryExpression("asx_runtime")
         {
@@ -104,7 +107,8 @@ public sealed class RuntimeProfile
         };
         query.Criteria.AddCondition("asx_name", ConditionOperator.Equal, "Default");
         var rows = service.RetrieveMultiple(query);
-        return rows.Entities.Count == 1
+        return RecordUpdates.Available
+            && rows.Entities.Count == 1
             && rows.Entities[0].GetAttributeValue<bool>("asx_processrecordupdates");
     }
 

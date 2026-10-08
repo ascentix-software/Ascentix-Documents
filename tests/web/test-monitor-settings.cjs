@@ -1714,25 +1714,22 @@ async function boot({
   }
   {
     // Automation settings: edits show the sticky footer with a count; Discard resets from the
-    // runtime; Save sends the form and hides the footer.
+    // runtime; Save sends the form and hides the footer. "Update folders when records change"
+    // is out of 0.1.0.4: no row, no switch, and Save does not send it.
     const s = await boot({ tab: 'settings' });
     assert.equal(s.$('settings-footer').hidden, true);
-    assert.equal(
-      s.$('help-record-updates').textContent,
-      'Applies to records changed from now on. To update existing records, re-run their template.',
-    );
+    assert.equal(s.$('record-updates'), null);
+    assert.equal(s.$('help-record-updates'), null);
+    assert.doesNotMatch(s.$('automation-settings').textContent, /records change/);
     const host = s.$('hosts-list').querySelector('input');
     host.value = 'fabrikam.sharepoint.com';
     host.oninput();
     assert.equal(s.$('settings-footer').hidden, false);
     assert.equal(s.$('settings-unsaved').textContent, '1 unsaved change');
     assert.ok(host.classList.contains('is-edited'));
-    await s.press(s.$('record-updates'));
-    assert.equal(s.$('settings-unsaved').textContent, '2 unsaved changes');
     await s.press(s.$('settings-discard'));
     assert.equal(s.$('settings-footer').hidden, true);
     assert.equal(s.$('hosts-list').querySelector('input').value, 'contoso.sharepoint.com');
-    assert.equal(s.$('record-updates').getAttribute('aria-checked'), 'false');
     const again = s.$('hosts-list').querySelector('input');
     again.value = 'fabrikam.sharepoint.com';
     again.oninput();
@@ -1740,6 +1737,7 @@ async function boot({
     const saved = s.sent.filter(([a]) => a === 'asx_RuntimeAdmin').at(-1)[1];
     assert.equal(saved.Command, 'Save');
     assert.deepEqual([...saved.SharePointHosts], ['fabrikam.sharepoint.com']);
+    assert.equal('ProcessRecordUpdates' in saved, false);
     assert.equal(s.$('settings-footer').hidden, true);
     assert.equal(s.$('fb-settings').textContent, 'Settings saved.');
   }

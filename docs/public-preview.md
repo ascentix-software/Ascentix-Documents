@@ -8,7 +8,6 @@ Ascentix Documents provisions SharePoint folders from Dataverse records and mana
 - Multiple document destinations and reuse of existing managed folders during replay or a re-run.
 - Team-based Read and Contribute library policies with membership reconciliation.
 - Work inspection in Monitor, with retry, cancellation, and re-runs.
-- A system-wide record-update setting, Off by default, which deactivates the Update event steps Documents registers when Off.
 - A fix for registered-team deletion failing during the worker's retirement update.
 
 ## What is new in 0.1.0.4
@@ -27,6 +26,7 @@ Ascentix Documents provisions SharePoint folders from Dataverse records and mana
 - Teams can be edited while their access is being applied; the newer change replaces the queued run or waits for it.
 - Customized Read and Contribute permission levels are accepted unless they carry administrative rights.
 - SharePoint hosts may be on any Microsoft cloud: worldwide and GCC, GCC High, DoD and 21Vianet. There is no host-count limit.
+- Update folders when records change is not in this release. An environment that had it on stops capturing record updates after Repair all.
 
 To upgrade from 0.1.0.3, follow the [upgrade notes](upgrade-0.1.0.4.md). The upgrade has a breaking change: the `asx_PublishTemplate` result is now JSON.
 
@@ -44,7 +44,6 @@ Official packages use a stable assembly signing identity. Local builds use a dev
 - Support for B2B guests, Entra and Microsoft 365 group teams, and government clouds (GCC High, DoD and 21Vianet) is built in. Further testing is ongoing, as these are more complex areas.
 - Recovery from lost acknowledgements and ambiguous external writes, certificate rotation, and disaster recovery have not been rehearsed live.
 - Large membership pagination and team deletion across multiple active library grants require further validation. A team with more people than one access run can store (roughly 2,000) keeps its group members as they are, with a notice; use an Entra or Microsoft 365 group team for larger teams.
-- Event registration changes can take time to propagate. Turn on **Update folders when records change** during a quiet interval and verify a disposable write. Re-run records to catch up on changes made while it was Off.
 
 ## Known issues
 
@@ -56,4 +55,4 @@ Official packages use a stable assembly signing identity. Local builds use a dev
 - Bookmarks to the old `#access`, `#runtime` and `#operations` addresses open the default page.
 - Opening a record's Documents tab before its folders exist makes Dynamics create its own folder, unless the form has the Documents form script. See [Hide the Documents tab until folders exist](customer-installation.md#hide-the-documents-tab-until-folders-exist).
 
-See [operations](operations.md) for ongoing administration and [record-update processing](record-update-processing.md) for update behavior.
+See [operations](operations.md) for ongoing administration and [record changes](record-update-processing.md) for applying a template to existing records.

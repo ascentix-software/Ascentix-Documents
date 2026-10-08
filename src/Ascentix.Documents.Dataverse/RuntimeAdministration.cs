@@ -104,7 +104,7 @@ public static class RuntimeAdministration
                 new RuntimeRequest
                 {
                     Enabled = request.Enabled,
-                    ProcessRecordUpdates = old.GetAttributeValue<bool>("asx_processrecordupdates"),
+                    ProcessRecordUpdates = StoredRecordUpdates(old),
                 }
             );
         }
@@ -119,6 +119,9 @@ public static class RuntimeAdministration
             return ChangeTable(service, old, request);
         if (string.IsNullOrEmpty(request.RowVersion) || old.RowVersion != request.RowVersion)
             throw new EvaluationBlockedException("Refresh the runtime profile before saving.");
+        // While the setting is out of the release, a client that still sends on saves off, with
+        // no error. A stored on then differs, so the Update steps are turned off below.
+        request.ProcessRecordUpdates = request.ProcessRecordUpdates && RecordUpdates.Available;
         if (TogglesOnly(old, request))
             return Toggle(service, old, request);
         RuntimeProfile.ValidateHosts(request.SharePointHosts);
@@ -401,7 +404,7 @@ public static class RuntimeAdministration
         {
             ValidateWorker(service, worker);
             tables = current.Tables.Concat(new[] { table }).ToArray();
-            bool updates = old.GetAttributeValue<bool>("asx_processrecordupdates");
+            bool updates = StoredRecordUpdates(old);
             // Refuse unknown or unsupported tables before anything is written.
             var probe = EventRegistrations.Inspect(service, worker, tables, updates);
             if (probe.Error != null)
@@ -470,7 +473,8 @@ public static class RuntimeAdministration
             ? id
             : Guid.Empty;
         var tables = RuntimeTables.Effective(service, old);
-        bool updates = old.GetAttributeValue<bool>("asx_processrecordupdates");
+        // Always returned, so older clients keep working; off while out of the release.
+        bool updates = StoredRecordUpdates(old);
         var result = new RuntimeRequest
         {
             Command = "Get",
@@ -491,6 +495,15 @@ public static class RuntimeAdministration
             );
         return result;
     }
+
+    /// <summary>
+    /// The stored record-update setting, read as off while the setting is out of the release
+    /// (RecordUpdates.Available).
+    /// </summary>
+    /// <param name="old">The stored runtime row.</param>
+    /// <returns>True when record updates are processed.</returns>
+    private static bool StoredRecordUpdates(Entity old) =>
+        old.GetAttributeValue<bool>("asx_processrecordupdates") && RecordUpdates.Available;
 
     private static void ValidateWorker(IOrganizationService service, Guid worker)
     {

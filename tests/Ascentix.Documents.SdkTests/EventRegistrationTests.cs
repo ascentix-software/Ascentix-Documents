@@ -60,6 +60,8 @@ public sealed class EventRegistrationTests
     [Fact]
     public void ReconcileRegistersAsyncWorkerStepsAndIsIdempotent()
     {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
         var o = new Org("account", "contact");
         var summary = EventRegistrations.Reconcile(
             o.S,
@@ -94,6 +96,8 @@ public sealed class EventRegistrationTests
     [Fact]
     public void WorkerChangeAndTableRemovalRewriteOwnedSteps()
     {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
         var o = new Org("account", "contact");
         EventRegistrations.Reconcile(o.S, o.Worker, new[] { "account", "contact" }, true);
         var next = Guid.NewGuid();
@@ -169,6 +173,8 @@ public sealed class EventRegistrationTests
     [Fact]
     public void ReadbackMismatchFailsAndUnregisterRemovesEverything()
     {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
         var o = new Org("account");
         EventRegistrations.Reconcile(o.S, o.Worker, new[] { "account" }, false);
         o.S.IgnoreStepWrites = true;

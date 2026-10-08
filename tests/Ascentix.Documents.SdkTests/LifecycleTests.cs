@@ -53,7 +53,10 @@ public sealed class LifecycleTests
     [Fact]
     public void RootUpdateFiltersAgainstCurrentPublishedDependencies()
     {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
         var f = Setup();
+        RuntimeSeed.RecordUpdatesStoredOn(f.Service);
         var unrelated = new Entity("account", f.RecordId) { ["telephone1"] = "555" };
         new RecordInvalidationPlugin().Execute(
             new Provider(f, Event(f, "Update", new ParameterCollection { ["Target"] = unrelated }))
@@ -69,7 +72,10 @@ public sealed class LifecycleTests
     [Fact]
     public void BulkRootEventsUseExactWorkerIdentity()
     {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
         var f = Setup();
+        RuntimeSeed.RecordUpdatesStoredOn(f.Service);
         var targets = new EntityCollection(
             new[]
             {
@@ -89,6 +95,31 @@ public sealed class LifecycleTests
                 new Provider(f, Event(f, "Create", new ParameterCollection(), Guid.NewGuid()))
             )
         );
+    }
+
+    /// <summary>
+    /// "Update folders when records change" is out of 0.1.0.4: a record Update event is not
+    /// captured even when the stored setting is still on from an earlier release.
+    /// </summary>
+    [Theory]
+    [InlineData("Update")]
+    [InlineData("UpdateMultiple")]
+    public void RecordUpdateEventIsNotCapturedWhileTheSettingIsOutOfTheRelease(string message)
+    {
+        var f = Setup();
+        RuntimeSeed.RecordUpdatesStoredOn(f.Service);
+        Assert.True(
+            f.Service.Rows.Values.Single(r => r.LogicalName == "asx_runtime")
+                .GetAttributeValue<bool>("asx_processrecordupdates")
+        );
+        var related = new Entity("account", f.RecordId) { ["name"] = "Changed" };
+        var inputs =
+            message == "Update"
+                ? new ParameterCollection { ["Target"] = related }
+                : new ParameterCollection { ["Targets"] = new EntityCollection(new[] { related }) };
+        new RecordInvalidationPlugin().Execute(new Provider(f, Event(f, message, inputs)));
+        Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_outbox");
+        Assert.False(RuntimeProfile.ReadCapture(f.Service).ProcessRecordUpdates);
     }
 
     [Theory]
