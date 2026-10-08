@@ -1,0 +1,57 @@
+# Manual DEV export: export the unmanaged solution, unpack it into the repository layout,
+# and open a pull request for review. Never merges.
+# Requires pipeline variable DocumentsDevUrl (the DEV environment URL), defined in the pipeline settings, not in this repository.
+name: documents-solution-export-$(Date:yyyyMMdd)-$(Rev:r)
+trigger: none
+pr: none
+
+pool:
+  vmImage: windows-latest
+
+jobs:
+  - job: Export
+    timeoutInMinutes: 30
+    steps:
+      - checkout: self
+        persistCredentials: true
+      - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.tool-installer.PowerPlatformToolInstaller@2
+        inputs:
+          AddToolsToPath: true
+      - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.export-solution.PowerPlatformExportSolution@2
+        inputs:
+          authenticationType: PowerPlatformSPN
+          PowerPlatformSPN: Ascentix Documents DEV
+          Environment: $(DocumentsDevUrl)
+          SolutionName: AscentixDocuments
+          SolutionOutputFile: $(Build.ArtifactStagingDirectory)/AscentixDocuments.zip
+          Managed: false
+          AsyncOperation: true
+          MaxAsyncWaitTime: 30
+      - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.export-solution.PowerPlatformExportSolution@2
+        inputs:
+          authenticationType: PowerPlatformSPN
+          PowerPlatformSPN: Ascentix Documents DEV
+          Environment: $(DocumentsDevUrl)
+          SolutionName: AscentixDocuments
+          SolutionOutputFile: $(Build.ArtifactStagingDirectory)/AscentixDocuments_managed.zip
+          Managed: true
+          AsyncOperation: true
+          MaxAsyncWaitTime: 30
+      - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.unpack-solution.PowerPlatformUnpackSolution@2
+        inputs:
+          SolutionInputFile: $(Build.ArtifactStagingDirectory)/AscentixDocuments.zip
+          SolutionTargetFolder: solution/AscentixDocuments/src
+          SolutionType: Both
+      - pwsh: |
+          $ErrorActionPreference = 'Stop'
+          git config core.longpaths true
+          git config user.email "pipeline@ascentix.ca"
+          git config user.name "Documents export pipeline"
+          $branch = "export/dev-$(Build.BuildId)"
+          git switch -c $branch
+          git add solution/AscentixDocuments/src
+          if (-not (git status --porcelain)) { Write-Host 'No solution changes.'; exit 0 }
+          git commit -m "Export DEV solution (build $(Build.BuildId))"
+          git push origin "HEAD:refs/heads/$branch"
+          Write-Host "Open a PR from $branch into main for review."
+        displayName: Commit export to a review branch

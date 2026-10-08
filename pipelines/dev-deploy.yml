@@ -1,0 +1,74 @@
+# Manual DEV deployment: imports the officially signed plug-in built by the official plug-in
+# pipeline (it must have a successful run on the same branch first), packs the unmanaged
+# solution around it, and imports it into Documents DEV. Credentials stay in the ADO service connection.
+# Requires pipeline variable DocumentsDevUrl (the DEV environment URL), defined in the pipeline settings, not in this repository.
+name: documents-dev-deploy-$(Date:yyyyMMdd)-$(Rev:r)
+trigger: none
+pr: none
+
+pool:
+  vmImage: windows-latest
+
+jobs:
+  - job: DeployDev
+    timeoutInMinutes: 30
+    steps:
+      - checkout: self
+        persistCredentials: false
+      - task: UseDotNet@2
+        inputs:
+          packageType: sdk
+          version: 10.0.302
+      - task: UseNode@1
+        inputs:
+          version: '22.x'
+      - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.tool-installer.PowerPlatformToolInstaller@2
+        inputs:
+          AddToolsToPath: true
+      - task: DownloadPipelineArtifact@2
+        displayName: Download officially signed plug-in
+        inputs:
+          buildType: specific
+          # The official plug-in pipeline lives in this same project.
+          project: $(System.TeamProjectId)
+          definition: '25'
+          buildVersionToDownload: latestFromBranch
+          branchName: $(Build.SourceBranch)
+          artifactName: documents-plugins-official
+          targetPath: $(Pipeline.Workspace)/plugins
+      - pwsh: |
+          $ErrorActionPreference = 'Stop'
+          $dll = "$(Pipeline.Workspace)/plugins/Ascentix.Documents.Plugins.dll"
+          $identity = Get-Content "$(Pipeline.Workspace)/plugins/build-identity.json" -Raw | ConvertFrom-Json
+          if ($identity.signingMode -ne 'Official') { throw "Plug-in artifact signing mode is '$($identity.signingMode)', expected Official." }
+          if ($identity.publicKeyToken -ne '50214c64469649b5') { throw "Plug-in public key token is '$($identity.publicKeyToken)', expected 50214c64469649b5." }
+          if ((Get-FileHash -LiteralPath $dll).Hash -ne $identity.sha256) { throw 'Plug-in DLL hash does not match build-identity.json.' }
+          ./scripts/pack-solution.ps1 -PluginAssemblyPath $dll -SigningMode Official
+        displayName: Verify official plug-in and pack
+      - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.whoami.PowerPlatformWhoAmi@2
+        displayName: Confirm Documents DEV service connection
+        inputs:
+          authenticationType: PowerPlatformSPN
+          PowerPlatformSPN: Ascentix Documents DEV
+          Environment: $(DocumentsDevUrl)
+      - pwsh: |
+          [xml]$m = Get-Content solution/AscentixDocuments/src/Other/Solution.xml -Raw
+          Write-Host "##vso[task.setvariable variable=solutionVersion]$($m.ImportExportXml.SolutionManifest.Version)"
+        displayName: Read solution version
+      - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.import-solution.PowerPlatformImportSolution@2
+        displayName: Import unmanaged solution into DEV
+        inputs:
+          authenticationType: PowerPlatformSPN
+          PowerPlatformSPN: Ascentix Documents DEV
+          Environment: $(DocumentsDevUrl)
+          SolutionInputFile: artifacts/solutions/official/AscentixDocuments_$(solutionVersion)_unmanaged.zip
+          AsyncOperation: true
+          MaxAsyncWaitTime: 30
+          PublishWorkflows: false
+          OverwriteUnmanagedCustomizations: true
+      - task: microsoft-IsvExpTools.PowerPlatform-BuildTools.publish-customizations.PowerPlatformPublishCustomizations@2
+        displayName: Publish customizations in DEV
+        inputs:
+          authenticationType: PowerPlatformSPN
+          PowerPlatformSPN: Ascentix Documents DEV
+          Environment: $(DocumentsDevUrl)

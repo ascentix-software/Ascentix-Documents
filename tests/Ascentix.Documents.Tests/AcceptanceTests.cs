@@ -63,10 +63,8 @@ public class AcceptanceTests
                         WebId = Guid.NewGuid(),
                         ListId = Guid.NewGuid(),
                         EntryId = Guid.NewGuid(),
-                        PolicyRevision = Guid.NewGuid(),
                         EntryUrl = "https://example.sharepoint.com/sites/proto/" + key,
                         Approved = true,
-                        PolicyApplied = true,
                     },
                     Nodes = new List<FolderNode>
                     {
@@ -232,13 +230,19 @@ public class AcceptanceTests
     }
 
     [Fact]
-    public void InvalidTreeAndUnavailablePolicyBlock()
+    public void InvalidTreeAndSuspendedDestinationBlock()
     {
         var template = Template();
         template.Destinations[0].Nodes[1].ParentKey = "child";
         Assert.Throws<EvaluationBlockedException>(() => TemplateValidator.Validate(template));
         template = Template();
-        template.Destinations[0].Library.PolicyApplied = false;
+        template.Destinations[0].Library.Approved = false;
+        var suspended = Assert.Throws<EvaluationBlockedException>(() =>
+            TemplateValidator.Validate(template)
+        );
+        Assert.Equal("Destination must be approved and have a valid identity.", suspended.Message);
+        template = Template();
+        template.Destinations[0].Library.EntryId = Guid.Empty;
         Assert.Throws<EvaluationBlockedException>(() => TemplateValidator.Validate(template));
     }
 
@@ -252,7 +256,7 @@ public class AcceptanceTests
         Assert.Throws<EvaluationBlockedException>(() => FolderNames.Validate(name));
 
     [Fact]
-    public void IncludedSiblingDuplicatesFail()
+    public void IncludedSiblingDuplicatesWaitWhileTheFirstIsPlanned()
     {
         var template = Template();
         template
@@ -265,8 +269,26 @@ public class AcceptanceTests
                     Name = "included",
                 }
             );
-        Assert.Throws<EvaluationBlockedException>(() =>
-            FolderPlanner.Plan(template, Guid.NewGuid(), Snapshot)
+        template
+            .Destinations[0]
+            .Nodes.Add(
+                new FolderNode
+                {
+                    Key = "below",
+                    ParentKey = "duplicate",
+                    Name = "Below",
+                }
+            );
+        var plan = FolderPlanner.Plan(template, Guid.NewGuid(), Snapshot);
+        Assert.Equal(4, plan.Count);
+        Assert.Contains(plan, n => n.Section == "general" && n.Node == "child");
+        Assert.DoesNotContain(plan, n => n.Node == "duplicate" || n.Node == "below");
+        Assert.Equal(
+            new[]
+            {
+                "Folder 'general/duplicate' has the same name 'included' as 'general/child'; it waits until the names differ.",
+            },
+            plan.Notices
         );
     }
 

@@ -1,8 +1,8 @@
-<customapi uniquename="asx_ManageWork">
+﻿<customapi uniquename="asx_ManageWork">
   <allowedcustomprocessingsteptype>0</allowedcustomprocessingsteptype>
   <bindingtype>0</bindingtype>
-  <description default="Owned by standalone Ascentix Documents development setup v1">
-    <label description="Owned by standalone Ascentix Documents development setup v1" languagecode="1033" />
+  <description default="Ascentix Documents">
+    <label description="Ascentix Documents" languagecode="1033" />
   </description>
   <displayname default="ManageWork">
     <label description="ManageWork" languagecode="1033" />

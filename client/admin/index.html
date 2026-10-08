@@ -4,414 +4,942 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Ascentix Documents</title>
-    <link rel="stylesheet" href="admin.css?v=ui20260909labels4" />
+    <link rel="stylesheet" href="admin.css?v=ui20261008rc1" />
+    <!-- In the head so a chosen light or dark appearance applies before the first paint. -->
+    <script src="shell.js?v=ui20261008rc1"></script>
   </head>
   <body>
     <main class="app">
-      <div class="row between top">
-        <div class="brand">
-          <span class="logo"
-            ><svg class="folder-icon" aria-hidden="true" viewBox="0 0 24 24">
-              <path fill="#e8b84d" stroke="#ad7b16" stroke-width="1.2" d="M2 5.5h7l2 2h11v12H2z" />
-              <path
-                fill="#f8d77e"
-                stroke="#ad7b16"
-                stroke-width="1.2"
-                d="M2 9h20l-2 10.5H2z"
-              /></svg></span
-          >Ascentix <span style="font-weight: 450">Documents</span>
-        </div>
-        <div id="templateActions" class="row wrap" hidden>
-          <details class="header-availability">
-            <summary>Availability</summary>
-            <div class="availability-body">
-              <label class="inline-check"
-                ><input id="templateActive" type="checkbox" checked />Active</label
-              ><label class="inline-check"
-                ><input id="useSchedule" type="checkbox" />Set start or end dates</label
-              >
-              <div id="scheduleFields" hidden>
-                <label
-                  >Start (your local time, optional)<input
-                    id="templateStart"
-                    type="datetime-local" /></label
-                ><label
-                  >End (your local time, optional)<input id="templateEnd" type="datetime-local"
-                /></label>
-              </div>
-              <button id="saveAvailability" disabled>Save availability</button>
-              <p id="templateAvailability" role="status">Save a template first.</p>
+      <div id="leavePrompt"></div>
+      <section id="templates" class="page" aria-labelledby="overview-title" tabindex="-1" hidden>
+        <div class="templates-layout">
+          <aside id="templates-list" aria-labelledby="templates-list-title">
+            <div class="list-head">
+              <h2 id="templates-list-title">Templates</h2>
+              <button id="new-template" type="button" class="link">＋ New</button>
             </div>
-          </details>
-          <button id="save" class="primary" disabled>Save draft</button
-          ><button id="publish" disabled>Publish saved revision</button
-          ><button id="deleteTemplate" class="danger" disabled>Delete template</button>
-        </div>
-      </div>
-
-      <section class="shell">
-        <nav class="tabs" aria-label="Workspace">
-          <button class="tab active" data-view="author" aria-pressed="true">Folder templates</button
-          ><button class="tab" data-view="access" aria-pressed="false">Sites &amp; access</button
-          ><button class="tab" data-view="administration" aria-pressed="false">
-            Administration
-          </button>
-        </nav>
-        <div id="status" role="status" aria-live="polite">Connecting to Dataverse…</div>
-        <div id="author-view">
-          <div class="template-layout">
-            <aside class="template-nav" aria-label="Tables and templates">
-              <div class="row between">
-                <h3>Tables</h3>
-                <button id="addTable" type="button">＋ Add table</button>
-              </div>
-              <div id="tablePicker" hidden>
-                <label
-                  >Document-enabled table<select id="table" disabled>
-                    <option>Loading metadata…</option>
-                  </select></label
-                >
-              </div>
-              <div id="templateTree"></div>
-            </aside>
-            <div class="template-main">
-              <section class="table-bar">
-                <label
-                  >Template name<input
-                    id="templateName"
-                    maxlength="200"
-                    placeholder="For example, Account onboarding" /></label
-                ><button id="newTemplate" type="button" disabled>＋ New template</button>
-                <div id="revisionControls" class="revision-inline" hidden>
-                  <label
-                    >Saved revision<select id="savedRevision">
-                      <option value="">Select a table first</option>
-                    </select></label
-                  ><button
-                    id="loadRevision"
-                    disabled
-                    title="Load this revision and replace unsaved edits"
+            <select id="new-template-table" aria-label="Table" hidden></select>
+            <input
+              id="template-search"
+              type="search"
+              placeholder="Search templates"
+              aria-label="Search templates"
+            />
+            <div id="template-groups"></div>
+            <div class="list-foot">
+              <button id="manage-tables" type="button" class="link">Manage tables</button>
+            </div>
+          </aside>
+          <div class="templates-main">
+            <p class="feedback" id="fb-templates"></p>
+            <label class="narrow-only template-picker"
+              >Template<select id="template-picker"></select
+            ></label>
+            <div id="template-overview">
+              <header id="overview-header" class="page-header">
+                <h1 id="overview-title" tabindex="-1">Folder templates</h1>
+                <span id="overview-pill" class="pill" hidden></span>
+                <span id="overview-problems" class="problem-host"></span>
+                <p id="overview-meta" class="page-meta"></p>
+                <div id="overview-actions" class="page-actions row" data-actions hidden>
+                  <div class="menu-anchor">
+                    <button
+                      id="overview-menu"
+                      type="button"
+                      class="secondary menu-button"
+                      aria-haspopup="menu"
+                      aria-expanded="false"
+                      aria-controls="overview-menu-list"
+                      aria-label="More actions"
+                    >
+                      ⋯
+                    </button>
+                    <ul id="overview-menu-list" class="menu" role="menu" hidden>
+                      <li role="none">
+                        <button id="menu-rerun" type="button" role="menuitem" tabindex="-1">
+                          Re-run for existing records…
+                        </button>
+                      </li>
+                      <li id="menu-rerun-separator" role="separator"></li>
+                      <li role="none">
+                        <button
+                          id="menu-delete"
+                          type="button"
+                          role="menuitem"
+                          tabindex="-1"
+                          class="danger"
+                        >
+                          Delete template
+                        </button>
+                      </li>
+                    </ul>
+                  </div>
+                  <button id="overview-edit" type="button" class="primary">Edit template</button>
+                </div>
+              </header>
+              <div id="overview-cards" class="page-body one-column"></div>
+            </div>
+            <div id="template-editor" hidden>
+              <header class="editor-header">
+                <div class="editor-row">
+                  <span id="editor-table" class="editor-table"></span>
+                  <h1 id="editor-title" tabindex="-1">
+                    <span id="editor-name"></span
+                    ><input
+                      id="templateName"
+                      maxlength="200"
+                      aria-label="Template name"
+                      placeholder="Template name"
+                      hidden
+                    />
+                  </h1>
+                  <span id="editor-pill" class="pill" data-tone="warning"></span>
+                  <span id="editor-note" class="muted"></span>
+                  <span id="save-status" class="muted" role="status"></span>
+                  <button id="editor-close" type="button" class="secondary">Close</button>
+                </div>
+                <div id="editor-steps" class="stepper" role="tablist" aria-label="Steps">
+                  <button
+                    id="step-tab-1"
+                    type="button"
+                    role="tab"
+                    aria-controls="step-1"
+                    aria-selected="true"
                   >
-                    Load revision
+                    <span class="step-num" aria-hidden="true">1</span
+                    ><span class="step-label">Destinations</span
+                    ><span class="step-dot" aria-hidden="true" hidden></span>
+                  </button>
+                  <button
+                    id="step-tab-2"
+                    type="button"
+                    role="tab"
+                    aria-controls="step-2"
+                    aria-selected="false"
+                    tabindex="-1"
+                  >
+                    <span class="step-num" aria-hidden="true">2</span
+                    ><span class="step-label">Folders</span
+                    ><span class="step-dot" aria-hidden="true" hidden></span>
+                  </button>
+                  <button
+                    id="step-tab-3"
+                    type="button"
+                    role="tab"
+                    aria-controls="step-3"
+                    aria-selected="false"
+                    tabindex="-1"
+                  >
+                    <span class="step-num" aria-hidden="true">3</span
+                    ><span class="step-label">Review and publish</span
+                    ><span class="step-dot" aria-hidden="true" hidden></span>
                   </button>
                 </div>
+              </header>
+              <section id="step-1" role="tabpanel" aria-labelledby="step-tab-1" class="step-panel">
+                <!-- prettier-ignore -->
+                <p class="help" id="help-destinations">Each destination is a SharePoint library. Every team with access to the library can open the folders created in it; to restrict a folder, give it its own library.</p>
+                <div id="destination-list" class="stack" data-focus-scope></div>
+                <div class="row" data-actions>
+                  <button id="add-destination" type="button" class="secondary">
+                    ＋ Add destination
+                  </button>
+                </div>
+                <p id="no-library" hidden>
+                  No libraries are ready yet.
+                  <button id="go-access" type="button" class="link">
+                    Set one up in Sites &amp; access →
+                  </button>
+                </p>
               </section>
-              <p id="tablePrompt" class="empty">
-                Choose a table to load saved revisions or build a folder template.
-              </p>
-              <div id="authorWorkspace" hidden>
-                <div class="toolbar row between">
-                  <div>
-                    <div class="row">
-                      <h2>Folder templates</h2>
-                      <span class="badge" id="destinationCount">0 destinations</span>
+              <section
+                id="step-2"
+                role="tabpanel"
+                aria-labelledby="step-tab-2"
+                class="step-panel"
+                hidden
+              >
+                <div class="folders-layout">
+                  <div class="tree-side" data-focus-scope id="folders-pane">
+                    <h2 id="folders-heading" class="sr-only" tabindex="-1" data-focus-heading>
+                      Folders
+                    </h2>
+                    <div
+                      id="dest-pills"
+                      class="dest-pills"
+                      role="group"
+                      aria-label="Destination"
+                    ></div>
+                    <div class="tree-card">
+                      <div id="folder-tree"></div>
+                      <div id="tree-actions" class="row tree-actions" data-actions>
+                        <button id="add-folder" type="button" class="link">＋ Folder</button>
+                        <button id="add-subfolder" type="button" class="link">＋ Subfolder</button>
+                      </div>
                     </div>
-                    <p class="small muted" style="margin-top: 6px">
-                      Each destination has its own tree and inherits its library’s access.
-                    </p>
                   </div>
+                  <aside
+                    id="folder-panel"
+                    class="folder-panel"
+                    aria-labelledby="folder-title"
+                    data-focus-scope
+                  >
+                    <div class="row between panel-top">
+                      <p id="folder-path" class="muted"></p>
+                      <div class="menu-anchor">
+                        <button
+                          id="folder-menu"
+                          type="button"
+                          class="icon"
+                          aria-haspopup="menu"
+                          aria-expanded="false"
+                          aria-controls="folder-menu-list"
+                        >
+                          ⋯
+                        </button>
+                        <!-- prettier-ignore -->
+                        <ul id="folder-menu-list" class="menu" role="menu" hidden>
+                          <li role="none"><button id="menu-remove-folder" type="button" role="menuitem" tabindex="-1" class="danger">Remove folder</button></li>
+                        </ul>
+                      </div>
+                    </div>
+                    <h2 id="folder-title" tabindex="-1" data-focus-heading></h2>
+                    <div id="folder-body">
+                      <p id="folder-same" class="warning" hidden>
+                        Every record will use this same folder.
+                      </p>
+                      <div class="name-block">
+                        <label for="folder-name">Name</label>
+                        <div class="name-field">
+                          <input
+                            id="folder-name"
+                            data-focus-key="edit:name"
+                            aria-describedby="folder-shows-as"
+                            autocomplete="off"
+                          />
+                          <!-- prettier-ignore -->
+                          <button id="add-field" type="button" class="token-button" aria-haspopup="dialog" aria-expanded="false" aria-controls="field-popover">＋ Field</button>
+                        </div>
+                        <div
+                          id="field-popover"
+                          class="popover"
+                          role="dialog"
+                          aria-label="Insert field"
+                          hidden
+                        >
+                          <input
+                            id="field-search"
+                            type="search"
+                            aria-label="Search fields"
+                            placeholder="Search fields"
+                            aria-controls="field-options"
+                            aria-autocomplete="list"
+                            autocomplete="off"
+                          />
+                          <p id="related-reason" class="reason" hidden></p>
+                          <ul id="field-options" role="listbox" aria-label="Fields"></ul>
+                        </div>
+                        <p id="folder-shows-as" class="shows-as"></p>
+                      </div>
+                      <div class="create-block">
+                        <span id="create-mode-label" class="label-text">Create this folder</span>
+                        <!-- prettier-ignore -->
+                        <div id="create-mode" class="segmented" role="radiogroup" aria-labelledby="create-mode-label">
+                          <button type="button" role="radio" aria-checked="true" data-focus-key="mode:always">Always</button>
+                          <button type="button" role="radio" aria-checked="false" tabindex="-1" data-focus-key="mode:when">Only when…</button>
+                        </div>
+                        <!-- prettier-ignore -->
+                        <p class="help" id="help-include-root" hidden>If these conditions don't match, Documents skips this whole destination for the record. Folders it already created stay.</p>
+                      </div>
+                      <div id="conditions" class="conditions" hidden></div>
+                      <section
+                        id="test-records"
+                        class="test-records"
+                        aria-labelledby="test-records-title"
+                      >
+                        <div class="row between">
+                          <h3 id="test-records-title">Test records</h3>
+                          <button id="add-test-record" type="button" class="link">＋ Add</button>
+                        </div>
+                        <div id="test-record-list"></div>
+                      </section>
+                    </div>
+                  </aside>
                 </div>
-                <div class="editor">
-                  <section class="pane tree-pane">
-                    <div class="eyebrow">01 / Destinations &amp; structure</div>
-                    <div id="destinations" class="stack"></div>
-                    <button id="addDestination" class="wide" disabled>
-                      ＋ Add destination section
+              </section>
+              <section
+                id="step-3"
+                role="tabpanel"
+                aria-labelledby="step-tab-3"
+                class="step-panel"
+                hidden
+              >
+                <section
+                  id="review-changes"
+                  class="section-card review-card"
+                  aria-labelledby="result-label"
+                >
+                  <h2 id="review-title" tabindex="-1"></h2>
+                  <div id="change-list"></div>
+                  <div class="row result-for">
+                    <label id="result-label" for="result-record">Result for</label>
+                    <select id="result-record" hidden></select>
+                    <button id="result-choose" type="button" class="secondary" hidden>
+                      Choose record…
                     </button>
-                    <p class="hint">
-                      Each section runs for the same record. Select a folder to edit its name and
-                      conditions.
-                    </p>
-                  </section>
-                  <section class="pane">
-                    <div class="eyebrow">02 / Edit selected section</div>
-                    <div id="folderEditor">
-                      <div class="empty">
-                        Select a business table, then add an approved destination to start shaping
-                        its folders.
-                      </div>
-                    </div>
-                  </section>
-                  <section class="pane preview-pane">
-                    <div class="row between">
-                      <div class="eyebrow">03 / All destinations</div>
-                      <span class="badge gray">Record preview</span>
-                    </div>
-                    <h2 style="margin-top: 8px">One record, multiple trees</h2>
-                    <label
-                      >Record for preview<select id="record" disabled>
-                        <option>Select a table first</option>
-                      </select></label
+                  </div>
+                  <div id="previewTrees" class="preview-grid"></div>
+                  <p id="preview-status" class="sr-only" role="status"></p>
+                </section>
+                <section
+                  id="publishing"
+                  class="section-card publish-card"
+                  aria-labelledby="publishing-title"
+                >
+                  <h2 id="publishing-title" tabindex="-1"></h2>
+                  <ul id="consequences" class="consequences"></ul>
+                  <div class="check-panel">
+                    <input
+                      id="publish-rerun"
+                      type="checkbox"
+                      checked
+                      aria-describedby="publish-rerun-desc"
+                    />
+                    <label for="publish-rerun"
+                      ><strong>Re-run existing records after publishing</strong></label
                     >
-                    <div class="row wrap">
-                      <button id="chooseRecord" disabled>Choose another record</button
-                      ><button id="preview" disabled>Preview saved revision</button>
-                    </div>
-                    <p id="revision" class="hint">No revision saved in this session.</p>
-                    <div id="previewTrees" aria-live="polite">
-                      <div class="callout">
-                        Save a draft and choose a record to preview folder names using your access.
-                      </div>
-                    </div>
-                    <p class="hint">
-                      Preview checks names and conditions. Existing physical folders and collisions
-                      are checked when provisioning runs. Placement never grants access.
-                    </p>
-                  </section>
-                </div>
+                    <p id="publish-rerun-desc" class="muted"></p>
+                  </div>
+                  <label
+                    >Starts<select id="publish-starts">
+                      <option value="now">Now</option>
+                      <option value="later">Later…</option>
+                    </select></label
+                  >
+                  <label id="publish-start-label" hidden
+                    >Start<input id="publish-start" type="datetime-local"
+                  /></label>
+                  <p id="publish-paused" class="warning" hidden></p>
+                </section>
+              </section>
+              <div id="editor-footer" class="footer-bar">
+                <button id="step-back" type="button" class="secondary">Back</button>
+                <span id="step-count" class="muted"></span>
+                <p class="feedback" id="fb-editor"></p>
+                <button id="step-next" type="button" class="primary"></button>
+                <button id="publish" type="button" class="primary" hidden>Publish</button>
               </div>
             </div>
           </div>
         </div>
-        <section id="access" hidden>
-          <div class="ad-layout">
-            <aside aria-label="Sites">
-              <div class="ad-row ad-between">
-                <h3>Sites</h3>
-                <button id="ad-add-site" type="button">＋ Add site</button>
+        <aside id="schedule-panel" class="side-panel" hidden>
+          <div class="panel-head">
+            <h2 id="schedule-title">Status</h2>
+            <button type="button" class="link panel-close" aria-label="Close status">Close</button>
+          </div>
+          <div class="panel-body">
+            <button
+              id="schedule-on"
+              type="button"
+              role="switch"
+              class="switch"
+              aria-checked="true"
+              aria-labelledby="schedule-on-label"
+            >
+              <span class="switch-track" aria-hidden="true"
+                ><span class="switch-thumb"></span
+              ></span>
+              <span id="schedule-on-label">Template is on</span>
+            </button>
+            <label>Active from (optional)<input id="templateStart" type="datetime-local" /></label>
+            <label>Active until (optional)<input id="templateEnd" type="datetime-local" /></label>
+            <div class="row" data-actions>
+              <button id="saveAvailability" type="button">Save status</button>
+            </div>
+            <p class="feedback" id="fb-schedule"></p>
+          </div>
+        </aside>
+        <aside id="history-panel" class="side-panel" hidden>
+          <div class="panel-head">
+            <h2 id="history-title">Version history</h2>
+            <button type="button" class="link panel-close" aria-label="Close version history">
+              Close
+            </button>
+          </div>
+          <div class="panel-body">
+            <div id="history-list" data-actions></div>
+          </div>
+        </aside>
+        <aside id="rerun-panel" class="side-panel" hidden>
+          <div class="panel-head">
+            <h2 id="rerun-title">Re-run for existing records</h2>
+            <button
+              type="button"
+              class="link panel-close"
+              aria-label="Close re-run for existing records"
+            >
+              Close
+            </button>
+          </div>
+          <div class="panel-body">
+            <p id="rerun-progress" hidden></p>
+            <div class="row wrap" data-actions>
+              <button id="rerun-all" type="button" class="primary">Re-run all records</button>
+              <button id="rerun-preview" type="button" class="secondary">
+                Preview re-run for records…
+              </button>
+            </div>
+            <div id="rerun-impact"></div>
+            <div class="row" data-actions>
+              <button id="rerun-these" type="button" hidden>Re-run these records</button>
+            </div>
+            <p class="feedback" id="fb-rerun"></p>
+          </div>
+        </aside>
+      </section>
+      <section id="access" class="page" aria-labelledby="ad-site-title" tabindex="-1" hidden>
+        <div class="ad-layout">
+          <header id="ad-site-header" class="page-header">
+            <h1 id="ad-site-title" tabindex="-1">Select or add a site</h1>
+            <span id="ad-site-problems" class="problem-host"></span>
+            <p id="ad-site-meta" class="page-meta"></p>
+            <div id="ad-site-actions" class="page-actions row" data-actions hidden>
+              <button class="secondary" id="ad-existing" type="button">Add existing library</button>
+              <button id="ad-create" class="primary" type="button">＋ Create library</button>
+              <button
+                class="secondary"
+                id="ad-site-menu"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="ad-site-menu-list"
+                aria-label="More actions for this site"
+              >
+                ⋯
+              </button>
+              <!-- prettier-ignore -->
+              <ul id="ad-site-menu-list" class="menu" role="menu" hidden>
+                  <li role="none"><button id="ad-repoint-site" role="menuitem" type="button" tabindex="-1">Re-point site</button></li>
+                  <li role="none"><button id="ad-remove-site" role="menuitem" type="button" tabindex="-1" class="danger">Remove site</button></li>
+                </ul>
+            </div>
+            <div id="ad-site-validation" class="muted" hidden>
+              <span id="ad-site-validation-text" role="status"></span>
+              <button class="link" id="ad-check-validation" type="button">Check again</button>
+            </div>
+          </header>
+          <aside id="ad-sites-pane" aria-labelledby="ad-sites-heading" data-focus-scope>
+            <div id="ad-sites-header" class="rail-head">
+              <h2 id="ad-sites-heading" tabindex="-1" data-focus-heading>Sites</h2>
+              <!-- prettier-ignore -->
+              <button id="ad-add-site" class="link" type="button" data-focus-key="add-site">＋ Add</button>
+            </div>
+            <label id="ad-filter"
+              ><span class="sr-only">Find a site</span
+              ><input id="ad-search" type="search" placeholder="Search sites"
+            /></label>
+            <div id="ad-sites"></div>
+            <div id="ad-sites-empty" class="ad-empty" hidden>
+              <p id="ad-sites-empty-text">No sites yet</p>
+            </div>
+            <button class="secondary" id="ad-more-sites" type="button" hidden>More sites</button>
+          </aside>
+          <div class="ad-main">
+            <p class="feedback" id="fb-access"></p>
+            <ul id="ad-changes" class="ad-access-notices" aria-label="What changed" hidden></ul>
+            <section id="ad-site-error" class="panel" hidden aria-labelledby="ad-site-error-title">
+              <h3 id="ad-site-error-title">Site access needs attention</h3>
+              <p>
+                The shared application cannot access this site. An administrator needs to grant it
+                access before this site can be used.
+              </p>
+              <div class="row" data-actions>
+                <button class="secondary" id="ad-recheck" type="button">Check again</button>
               </div>
-              <label id="ad-filter"
-                ><span class="ad-muted">Find a site</span
-                ><input id="ad-search" type="search" placeholder="Search sites"
+            </section>
+            <p id="ad-poll-status" class="muted" role="status" hidden></p>
+            <section
+              id="ad-site-cards"
+              aria-labelledby="ad-site-cards-heading"
+              data-focus-scope
+              hidden
+            >
+              <h2 id="ad-site-cards-heading" class="sr-only" tabindex="-1" data-focus-heading>
+                Setup activity
+              </h2>
+              <div id="ad-provision-progress" aria-live="polite"></div>
+            </section>
+            <button class="secondary" id="ad-more-activity" type="button" hidden>
+              More setup activity
+            </button>
+            <section id="ad-existing-form" class="panel" hidden aria-labelledby="ad-existing-title">
+              <div class="row between">
+                <h3 id="ad-existing-title">Existing libraries</h3>
+                <button class="secondary" id="ad-existing-cancel" type="button">Close</button>
+              </div>
+              <div id="ad-existing-choices" class="row" data-actions></div>
+              <button class="secondary" id="ad-existing-more" type="button" hidden>
+                More libraries
+              </button>
+            </section>
+            <section
+              id="ad-library-form"
+              class="panel"
+              hidden
+              aria-labelledby="ad-library-form-title"
+            >
+              <div class="row between">
+                <h3 id="ad-library-form-title">Create library</h3>
+                <button class="secondary" id="ad-cancel-library" type="button">Cancel</button>
+              </div>
+              <label
+                >Library name<input
+                  id="ad-library-name"
+                  maxlength="80"
+                  placeholder="For example, Project documents"
               /></label>
-              <div id="ad-sites"></div>
-              <button id="ad-more-sites" hidden>More sites</button>
-            </aside>
-            <main>
-              <section id="ad-site-form" class="ad-box" hidden aria-label="Add a registered site">
-                <div class="ad-row ad-between">
-                  <h3>Add site</h3>
-                  <button id="ad-cancel-site" type="button">Cancel</button>
-                </div>
-                <label>Find registered site<input id="ad-native-search" type="search" /></label
-                ><label
-                  >Registered SharePoint site<select
-                    id="ad-native"
-                    aria-label="Registered SharePoint site"
-                  >
-                    <option value="">Select a registered site</option>
-                  </select></label
-                ><button id="ad-validate" class="ad-primary" type="button">
-                  Add and check site
-                </button>
-                <p id="ad-site-progress" class="ad-topgap" role="status"></p>
-              </section>
-              <div class="ad-row ad-between">
-                <div>
-                  <h2 id="ad-site-title">Select or add a site</h2>
-                  <span id="ad-site-health" class="ad-status">Ready</span>
-                </div>
-                <button id="ad-existing" type="button">Add existing library</button
-                ><button id="ad-create" class="ad-primary" type="button">＋ Create library</button>
-              </div>
-              <section id="ad-site-error" class="ad-box" hidden>
-                <h3>Site access needs attention</h3>
-                <p class="ad-topgap">
-                  The shared application cannot access this site. An administrator needs to grant it
-                  access before this site can be used.
-                </p>
-                <button id="ad-recheck" type="button" class="ad-topgap">Check again</button>
-              </section>
-              <section id="ad-existing-form" class="ad-box" hidden aria-label="Existing libraries">
-                <div class="ad-row ad-between">
-                  <h3>Existing libraries</h3>
-                  <button id="ad-existing-cancel" type="button">Close</button>
-                </div>
-                <p class="ad-muted">
-                  The library must already have its own permissions. Adding it validates access and
-                  creates its navigation entry.
-                </p>
-                <div id="ad-existing-choices" class="ad-row"></div>
-                <button id="ad-existing-more" type="button" hidden>More libraries</button>
-              </section>
-              <section id="ad-library-form" class="ad-box" hidden aria-label="Create library">
-                <div class="ad-row ad-between">
-                  <h3>Create library</h3>
-                  <button id="ad-cancel-library" type="button">Cancel</button>
-                </div>
+              <div class="row">
                 <label
-                  >Library name<input
-                    id="ad-library-name"
-                    maxlength="80"
-                    placeholder="For example, Project documents"
-                /></label>
-                <div class="ad-row">
+                  >Give access to (optional)<select id="ad-initial-team">
+                    <option value="">No additional teams</option>
+                  </select></label
+                >
+                <label
+                  >Access<select id="ad-initial-access">
+                    <option>Read</option>
+                    <option>Contribute</option>
+                  </select></label
+                >
+              </div>
+              <div class="row" data-actions>
+                <button id="ad-provision" class="primary" type="button">Create library</button>
+              </div>
+            </section>
+            <section
+              id="ad-libraries-card"
+              class="section-card"
+              aria-labelledby="ad-libraries-heading"
+              data-focus-scope
+              hidden
+            >
+              <h2 id="ad-libraries-heading" class="sr-only" tabindex="-1" data-focus-heading>
+                Libraries
+              </h2>
+              <table id="ad-libraries-table">
+                <thead>
+                  <tr>
+                    <th scope="col" class="col-library">Library</th>
+                    <th scope="col" class="col-used-by">Used by</th>
+                    <th scope="col" class="col-teams">Teams</th>
+                    <th scope="col" class="col-access">Access</th>
+                  </tr>
+                </thead>
+                <tbody id="ad-libraries"></tbody>
+              </table>
+              <div class="card-row" data-actions>
+                <button class="link" id="ad-more-libraries" type="button" hidden>
+                  More libraries
+                </button>
+              </div>
+            </section>
+            <div id="ad-libraries-empty" hidden>
+              <p>No libraries yet</p>
+              <div class="row" data-actions>
+                <button id="ad-empty-create" type="button" class="primary">＋ Create library</button
+                ><button class="secondary" id="ad-empty-existing" type="button">
+                  Add existing library
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <aside id="ad-site-form" class="side-panel small" hidden>
+          <div class="panel-head">
+            <h2 id="ad-site-form-title">Add site</h2>
+            <button class="link" id="ad-cancel-site" type="button">Cancel</button>
+          </div>
+          <div class="panel-body">
+            <label for="ad-native-search">SharePoint site</label>
+            <input
+              id="ad-native-search"
+              type="text"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded="false"
+              aria-controls="ad-native-list"
+              autocomplete="off"
+            />
+            <ul id="ad-native-list" role="listbox" aria-label="SharePoint sites" hidden></ul>
+            <div class="row" data-actions>
+              <button id="ad-validate" class="primary" type="button">Add and check site</button>
+            </div>
+            <p class="feedback" id="fb-access-add"></p>
+          </div>
+        </aside>
+        <aside id="ad-drawer" class="drawer" hidden data-focus-scope>
+          <header class="drawer-head">
+            <div class="drawer-title">
+              <h2 id="ad-library-title" tabindex="-1" data-focus-heading></h2>
+              <p class="drawer-sub muted">Team access applies to every folder in this library</p>
+              <p id="ad-library-status" class="status-text warning" hidden></p>
+            </div>
+            <div class="row" data-actions>
+              <div class="menu-anchor">
+                <button
+                  class="secondary menu-button"
+                  id="ad-library-menu"
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded="false"
+                  aria-controls="ad-library-menu-list"
+                  aria-label="More actions for this library"
+                >
+                  ⋯
+                </button>
+                <!-- prettier-ignore -->
+                <ul id="ad-library-menu-list" class="menu" role="menu" hidden>
+                    <li role="none"><button id="ad-repoint-library" role="menuitem" type="button" tabindex="-1">Re-point library</button></li>
+                    <li role="none"><button id="ad-remove-library" role="menuitem" type="button" tabindex="-1" class="danger">Remove library</button></li>
+                  </ul>
+              </div>
+              <button
+                id="ad-drawer-close"
+                type="button"
+                class="icon"
+                aria-label="Close team access"
+              >
+                ✕
+              </button>
+            </div>
+          </header>
+          <div class="drawer-body">
+            <div id="ad-drawer-progress" aria-live="polite"></div>
+            <div id="ad-drawer-access">
+              <div class="team-grid col-head" aria-hidden="true">
+                <span>Team</span><span>Access</span><span></span>
+              </div>
+              <div id="ad-team-rows" role="list" aria-label="Team access"></div>
+              <div class="row" data-actions>
+                <button id="ad-add-team" type="button" class="link">＋ Add team</button>
+              </div>
+              <div id="ad-team-form" class="panel" hidden>
+                <div class="row">
                   <label
-                    >Initial team<select id="ad-initial-team" aria-label="Initial team">
-                      <option value="">No additional teams</option>
+                    >Team<select id="ad-team-choice">
+                      <option value="">Select a team</option>
                     </select></label
-                  ><label
-                    >Access<select id="ad-initial-access" aria-label="Initial access">
+                  >
+                  <label
+                    >Access<select id="ad-team-access">
                       <option>Read</option>
                       <option>Contribute</option>
                     </select></label
                   >
                 </div>
-                <p class="ad-muted">
-                  Site owners retain administrative access. Only the teams you select receive
-                  additional library access.
-                </p>
-                <div class="ad-row ad-topgap">
-                  <button id="ad-provision" class="ad-primary" type="button">Create library</button
-                  ><span id="ad-create-error" role="alert" class="ad-issue"></span>
+                <div class="row" data-actions>
+                  <button class="secondary" id="ad-stage-team" type="button">Add</button>
+                  <button class="secondary" id="ad-cancel-team" type="button">Cancel</button>
                 </div>
-              </section>
-              <button id="ad-more-activity" hidden>More setup activity</button>
-              <p id="ad-poll-status" class="ad-muted" role="status" hidden></p>
-              <div
-                id="ad-provision-progress"
+              </div>
+              <p id="ad-run-status" class="muted"></p>
+              <div id="ad-run-actions" class="row" data-actions hidden>
+                <button class="secondary" id="ad-run-retry" type="button">Retry access run</button>
+                <button class="secondary" id="ad-run-cancel" type="button">
+                  Cancel access run
+                </button>
+              </div>
+              <ul
+                id="ad-access-notices"
+                class="ad-access-notices"
+                aria-label="Access sync notices"
                 hidden
-                role="status"
-                aria-live="polite"
-                aria-atomic="true"
-              ></div>
-              <div id="ad-libraries" class="ad-libraries" aria-label="Libraries"></div>
-              <button id="ad-more-libraries" hidden>More libraries</button>
-              <section id="ad-library-detail">
-                <div class="ad-row ad-between">
-                  <h3 id="ad-library-title">Library access</h3>
-                  <span id="ad-library-status" class="ad-status">Ready for folder templates</span>
-                </div>
-                <p class="ad-muted ad-topgap">All folders inherit this library’s access.</p>
-
-                <div id="ad-access">
-                  <table aria-label="Library team access">
-                    <thead>
-                      <tr>
-                        <th>Team</th>
-                        <th>Access</th>
-                        <th>In SharePoint</th>
-                      </tr>
-                    </thead>
-                    <tbody id="ad-teams"></tbody>
-                  </table>
-                  <button id="ad-add-team" type="button">＋ Add team</button>
-                  <div id="ad-team-form" class="ad-box" hidden>
-                    <div class="ad-row">
-                      <label
-                        >Team<select id="ad-team-choice" aria-label="Team">
-                          <option value="">Select a team</option>
-                        </select></label
-                      ><label
-                        >Access<select id="ad-team-access" aria-label="Team access">
-                          <option>Read</option>
-                          <option>Contribute</option>
-                        </select></label
-                      ><button id="ad-stage-team" type="button">Add</button
-                      ><button id="ad-cancel-team" type="button">Cancel</button>
-                    </div>
-                  </div>
-                  <div class="ad-row ad-between ad-access-footer">
-                    <p id="ad-change-status" class="ad-muted">Access is up to date.</p>
-                    <button id="ad-apply" class="ad-primary" disabled type="button">
-                      Apply access changes
-                    </button>
-                  </div>
-                  <p class="ad-muted ad-topgap">
-                    Removing a team removes this app’s grant. Other sharing may still provide
-                    access.
-                  </p>
-                </div>
-              </section>
-              <p id="ad-empty" class="ad-empty" hidden>
-                No libraries yet. Create the first library for this site.
-              </p>
-              <div id="ad-message" role="status" aria-live="polite"></div>
-              <details>
-                <summary>Shared connection</summary>
-                <p>One application connection is used across authorized sites.</p>
-                <button id="ad-manage-connection" type="button">Manage in Power Platform</button>
-              </details>
-            </main>
+              ></ul>
+            </div>
+          </div>
+          <div id="ad-drawer-footer" class="footer-bar">
+            <span id="ad-change-status" class="status-text warning"></span>
+            <p class="feedback" id="fb-access-library"></p>
+            <div class="row" data-actions>
+              <button id="ad-discard" type="button" class="link" hidden>Discard</button>
+              <button id="ad-apply" type="button" class="primary" disabled>Apply access</button>
+            </div>
+          </div>
+        </aside>
+      </section>
+      <section id="monitor" class="page" aria-labelledby="monitor-title" tabindex="-1" hidden>
+        <header class="page-header">
+          <h1 id="monitor-title" tabindex="-1">Monitor</h1>
+          <span id="monitor-automation" class="pill" hidden></span>
+          <button id="monitor-settings-link" type="button" class="link">Change in Settings</button>
+          <div class="page-actions row" data-actions>
+            <span id="monitor-checked" class="muted"></span>
+            <button id="monitor-refresh" type="button" class="secondary">Refresh</button>
+            <div class="menu-anchor">
+              <button
+                id="monitor-tools"
+                type="button"
+                class="secondary"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="monitor-tools-list"
+              >
+                Tools<span aria-hidden="true"> ▾</span>
+              </button>
+              <ul id="monitor-tools-list" class="menu" role="menu" hidden>
+                <!-- prettier-ignore -->
+                <li role="none"><button id="tools-check" type="button" role="menuitem" tabindex="-1">Check a record…</button></li>
+                <!-- prettier-ignore -->
+                <li role="none"><button id="tools-lookup" type="button" role="menuitem" tabindex="-1">Look up an operation…</button></li>
+              </ul>
+            </div>
+          </div>
+        </header>
+        <p class="feedback" id="fb-monitor"></p>
+        <ol id="setup-checklist" class="checklist" hidden></ol>
+        <div id="runs-strip" class="runs-strip" data-focus-scope hidden></div>
+        <div id="monitor-filters" class="filter-chips" role="group" aria-label="Show"></div>
+        <div id="monitor-errors"></div>
+        <div id="rerun-selected-row" class="row" data-actions hidden></div>
+        <section
+          class="section-card"
+          id="problem-table-card"
+          data-focus-scope
+          aria-labelledby="problem-heading"
+        >
+          <h2 id="problem-heading" class="sr-only" tabindex="-1" data-focus-heading>Problems</h2>
+          <!-- Explicit roles: at phone widths the rows are laid out as cards. -->
+          <table id="problem-table" role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th scope="col" class="col-type" role="columnheader">Type</th>
+                <th scope="col" role="columnheader">Item</th>
+                <th scope="col" role="columnheader">Problem</th>
+                <th scope="col" class="col-since" role="columnheader" aria-sort="descending">
+                  <!-- prettier-ignore -->
+                  <button id="problem-sort" type="button" class="link sort" data-focus-key="sort">Since<span id="problem-sort-arrow" aria-hidden="true"> ▾</span></button>
+                </th>
+                <th scope="col" class="col-actions" role="columnheader">
+                  <span class="sr-only">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="problem-rows" role="rowgroup"></tbody>
+          </table>
+          <div class="card-row" data-actions hidden>
+            <button id="problem-more" type="button" class="link" hidden></button>
           </div>
         </section>
-        <details id="recordTools" class="card" hidden>
-          <summary>Record results and replanning</summary>
-          <p id="maintenanceContext"></p>
-          <div class="row wrap">
-            <button id="inspectRecord">Inspect record results</button
-            ><button id="replanRecord">Replan published template for record</button
-            ><button id="previewBatch">Review batch replan</button
-            ><button id="queueBatch" disabled>Queue reviewed batch</button>
+        <aside id="check-panel" class="side-panel" hidden>
+          <div class="panel-head">
+            <h2 id="check-title">Check a record</h2>
+            <button id="check-close" type="button" class="link" aria-label="Close check a record">
+              Close
+            </button>
           </div>
-          <pre id="result">No inspection yet.</pre>
-          <pre id="batchReview">
-Select up to five records for a published-revision impact review.</pre>
-        </details>
-        <details id="runtime" class="card">
-          <summary>Runtime administration</summary>
-          <p>
-            Configuration is separate from flow activation and role assignment. Finish active work
-            before changing runtime identity or scope.
-          </p>
-          <button id="loadRuntime" class="secondary">Load runtime profile</button>
-          <div class="row">
-            <label>Dataverse worker user ID<input id="runtimeWorker" /></label
-            ><label
-              >Allowed source tables<input
-                id="runtimeTables"
-                placeholder="account,contact" /></label
-            ><label
-              >SharePoint tenant hosts<input
-                id="runtimeSites"
-                placeholder="tenant.sharepoint.com" /></label
-            ><label>Runtime enabled<input id="runtimeEnabled" type="checkbox" /></label
-            ><label
-              >Apply folder templates when record data changes<input
-                id="runtimeRecordUpdates"
-                type="checkbox" /></label
-            ><button id="saveRuntime">Save runtime profile</button>
+          <div class="panel-body">
+            <label>Table<select id="check-table"></select></label>
+            <label>Template<select id="check-template"></select></label>
+            <div class="field">
+              <span class="label-text">Record</span>
+              <button id="check-choose" type="button" class="secondary">Choose record…</button>
+              <span id="check-record-name" role="status"></span>
+            </div>
+            <div class="row wrap" data-actions>
+              <button id="check-run" type="button">Check record</button>
+              <button id="check-rerun" type="button" class="secondary">
+                Re-run published template for this record
+              </button>
+            </div>
+            <p class="feedback" id="fb-check"></p>
+            <div id="check-result"></div>
           </div>
-          <p class="hint">
-            Applies system-wide to all configured source tables. Off disables record-update
-            monitoring; creation still works. Turning it on processes future updates only. Existing
-            queued work can finish. Saving this setting requires permission to manage plug-in steps.
-          </p>
-          <p id="runtimeStatus" class="hint">No profile loaded.</p>
-        </details>
-        <details id="operations" class="card">
-          <summary>Operations and recovery</summary>
-          <button id="loadOperations" class="secondary">Load latest 50 operations</button
-          ><label
-            >Operation<select id="operation">
-              <option value="">Load operations first</option>
-            </select></label
+        </aside>
+        <aside id="lookup-panel" class="side-panel wide" hidden>
+          <div class="panel-head">
+            <h2 id="lookup-title">Look up an operation</h2>
+            <button
+              id="lookup-close"
+              type="button"
+              class="link"
+              aria-label="Close look up an operation"
+            >
+              Close
+            </button>
+          </div>
+          <div class="panel-body">
+            <label
+              >Operation ID<input
+                id="operation-id"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+            /></label>
+            <div class="row" data-actions>
+              <button id="operation-lookup" type="button" class="secondary">Look up</button>
+            </div>
+            <p class="feedback" id="fb-advanced"></p>
+            <section id="operation-result" hidden aria-labelledby="operation-result-title">
+              <h3 id="operation-result-title" tabindex="-1">Operation</h3>
+              <dl id="operation-fields"></dl>
+              <div id="operation-actions" class="row" data-actions></div>
+            </section>
+            <h3>Recent operations</h3>
+            <table id="recent-table">
+              <caption class="sr-only">
+                Recent operations
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Title</th>
+                  <th scope="col">Kind</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Since</th>
+                </tr>
+              </thead>
+              <tbody id="recent-rows"></tbody>
+            </table>
+            <div class="row" data-actions>
+              <button id="recent-more" type="button" class="secondary" hidden>Show 50 more</button>
+            </div>
+          </div>
+        </aside>
+      </section>
+      <section id="settings" class="page" aria-labelledby="settings-title" tabindex="-1" hidden>
+        <header class="page-header">
+          <h1 id="settings-title" tabindex="-1">Settings</h1>
+          <span id="settings-problems" class="problem-host"></span>
+          <p id="settings-meta" class="page-meta">Only System Administrators can change these</p>
+        </header>
+        <p class="feedback" id="fb-settings"></p>
+        <p id="settings-missing" role="alert" hidden>
+          No automation settings are installed. Import the Documents solution, then reopen this
+          page.
+        </p>
+        <div class="page-body one-column">
+          <section
+            id="automation-card"
+            class="section-card"
+            aria-labelledby="automation-card-title"
           >
-          <pre id="operationStatus">Select an operation.</pre>
-          <div class="row">
-            <button id="retryOperation" class="secondary">Retry after repair</button
-            ><button id="cancelOperation" class="secondary">Cancel unstarted work</button>
+            <h2 id="automation-card-title" class="sr-only">Automation</h2>
+            <div class="card-body switch-row">
+              <button
+                id="automation-switch-settings"
+                type="button"
+                role="switch"
+                class="switch"
+                aria-checked="false"
+                aria-labelledby="automation-card-title"
+                aria-describedby="help-automation-settings"
+              >
+                <span class="switch-track" aria-hidden="true"
+                  ><span class="switch-thumb"></span
+                ></span>
+              </button>
+              <div>
+                <p id="automation-state-settings" class="switch-title"></p>
+                <!-- prettier-ignore -->
+                <p class="help" id="help-automation-settings">Turning it off pauses folder and access work. Changes keep queueing and run when it's back on.</p>
+              </div>
+            </div>
+          </section>
+          <section
+            id="automation-settings"
+            class="section-card"
+            aria-labelledby="automation-settings-title"
+            aria-busy="true"
+          >
+            <div class="card-head"><h2 id="automation-settings-title">Automation settings</h2></div>
+            <div class="card-row setting">
+              <div>
+                <span class="label-text" id="worker-label">Run as</span
+                ><span class="sub">Application user</span>
+              </div>
+              <div>
+                <select id="runtimeWorker" aria-labelledby="worker-label" disabled></select>
+                <span id="worker-text" class="value-text" hidden></span>
+              </div>
+            </div>
+            <div class="card-row setting">
+              <div>
+                <span class="label-text" id="hosts-label">SharePoint host names</span
+                ><span class="sub"
+                  >Documents only connects to these hosts. Every site in Sites &amp; access must be
+                  on one.</span
+                >
+              </div>
+              <div>
+                <ul id="hosts-list" aria-labelledby="hosts-label"></ul>
+                <button id="add-host" type="button" class="link">＋ Add host</button>
+              </div>
+            </div>
+          </section>
+          <section
+            id="tables-card"
+            class="section-card"
+            aria-labelledby="tables-title"
+            data-focus-scope
+          >
+            <div class="card-head">
+              <h2 id="tables-title" tabindex="-1" data-focus-heading>Tables</h2>
+              <div class="card-actions row" data-actions>
+                <button id="repair-all" type="button" class="secondary" hidden>Repair all</button>
+                <button id="add-table" type="button" class="link">＋ Add table</button>
+              </div>
+            </div>
+            <div id="table-picker" class="card-row row" data-actions hidden>
+              <label>Table to add<select id="enableTable"></select></label>
+              <button id="add-chosen-table" type="button" class="secondary" aria-disabled="true">
+                Add
+              </button>
+            </div>
+            <p id="tracking-error" class="card-row error" role="alert" hidden></p>
+            <div class="card-row col-head tables-grid" aria-hidden="true">
+              <span>Table</span><span>Change tracking</span><span></span>
+            </div>
+            <div id="tables-rows" role="list" aria-labelledby="tables-title"></div>
+          </section>
+          <section id="connections-card" class="section-card" aria-labelledby="connection-title">
+            <div class="card-head">
+              <h2 id="connection-title">Connections</h2>
+              <a id="open-connections" class="card-action" target="_blank" rel="noopener"
+                >Open in Power Automate</a
+              >
+            </div>
+            <ul id="connection-list" class="card-list"></ul>
+          </section>
+          <section id="danger-zone" class="section-card" aria-labelledby="danger-title">
+            <div class="card-body danger-body">
+              <div>
+                <h2 id="danger-title">Before uninstalling</h2>
+                <!-- prettier-ignore -->
+                <p class="help" id="help-stop-tracking">Stops capturing record and team changes for every table until change tracking is repaired.</p>
+              </div>
+              <div class="row" data-actions>
+                <button
+                  id="stop-tracking"
+                  type="button"
+                  class="danger-outline"
+                  aria-describedby="help-stop-tracking"
+                >
+                  Stop tracking changes
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+        <div id="settings-footer" class="footer-bar" hidden>
+          <span id="settings-unsaved" class="status-text warning"></span>
+          <p class="feedback" id="fb-settings-save"></p>
+          <div class="row" data-actions>
+            <button id="settings-discard" type="button" class="link">Discard</button>
+            <button id="save-settings" type="button" class="primary">Save settings</button>
           </div>
-          <details>
-            <summary>Expired writer recovery</summary>
-            <p>
-              Verify the prior flow run has terminated and outstanding calls have resolved before
-              permitting recovery. Expiry alone is insufficient.
-            </p>
-            <label>Exact prior run identity<input id="recoveryRun" /></label
-            ><label>Exact prior claim token<input id="recoveryToken" /></label
-            ><label
-              >Termination and outstanding-call evidence<input
-                id="recoveryEvidence"
-                maxlength="500" /></label
-            ><label
-              >Original successful library-create response (only for an unknown new-library
-              result)<textarea
-                id="recoveryResponse"
-                maxlength="16000"
-                placeholder="Copy the successful HTTP response body from the exact prior run. Do not substitute a library found by name."
-              ></textarea></label
-            ><button id="recoverOperation">Record recovery permit</button>
-          </details>
-        </details>
-
-        <footer class="footer">
-          <span>Background provisioning requires an enabled runtime and active dispatcher.</span
-          ><span>Publishing saves configuration; it does not create folders.</span>
-        </footer>
+        </div>
       </section>
     </main>
-    <script src="admin.js?v=ui20260909labels4"></script>
-    <script src="sites-access.js?v=ui20260909labels4"></script>
+    <script src="admin.js?v=ui20261008rc1"></script>
+    <script src="sites-access.js?v=ui20261008rc1"></script>
+    <script src="operations.js?v=ui20261008rc1"></script>
   </body>
 </html>

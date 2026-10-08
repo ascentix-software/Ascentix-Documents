@@ -15,7 +15,6 @@ public sealed class ApiWriteService : IOrganizationService
     private static readonly string[] Apis =
     {
         "asx_DocumentWorker",
-        "asx_RecoverWorker",
         "asx_SecurityAdmin",
         "asx_RuntimeAdmin",
         "asx_ManageWork",
@@ -84,9 +83,8 @@ public sealed class ApiWriteService : IOrganizationService
     /// Verifies the write tag against the transactional product API ancestry and target.
     /// </summary>
     /// <param name="context">The pre-operation row guard's execution context.</param>
-    /// <param name="catalog">Whether to exclude recovery API authorization for a catalog write.</param>
     /// <returns>Whether the target and write tag match an authorized product API ancestor.</returns>
-    public static bool Authorizes(IPluginExecutionContext context, bool catalog = false)
+    public static bool Authorizes(IPluginExecutionContext context)
     {
         if (
             context.Stage != 20
@@ -123,8 +121,6 @@ public sealed class ApiWriteService : IOrganizationService
                 return false;
             if (Apis.Contains(frame.MessageName))
             {
-                if (catalog && frame.MessageName == "asx_RecoverWorker")
-                    return false;
                 try
                 {
                     return tag != null && tag == Tag(frame, message, target);
@@ -147,7 +143,7 @@ public sealed class ApiWriteService : IOrganizationService
 
     public static bool AuthorizesCatalogIdentityUpgrade(IPluginExecutionContext context)
     {
-        if (!Authorizes(context, true))
+        if (!Authorizes(context))
             return false;
         var frame = context.ParentContext;
         for (int depth = 0; frame != null && depth < 3; depth++, frame = frame.ParentContext)
@@ -161,6 +157,86 @@ public sealed class ApiWriteService : IOrganizationService
                             (string)frame.InputParameters["Request"]
                         )
                         .Command == "CompleteSiteIdentity";
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// A site or library address written by a verified re-point: the worker completing a
+    /// re-point probe, which only the catalog API queues. Identity fields stay immutable.
+    /// </summary>
+    public static bool AuthorizesCatalogRepoint(IPluginExecutionContext context) =>
+        AuthorizesCatalogCommand(
+            context,
+            "asx_DocumentWorker",
+            request =>
+            {
+                var work =
+                    Ascentix.Documents.Dataverse.JsonWire.Read<Ascentix.Documents.Dataverse.WorkerRequest>(
+                        request
+                    );
+                return work.Command == "Complete"
+                    && work.Key?.StartsWith(
+                        Ascentix.Documents.Dataverse.CatalogAdministration.RepointPrefix,
+                        StringComparison.Ordinal
+                    ) == true;
+            }
+        );
+
+    /// <summary>A site or library deleted by the catalog API's Remove command.</summary>
+    public static bool AuthorizesCatalogRemoval(IPluginExecutionContext context)
+    {
+        var target = SingleTarget(context);
+        return target != null
+            && AuthorizesCatalogCommand(
+                context,
+                "asx_CatalogAdmin",
+                request => RemovalRequest(request, target.LogicalName, target.Id)
+            );
+    }
+
+    /// <summary>
+    /// A Remove request deletes only the one row it names: RemoveLibrary its asx_library row,
+    /// RemoveSite its asx_site row.
+    /// </summary>
+    private static bool RemovalRequest(string request, string table, Guid id)
+    {
+        var removal =
+            Ascentix.Documents.Dataverse.JsonWire.Read<Ascentix.Documents.Dataverse.CatalogRequest>(
+                request
+            );
+        return id != Guid.Empty
+            && id == removal.CatalogId
+            && (
+                removal.Command == "RemoveLibrary" && table == "asx_library"
+                || removal.Command == "RemoveSite" && table == "asx_site"
+            );
+    }
+
+    /// <summary>Whether the nearest product API frame is the named API with a matching request.</summary>
+    private static bool AuthorizesCatalogCommand(
+        IPluginExecutionContext context,
+        string api,
+        Func<string, bool> matches
+    )
+    {
+        if (!Authorizes(context))
+            return false;
+        var frame = context.ParentContext;
+        for (int depth = 0; frame != null && depth < 3; depth++, frame = frame.ParentContext)
+        {
+            if (!Apis.Contains(frame.MessageName))
+                continue;
+            if (frame.MessageName != api)
+                return false;
+            try
+            {
+                return matches((string)frame.InputParameters["Request"]);
             }
             catch
             {
@@ -217,9 +293,12 @@ public sealed class ApiWriteService : IOrganizationService
             Mark(request, "Update", update.Target);
         else if (request is DeleteRequest delete)
         {
-            if (!RetentionRequest(owner))
+            if (
+                !RetentionRequest(owner)
+                && !CatalogRemovalRequest(owner, delete.Target.LogicalName, delete.Target.Id)
+            )
                 throw new InvalidPluginExecutionException(
-                    "Only history retention may delete through this transport."
+                    "Only history retention, and Remove of the one site or library it names, may delete through this transport."
                 );
             Mark(request, "Delete", new Entity(delete.Target.LogicalName, delete.Target.Id));
         }
@@ -230,6 +309,27 @@ public sealed class ApiWriteService : IOrganizationService
             Mark(request, "Create", create.Target);
         }
         return inner.Execute(request);
+    }
+
+    private static bool CatalogRemovalRequest(
+        IPluginExecutionContext context,
+        string table,
+        Guid id
+    )
+    {
+        if (
+            context.MessageName != "asx_CatalogAdmin"
+            || context.InputParameters?.Contains("Request") != true
+        )
+            return false;
+        try
+        {
+            return RemovalRequest((string)context.InputParameters["Request"], table, id);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public static bool RetentionRequest(IPluginExecutionContext context)

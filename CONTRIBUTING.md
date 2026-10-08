@@ -26,7 +26,7 @@ Plug-in and web-resource artifacts are written to `artifacts/plugins` and `artif
 
 `solution/AscentixDocuments/src` is the complete unpacked solution: schema, roles, app, plug-in/API registrations, web resources, and Power Automate flows. Edit flow definitions there; there is no separate worker generator or bootstrap installer.
 
-The packer copies the solution to a temporary build directory, inserts the compiled plug-in and current `client/admin` resources, then creates and verifies both ZIPs. It does not modify tracked solution files. Compiled plug-in DLLs are build outputs and are not tracked.
+The packer copies the solution to a temporary build directory, inserts the compiled plug-in and current `client/admin` and `client/form` resources, then creates and verifies both ZIPs. It does not modify tracked solution files. Compiled plug-in DLLs are build outputs and are not tracked.
 
 Maintainers with the official signing key can run:
 
@@ -71,4 +71,4 @@ dotnet csharpier check src tests Directory.Build.props
 npm.cmd run format:check
 ```
 
-The web formatter covers `client/admin`, JavaScript checks under `scripts`, and `tests/web`. Exported solution files and architecture documents are outside the formatting scope. Formatting does not build, test, or deploy the product; run the relevant component build afterward.
+The web formatter covers `client`, JavaScript checks under `scripts`, and `tests/web`. Exported solution files and architecture documents are outside the formatting scope. Formatting does not build, test, or deploy the product; run the relevant component build afterward.

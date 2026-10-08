@@ -1,8 +1,8 @@
-<customapi uniquename="asx_CreateDraft">
+﻿<customapi uniquename="asx_CreateDraft">
   <allowedcustomprocessingsteptype>0</allowedcustomprocessingsteptype>
   <bindingtype>0</bindingtype>
-  <description default="Owned by standalone Ascentix Documents development setup v1">
-    <label description="Owned by standalone Ascentix Documents development setup v1" languagecode="1033" />
+  <description default="Ascentix Documents">
+    <label description="Ascentix Documents" languagecode="1033" />
   </description>
   <displayname default="CreateDraft">
     <label description="CreateDraft" languagecode="1033" />

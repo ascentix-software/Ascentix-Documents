@@ -1,6 +1,5 @@
 using System;
 using System.Linq;
-using System.Text.RegularExpressions;
 using Ascentix.Documents.Conditions;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
@@ -25,7 +24,6 @@ public sealed class SecurityCatalog
                 "asx_listid",
                 "asx_entryurl",
                 "asx_approved",
-                "asx_aclhash",
                 "asx_policyrevision",
                 "asx_policyapplied",
                 "asx_readrole",
@@ -64,8 +62,7 @@ public sealed class SecurityCatalog
         IOrganizationService service,
         Entity old,
         Guid generation,
-        bool applied,
-        string? hash = null
+        bool applied
     )
     {
         if (string.IsNullOrEmpty(old.RowVersion))
@@ -76,8 +73,6 @@ public sealed class SecurityCatalog
             ["asx_policyrevision"] = generation.ToString("D"),
             ["asx_policyapplied"] = applied,
         };
-        if (hash != null)
-            target["asx_aclhash"] = hash;
         service.Execute(
             new UpdateRequest
             {
@@ -111,21 +106,14 @@ public sealed class SecurityAdministration
         {
             if (request.TeamId == Guid.Empty)
                 throw new EvaluationBlockedException("Team ID required.");
-            var team = service.Retrieve(
-                "team",
-                request.TeamId,
-                new ColumnSet("teamtype", "isdefault")
-            );
-            if (
-                request.Enabled
-                && (
-                    team.GetAttributeValue<OptionSetValue>("teamtype")?.Value != 0
-                    || team.GetAttributeValue<bool>("isdefault")
-                )
-            )
-                throw new EvaluationBlockedException(
-                    "Only non-default manual owner teams can opt in."
-                );
+            Entity? team = null;
+            if (request.Enabled)
+            {
+                team =
+                    TeamDirectory.Find(service, request.TeamId)
+                    ?? throw new EvaluationBlockedException(TeamDirectory.DeletedRefusal);
+                TeamPrincipal.Validate(team, request.AcknowledgeBroaderAccess);
+            }
             string key = "team:" + request.TeamId.ToString("N");
             var old = store.Find<TeamRegistration>("asx_teamregistration", key);
             if (old == null)
@@ -139,6 +127,8 @@ public sealed class SecurityAdministration
                         Key = key,
                         TeamId = request.TeamId,
                         Enabled = request.Enabled,
+                        Group = team == null ? (bool?)null : TeamPrincipal.IsGroup(team),
+                        Name = team == null ? null : TeamPrincipal.Name(team),
                         Status = request.Enabled ? "Enabled" : "Revoking",
                     }
                 );
@@ -147,6 +137,11 @@ public sealed class SecurityAdministration
             {
                 Version(old.Row, request.RowVersion);
                 old.Value.Enabled = request.Enabled;
+                if (team != null)
+                {
+                    old.Value.Group = TeamPrincipal.IsGroup(team);
+                    old.Value.Name = TeamPrincipal.Name(team);
+                }
                 old.Value.Status = request.Enabled ? "Enabled" : "Revoking";
                 store.Save(old);
             }
@@ -164,6 +159,24 @@ public sealed class SecurityAdministration
         var existing = store.Find<PolicyDocument>("asx_policy", policyKey);
         if (request.Command == "GetPolicy")
             return Result(existing);
+        // Before the catalog check: a stuck run of a suspended library can be cancelled too.
+        if (request.Command == "RetryAccessRun" || request.Command == "CancelAccessRun")
+            return ManageRun(existing, request);
+        if (
+            (request.Command == "ApplyPolicy" || workerRefresh && request.Command == "ApplyPending")
+            && existing != null
+        )
+            existing = ReplaceQueuedRun(existing, request);
+        if (request.Command == "ApplyPending")
+        {
+            // The next access review applies what the admin applied while the run could not
+            // be replaced; until it can be, the change keeps waiting.
+            if (existing == null || !existing.Value.ApplyPending)
+                return Result(existing);
+            if (existing.Value.OperationKey != null)
+                return Result(existing);
+            request.RowVersion = existing.Row.RowVersion;
+        }
         var catalog = new SecurityCatalog(service, request.LibraryId);
         string? expectedVersion = request.RowVersion;
         if (request.Command == "SavePolicy" || request.Command == "ApplyPolicy")
@@ -177,21 +190,24 @@ public sealed class SecurityAdministration
                     TemplateStore.Text(catalog.Library, "asx_contributerole")
                 );
             Validate(request.Entries, request.ReadRole, request.ContributeRole);
+            // A team deleted in Dataverse leaves the library's teams, whatever access its row
+            // still shows: the other teams' changes go on, and the access run queued below
+            // removes Documents' grant for the deleted team's group (see the queued entries).
+            var teams = TeamDirectory.Read(service, request.Entries.Select(e => e.TeamId));
+            foreach (var deleted in request.Entries.Where(e => !teams.ContainsKey(e.TeamId)))
+                TeamDirectory.Retire(store, deleted.TeamId);
+            request.Entries = request.Entries.Where(e => teams.ContainsKey(e.TeamId)).ToArray();
             foreach (var entry in request.Entries.Where(e => e.Access != "None"))
             {
                 // Saving a draft validates eligibility; only applying explicitly onboards syncing.
-                var team = service.Retrieve(
-                    "team",
-                    entry.TeamId,
-                    new ColumnSet("teamtype", "isdefault")
-                );
-                if (
-                    team.GetAttributeValue<OptionSetValue>("teamtype")?.Value != 0
-                    || team.GetAttributeValue<bool>("isdefault")
-                )
-                    throw new EvaluationBlockedException("Select a non-default manual owner team.");
+                var team = teams[entry.TeamId];
+                TeamPrincipal.Validate(team, request.AcknowledgeBroaderAccess);
                 if (request.Command == "ApplyPolicy")
                 {
+                    // teamtype is fixed when a team is created, so the kind recorded here stays
+                    // true; membership events for group teams are then skipped at the source.
+                    bool group = TeamPrincipal.IsGroup(team);
+                    string name = TeamPrincipal.Name(team);
                     string teamKey = "team:" + entry.TeamId.ToString("N");
                     var registration = store.Find<TeamRegistration>(
                         "asx_teamregistration",
@@ -205,12 +221,20 @@ public sealed class SecurityAdministration
                                 Key = teamKey,
                                 TeamId = entry.TeamId,
                                 Enabled = true,
+                                Group = group,
+                                Name = name,
                                 Status = "Enabled",
                             }
                         );
-                    else if (!registration.Value.Enabled)
+                    else if (
+                        !registration.Value.Enabled
+                        || registration.Value.Group != group
+                        || registration.Value.Name != name
+                    )
                     {
                         registration.Value.Enabled = true;
+                        registration.Value.Group = group;
+                        registration.Value.Name = name;
                         registration.Value.Status = "Enabled";
                         store.Save(registration);
                     }
@@ -236,19 +260,30 @@ public sealed class SecurityAdministration
             else
             {
                 Version(existing.Row, request.RowVersion);
-                if (existing.Value.OperationKey != null)
-                    throw new EvaluationBlockedException(
-                        "Queued policy must finish or be reviewed before editing."
-                    );
+                // A queued or running access run keeps its own copy of the teams, so the team
+                // list may change meanwhile; the run's status stays until it ends.
                 existing.Value.Desired = request.Entries;
                 existing.Value.ReadRole = request.ReadRole;
                 existing.Value.ContributeRole = request.ContributeRole;
-                existing.Value.Status = "Draft";
+                if (existing.Value.OperationKey == null)
+                    existing.Value.Status = "Draft";
                 store.Save(existing);
             }
             existing = store.Require<PolicyDocument>("asx_policy", policyKey);
             if (request.Command == "SavePolicy")
                 return Result(existing);
+            if (existing.Value.OperationKey != null)
+            {
+                // The run in progress could not be replaced yet: a flow holds it, or SharePoint
+                // has not answered its write. The change waits and the next access review, a
+                // minute later, applies it as soon as it can.
+                existing.Value.ApplyPending = true;
+                if (request.BreakInheritance)
+                    existing.Value.BreakInheritance = true;
+                existing.Value.NextReviewUtc = DateTime.UtcNow;
+                store.Save(existing);
+                return Result(store.Require<PolicyDocument>("asx_policy", policyKey));
+            }
             expectedVersion = existing.Row.RowVersion; // Apply continues in this same transaction; any failure rolls back the save.
         }
         if (
@@ -256,6 +291,7 @@ public sealed class SecurityAdministration
                 request.Command != "QueuePolicy"
                 && request.Command != "ApplyPolicy"
                 && !(workerRefresh && request.Command == "RefreshPolicy")
+                && !(workerRefresh && request.Command == "ApplyPending")
             )
             || existing == null
         )
@@ -263,7 +299,9 @@ public sealed class SecurityAdministration
         Version(existing.Row, expectedVersion);
         if (existing.Value.OperationKey != null)
             throw new EvaluationBlockedException("A policy generation is already queued.");
-        // Serialize approval with a concurrent claim; an active external writer must finish first.
+        // Serialize queuing with a concurrent claim. Queuing writes nothing to SharePoint; the
+        // queued operation takes the writer claim itself later, so an active writer is no reason
+        // to refuse.
         var dispatcher = store.Find<DispatcherDocument>(
             "asx_claim",
             WorkCoordination.Library(service, request.LibraryId)
@@ -284,31 +322,45 @@ public sealed class SecurityAdministration
             );
         }
         if (dispatcher != null)
-        {
-            if (dispatcher.Value.RunId != null)
-                throw new EvaluationBlockedException(
-                    "An external writer is active. Queue after it completes."
-                );
             store.Save(dispatcher);
-        }
-        string baseline = TemplateStore.Text(catalog.Library, "asx_aclhash");
-        if (!Regex.IsMatch(baseline, "\\A[a-f0-9]{64}\\z"))
-            throw new EvaluationBlockedException(
-                "A reviewed complete library ACL baseline is required."
-            );
-        var desired = workerRefresh ? existing.Value.Approved : existing.Value.Desired;
-        var entries = desired
+        // A scheduled refresh repeats what was applied; an admin's apply, also one that waited
+        // for the run before it, applies the teams the admin chose.
+        bool admin = !workerRefresh || request.Command == "ApplyPending";
+        var desired = admin ? existing.Value.Desired : existing.Value.Approved;
+        var queued = desired
             .Concat(
                 existing
                     .Value.ManagedTeams.Where(team => !desired.Any(d => d.TeamId == team))
                     .Select(team => new PolicyEntry { TeamId = team, Access = "None" })
             )
             .ToArray();
+        // A team deleted in Dataverse keeps no access, also when the scheduled refresh repeats
+        // what was applied: its entry asks for none, so the run removes Documents' grant for its
+        // Documents group, and its registration is retired. The group itself stays.
+        var live = TeamDirectory.Read(service, queued.Select(e => e.TeamId));
+        var entries = queued
+            .Select(e =>
+                live.ContainsKey(e.TeamId)
+                    ? e
+                    : new PolicyEntry { TeamId = e.TeamId, Access = "None" }
+            )
+            .ToArray();
         foreach (var entry in entries)
+        {
+            if (live.TryGetValue(entry.TeamId, out var team))
+                TeamDirectory.Remember(store, team);
+            else
+                TeamDirectory.Retire(store, entry.TeamId);
             new TeamSnapshotReader(service).Read(entry.TeamId);
+        }
         var generation = Guid.NewGuid();
         string operationKey = "policywork:" + generation.ToString("N");
-        if (!workerRefresh)
+        // The admin's consent is used by this run only; a later reset to inheritance asks again.
+        bool breakInheritance = request.BreakInheritance || existing.Value.BreakInheritance;
+        existing.Value.BreakInheritance = false;
+        if (breakInheritance)
+            existing.Value.Inherits = false;
+        if (admin)
         {
             existing.Value.ApprovedReadRole = existing.Value.ReadRole;
             existing.Value.ApprovedContributeRole = existing.Value.ContributeRole;
@@ -321,7 +373,7 @@ public sealed class SecurityAdministration
         existing.Value.Generation = generation;
         existing.Value.Queued = entries;
         existing.Value.OperationKey = operationKey;
-        existing.Value.BaselineHash = baseline;
+        existing.Value.ApplyPending = false;
         existing.Value.Status = "Queued";
         store.Save(existing);
         store.Create(
@@ -339,7 +391,7 @@ public sealed class SecurityAdministration
                 Entries = entries,
                 ReadRole = existing.Value.ApprovedReadRole,
                 ContributeRole = existing.Value.ApprovedContributeRole,
-                BaselineHash = baseline,
+                BreakInheritance = breakInheritance,
             }
         );
         foreach (var entry in entries)
@@ -368,18 +420,88 @@ public sealed class SecurityAdministration
         return Result(store.Require<PolicyDocument>("asx_policy", policyKey));
     }
 
+    /// <summary>
+    /// The admin's Apply access replaces the library's queued access run, the same way a newer
+    /// team snapshot replaces idle work in SecurityRefresh: the run is cancelled with the
+    /// existing Cancel semantics (nothing in SharePoint is undone) and the apply continues in
+    /// this transaction, so the admin's newer intent wins. A run with a write SharePoint has not
+    /// answered, or one a flow holds right now, is never replaced: the change then waits
+    /// (ApplyPending) and the next access review applies it once the run can be replaced.
+    /// </summary>
+    private StoredRow<PolicyDocument> ReplaceQueuedRun(
+        StoredRow<PolicyDocument> policy,
+        SecurityRequest request
+    )
+    {
+        if (policy.Value.OperationKey == null)
+            return policy;
+        var queued = store.Require<SecurityOperation>("asx_operation", policy.Value.OperationKey);
+        if (queued.Value.ExternalSubmitted && !queued.Value.ExternalResponseKnown)
+            return policy;
+        var claim = store.Find<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(service, queued.Value.Key)
+        );
+        if (
+            claim?.Value.OperationKey == queued.Value.Key
+            && claim.Value.RunId != null
+            && claim.Value.LeaseUntilUtc > DateTime.UtcNow
+        )
+            return policy;
+        Version(policy.Row, request.RowVersion);
+        new SecurityWorker(service).Execute(
+            new WorkerRequest { Command = "Cancel", Key = queued.Value.Key },
+            true
+        );
+        var replaced = store.Require<SecurityOperation>("asx_operation", queued.Value.Key);
+        replaced.Value.ErrorCode = "Replaced by a newer access change.";
+        store.Save(replaced);
+        var current = store.Require<PolicyDocument>("asx_policy", policy.Value.Key);
+        request.RowVersion = current.Row.RowVersion;
+        return current;
+    }
+
+    /// <summary>
+    /// Retry or Cancel of the library's queued access run, from the library in Sites. It acts
+    /// only on the run the admin saw, and keeps the operator rules (SecurityWorker.Manage): a
+    /// run a flow still holds waits for its claim to expire, Retry reads back any write whose
+    /// outcome is unknown before writing again, and Cancel never undoes anything in SharePoint.
+    /// </summary>
+    private SecurityResult ManageRun(StoredRow<PolicyDocument>? policy, SecurityRequest request)
+    {
+        if (
+            policy == null
+            || string.IsNullOrEmpty(request.OperationKey)
+            || policy.Value.OperationKey != request.OperationKey
+        )
+            throw new EvaluationBlockedException(
+                "This library's access run changed. Refresh the library and try again."
+            );
+        new SecurityWorker(service).Execute(
+            new WorkerRequest
+            {
+                Command = request.Command == "RetryAccessRun" ? "Retry" : "Cancel",
+                Key = request.OperationKey!,
+            },
+            true
+        );
+        return Result(store.Require<PolicyDocument>("asx_policy", policy.Value.Key));
+    }
+
     public static void Validate(PolicyEntry[] entries, PolicyRole read, PolicyRole contribute)
     {
         if (
             entries == null
-            || entries.Length > 10
+            || entries.Length > Domain.Bounds.TeamEntries
             || entries.Any(e =>
                 e.TeamId == Guid.Empty || !new[] { "None", "Read", "Contribute" }.Contains(e.Access)
             )
             || entries.Select(e => e.TeamId).Distinct().Count() != entries.Length
         )
             throw new EvaluationBlockedException(
-                "At most ten unique team policy entries with named access levels required."
+                "At most "
+                    + Domain.Bounds.TeamEntries
+                    + " unique team policy entries with named access levels required."
             );
         ValidateRole(read, true);
         ValidateRole(contribute, false);
@@ -387,16 +509,31 @@ public sealed class SecurityAdministration
             throw new EvaluationBlockedException("Read and Contribute roles must be distinct.");
     }
 
+    // Rights that administer the site rather than its documents, as SharePoint's PermissionKind
+    // names them, with their one-based bit position in the 64-bit permission mask
+    // (https://learn.microsoft.com/dotnet/api/microsoft.sharepoint.client.permissionkind).
+    // Documents grants teams only Read and Contribute, so a level carrying any of these is
+    // refused. Every other right is the site's own choice: a customized level is accepted.
+    // ManageAlerts (bit 39) stays accepted: it only lets a member manage other users' alerts,
+    // that is who is e-mailed about changes they can already see, and grants no access.
+    private static readonly (string Name, int Bit)[] AdministrativeRights =
+    {
+        ("ManageLists", 12),
+        // Adds and edits pages and web parts, which can carry script.
+        ("AddAndCustomizePages", 19),
+        ("ManageSubwebs", 24),
+        ("CreateGroups", 25),
+        ("ManagePermissions", 26),
+        ("ManageWeb", 31),
+        ("EnumeratePermissions", 63),
+    };
+
+    /// <summary>
+    /// Accepts the site's Read or Contribute permission level, customized or not, unless it
+    /// carries administrative rights; the refusal names them. Read again at every access run.
+    /// </summary>
     public static void ValidateRole(PolicyRole role, bool read)
     {
-        // PermissionKind uses one-based bit positions. Allow the documented default role permissions,
-        // require document read/write fundamentals, and reject all unknown or administrative bits.
-        const uint readHigh = 176,
-            readLow = 138612833,
-            contributeHigh = 432,
-            contributeLow = 1011028719;
-        const uint readRequired = 200737,
-            contributeRequired = 200751;
         if (
             role == null
             || role.Id <= 0
@@ -414,13 +551,28 @@ public sealed class SecurityAdministration
             )
             || role.High != high.ToString(System.Globalization.CultureInfo.InvariantCulture)
             || role.Low != low.ToString(System.Globalization.CultureInfo.InvariantCulture)
-            || (high & ~(read ? readHigh : contributeHigh)) != 0
-            || (low & ~(read ? readLow : contributeLow)) != 0
-            || (low & (read ? readRequired : contributeRequired))
-                != (read ? readRequired : contributeRequired)
         )
             throw new EvaluationBlockedException(
-                "Reviewed role permissions do not match bounded Read/Contribute semantics."
+                "SharePoint returned an unreadable permission mask for the site's "
+                    + (read ? "Read" : "Contribute")
+                    + " permission level."
+            );
+        ulong mask = ((ulong)high << 32) | low;
+        // FullMask (Full Control) sets every bit SharePoint defines.
+        var held =
+            high == int.MaxValue && low == uint.MaxValue
+                ? new[] { "FullMask" }
+                : AdministrativeRights
+                    .Where(right => (mask & (1UL << (right.Bit - 1))) != 0)
+                    .Select(right => right.Name)
+                    .ToArray();
+        if (held.Length > 0)
+            throw new EvaluationBlockedException(
+                "The site's "
+                    + (read ? "Read" : "Contribute")
+                    + " permission level includes administrative rights ("
+                    + string.Join(", ", held)
+                    + "). Documents grants teams only Read and Contribute, so remove these rights from the permission level in SharePoint, then try again."
             );
     }
 
@@ -432,7 +584,60 @@ public sealed class SecurityAdministration
             );
     }
 
-    private static SecurityResult Result(StoredRow<PolicyDocument>? row) =>
+    /// <summary>
+    /// The policy with its diff, and the queued access run's status and first notice, so the
+    /// library shows a run that stopped or waits instead of "Applying access" forever.
+    /// </summary>
+    private SecurityResult Result(StoredRow<PolicyDocument>? row)
+    {
+        var result = Describe(row);
+        var run =
+            row?.Value.OperationKey == null
+                ? null
+                : store.Find<SecurityOperation>("asx_operation", row.Value.OperationKey)?.Value;
+        if (run != null)
+        {
+            result.RunStatus = run.Status;
+            result.RunNotice = run.ErrorCode ?? run.Notices.FirstOrDefault();
+            result.RunNextAttemptUtc = run.Status == "RetryWait" ? run.NextAttemptUtc : null;
+        }
+        if (row != null)
+            result.Teams = Teams(row.Value);
+        return result;
+    }
+
+    /// <summary>
+    /// The policy's teams with their names, read with one query, so a team deleted in Dataverse
+    /// is shown as deleted by its last known name instead of failing the read.
+    /// </summary>
+    private PolicyTeam[] Teams(PolicyDocument policy)
+    {
+        var ids = policy
+            .Desired.Concat(policy.Applied)
+            .Select(e => e.TeamId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToArray();
+        var live = TeamDirectory.Read(service, ids);
+        return ids.Select(id =>
+                live.TryGetValue(id, out var team)
+                    ? new PolicyTeam { TeamId = id, Name = TeamPrincipal.Name(team) }
+                    : new PolicyTeam
+                    {
+                        TeamId = id,
+                        Deleted = true,
+                        Name = store
+                            .Find<TeamRegistration>(
+                                "asx_teamregistration",
+                                "team:" + id.ToString("N")
+                            )
+                            ?.Value.Name,
+                    }
+            )
+            .ToArray();
+    }
+
+    private static SecurityResult Describe(StoredRow<PolicyDocument>? row) =>
         new SecurityResult
         {
             Status = row?.Value.Status ?? "Missing",

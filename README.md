@@ -2,25 +2,40 @@
 
 Ascentix Documents provisions SharePoint folder structures from Dataverse records and manages library access through Dataverse teams. Define folder templates, publish them, and let the worker apply the resulting folder and access changes. It runs independently of Ascentix Rules Engine.
 
-**Version 0.1.0.3 is a public preview.** Read the [release notes](docs/public-preview.md) for features and known limitations. The managed solution is the intended evaluation download. Source is licensed under [Apache 2.0](LICENSE).
+**Version 0.1.0.4 is a public beta.** Read the [release notes](docs/public-beta.md) for features and known limitations. The managed solution is the intended evaluation download. Source is licensed under [Apache 2.0](LICENSE).
 
 ## What it does
 
 - Creates conditional folder structures with names drawn from record data and supported lookups.
 - Supports multiple document destinations and a draft, preview, and publication workflow for templates.
-- Reuses existing managed folders when work is replayed or replanned.
+- Reuses existing managed folders when work is replayed or re-run.
 - Applies library Read and Contribute policies for registered Dataverse teams and reconciles membership changes.
-- Provides work inspection, retry, cancellation, and replan operations.
-- Offers a system-wide record-update switch, Off by default. Disabling it disables the Update and UpdateMultiple plugin steps.
+- Provides work inspection in Monitor, with retry, cancellation, and re-runs.
 - Retains document folders when their business record is deleted and marks the record for decommission review.
+
+## New in 0.1.0.4
+
+- No customer save can be blocked by Documents. Capture is asynchronous.
+- No table-count limit. Event registration is managed in the application.
+- Temporary failures retry automatically.
+- Admin stops always work.
+- A redesigned admin page: a Folder templates overview with a three-step editor and autosave, one Monitor list, a team access panel in Sites & access, and Settings in one place.
+- Support for B2B guests, Entra and Microsoft 365 group teams, and government clouds is built in. Further testing is ongoing, as these are more complex areas.
+- Re-point and Remove for destinations.
+- Monitor lists blocked jobs and library setups, records waiting for data, and jobs retrying automatically, with **Retry**, **Cancel job** or **Re-run**; a stuck access run has **Retry access run** and **Cancel access run** in Sites & access.
+- Team access can be edited while it is being applied, and customized Read and Contribute permission levels are accepted.
+- SharePoint hosts in every Microsoft cloud, including GCC High, DoD and 21Vianet.
+- Update folders when records change is not in this release. An environment that had it on no longer captures record updates; Repair all removes the leftover Update steps.
+
+Upgrading from 0.1.0.3? Read the [upgrade notes](docs/upgrade-0.1.0.4.md).
 
 ## Evaluate
 
-Use a dedicated Dataverse and SharePoint evaluation environment. Follow the [managed installation guide](docs/customer-installation.md), including the application identity, connector connections, worker roles, event registrations, and disposable-record check. Credentials stay in the platform.
+Use a dedicated Dataverse and SharePoint evaluation environment. Follow the [managed installation guide](docs/customer-installation.md), including the application identity, connector connections, worker roles, tables, and disposable-record check. Credentials stay in the platform.
 
-The [operations guide](docs/operations.md) covers work recovery, access changes, upgrades, and retention. Read [record-update processing](docs/record-update-processing.md) before enabling update monitoring.
+The [operations guide](docs/operations.md) covers work recovery, access changes, upgrades, and retention. [Record changes](docs/record-update-processing.md) explains how to apply a template to existing records.
 
-This preview has bounded live validation. Sustained high-volume capacity, advanced recovery, and a fresh installation of the corrected package remain unverified. See the release notes for the remaining limitations.
+This beta has bounded live validation. Sustained high-volume capacity, advanced recovery, a fresh installation, and uninstall remain unverified. Support for B2B guests, Entra and Microsoft 365 group teams, and government clouds is built in, and further testing is ongoing. See the release notes for the remaining limitations.
 
 ## Build from source
 

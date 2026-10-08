@@ -1,0 +1,1041 @@
+using System;
+using System.Linq;
+using Ascentix.Documents.Conditions;
+using Ascentix.Documents.Dataverse;
+using Ascentix.Documents.Plugins;
+using Microsoft.Xrm.Sdk;
+using Xunit;
+
+namespace Ascentix.Documents.SdkTests;
+
+public sealed class RuntimeAdministrationTests
+{
+    private sealed class Env
+    {
+        internal readonly EventRegistrationTests.Org Org;
+        internal readonly Guid Runtime;
+        internal readonly Guid Admin = Guid.NewGuid();
+
+        internal Env(params string[] tables)
+            : this(tables, Array.Empty<string>()) { }
+
+        internal Env(string[] tables, string[] orgTables)
+        {
+            Org = new EventRegistrationTests.Org(
+                new[] { "account", "contact", "lead" }.Concat(orgTables).ToArray()
+            );
+            Runtime = RuntimeSeed.Seed(Org.S.Memory, Org.Worker, tables);
+            var role = Guid.NewGuid();
+            Org.S.Memory.Seed(
+                new Entity("role", role)
+                {
+                    ["roletemplateid"] = new EntityReference(
+                        "roletemplate",
+                        AdministratorCheck.SystemAdministratorTemplate
+                    ),
+                }
+            );
+            Org.S.Memory.Seed(
+                new Entity("systemuserroles", Guid.NewGuid())
+                {
+                    ["systemuserid"] = Admin,
+                    ["roleid"] = role,
+                }
+            );
+        }
+
+        internal RuntimeRequest Get() =>
+            RuntimeAdministration.Execute(Org.S, new RuntimeRequest(), true, Admin);
+
+        internal RuntimeRequest Save(RuntimeRequest r, Guid? caller = null)
+        {
+            r.Command = "Save";
+            return RuntimeAdministration.Execute(Org.S, r, true, caller ?? Admin);
+        }
+
+        internal RuntimeRequest Change(string command, string table, Guid? caller = null) =>
+            RuntimeAdministration.Execute(
+                Org.S,
+                new RuntimeRequest { Command = command, Table = table },
+                true,
+                caller ?? Admin
+            );
+
+        internal string[] Rows() =>
+            Org
+                .S.Memory.Rows.Values.Where(r => r.LogicalName == "asx_runtimetable")
+                .Select(r => r.GetAttributeValue<string>("asx_logicalname"))
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToArray();
+
+        internal int StepsFor(string table) =>
+            Org.Steps.Count(s => s.GetAttributeValue<string>("name").EndsWith(" " + table));
+
+        /// <summary>Records one active site writer in the shared connection budget.</summary>
+        internal void ActiveWriter()
+        {
+            var store = new DocumentStore(Org.S.Memory);
+            if (store.Find<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey) == null)
+                store.Create(
+                    "asx_claim",
+                    new ConnectionBudget { Key = WorkCoordination.BudgetKey, Status = "Budget" }
+                );
+            var budget = store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey);
+            budget.Value.Writers = new[] { "site" };
+            store.Save(budget);
+        }
+
+        /// <summary>Whether the Update event step of a table is active.</summary>
+        internal bool UpdateStepActive(string table) =>
+            (
+                Org.Steps.Single(s =>
+                        s.GetAttributeValue<string>("name")
+                        == "Ascentix Documents: event Update " + table
+                    )
+                    .GetAttributeValue<OptionSetValue>("statecode")
+                    ?.Value
+                ?? 0
+            ) == 0;
+
+        internal void ClearRows()
+        {
+            foreach (
+                var row in Org
+                    .S.Memory.Rows.Values.Where(r => r.LogicalName == "asx_runtimetable")
+                    .ToList()
+            )
+                Org.S.Memory.Rows.Remove(row.Id);
+        }
+    }
+
+    [Fact]
+    public void AddTableRegistersOnlyTheNewTableAndAddsItsRow()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        int accountSteps = e.StepsFor("account");
+        e.Org.S.Writes.Clear();
+        var got = e.Change("AddTable", "contact");
+        Assert.Equal(new[] { "account", "contact" }, got.Tables.OrderBy(t => t).ToArray());
+        Assert.Equal(new[] { "account", "contact" }, e.Rows());
+        Assert.Equal(accountSteps, e.StepsFor("account"));
+        // No Update step: "Update folders when records change" is out of 0.1.0.4.
+        Assert.Equal(EventRegistrationPlan.RecordMessages.Length - 1, e.StepsFor("contact"));
+        Assert.DoesNotContain(
+            e.Org.S.Writes,
+            w => w.EndsWith("sdkmessageprocessingstep") && w.StartsWith("Delete")
+        );
+        Assert.All(got.Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+    }
+
+    [Fact]
+    public void AddTableForAnEnabledTableMakesNoWrites()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        e.Org.S.Writes.Clear();
+        int updates = e.Org.S.Memory.Updates.Count;
+        e.Change("AddTable", "account");
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Equal(updates, e.Org.S.Memory.Updates.Count);
+    }
+
+    [Fact]
+    public void NonAdministratorAddTableIsRefusedBeforeAnyWrite()
+    {
+        var e = new Env("account");
+        var ex = Assert.Throws<EvaluationBlockedException>(() =>
+            e.Change("AddTable", "contact", Guid.NewGuid())
+        );
+        Assert.Contains("System Administrator", ex.Message);
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Empty(e.Org.S.Memory.Updates);
+    }
+
+    [Fact]
+    public void AddTableOfAnUnknownTableNamesItAndWritesNothing()
+    {
+        var e = new Env(new[] { "account" }, new[] { "cr123_gone" });
+        e.Org.S.MissingTables.Add("cr123_gone");
+        var ex = Assert.Throws<EvaluationBlockedException>(() =>
+            e.Change("AddTable", "cr123_gone")
+        );
+        Assert.Contains("cr123_gone", ex.Message);
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Equal(0, e.StepsFor("cr123_gone"));
+    }
+
+    [Fact]
+    public void GetSucceedsWithoutAWorkerAndReportsAnUnknownWorker()
+    {
+        var e = new Env("account");
+        e.Org.S.Memory.Rows[e.Runtime]["asx_workeruserid"] = Guid.Empty.ToString();
+        var none = e.Get();
+        Assert.Null(none.Registration!.Error);
+        var unknown = Guid.NewGuid();
+        e.Org.S.Memory.Rows[e.Runtime]["asx_workeruserid"] = unknown.ToString();
+        e.Org.S.UnknownUsers.Add(unknown);
+        var got = e.Get();
+        Assert.Contains("could not be checked", got.Registration!.Error);
+    }
+
+    [Fact]
+    public void SaveWithoutSystemJobsReadIsRefusedBeforeAnyWrite()
+    {
+        var e = new Env("account");
+        var request = e.Get();
+        e.Org.S.WorkerLacksSystemJobs = true;
+        e.Org.S.Writes.Clear();
+        int updates = e.Org.S.Memory.Updates.Count;
+        var ex = Assert.Throws<EvaluationBlockedException>(() => e.Save(request));
+        Assert.Contains("prvReadAsyncOperation", ex.Message);
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Equal(updates, e.Org.S.Memory.Updates.Count);
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Empty(e.Org.Steps);
+    }
+
+    [Fact]
+    public void AddTableTheWorkerCannotReadGloballyIsRefusedBeforeAnyWrite()
+    {
+        var e = new Env("account");
+        e.Org.S.WorkerReadDepth["contact"] = Microsoft.Crm.Sdk.Messages.PrivilegeDepth.Basic;
+        int updates = e.Org.S.Memory.Updates.Count;
+        var ex = Assert.Throws<EvaluationBlockedException>(() => e.Change("AddTable", "contact"));
+        Assert.Contains("'contact'", ex.Message);
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Equal(updates, e.Org.S.Memory.Updates.Count);
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Empty(e.Org.Steps);
+    }
+
+    [Fact]
+    public void AddTableOnALegacyProfileMigratesRowsAndClearsTheJson()
+    {
+        var e = new Env("account");
+        e.ClearRows();
+        Assert.False(e.Get().Migrated);
+        var got = e.Change("AddTable", "contact");
+        Assert.True(got.Migrated);
+        Assert.Equal(new[] { "account", "contact" }, e.Rows());
+        Assert.Equal(
+            "[]",
+            e.Org.S.Memory.Rows[e.Runtime].GetAttributeValue<string>("asx_allowedtables")
+        );
+    }
+
+    [Fact]
+    public void RemoveTableDeletesItsStepsAndRowOnly()
+    {
+        var e = new Env("account", "contact");
+        e.Save(e.Get());
+        int accountSteps = e.StepsFor("account");
+        Assert.NotEqual(0, e.StepsFor("contact"));
+        var got = e.Change("RemoveTable", "contact");
+        Assert.Equal(new[] { "account" }, got.Tables);
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Equal(0, e.StepsFor("contact"));
+        Assert.Equal(accountSteps, e.StepsFor("account"));
+    }
+
+    [Fact]
+    public void RemoveTableOfAnAbsentTableMakesNoWrites()
+    {
+        var e = new Env("account");
+        e.Org.S.Writes.Clear();
+        e.Change("RemoveTable", "contact");
+        Assert.Empty(e.Org.S.Writes);
+    }
+
+    [Fact]
+    public void RemoveTableSucceedsWhileAWriterIsActive()
+    {
+        var e = new Env("account", "contact");
+        e.Save(e.Get());
+        e.ActiveWriter();
+        var got = e.Change("RemoveTable", "contact");
+        Assert.Equal(new[] { "account" }, got.Tables);
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Equal(0, e.StepsFor("contact"));
+    }
+
+    [Fact]
+    public void PauseSucceedsWhileAWriterIsActive()
+    {
+        var e = new Env("account");
+        var running = e.Get();
+        running.Enabled = true;
+        e.Save(running);
+        e.ActiveWriter();
+        var pause = e.Get();
+        pause.Enabled = false;
+        var paused = e.Save(pause);
+        Assert.False(paused.Enabled);
+        Assert.False(e.Org.S.Memory.Rows[e.Runtime].GetAttributeValue<bool>("asx_enabled"));
+    }
+
+    [Theory]
+    [InlineData("WorkerDisabled")]
+    [InlineData("TableUnreadable")]
+    [InlineData("NoSystemJobsRead")]
+    public void PauseSucceedsWhateverTheWorkerAndTableState(string problem)
+    {
+        var e = new Env("account");
+        var running = e.Get();
+        running.Enabled = true;
+        e.Save(running);
+        if (problem == "WorkerDisabled")
+            e.Org.S.Memory.Rows[e.Org.Worker]["isdisabled"] = true;
+        if (problem == "TableUnreadable")
+            e.Org.S.WorkerReadDepth["account"] = Microsoft.Crm.Sdk.Messages.PrivilegeDepth.Basic;
+        if (problem == "NoSystemJobsRead")
+            e.Org.S.WorkerLacksSystemJobs = true;
+        int stepWrites = e.Org.S.StepWrites;
+        var pause = e.Get();
+        pause.Enabled = false;
+        var paused = e.Save(pause);
+        Assert.False(paused.Enabled);
+        Assert.Equal(stepWrites, e.Org.S.StepWrites);
+    }
+
+    [Fact]
+    public void ResumeWithAnUnreadableTableSucceedsAndReportsReadiness()
+    {
+        var e = new Env("account", "contact");
+        e.Save(e.Get());
+        e.ActiveWriter();
+        e.Org.S.WorkerReadDepth["contact"] = Microsoft.Crm.Sdk.Messages.PrivilegeDepth.Basic;
+        var resume = e.Get();
+        resume.Enabled = true;
+        var resumed = e.Save(resume);
+        Assert.True(resumed.Enabled);
+        Assert.Equal(
+            "WorkerCannotRead",
+            resumed.Registration!.Readiness.Single(r => r.Scope == "contact").Status
+        );
+    }
+
+    [Fact]
+    public void ResumeWithADisabledWorkerSucceedsAndReportsIt()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        e.Org.S.Memory.Rows[e.Org.Worker]["isdisabled"] = true;
+        var resume = e.Get();
+        resume.Enabled = true;
+        var resumed = e.Save(resume);
+        Assert.True(resumed.Enabled);
+        Assert.Contains("disabled", resumed.Registration!.Error);
+    }
+
+    [Fact]
+    public void RecordUpdatesToggleOnlyTheUpdateStepsWhileAWriterIsActive()
+    {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
+        var e = new Env("account", "contact");
+        RuntimeSeed.RecordUpdatesStoredOn(e.Org.S.Memory);
+        e.Save(e.Get());
+        Assert.True(e.UpdateStepActive("account"));
+        e.ActiveWriter();
+        e.Org.S.WorkerLacksSystemJobs = true;
+        var off = e.Get();
+        off.ProcessRecordUpdates = false;
+        var saved = e.Save(off);
+        Assert.False(saved.ProcessRecordUpdates);
+        Assert.False(e.UpdateStepActive("account"));
+        Assert.False(e.UpdateStepActive("contact"));
+        Assert.All(
+            e.Org.Steps.Where(s =>
+                !s.GetAttributeValue<string>("name").StartsWith("Ascentix Documents: event Update")
+            ),
+            s => Assert.Equal(0, s.GetAttributeValue<OptionSetValue>("statecode")?.Value ?? 0)
+        );
+        e.Org.S.WorkerLacksSystemJobs = false;
+        Assert.All(e.Get().Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+        var on = e.Get();
+        on.ProcessRecordUpdates = true;
+        e.Save(on);
+        Assert.True(e.UpdateStepActive("account"));
+        Assert.True(e.UpdateStepActive("contact"));
+    }
+
+    [Fact]
+    public void SaveThatChangesTheWorkerStillRequiresIdleAndRevalidates()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        var other = Guid.NewGuid();
+        e.Org.S.Memory.Seed(
+            new Entity("systemuser", other)
+            {
+                ["isdisabled"] = false,
+                ["applicationid"] = Guid.NewGuid(),
+            }
+        );
+        e.ActiveWriter();
+        var change = e.Get();
+        change.WorkerId = other;
+        change.Enabled = true;
+        var busy = Assert.Throws<EvaluationBlockedException>(() => e.Save(change));
+        Assert.Contains("active writers", busy.Message);
+        e.Org.S.Memory.Rows[other]["isdisabled"] = true;
+        var disabled = Assert.Throws<EvaluationBlockedException>(() => e.Save(change));
+        Assert.Contains("disabled", disabled.Message);
+        Assert.False(e.Get().Enabled);
+    }
+
+    [Fact]
+    public void SaveThatChangesTheHostsStillRequiresIdleAndRevalidates()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        e.ActiveWriter();
+        var change = e.Get();
+        change.SharePointHosts = new[] { "other.sharepoint.com" };
+        change.Enabled = true;
+        var busy = Assert.Throws<EvaluationBlockedException>(() => e.Save(change));
+        Assert.Contains("active writers", busy.Message);
+        change.SharePointHosts = new[] { "https://other.sharepoint.com/sites/x" };
+        Assert.Throws<EvaluationBlockedException>(() => e.Save(change));
+        Assert.False(e.Get().Enabled);
+    }
+
+    [Fact]
+    public void NonAdministratorRemoveTableIsRefusedBeforeAnyWrite()
+    {
+        var e = new Env("account", "contact");
+        var ex = Assert.Throws<EvaluationBlockedException>(() =>
+            e.Change("RemoveTable", "contact", Guid.NewGuid())
+        );
+        Assert.Contains("System Administrator", ex.Message);
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Empty(e.Org.S.Memory.Updates);
+    }
+
+    [Fact]
+    public void SaveIgnoresTheTablesInTheRequest()
+    {
+        var e = new Env("account");
+        var got = e.Get();
+        got.Tables = new[] { "contact", "lead" };
+        var saved = e.Save(got);
+        Assert.Equal(new[] { "account" }, saved.Tables);
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Equal(0, e.StepsFor("contact"));
+    }
+
+    [Fact]
+    public void LegacyProfileShowsPendingThenSaveMigratesAndRegisters()
+    {
+        var e = new Env("account");
+        foreach (
+            var row in e
+                .Org.S.Memory.Rows.Values.Where(r => r.LogicalName == "asx_runtimetable")
+                .ToList()
+        )
+            e.Org.S.Memory.Rows.Remove(row.Id);
+        var got = e.Get();
+        Assert.False(got.Migrated);
+        Assert.Equal(new[] { "account" }, got.Tables);
+        Assert.Equal(
+            "Pending",
+            got.Registration!.Readiness.Single(r => r.Scope == "account").Status
+        );
+        var saved = e.Save(got);
+        Assert.True(saved.Migrated);
+        Assert.All(saved.Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+        Assert.Equal(
+            "[]",
+            e.Org.S.Memory.Rows[e.Runtime].GetAttributeValue<string>("asx_allowedtables")
+        );
+    }
+
+    [Fact]
+    public void NonAdministratorSaveIsRefusedBeforeAnyWrite()
+    {
+        var e = new Env("account");
+        var got = e.Get();
+        var ex = Assert.Throws<EvaluationBlockedException>(() => e.Save(got, Guid.NewGuid()));
+        Assert.Contains("System Administrator", ex.Message);
+        Assert.Empty(e.Org.S.Writes);
+    }
+
+    [Fact]
+    public void RepeatedSaveWithoutChangesMakesNoStepWrites()
+    {
+        var e = new Env("account", "contact");
+        var saved = e.Save(e.Get());
+        int writes = e.Org.S.StepWrites;
+        e.Save(saved);
+        Assert.Equal(writes, e.Org.S.StepWrites);
+    }
+
+    [Fact]
+    public void BatchedSaveRegistersAtMostTheLimitAndLeavesTheRestPending()
+    {
+        var added = Enumerable
+            .Range(0, EventRegistrations.MaxNewTablesPerSave + 2)
+            .Select(i => "cr123_t" + i)
+            .ToArray();
+        var e = new Env(new[] { "account" }.Concat(added).ToArray(), added);
+        var saved = e.Save(e.Get());
+        var newScopes = saved
+            .Registration!.Readiness.Where(r => r.Scope == "account" || added.Contains(r.Scope))
+            .ToList();
+        Assert.Equal(
+            EventRegistrations.MaxNewTablesPerSave,
+            newScopes.Count(r => r.Status == "Ready")
+        );
+        Assert.Equal(3, newScopes.Count(r => r.Status == "Pending"));
+        Assert.Equal(
+            added.Length + 1,
+            e.Org.S.Memory.Rows.Values.Count(r => r.LogicalName == "asx_runtimetable")
+        );
+        var second = e.Save(saved);
+        Assert.All(second.Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+    }
+
+    [Fact]
+    public void LegacyMigrationAboveLimitIsBatched()
+    {
+        var legacy = Enumerable
+            .Range(0, EventRegistrations.MaxNewTablesPerSave + 1)
+            .Select(i => "cr123_t" + i)
+            .ToArray();
+        var e = new Env(legacy, legacy);
+        foreach (
+            var row in e
+                .Org.S.Memory.Rows.Values.Where(r => r.LogicalName == "asx_runtimetable")
+                .ToList()
+        )
+            e.Org.S.Memory.Rows.Remove(row.Id);
+        var got = e.Get();
+        Assert.False(got.Migrated);
+        var saved = e.Save(got);
+        Assert.Equal(1, saved.Registration!.Readiness.Count(r => r.Status == "Pending"));
+        var second = e.Save(saved);
+        Assert.All(second.Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+    }
+
+    [Fact]
+    public void StaleRuntimeSaveIsRefusedWithoutWrites()
+    {
+        var e = new Env("account");
+        var got = e.Get();
+        got.RowVersion = "stale";
+        Assert.Throws<EvaluationBlockedException>(() => e.Save(got));
+        Assert.Empty(e.Org.S.Writes);
+        Assert.Empty(e.Org.S.Memory.Updates);
+    }
+
+    [Fact]
+    public void NonAdministratorUnregisterIsRefused()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        int steps = e.Org.Steps.Length;
+        Assert.NotEqual(0, steps);
+        var r = e.Get();
+        r.Command = "Unregister";
+        Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeAdministration.Execute(e.Org.S, r, true, Guid.NewGuid())
+        );
+        Assert.Equal(steps, e.Org.Steps.Length);
+    }
+
+    [Fact]
+    public void WorkerMustBeAnEnabledApplicationUser()
+    {
+        var e = new Env("account");
+        var got = e.Get();
+        var human = Guid.NewGuid();
+        e.Org.S.Memory.Seed(new Entity("systemuser", human) { ["isdisabled"] = false });
+        got.WorkerId = human;
+        var ex = Assert.Throws<EvaluationBlockedException>(() => e.Save(got));
+        Assert.Contains("application user", ex.Message);
+    }
+
+    [Fact]
+    public void GetReportsUnsupportedTableInsteadOfFailing()
+    {
+        var e = new Env("account", "cr123_gone");
+        var got = e.Get();
+        Assert.Contains("cr123_gone", got.Registration!.Error);
+    }
+
+    [Fact]
+    public void UnregisterRemovesAllOwnedSteps()
+    {
+        var e = new Env("account");
+        e.Save(e.Get());
+        var r = e.Get();
+        r.Command = "Unregister";
+        var after = RuntimeAdministration.Execute(e.Org.S, r, true, e.Admin);
+        Assert.Empty(e.Org.Steps);
+        Assert.All(after.Registration!.Readiness, x => Assert.Equal("Pending", x.Status));
+    }
+
+    [Fact]
+    public void AddTableOnALegacyProfileBatchesRegistrationAndAlwaysIncludesTheNewTable()
+    {
+        var legacy = Enumerable
+            .Range(0, EventRegistrations.MaxNewTablesPerSave + 1)
+            .Select(i => "cr123_t" + i)
+            .ToArray();
+        var e = new Env(legacy, legacy.Concat(new[] { "cr123_new" }).ToArray());
+        e.ClearRows();
+        var got = e.Change("AddTable", "cr123_new");
+        var scopes = got.Registration!.Readiness.Where(r =>
+                r.Scope == "cr123_new" || legacy.Contains(r.Scope)
+            )
+            .ToList();
+        Assert.Equal(
+            EventRegistrations.MaxNewTablesPerSave,
+            scopes.Count(r => r.Status == "Ready")
+        );
+        Assert.Equal(2, scopes.Count(r => r.Status == "Pending"));
+        Assert.Equal("Ready", scopes.Single(r => r.Scope == "cr123_new").Status);
+        Assert.Equal(legacy.Length + 1, e.Rows().Length);
+    }
+
+    [Fact]
+    public void AddTableWithoutAWorkerIsRefusedAndWritesNothing()
+    {
+        var e = new Env("account");
+        e.Org.S.Memory.Rows[e.Runtime]["asx_workeruserid"] = "";
+        var ex = Assert.Throws<EvaluationBlockedException>(() => e.Change("AddTable", "contact"));
+        Assert.Contains("Select the worker application user.", ex.Message);
+        Assert.Empty(e.Org.S.Writes);
+    }
+
+    [Fact]
+    public void RemoveTableWorksForTablesDeletedFromTheEnvironment()
+    {
+        var e = new Env(new[] { "account", "cr123_a", "cr123_b" }, new[] { "cr123_a", "cr123_b" });
+        e.Save(e.Get());
+        foreach (var gone in new[] { "cr123_a", "cr123_b" })
+            e.Org.S.MissingTables.Add(gone);
+        int accountSteps = e.StepsFor("account");
+        e.Change("RemoveTable", "cr123_a");
+        Assert.Equal(new[] { "account", "cr123_b" }, e.Rows());
+        e.Change("RemoveTable", "cr123_b");
+        Assert.Equal(new[] { "account" }, e.Rows());
+        Assert.Equal(accountSteps, e.StepsFor("account"));
+        Assert.Equal(0, e.StepsFor("cr123_a"));
+        Assert.Equal(0, e.StepsFor("cr123_b"));
+    }
+
+    [Fact]
+    public void AddTableOnAMigratedProfileChecksTheRuntimeRowVersion()
+    {
+        var e = new Env("account");
+        var before = e.Org.S.Memory.Updates.Count;
+        e.Change("AddTable", "contact");
+        Assert.True(e.Org.S.Memory.Updates.Count > before);
+    }
+
+    [Fact]
+    public void GetSaysWhetherTheCallerCanChangeAndHowManyScopesNeedRepair()
+    {
+        var e = new Env("account", "contact");
+        var asAdmin = e.Get();
+        Assert.True(asAdmin.CanChange);
+        Assert.Equal(
+            "Pending",
+            asAdmin.Registration!.Readiness.Single(r => r.Scope == "contact").Status
+        );
+        Assert.Equal(
+            asAdmin.Registration.Readiness.Count(r => r.Status != "Ready"),
+            asAdmin.Registration.Pending
+        );
+        var other = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest(),
+            true,
+            Guid.NewGuid()
+        );
+        Assert.False(other.CanChange);
+        // A table the worker cannot read is not something Register can fix.
+        e.Org.S.WorkerReadDepth["contact"] = Microsoft.Crm.Sdk.Messages.PrivilegeDepth.Basic;
+        var unreadable = e.Get();
+        Assert.Equal(
+            "WorkerCannotRead",
+            unreadable.Registration!.Readiness.Single(r => r.Scope == "contact").Status
+        );
+        Assert.Equal(asAdmin.Registration.Pending - 1, unreadable.Registration.Pending);
+    }
+
+    [Fact]
+    public void SetEnabledPausesWithoutWaitingAndResumeReportsProblems()
+    {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
+        var e = new Env("account");
+        RuntimeSeed.RecordUpdatesStoredOn(e.Org.S.Memory);
+        e.Save(e.Get());
+        e.ActiveWriter();
+        var paused = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest
+            {
+                Command = "SetEnabled",
+                Enabled = false,
+                RowVersion = e.Get().RowVersion,
+            },
+            true,
+            e.Admin
+        );
+        Assert.False(paused.Enabled);
+        Assert.True(paused.CanChange);
+        e.Org.S.Memory.Rows[e.Org.Worker]["isdisabled"] = true;
+        var resumed = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest
+            {
+                Command = "SetEnabled",
+                Enabled = true,
+                RowVersion = paused.RowVersion,
+            },
+            true,
+            e.Admin
+        );
+        Assert.True(resumed.Enabled);
+        Assert.Contains("disabled", resumed.Registration!.Error);
+        // The record-update setting is kept as stored.
+        Assert.True(resumed.ProcessRecordUpdates);
+    }
+
+    [Fact]
+    public void SetEnabledIsRefusedForANonAdministratorAndForAStaleVersion()
+    {
+        var e = new Env("account");
+        var got = e.Get();
+        Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeAdministration.Execute(
+                e.Org.S,
+                new RuntimeRequest
+                {
+                    Command = "SetEnabled",
+                    Enabled = true,
+                    RowVersion = got.RowVersion,
+                },
+                true,
+                Guid.NewGuid()
+            )
+        );
+        var stale = Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeAdministration.Execute(
+                e.Org.S,
+                new RuntimeRequest
+                {
+                    Command = "SetEnabled",
+                    Enabled = true,
+                    RowVersion = "stale",
+                },
+                true,
+                e.Admin
+            )
+        );
+        Assert.Equal("Automation settings changed. Reopen the page and try again.", stale.Message);
+        Assert.Empty(e.Org.S.Memory.Updates);
+    }
+
+    [Fact]
+    public void RegisterRepairsOneTableWithoutWaitingForWriters()
+    {
+        var e = new Env("account", "contact");
+        e.ActiveWriter();
+        var repaired = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest
+            {
+                Command = "Register",
+                Table = "contact",
+                RowVersion = e.Get().RowVersion,
+            },
+            true,
+            e.Admin
+        );
+        Assert.True(repaired.CanChange);
+        Assert.Equal(
+            "Ready",
+            repaired.Registration!.Readiness.Single(r => r.Scope == "contact").Status
+        );
+        Assert.Equal(
+            "Pending",
+            repaired.Registration.Readiness.Single(r => r.Scope == "account").Status
+        );
+        Assert.True(e.StepsFor("contact") > 0);
+    }
+
+    [Fact]
+    public void RegisterIsRefusedForATableThatIsNotEnabledAndForANonAdministrator()
+    {
+        var e = new Env("account");
+        var refused = Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeAdministration.Execute(
+                e.Org.S,
+                new RuntimeRequest { Command = "Register", Table = "contact" },
+                true,
+                e.Admin
+            )
+        );
+        Assert.Equal("The table contact is not enabled in Documents.", refused.Message);
+        Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeAdministration.Execute(
+                e.Org.S,
+                new RuntimeRequest { Command = "Register", Table = "account" },
+                true,
+                Guid.NewGuid()
+            )
+        );
+        Assert.Empty(e.Org.Steps);
+    }
+
+    [Fact]
+    public void RegisterWithoutATableWorksInBatchesUntilNothingIsPending()
+    {
+        var added = Enumerable
+            .Range(0, EventRegistrations.MaxNewTablesPerSave + 2)
+            .Select(i => "cr123_t" + i)
+            .ToArray();
+        var e = new Env(new[] { "account" }.Concat(added).ToArray(), added);
+        var first = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest { Command = "Register", RowVersion = e.Get().RowVersion },
+            true,
+            e.Admin
+        );
+        // One batch registers MaxNewTablesPerSave tables; the last tables of the list stay Pending.
+        Assert.Equal(
+            3,
+            first.Registration!.Readiness.Count(r =>
+                r.Scope != EventRegistrationPlan.TeamScope && r.Status == "Pending"
+            )
+        );
+        Assert.Equal(
+            first.Registration.Readiness.Count(r =>
+                r.Status != "Ready" && r.Status != "WorkerCannotRead"
+            ),
+            first.Registration.Pending
+        );
+        var second = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest { Command = "Register", RowVersion = first.RowVersion },
+            true,
+            e.Admin
+        );
+        Assert.Equal(0, second.Registration!.Pending);
+    }
+
+    [Fact]
+    public void SetEnabledAndRegisterPassTheGuardedTransport()
+    {
+        var e = new Env("account", "contact");
+        RuntimeRequest Api(RuntimeRequest request) =>
+            e.Org.S.Memory.Transaction(() =>
+                JsonWire.Read<RuntimeRequest>(
+                    ApiHarness.Invoke(
+                        new RuntimeAdminApi(),
+                        "asx_RuntimeAdmin",
+                        e.Org.S,
+                        request,
+                        e.Admin
+                    )
+                )
+            );
+        var paused = Api(
+            new RuntimeRequest
+            {
+                Command = "SetEnabled",
+                Enabled = false,
+                RowVersion = e.Get().RowVersion,
+            }
+        );
+        Assert.False(paused.Enabled);
+        var repaired = Api(
+            new RuntimeRequest
+            {
+                Command = "Register",
+                Table = "contact",
+                RowVersion = paused.RowVersion,
+            }
+        );
+        Assert.Equal(
+            "Ready",
+            repaired.Registration!.Readiness.Single(r => r.Scope == "contact").Status
+        );
+    }
+
+    private static RuntimeRequest InTransaction(Env e, RuntimeRequest request) =>
+        e.Org.S.Memory.Transaction(() =>
+            RuntimeAdministration.Execute(e.Org.S, request, true, e.Admin)
+        );
+
+    [Fact]
+    public void AnEnabledTableDeletedFromTheOrganizationLeavesSettingsOpen()
+    {
+        // Each call runs in a transaction that a caught fault would end, as in the plug-in.
+        var e = new Env(new[] { "account", "cr123_gone" }, new[] { "cr123_gone" });
+        e.Save(e.Get());
+        e.Org.S.MissingTables.Add("cr123_gone");
+        var got = InTransaction(e, new RuntimeRequest());
+        Assert.Contains("cr123_gone", got.Registration!.Error);
+        Assert.True(got.CanChange);
+        var paused = InTransaction(
+            e,
+            new RuntimeRequest
+            {
+                Command = "SetEnabled",
+                Enabled = false,
+                RowVersion = got.RowVersion,
+            }
+        );
+        Assert.False(paused.Enabled);
+        var refused = Assert.Throws<EvaluationBlockedException>(() =>
+            InTransaction(e, new RuntimeRequest { Command = "Register", Table = "account" })
+        );
+        Assert.Contains("cr123_gone", refused.Message);
+        // Removing the deleted table still works, and then everything is ready again.
+        e.Org.S.Memory.Transaction(() => e.Change("RemoveTable", "cr123_gone"));
+        Assert.Null(InTransaction(e, new RuntimeRequest()).Registration!.Error);
+    }
+
+    [Fact]
+    public void RegisteringOneTableKeepsTheStepsOfTablesItCannotSeeWhileAnotherIsDeleted()
+    {
+        var e = new Env(new[] { "account", "contact", "cr123_gone" }, new[] { "cr123_gone" });
+        e.Save(e.Get());
+        int accountSteps = e.StepsFor("account");
+        Assert.True(accountSteps > 0);
+        e.Org.S.MissingTables.Add("cr123_gone");
+        Assert.Throws<EvaluationBlockedException>(() =>
+            InTransaction(e, new RuntimeRequest { Command = "Register", Table = "contact" })
+        );
+        Assert.Equal(accountSteps, e.StepsFor("account"));
+    }
+
+    [Fact]
+    public void RegisteringOneTableRepairsRatherThanRemovesAnotherTablesPartialSteps()
+    {
+        var e = new Env("account", "contact", "lead");
+        e.Save(e.Get());
+        int leadSteps = e.StepsFor("lead");
+        // One of lead's steps was deleted by hand: lead is Missing, not Ready.
+        e.Org.S.Memory.Rows.Remove(
+            e.Org.Steps.First(s => s.GetAttributeValue<string>("name").EndsWith(" lead")).Id
+        );
+        Assert.Equal(
+            "Missing",
+            e.Get().Registration!.Readiness.Single(r => r.Scope == "lead").Status
+        );
+        var repaired = InTransaction(
+            e,
+            new RuntimeRequest { Command = "Register", Table = "contact" }
+        );
+        Assert.Equal(leadSteps, e.StepsFor("lead"));
+        Assert.All(repaired.Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+    }
+
+    // "Update folders when records change" is out of 0.1.0.4 (RecordUpdates.Available). These
+    // tests cover the release default; tests marked "Kept code" turn the switch on.
+
+    [Fact]
+    public void SaveWithRecordUpdatesOnStoresOffWithoutAnError()
+    {
+        var e = new Env("account");
+        RuntimeSeed.RecordUpdatesStoredOn(e.Org.S.Memory);
+        var request = e.Get();
+        request.ProcessRecordUpdates = true;
+        request.Enabled = true;
+        var saved = e.Save(request);
+        Assert.False(saved.ProcessRecordUpdates);
+        Assert.True(saved.Enabled);
+        Assert.False(
+            e.Org.S.Memory.Rows[e.Runtime].GetAttributeValue<bool>("asx_processrecordupdates")
+        );
+        Assert.DoesNotContain(
+            e.Org.Steps,
+            s => s.GetAttributeValue<string>("name").StartsWith("Ascentix Documents: event Update")
+        );
+        // A settings-only Save with the switch still sent as on stores off too.
+        var again = e.Get();
+        again.ProcessRecordUpdates = true;
+        again.Enabled = false;
+        Assert.False(e.Save(again).ProcessRecordUpdates);
+    }
+
+    [Fact]
+    public void AStoredRecordUpdatesOnIsReportedOff()
+    {
+        var e = new Env("account");
+        RuntimeSeed.RecordUpdatesStoredOn(e.Org.S.Memory);
+        Assert.True(
+            e.Org.S.Memory.Rows[e.Runtime].GetAttributeValue<bool>("asx_processrecordupdates")
+        );
+        Assert.False(e.Get().ProcessRecordUpdates);
+        Assert.False(RuntimeProfile.Read(e.Org.S).ProcessRecordUpdates);
+        Assert.False(RuntimeProfile.ReadCapture(e.Org.S).ProcessRecordUpdates);
+        Assert.False(RuntimeProfile.ProcessesRecordUpdates(e.Org.S));
+    }
+
+    [Fact]
+    public void SaveTurnsOffUpdateStepsStoredOnAndRepairAllRemovesThem()
+    {
+        var e = new Env("account", "contact");
+        RuntimeSeed.RecordUpdatesStoredOn(e.Org.S.Memory);
+        using (RecordUpdatesSwitch.On())
+            e.Save(e.Get());
+        Assert.True(e.UpdateStepActive("account"));
+        // After the upgrade the tables need repair, and Save still turns the steps off.
+        var upgraded = e.Get();
+        Assert.Equal(
+            "Outdated",
+            upgraded.Registration!.Readiness.Single(r => r.Scope == "account").Status
+        );
+        Assert.Equal(2, upgraded.Registration.Pending);
+        upgraded.ProcessRecordUpdates = true;
+        upgraded.Enabled = true;
+        var saved = e.Save(upgraded);
+        Assert.False(saved.ProcessRecordUpdates);
+        Assert.False(e.UpdateStepActive("account"));
+        Assert.False(e.UpdateStepActive("contact"));
+        var repaired = RuntimeAdministration.Execute(
+            e.Org.S,
+            new RuntimeRequest { Command = "Register", RowVersion = saved.RowVersion },
+            true,
+            e.Admin
+        );
+        Assert.DoesNotContain(
+            e.Org.Steps,
+            s => s.GetAttributeValue<string>("name").StartsWith("Ascentix Documents: event Update")
+        );
+        Assert.All(repaired.Registration!.Readiness, r => Assert.Equal("Ready", r.Status));
+        Assert.Equal(0, repaired.Registration.Pending);
+        Assert.Equal(0, repaired.Registration.ExtraSteps);
+    }
+
+    [Fact]
+    public void RepairingOneTableRemovesItsUpdateStepAndKeepsTheOthers()
+    {
+        var e = new Env("account", "contact");
+        RuntimeSeed.RecordUpdatesStoredOn(e.Org.S.Memory);
+        using (RecordUpdatesSwitch.On())
+            e.Save(e.Get());
+        int contactSteps = e.StepsFor("contact");
+        var repaired = e.Change("Register", "account");
+        Assert.DoesNotContain(
+            e.Org.Steps,
+            s => s.GetAttributeValue<string>("name") == "Ascentix Documents: event Update account"
+        );
+        Assert.Equal(
+            "Ready",
+            repaired.Registration!.Readiness.Single(r => r.Scope == "account").Status
+        );
+        // Every table given to the repair is reconciled, so contact loses only its Update step.
+        Assert.Equal(contactSteps - 1, e.StepsFor("contact"));
+        Assert.All(repaired.Registration.Readiness, r => Assert.Equal("Ready", r.Status));
+    }
+}

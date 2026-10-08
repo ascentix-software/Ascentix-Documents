@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<WebResource xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <WebResourceId>{3c9d6a41-7e2b-4f08-9a51-6b0e2d4f8c11}</WebResourceId>
+  <Name>asx_admin/shell.js</Name>
+  <DisplayName>asx_admin/shell.js</DisplayName>
+  <Description>Owned by standalone Ascentix Documents development setup v1</Description>
+  <WebResourceType>3</WebResourceType>
+  <IntroducedVersion>1.0</IntroducedVersion>
+  <IsEnabledForMobileClient>0</IsEnabledForMobileClient>
+  <IsAvailableForMobileOffline>0</IsAvailableForMobileOffline>
+  <IsCustomizable>1</IsCustomizable>
+  <CanBeDeleted>1</CanBeDeleted>
+  <IsHidden>0</IsHidden>
+  <FileName>/WebResources/asx_adminshelljs3C9D6A41-7E2B-4F08-9A51-6B0E2D4F8C11</FileName>
+</WebResource>

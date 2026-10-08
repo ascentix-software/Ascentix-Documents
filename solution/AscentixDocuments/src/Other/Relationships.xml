@@ -9,6 +9,7 @@
   <EntityRelationship Name="asx_library_siteid" />
   <EntityRelationship Name="asx_outbox_revisionid" />
   <EntityRelationship Name="asx_revision_templateid" />
+  <EntityRelationship Name="asx_runtime_asx_runtimetable" />
   <EntityRelationship Name="asx_site_nativeid" />
   <EntityRelationship Name="asx_source_revisionid" />
   <EntityRelationship Name="asx_template_publishedrevisionid" />
@@ -48,6 +49,8 @@
   <EntityRelationship Name="lk_asx_revision_modifiedby" />
   <EntityRelationship Name="lk_asx_runtime_createdby" />
   <EntityRelationship Name="lk_asx_runtime_modifiedby" />
+  <EntityRelationship Name="lk_asx_runtimetable_createdby" />
+  <EntityRelationship Name="lk_asx_runtimetable_modifiedby" />
   <EntityRelationship Name="lk_asx_site_createdby" />
   <EntityRelationship Name="lk_asx_site_modifiedby" />
   <EntityRelationship Name="lk_asx_source_createdby" />
@@ -76,6 +79,7 @@
   <EntityRelationship Name="organization_asx_publication" />
   <EntityRelationship Name="organization_asx_revision" />
   <EntityRelationship Name="organization_asx_runtime" />
+  <EntityRelationship Name="organization_asx_runtimetable" />
   <EntityRelationship Name="organization_asx_site" />
   <EntityRelationship Name="organization_asx_source" />
   <EntityRelationship Name="organization_asx_teamregistration" />

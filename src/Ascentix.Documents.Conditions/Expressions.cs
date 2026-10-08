@@ -46,13 +46,14 @@ public abstract class Predicate
 {
     public abstract bool Evaluate(Snapshot snapshot);
     public abstract IEnumerable<FieldReference> Fields { get; }
-    internal abstract int Validate(int depth);
+    internal abstract void ValidateShape();
 
-    public void Validate()
-    {
-        if (Validate(0) > 100)
-            throw new EvaluationBlockedException("Condition leaf limit exceeded.");
-    }
+    /// <summary>
+    /// Checks the tree's shape. Its size is bounded where it is saved (Bounds.ConfigurationRows,
+    /// one row per group and condition) and its depth where a template is validated
+    /// (Bounds.ConditionDepth, in TemplateValidator).
+    /// </summary>
+    public void Validate() => ValidateShape();
 }
 
 public sealed class Condition : Predicate
@@ -76,16 +77,15 @@ public sealed class Condition : Predicate
         Validate();
     }
 
-    internal override int Validate(int depth)
+    internal override void ValidateShape()
     {
-        if (depth > 10 || !Enum.IsDefined(typeof(Comparison), Operator))
+        if (!Enum.IsDefined(typeof(Comparison), Operator))
             throw new EvaluationBlockedException("Invalid condition shape.");
         bool unary = Operator == Comparison.IsNull || Operator == Comparison.IsNotNull;
         if (unary ? Literal != null || Right != null : (Literal == null) == (Right == null))
             throw new EvaluationBlockedException(
                 "Condition must have exactly one comparison source, or none for a null predicate."
             );
-        return 1;
     }
 
     public override bool Evaluate(Snapshot snapshot) =>
@@ -111,11 +111,12 @@ public sealed class ConditionGroup : Predicate
         Validate();
     }
 
-    internal override int Validate(int depth)
+    internal override void ValidateShape()
     {
-        if (depth > 10 || Children.Count == 0 || Children.Any(c => c == null))
+        if (Children.Count == 0 || Children.Any(c => c == null))
             throw new EvaluationBlockedException("Invalid or empty condition group.");
-        return Children.Sum(c => c.Validate(depth + 1));
+        foreach (var child in Children)
+            child.ValidateShape();
     }
 
     public override bool Evaluate(Snapshot snapshot)
@@ -151,17 +152,36 @@ public static class NameExpression
             .ToArray();
     }
 
-    public static string Render(string expression, Snapshot snapshot)
+    /// <summary>Renders a folder name from the snapshot.</summary>
+    /// <param name="expression">The naming expression with its field tokens.</param>
+    /// <param name="snapshot">The record's authorized values.</param>
+    /// <param name="blank">The field the name waits for, when it returns null.</param>
+    /// <returns>
+    /// The rendered name, or null when a field is null, or when the whole name is blank because
+    /// a field is blank. A blank field inside an otherwise filled name is kept as it is.
+    /// </returns>
+    public static string? Render(string expression, Snapshot snapshot, out FieldReference? blank)
     {
         Fields(expression);
-        return Token
-            .Replace(
-                expression,
-                m =>
-                    snapshot
-                        .Resolve(new FieldReference(m.Groups[1].Value, m.Groups[2].Value))
-                        .Format()
-            )
-            .Normalize(NormalizationForm.FormC);
+        FieldReference? missing = null;
+        FieldReference? empty = null;
+        var name = Token.Replace(
+            expression,
+            m =>
+            {
+                var field = new FieldReference(m.Groups[1].Value, m.Groups[2].Value);
+                var text = snapshot.Resolve(field).Format();
+                if (text == null)
+                {
+                    missing ??= field;
+                    return "";
+                }
+                if (string.IsNullOrWhiteSpace(text))
+                    empty ??= field;
+                return text;
+            }
+        );
+        blank = missing ?? (string.IsNullOrWhiteSpace(name) ? empty : null);
+        return blank == null ? name.Normalize(NormalizationForm.FormC) : null;
     }
 }

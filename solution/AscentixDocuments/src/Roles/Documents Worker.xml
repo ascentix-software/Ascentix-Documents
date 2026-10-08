@@ -52,10 +52,12 @@
     <RolePrivilege name="prvReadasx_policyentry" level="Global" />
     <RolePrivilege name="prvReadasx_revision" level="Global" />
     <RolePrivilege name="prvReadasx_runtime" level="Global" />
+    <RolePrivilege name="prvReadasx_runtimetable" level="Global" />
     <RolePrivilege name="prvReadasx_site" level="Global" />
     <RolePrivilege name="prvReadasx_source" level="Global" />
     <RolePrivilege name="prvReadasx_teamregistration" level="Global" />
     <RolePrivilege name="prvReadasx_template" level="Global" />
+    <RolePrivilege name="prvReadAsyncOperation" level="Basic" />
     <RolePrivilege name="prvReadAttribute" level="Global" />
     <RolePrivilege name="prvReadSharePointData" level="Global" />
     <RolePrivilege name="prvReadSharePointDocument" level="Global" />
@@ -75,5 +77,6 @@
     <RolePrivilege name="prvWriteasx_site" level="Global" />
     <RolePrivilege name="prvWriteasx_teamregistration" level="Global" />
     <RolePrivilege name="prvWriteSharePointData" level="Global" />
+    <RolePrivilege name="prvWriteSharePointDocumentLocation" level="Global" />
   </RolePrivileges>
 </Role>

@@ -8,18 +8,26 @@ namespace Ascentix.Documents.SdkTests;
 public sealed class WorkCoordinationTests
 {
     [Fact]
-    public void TwoSitesCanHoldWritersButThirdCannotAndReleaseRestoresCapacity()
+    public void EverySiteCanHoldItsOwnWriterAtOnceAndReleaseRemovesIt()
     {
         var f = new Fixture();
         var a = f.Claim("a");
-        var b = f.Claim("b");
-        Assert.False(
+        f.Claim("b");
+        f.Claim("c");
+        Assert.True(
             WorkCoordination.HasCapacity(
                 f.Service,
-                WorkCoordination.SiteUrl("https://example.sharepoint.com/sites/c")
+                WorkCoordination.SiteUrl("https://example.sharepoint.com/sites/d")
             )
         );
-        Assert.Throws<EvaluationBlockedException>(() => f.Claim("c"));
+        f.Claim("d");
+        Assert.Equal(
+            4,
+            f.Store.Require<ConnectionBudget>(
+                "asx_claim",
+                WorkCoordination.BudgetKey
+            ).Value.Writers.Length
+        );
         var claim = f.Store.Require<DispatcherDocument>(
             "asx_claim",
             WorkCoordination.Operation(f.Service, a.Key)
@@ -27,9 +35,8 @@ public sealed class WorkCoordinationTests
         claim.Value.RunId = null;
         claim.Value.Status = "Idle";
         f.Store.Save(claim);
-        f.Claim("c");
         Assert.Equal(
-            2,
+            3,
             f.Store.Require<ConnectionBudget>(
                 "asx_claim",
                 WorkCoordination.BudgetKey
@@ -57,7 +64,7 @@ public sealed class WorkCoordinationTests
     }
 
     [Fact]
-    public void UnknownRequestKeepsSlotAndRequiresExactRecoveryBeforeAnotherRequest()
+    public void UnknownRequestKeepsSlotUntilTheNextClaimTakesItOver()
     {
         var f = new Fixture();
         var a = f.Claim("a");
@@ -74,15 +81,15 @@ public sealed class WorkCoordinationTests
         Assert.Throws<EvaluationBlockedException>(() => f.Store.Save(claim));
         f.Now = f.Now.AddMinutes(6);
         Assert.Throws<EvaluationBlockedException>(() => f.Begin(a));
-        a.Evidence = "Original flow terminated; outstanding HTTP completion verified.";
-        new WorkerCoordinator(f.Service, () => f.Now).PermitRecovery(a, true);
-        Assert.False(
+        // Without evidence recovery the writer stays reserved until the job's next claim takes it
+        // over and reads back first (DurableWorkerTests.AnExpiredClaimIsTakenOverWithoutAnyOperatorStep).
+        Assert.True(
             f.Store.Require<DispatcherDocument>(
                 "asx_claim",
                 WorkCoordination.Operation(f.Service, a.Key)
             ).Value.HttpOutstanding
         );
-        Assert.True(WorkCoordination.Busy(f.Service)); // Recovery permits takeover; it does not itself release the writer.
+        Assert.True(WorkCoordination.Busy(f.Service));
     }
 
     [Fact]

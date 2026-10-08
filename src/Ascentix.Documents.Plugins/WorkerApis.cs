@@ -25,7 +25,8 @@ public sealed class DocumentWorkerApi : IPlugin
             throw new InvalidPluginExecutionException(
                 "Worker caller differs from the approved runtime identity."
             );
-        if (!profile.Enabled)
+        var request = JsonWire.Read<WorkerRequest>((string)context.InputParameters["Request"]);
+        if (!profile.Enabled && WorkerPause.Refuses(request.Command))
         {
             context.OutputParameters["Result"] = JsonWire.Write(
                 new WorkerResult { Status = "Disabled" }
@@ -33,7 +34,6 @@ public sealed class DocumentWorkerApi : IPlugin
             return;
         }
         context.SharedVariables[InternalWrite] = true;
-        var request = JsonWire.Read<WorkerRequest>((string)context.InputParameters["Request"]);
         if (request.Command == "PurgeHistory")
         {
             context.OutputParameters["Result"] = JsonWire.Write(
@@ -65,35 +65,26 @@ public sealed class DocumentWorkerApi : IPlugin
                 ? new CatalogWorker(service).Execute(request, context.IsInTransaction)
             : request.Key?.StartsWith("policywork:", StringComparison.Ordinal) == true
                 ? new SecurityWorker(service).Execute(request, context.IsInTransaction)
-            : new WorkerCoordinator(service, allowedTables: profile.Tables).Execute(
-                request,
-                context.IsInTransaction
-            );
+            : new WorkerCoordinator(
+                service,
+                allowedTables: profile.Tables,
+                recordUpdates: profile.ProcessRecordUpdates
+            ).Execute(request, context.IsInTransaction);
         profile.ValidateTransport(result);
         context.OutputParameters["Result"] = JsonWire.Write(result);
     }
 }
 
+/// <summary>
+/// Kept so a managed upgrade can delete the asx_RecoverWorker custom API before the type goes.
+/// Nothing calls it; remove in 0.1.0.5.
+/// </summary>
 public sealed class RecoverWorkerApi : IPlugin
 {
-    public void Execute(IServiceProvider provider)
-    {
-        var context = (IPluginExecutionContext)provider.GetService(typeof(IPluginExecutionContext));
-        if (!context.IsInTransaction)
-            throw new InvalidPluginExecutionException("Recovery requires an ambient transaction.");
-        var service = new ApiWriteService(
-            (
-                (IOrganizationServiceFactory)
-                    provider.GetService(typeof(IOrganizationServiceFactory))
-            ).CreateOrganizationService(context.UserId),
-            context
+    public void Execute(IServiceProvider provider) =>
+        throw new InvalidPluginExecutionException(
+            "Evidence-based recovery was removed in 0.1.0.4. Open Monitor: Documents checks SharePoint for you."
         );
-        context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
-        var request = JsonWire.Read<WorkerRequest>((string)context.InputParameters["Request"]);
-        context.OutputParameters["Result"] = JsonWire.Write(
-            new WorkerCoordinator(service).PermitRecovery(request, context.IsInTransaction)
-        );
-    }
 }
 
 public sealed class StateGuard : IPlugin
@@ -146,7 +137,6 @@ public sealed class StateGuard : IPlugin
             && flag;
         bool api =
             parent?.MessageName == "asx_DocumentWorker"
-            || parent?.MessageName == "asx_RecoverWorker"
             || parent?.MessageName == "asx_SecurityAdmin"
             || parent?.MessageName == "asx_RuntimeAdmin"
             || parent?.MessageName == "asx_ManageWork"
@@ -158,7 +148,7 @@ public sealed class StateGuard : IPlugin
                 context,
                 () =>
                     RuntimeProfile
-                        .Read(
+                        .ReadCapture(
                             (
                                 (IOrganizationServiceFactory)
                                     provider.GetService(typeof(IOrganizationServiceFactory))

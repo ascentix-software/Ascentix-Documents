@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Ascentix.Documents.Conditions;
 using Ascentix.Documents.Dataverse;
 using Microsoft.Xrm.Sdk;
@@ -11,15 +12,7 @@ public sealed class RuntimeScopeTests
     private static DurableWorkerTests.MemoryService Service()
     {
         var s = new DurableWorkerTests.MemoryService();
-        s.Seed(
-            new Entity("asx_runtime", Guid.NewGuid())
-            {
-                ["asx_name"] = "Default",
-                ["asx_workeruserid"] = Guid.NewGuid().ToString(),
-                ["asx_allowedtables"] = "[\"account\"]",
-                ["asx_sharepointhosts"] = "[\"example.sharepoint.com\"]",
-            }
-        );
+        RuntimeSeed.Seed(s, Guid.NewGuid(), "account");
         return s;
     }
 
@@ -93,6 +86,62 @@ public sealed class RuntimeScopeTests
             RuntimeProfile.ValidateHosts(new[] { host })
         );
 
+    // Every Microsoft cloud's SharePoint Online domain: worldwide and GCC, GCC High, DoD (both
+    // of its listed domains) and 21Vianet.
+    [Theory]
+    [InlineData("contoso.sharepoint.com")]
+    [InlineData("contoso-my.sharepoint.com")]
+    [InlineData("agency.sharepoint.us")]
+    [InlineData("command.sharepoint-mil.us")]
+    [InlineData("command.dps.mil")]
+    [InlineData("contoso.sharepoint.cn")]
+    public void HostConfigurationAcceptsEveryMicrosoftSharePointCloud(string host)
+    {
+        RuntimeProfile.ValidateHosts(new[] { host });
+        var s = Service();
+        s.Rows.Values.Single(r => r.LogicalName == "asx_runtime")["asx_sharepointhosts"] =
+            "[\"" + host + "\"]";
+        string url = "https://" + host + "/sites/a";
+        Site(s, url);
+        RuntimeProfile.Read(s).ValidateTransport(Request(url));
+        // A listed host still needs a registered site.
+        Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeProfile.Read(s).ValidateTransport(Request("https://" + host + "/sites/b"))
+        );
+    }
+
+    [Theory]
+    [InlineData("contoso.sharepoint.de")]
+    [InlineData("sharepoint.us")]
+    [InlineData("contoso.sharepoint.us.evil.test")]
+    [InlineData("contoso.mysharepoint.com")]
+    [InlineData("contoso.dps.mil.evil.test")]
+    [InlineData("evil-sharepoint.com")]
+    [InlineData("contoso.sharepoint.com:444")]
+    [InlineData("contoso.sharepoint.cоm")]
+    [InlineData("xn--contso-6ve.sharepoint.com.evil.test")]
+    [InlineData("contоso.sharepoint.com")]
+    public void HostConfigurationRefusesOtherDomains(string host) =>
+        Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeProfile.ValidateHosts(new[] { host })
+        );
+
+    [Fact]
+    public void AnyNumberOfHostsIsAcceptedWhileTheyFitTheirColumn()
+    {
+        RuntimeProfile.ValidateHosts(
+            Enumerable.Range(0, 150).Select(i => "tenant" + i + ".sharepoint.com").ToArray()
+        );
+        // The hosts list is stored as one value of at most 5,000 characters; past that it cannot
+        // be saved, and the refusal says so.
+        var tooMany = Assert.Throws<EvaluationBlockedException>(() =>
+            RuntimeProfile.ValidateHosts(
+                Enumerable.Range(0, 400).Select(i => "tenant" + i + ".sharepoint.com").ToArray()
+            )
+        );
+        Assert.Contains("5,000 characters", tooMany.Message);
+    }
+
     [Fact]
     public void DuplicateHostsAndUnsupportedTransportRemainRejected()
     {
@@ -120,7 +169,9 @@ public sealed class RuntimeScopeTests
         foreach (var row in s.Rows.Values)
             if (row.LogicalName == "asx_runtime")
                 row.Attributes.Remove("asx_sharepointhosts");
-        Assert.Empty(RuntimeAdministration.Execute(s, new RuntimeRequest(), true).SharePointHosts);
+        Assert.Empty(
+            RuntimeAdministration.Execute(s, new RuntimeRequest(), true, Guid.Empty).SharePointHosts
+        );
         Assert.ThrowsAny<Exception>(() => RuntimeProfile.Read(s));
     }
 }

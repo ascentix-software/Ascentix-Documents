@@ -65,7 +65,8 @@ public sealed class RecordInspection
             "recordplan:" + template.Id.ToString("N") + ":" + request.RecordId.ToString("N")
         );
         if (selection == null)
-            return new WorkerResult { Status = "NotPlanned" };
+            return Blocked(service, template.Id, request.RecordId)
+                ?? new WorkerResult { Status = "NotPlanned" };
         var operations = selection
             .Value.Operations.Select(key =>
                 store.Require<OperationDocument>("asx_operation", key).Value
@@ -73,7 +74,12 @@ public sealed class RecordInspection
             .ToArray();
         var states = operations.Select(job => job.Status).ToArray();
         var folders = operations.SelectMany(job => job.Folders).ToArray();
-        var status = Summarize(states, folders, selection.Value.Status == "SelectionNeedsReview");
+        // A record with folders waiting for a value or a usable name reports that it waits;
+        // its folder jobs are still listed below.
+        var status =
+            selection.Value.Status == WorkerCoordinator.WaitingStatus
+                ? WorkerCoordinator.WaitingStatus
+                : Summarize(states, folders, selection.Value.Status == "SelectionNeedsReview");
         return new WorkerResult
         {
             Status = status,
@@ -82,8 +88,66 @@ public sealed class RecordInspection
             Notices = new[]
             {
                 "Current evaluation only. Existing folders remain intact. Paths shared by records contain shared documents; no permanent child-folder inventory is maintained.",
-            },
+            }
+                .Concat(selection.Value.Notices)
+                .ToArray(),
         };
+    }
+
+    /// <summary>
+    /// Reports a never-planned record as Blocked when its newest Blocked or Pending outbox row for
+    /// this template is Blocked, so a newer Pending request wins, and as WaitingToRetry when that
+    /// row is Pending with a next attempt after a temporary failure. Rows are found through the
+    /// indexed asx_recordid column; rows written before that column was populated are found once
+    /// they are retried.
+    /// </summary>
+    private static WorkerResult? Blocked(IOrganizationService service, Guid template, Guid record)
+    {
+        var query = new QueryExpression("asx_outbox")
+        {
+            ColumnSet = new ColumnSet("asx_payload", "createdon"),
+            PageInfo = new PagingInfo { Count = 5000, PageNumber = 1 },
+        };
+        query.Criteria.AddCondition("asx_recordid", ConditionOperator.Equal, record.ToString("D"));
+        query.Criteria.AddCondition("asx_status", ConditionOperator.In, "Blocked", "Pending");
+        query.AddOrder("createdon", OrderType.Descending);
+        while (true)
+        {
+            var page = service.RetrieveMultiple(query);
+            foreach (var row in page.Entities)
+            {
+                var job = JsonWire.Read<OutboxDocument>(
+                    row.GetAttributeValue<string>("asx_payload")
+                );
+                if (
+                    job.TemplateId != template
+                    || job.RecordId != record
+                    || job.RelatedRecordId != Guid.Empty
+                    || job.SecurityTeamId != Guid.Empty
+                )
+                    continue;
+                // A Pending row with a next attempt is waiting after a temporary failure.
+                if (job.Status == "Pending" && job.NextAttemptUtc != null)
+                    return new WorkerResult
+                    {
+                        Status = "WaitingToRetry",
+                        Key = job.Key,
+                        Notices = job.Notices,
+                    };
+                return job.Status != "Blocked"
+                    ? null
+                    : new WorkerResult
+                    {
+                        Status = "Blocked",
+                        Key = job.Key,
+                        Notices = job.Notices,
+                    };
+            }
+            if (!page.MoreRecords)
+                return null;
+            query.PageInfo.PageNumber++;
+            query.PageInfo.PagingCookie = page.PagingCookie;
+        }
     }
 
     private static string Summarize(

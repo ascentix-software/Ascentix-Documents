@@ -16,11 +16,17 @@ public sealed class WorkerCoordinator
     private readonly WorkerCatalog catalog;
     private readonly Func<DateTime> clock;
     private readonly string[]? allowedTables;
+    private readonly bool? recordUpdates;
 
+    /// <param name="recordUpdates">
+    /// Whether record updates are processed, as the worker API read it from the runtime
+    /// profile; null reads it when a plan has waiting folders to word.
+    /// </param>
     public WorkerCoordinator(
         IOrganizationService service,
         Func<DateTime>? clock = null,
-        string[]? allowedTables = null
+        string[]? allowedTables = null,
+        bool? recordUpdates = null
     )
     {
         this.service = service;
@@ -28,6 +34,63 @@ public sealed class WorkerCoordinator
         catalog = new WorkerCatalog(service);
         this.clock = clock ?? (() => DateTime.UtcNow);
         this.allowedTables = allowedTables;
+        this.recordUpdates = recordUpdates;
+    }
+
+    /// <summary>The record-plan status of a record whose plan skipped folders until it changes.</summary>
+    public const string WaitingStatus = "Waiting";
+
+    /// <summary>
+    /// What a waiting folder needs, added to its notice. With record updates on, filling in a
+    /// field of the record itself plans it on the record's Update event; anything else, and
+    /// every case with record updates off, needs a re-run of the record.
+    /// </summary>
+    public static string WaitFollowUp(FolderWait wait, bool updates) =>
+        wait.Reason == FolderWaitReason.PathTooLong
+            ? updates
+                ? "The folder is created when a change to the record makes its path short enough; after shortening the template's folder names, re-run the record."
+                : "Shorten the record's value or the template's folder names, then re-run the record."
+            : wait.Field == null
+                ? updates
+                    ? "The folder is created when a change to the record gives it a usable name of its own."
+                    : "Change the record so the folder gets a usable name of its own, then re-run the record."
+                : updates && wait.Field.Source == "root"
+                    ? "The folder is created when '" + wait.Field + "' has a value."
+                    : "Fill in '" + wait.Field + "', then re-run the record.";
+
+    /// <summary>The plan's notices, each waiting folder's with what it needs; and those alone.</summary>
+    private string[] PlanNotices(FolderPlan plan, out string[] waiting)
+    {
+        waiting = Array.Empty<string>();
+        if (plan.Waits.Count == 0)
+            return plan.Notices.ToArray();
+        bool updates = recordUpdates ?? RuntimeProfile.ProcessesRecordUpdates(service);
+        var followed = plan
+            .Waits.GroupBy(w => w.Notice, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Key + " " + WaitFollowUp(g.First(), updates),
+                StringComparer.Ordinal
+            );
+        waiting = followed.Values.ToArray();
+        return plan.Notices.Select(n => followed.TryGetValue(n, out var f) ? f : n).ToArray();
+    }
+
+    /// <summary>
+    /// Ends a record's waiting marker when it is not planned again: its record was deleted, its
+    /// template is inactive or its table was removed. Its folders no longer wait for a value.
+    /// </summary>
+    private void EndWait(OutboxDocument job)
+    {
+        var selection = store.Find<RecordPlanDocument>(
+            "asx_outbox",
+            "recordplan:" + job.TemplateId.ToString("N") + ":" + job.RecordId.ToString("N")
+        );
+        if (selection?.Value.Status != WaitingStatus)
+            return;
+        selection.Value.Status = "Selection";
+        selection.Value.Waiting = Array.Empty<string>();
+        store.Save(selection);
     }
 
     /// <summary>
@@ -54,7 +117,12 @@ public sealed class WorkerCoordinator
             }.Contains(request.Command)
         )
         {
-            var stopped = StopUnavailable(request);
+            var stopped =
+                StopUnavailable(request)
+                ?? StopRemoved(request)
+                ?? StopTable(request)
+                ?? StopSuperseded(request)
+                ?? StopSuspended(request);
             if (stopped != null)
                 return stopped;
         }
@@ -63,7 +131,21 @@ public sealed class WorkerCoordinator
             case "Queue":
                 return Queue(request);
             case "ListOutbox":
-                return new WorkerResult { Status = "Page", Keys = store.Pending("asx_outbox") };
+                // A template re-run comes after the rest of the page, its own page in flight
+                // included, so it finds that page planned and queues the next in this dispatch.
+                var outbox = store.Pending("asx_outbox", now: clock());
+                return new WorkerResult
+                {
+                    Status = "Page",
+                    Keys = outbox
+                        .Where(k => !k.StartsWith(TemplateRun.Prefix, StringComparison.Ordinal))
+                        .Concat(
+                            outbox.Where(k =>
+                                k.StartsWith(TemplateRun.Prefix, StringComparison.Ordinal)
+                            )
+                        )
+                        .ToArray(),
+                };
             case "ListOperations":
                 return new WorkerResult
                 {
@@ -93,15 +175,21 @@ public sealed class WorkerCoordinator
             case "Replan":
                 return Replan(request);
             case "FailUnclaimed":
-                return store.FailUnclaimed<OperationDocument>(request.Key);
+                return store.FailUnclaimed<OperationDocument>(request.Key, request, clock());
             case "FailOutbox":
                 return FailOutbox(request);
+            case "RetryOutbox":
+                return RetryOutbox(request);
             default:
                 throw new EvaluationBlockedException("Unsupported worker command.");
         }
     }
 
-    private WorkerResult Queue(WorkerRequest request)
+    /// <param name="priority">
+    /// asx_priority of the folder jobs the queued row's plan creates: 1 for record events and
+    /// replans, TemplateRun.Priority for a template re-run's records.
+    /// </param>
+    internal WorkerResult Queue(WorkerRequest request, int priority = 1)
     {
         if (
             request.RequestId == Guid.Empty
@@ -134,7 +222,7 @@ public sealed class WorkerCoordinator
             return new WorkerResult
             {
                 Status = "Inactive",
-                Notices = new[] { "Template is deleted, deactivated or outside its schedule." },
+                Notices = new[] { "Template is deleted, off or outside its active dates." },
             };
         var revision =
             template!.GetAttributeValue<EntityReference>("asx_publishedrevisionid")
@@ -155,6 +243,7 @@ public sealed class WorkerCoordinator
                 RevisionId = revision.Id,
                 RecordId = request.RecordId,
                 Table = table,
+                Priority = priority,
             }
         );
         return new WorkerResult { Status = "Pending", Key = key };
@@ -163,6 +252,22 @@ public sealed class WorkerCoordinator
     private WorkerResult Plan(string key)
     {
         var job = store.Require<OutboxDocument>("asx_outbox", key);
+        // A template re-run ends its own wait: it saves only when it changes (TemplateRun.Consume).
+        if (key.StartsWith(TemplateRun.Prefix, StringComparison.Ordinal))
+            return new TemplateRun(
+                service,
+                allowedTables ?? RuntimeProfile.Read(service).Tables,
+                clock
+            ).Consume(job);
+        // Any save of this row below ends an earlier wait after a temporary failure; a Plan that
+        // fails again rolls back and keeps it.
+        if (job.Value.NextAttemptUtc != null || job.Value.Attempts != 0)
+        {
+            job.Value.NextAttemptUtc = null;
+            job.Value.Attempts = 0;
+            if (job.Value.Status == "Pending")
+                job.Value.Notices = Array.Empty<string>();
+        }
         if (job.Value.RelatedRecordId != Guid.Empty)
             return new TargetedReplan(
                 service,
@@ -186,6 +291,7 @@ public sealed class WorkerCoordinator
                 "Record deleted; existing documents and receipts are retained.",
             };
             store.Save(job);
+            EndWait(job.Value);
             return new WorkerResult
             {
                 Status = job.Value.Status,
@@ -199,9 +305,10 @@ public sealed class WorkerCoordinator
             job.Value.Status = "Cancelled";
             job.Value.Notices = new[]
             {
-                "Template is deleted, deactivated or outside its schedule. Existing SharePoint content is unchanged.",
+                "Template is deleted, off or outside its active dates. Existing SharePoint content is unchanged.",
             };
             store.Save(job);
+            EndWait(job.Value);
             return new WorkerResult
             {
                 Status = "Cancelled",
@@ -212,6 +319,22 @@ public sealed class WorkerCoordinator
         var revision =
             header!.GetAttributeValue<EntityReference>("asx_publishedrevisionid")
             ?? throw new EvaluationBlockedException("Template is unpublished.");
+        // Only the template's own table must be enabled. Lookup source tables are read with the
+        // worker's Read privilege; their changes queue no replans unless they are enabled too.
+        // A row whose table was removed stops cleanly, like one for an inactive template.
+        if (!IsAllowed(job.Value.Table))
+        {
+            job.Value.Status = "Cancelled";
+            job.Value.Notices = new[] { TableNotEnabled(job.Value.Table) };
+            store.Save(job);
+            EndWait(job.Value);
+            return new WorkerResult
+            {
+                Status = "Cancelled",
+                Key = key,
+                Notices = job.Value.Notices,
+            };
+        }
         if (
             job.Value.PinnedRevision
             && (
@@ -237,10 +360,9 @@ public sealed class WorkerCoordinator
         var template = new TemplateStore(service).Read(revision.Id);
         if (template.Id != job.Value.TemplateId || template.Table != job.Value.Table)
             throw new EvaluationBlockedException("Queued template/table identity changed.");
-        foreach (var source in template.Sources)
-            Allowed(source.Table);
         var snapshot = new SnapshotReader(service).Read(template, job.Value.RecordId);
         var intents = FolderPlanner.Plan(template, job.Value.RecordId, snapshot.Values);
+        var notices = PlanNotices(intents, out var waiting);
         for (int i = 0; i < snapshot.Records.Count; i++)
         {
             var record = snapshot.Records[i];
@@ -281,6 +403,7 @@ public sealed class WorkerCoordinator
                     RevisionId = revision.Id,
                     Sources = sourceVersions,
                     IncludedSections = included,
+                    Notices = notices,
                 }
             );
         else
@@ -291,6 +414,7 @@ public sealed class WorkerCoordinator
             selected.Value.RevisionId = revision.Id;
             selected.Value.Sources = sourceVersions;
             selected.Value.IncludedSections = included;
+            selected.Value.Notices = notices;
             store.Save(selected);
         }
         var operations = new List<string>();
@@ -315,9 +439,15 @@ public sealed class WorkerCoordinator
                     Candidate = intent.Name,
                 })
                 .ToArray();
-            if (folders.Length == 0 || folders.Length > 100 || folders[0].ParentBinding != null)
+            if (
+                folders.Length == 0
+                || folders.Length > Bounds.FoldersPerDestination
+                || folders[0].ParentBinding != null
+            )
                 throw new EvaluationBlockedException(
-                    "A destination job requires one root and at most 100 folders."
+                    "A destination job requires one root and at most "
+                        + Bounds.FoldersPerDestination
+                        + " folders."
                 );
             var location = new NativeLocations(service).Find(
                 folders[0],
@@ -337,8 +467,10 @@ public sealed class WorkerCoordinator
                     {
                         Key = operationKey,
                         Folders = folders,
+                        // A row stored before priorities existed reads 0: a normal folder job.
+                        Priority = Math.Max(1, job.Value.Priority),
                         RevisionId = revision.Id,
-                        PolicyRevision = library.PolicyRevision,
+                        EntryPath = library.Target.EntryPath,
                     }
                 );
             operations.Add(operationKey);
@@ -354,10 +486,13 @@ public sealed class WorkerCoordinator
         }
         var completedSelection = store.Require<RecordPlanDocument>("asx_outbox", planKey);
         completedSelection.Value.Operations = operations.ToArray();
-        completedSelection.Value.Status = "Selection";
+        // A plan that skipped folders keeps the record listed as Waiting until a later plan
+        // includes them, so an admin sees it and can replan it after filling in the record.
+        completedSelection.Value.Status = waiting.Length > 0 ? WaitingStatus : "Selection";
+        completedSelection.Value.Waiting = waiting;
         store.Save(completedSelection);
         job.Value.Operations = operations.ToArray();
-        job.Value.Notices = Array.Empty<string>();
+        job.Value.Notices = notices;
         job.Value.Status = "Planned";
         store.Save(job);
         return new WorkerResult
@@ -365,6 +500,7 @@ public sealed class WorkerCoordinator
             Status = job.Value.Status,
             Key = key,
             Keys = job.Value.Operations,
+            Notices = job.Value.Notices,
         };
     }
 
@@ -385,35 +521,8 @@ public sealed class WorkerCoordinator
             || operation.Value.Status == "Cancelled"
         )
             return new WorkerResult { Status = operation.Value.Status, Key = request.Key };
+        // Unsent work a newer plan replaced was already stopped as Superseded (StopSuperseded).
         var binding = operation.Value.Folder;
-        var published = TemplateLifecycle
-            .Find(service, binding.TemplateId)
-            ?.GetAttributeValue<EntityReference>("asx_publishedrevisionid");
-        var existingClaim = store.Find<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(service, request.Key)
-        );
-        var selection = store.Find<RecordPlanDocument>(
-            "asx_outbox",
-            "recordplan:" + binding.TemplateId.ToString("N") + ":" + binding.RecordId.ToString("N")
-        );
-        bool excluded =
-            Retired(binding.Table, binding.RecordId)
-            || selection != null
-                && (
-                    selection.Value.RevisionId != operation.Value.RevisionId
-                    || !selection.Value.Operations.Contains(operation.Value.Key)
-                );
-        if (
-            (published?.Id != operation.Value.RevisionId || excluded)
-            && !operation.Value.ExternalSubmitted
-            && existingClaim?.Value.OperationKey != request.Key
-        )
-        {
-            operation.Value.Status = "Superseded";
-            store.Save(operation);
-            return new WorkerResult { Status = "Superseded", Key = request.Key };
-        }
         if (
             !WorkCoordination.HasCapacity(
                 service,
@@ -422,7 +531,9 @@ public sealed class WorkerCoordinator
             )
         )
             return new WorkerResult { Status = "Busy", Key = request.Key };
-        var library = Current(operation.Value, binding, true);
+        var library = Current(operation.Value, binding);
+        // A claim always starts by reading the library, so moved paths need no restart here.
+        Follow(operation.Value, library);
         var dispatcher = store.Find<DispatcherDocument>(
             "asx_claim",
             WorkCoordination.Operation(service, request.Key)
@@ -442,6 +553,7 @@ public sealed class WorkerCoordinator
                 WorkCoordination.Operation(service, request.Key)
             );
         }
+        dispatcher = WorkCoordination.Unstall(service, dispatcher);
         bool recovery = false;
         if (dispatcher.Value.RunId != null)
         {
@@ -451,7 +563,9 @@ public sealed class WorkerCoordinator
                 dispatcher.Value.RunId == request.RunId
                 && dispatcher.Value.Token == request.Token
                 && dispatcher.Value.LeaseUntilUtc > clock();
-            if (!sameLiveRun && !dispatcher.Value.RecoveryPermitted)
+            // A live claim of another run is left alone. Once its lease expires (5 minutes, at
+            // least twice the connector timeout) the next claim takes over and re-reads.
+            if (!sameLiveRun && dispatcher.Value.LeaseUntilUtc > clock())
                 return new WorkerResult { Status = "Quarantined", Key = request.Key };
             recovery = !sameLiveRun;
         }
@@ -478,15 +592,20 @@ public sealed class WorkerCoordinator
         )
             throw new EvaluationBlockedException("Pinned parent path changed.");
         operation.Value.ParentPath = parent;
-        operation.Value.ApprovedAclHash = library.AclHash;
         operation.Value.AbsenceVerified = false;
         if (recovery)
-            operation.Value.ExternalResponseKnown = true; // Requires the separately privileged, audited recovery permit.
+        {
+            // The earlier run's request is no longer awaited; the reads below establish what
+            // SharePoint did before any write.
+            dispatcher.Value.HttpOutstanding = false;
+            if (operation.Value.ExternalSubmitted && !operation.Value.ExternalResponseKnown)
+                operation.Value.Reprobe = true;
+            operation.Value.ExternalResponseKnown = true;
+        }
         dispatcher.Value.OperationKey = request.Key;
         dispatcher.Value.RunId = request.RunId;
         dispatcher.Value.Token = Guid.NewGuid();
         dispatcher.Value.LeaseUntilUtc = clock().AddMinutes(5);
-        dispatcher.Value.RecoveryPermitted = false;
         dispatcher.Value.Status = "Claimed";
         store.Save(dispatcher);
         Audit(request.Key, request.RunId, recovery ? "RecoveryClaim" : "Claim");
@@ -518,8 +637,35 @@ public sealed class WorkerCoordinator
             || request.ProbeKind != operation.Value.ProbeKind
         )
             throw new EvaluationBlockedException("Observation does not match the issued probe.");
-        if (request.HttpStatus == 429 || request.HttpStatus >= 500 || request.HttpStatus == 0)
-            return ScheduleRetry(operation, dispatcher, request.RetryAfter);
+        if (Follow(operation.Value, library))
+            return Restart(operation, dispatcher.Value, library);
+        // Earlier versions read the library's role assignments before and after each folder.
+        // Folder work no longer checks permissions, so an operation persisted mid-probe ignores
+        // that response, whatever it was, and continues with the parent-folder read.
+        // Legacy shim for jobs saved by 0.1.0.3: remove after 0.1.0.5.
+        if (operation.Value.ProbeKind == "Acl" || operation.Value.ProbeKind == "FinalAcl")
+            return Probe(
+                operation,
+                dispatcher.Value,
+                library,
+                operation.Value.ProbeKind == "FinalAcl" ? "FinalParent" : "Parent"
+            );
+        if (
+            request.HttpStatus == 429
+            || request.HttpStatus >= 500
+            || request.HttpStatus == 0
+            || request.HttpStatus == 408
+        )
+            return ScheduleRetry(
+                operation,
+                dispatcher,
+                request.RetryAfter,
+                request.HttpStatus,
+                null
+            );
+        // Neither a mismatch nor a lost permission: the connector never sent the read.
+        if (SharePointObservations.UrlTooLong(request))
+            return Block(operation, dispatcher, "RequestUrlTooLong");
         try
         {
             switch (operation.Value.ProbeKind)
@@ -544,23 +690,7 @@ public sealed class WorkerCoordinator
                         );
                     operation.Value.LibraryRootPath = observedLibrary.Root.Path;
                     operation.Value.LibraryRootId = observedLibrary.Root.Id;
-                    return Probe(operation, dispatcher.Value, library, "Acl");
-                case "Acl":
-                case "FinalAcl":
-                    if (
-                        SharePointObservations.AclHash(
-                            SharePointObservations.Body<ODataRows<AclAssignment>>(request)
-                        ) != library.AclHash
-                    )
-                        throw new EvaluationBlockedException(
-                            "Library ACL drifted from the approved policy observation."
-                        );
-                    return Probe(
-                        operation,
-                        dispatcher.Value,
-                        library,
-                        operation.Value.ProbeKind == "FinalAcl" ? "FinalParent" : "Parent"
-                    );
+                    return Probe(operation, dispatcher.Value, library, "Parent");
                 case "Parent":
                 case "FinalParent":
                     var parent = SharePointObservations.Body<FolderObservation>(request);
@@ -580,11 +710,8 @@ public sealed class WorkerCoordinator
                             operation.Value.ParentPath,
                             StringComparison.Ordinal
                         )
-                        || (!isLibraryRoot && parent.Item?.UniquePermissions != false)
                     )
-                        throw new EvaluationBlockedException(
-                            "Parent folder identity or inherited policy differs."
-                        );
+                        throw new EvaluationBlockedException("Parent folder identity differs.");
                     bool finalParent = operation.Value.ProbeKind == "FinalParent";
                     if (!isLibraryRoot)
                     {
@@ -625,10 +752,9 @@ public sealed class WorkerCoordinator
                             operation.Value.LibraryRootPath + "/",
                             StringComparison.Ordinal
                         )
-                        || ancestorFolder.Item?.UniquePermissions != false
                     )
                         throw new EvaluationBlockedException(
-                            "Intermediate ancestor identity or inherited library policy differs."
+                            "Intermediate ancestor identity differs."
                         );
                     string nextAncestor = ancestorFolder.Path.Substring(
                         0,
@@ -674,9 +800,15 @@ public sealed class WorkerCoordinator
                     throw new EvaluationBlockedException("Unknown observation phase.");
             }
         }
-        catch (EvaluationBlockedException)
+        catch (EvaluationBlockedException error)
         {
-            return Block(operation, dispatcher, "ObservationMismatch");
+            return Block(
+                operation,
+                dispatcher,
+                error.Message == SharePointRequests.AddressTooLongNotice
+                    ? "RequestUrlTooLong"
+                    : "ObservationMismatch"
+            );
         }
     }
 
@@ -688,9 +820,25 @@ public sealed class WorkerCoordinator
         WorkerLibrary library
     )
     {
+        // A folder read by its ID that is no longer at the expected path was moved or renamed.
+        if (binding.PhysicalId != Guid.Empty && request.HttpStatus == 200)
+        {
+            var known = SharePointObservations.Body<FolderLookupObservation>(request);
+            if (
+                known.Id != binding.PhysicalId
+                || !string.Equals(
+                    known.Path,
+                    operation.Value.ParentPath + "/" + binding.Candidate,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+                return Block(operation, dispatcher, "FolderChangedDuringRequest");
+        }
+        // A child folder is always below the library root; a root folder may sit at it.
         var item = SharePointObservations.Find(
             request,
-            operation.Value.ParentPath + "/" + binding.Candidate
+            operation.Value.ParentPath + "/" + binding.Candidate,
+            binding.ParentBinding == null
         );
         if (item == null)
         {
@@ -698,9 +846,20 @@ public sealed class WorkerCoordinator
                 return Block(operation, dispatcher, "EstablishedFolderMissing");
             if (
                 operation.Value.ExternalResponseKnown
-                && operation.Value.ErrorCode == "CreateNameConflict"
+                && (
+                    operation.Value.NameConflict
+                    || operation.Value.ErrorCode == "CreateNameConflict"
+                )
             )
                 return Probe(operation, dispatcher.Value, library, "ConflictFile");
+            if (operation.Value.Reprobe)
+            {
+                // The re-read after an unknown create found no folder: that create made nothing,
+                // so it is no longer outstanding and the folder is created once now.
+                operation.Value.Reprobe = false;
+                operation.Value.ExternalSubmitted = false;
+                operation.Value.ExternalResponseKnown = false;
+            }
             if (operation.Value.ExternalSubmitted)
                 return new WorkerResult
                 {
@@ -731,13 +890,19 @@ public sealed class WorkerCoordinator
                 Key = request.Key,
                 Token = request.Token,
             };
+        // A folder at the path is adopted, so an unknown create is never repeated.
+        operation.Value.Reprobe = false;
+        operation.Value.NameConflict = false;
         binding.PhysicalId = item.Id;
         binding.PhysicalPath = item.Path;
         binding.Candidate = item.Name;
         binding.Status = "Verified";
+        // The folder is there; its parent is read once more before the job completes. The
+        // status name dates from when a final permission check followed and is kept because
+        // stored jobs carry it; no policy or permission is involved any more.
         operation.Value.Status = "NeedsFinalPolicy";
         operation.Value.AbsenceVerified = false;
-        return Probe(operation, dispatcher.Value, library, "FinalAcl");
+        return Probe(operation, dispatcher.Value, library, "FinalParent");
     }
 
     private WorkerResult PrepareCreate(WorkerRequest request)
@@ -746,6 +911,8 @@ public sealed class WorkerCoordinator
         var operation = store.Require<OperationDocument>("asx_operation", request.Key);
         var binding = operation.Value.Folder;
         var library = Current(operation.Value, binding);
+        if (Follow(operation.Value, library))
+            return Restart(operation, dispatcher.Value, library);
         if (
             operation.Value.Status != "ReadyToCreate"
             || !operation.Value.AbsenceVerified
@@ -790,6 +957,19 @@ public sealed class WorkerCoordinator
             throw new EvaluationBlockedException(
                 "No outstanding prepared create response is expected."
             );
+        // The create was sent while the destination moved: reads under the new path decide.
+        if (Follow(operation.Value, library))
+            return Restart(operation, dispatcher.Value, library);
+        if (request.HttpStatus == 429)
+        {
+            // SharePoint does not execute a throttled request, so no folder was created. The
+            // write is no longer outstanding; after the wait the job re-reads and creates again.
+            operation.Value.ExternalSubmitted = false;
+            operation.Value.ExternalResponseKnown = false;
+            operation.Value.AbsenceVerified = false;
+            Audit(request.Key, request.RunId, "ExternalThrottled");
+            return ScheduleRetry(operation, dispatcher, request.RetryAfter, 429, null);
+        }
         if (request.HttpStatus == 0 || request.HttpStatus == 408 || request.HttpStatus >= 500)
             return new WorkerResult
             {
@@ -801,8 +981,12 @@ public sealed class WorkerCoordinator
         if (request.HttpStatus == 409)
         {
             operation.Value.ErrorCode = "CreateNameConflict";
+            operation.Value.NameConflict = true;
             return Probe(operation, dispatcher.Value, library, "Folder");
         }
+        // The connector refused the create before sending it, so SharePoint has nothing.
+        if (SharePointObservations.UrlTooLong(request))
+            return Block(operation, dispatcher, "RequestUrlTooLong");
         try
         {
             SharePointObservations.CreateSucceeded(request);
@@ -827,6 +1011,8 @@ public sealed class WorkerCoordinator
         var dispatcher = Assert(request);
         var binding = operation.Value.Folder;
         var library = Current(operation.Value, binding);
+        // The folder was verified by its identity; only its stored path follows the move.
+        Follow(operation.Value, library);
         if (
             operation.Value.Status != "Verified"
             || binding.Status != "Verified"
@@ -848,6 +1034,7 @@ public sealed class WorkerCoordinator
         if (!retired && operation.Value.Cursor + 1 < operation.Value.Folders.Length)
         {
             operation.Value.Cursor++;
+            operation.Value.NameConflict = false;
             operation.Value.ExternalSubmitted = false;
             operation.Value.ExternalResponseKnown = false;
             operation.Value.ParentPath = null;
@@ -864,86 +1051,107 @@ public sealed class WorkerCoordinator
         return Done(store.Require<OperationDocument>("asx_operation", request.Key));
     }
 
+    /// <summary>
+    /// Waits after a temporary failure (a throttled or failed read, or a temporary Dataverse
+    /// failure reported by the flow). There is no attempt cap; the notice shows the attempt
+    /// count and the last cause, and an operator can still Retry or Cancel the waiting work.
+    /// </summary>
     private WorkerResult ScheduleRetry(
         StoredRow<OperationDocument> operation,
         StoredRow<DispatcherDocument> dispatcher,
-        string? retryAfter
+        string? retryAfter,
+        int? statusCode,
+        string? errorCode
     )
     {
         if (operation.Value.ExternalSubmitted && !operation.Value.ExternalResponseKnown)
             return Block(operation, dispatcher, "ReadAfterUnknownWrite");
-        if (++operation.Value.RetryCount > 5)
-            return Block(operation, dispatcher, "RetryLimit");
-        operation.Value.Status = "RetryWait";
-        operation.Value.NextAttemptUtc = RetryAt(clock(), operation.Value.RetryCount, retryAfter);
-        operation.Value.ProbeId = Guid.Empty;
-        operation.Value.ErrorCode = "TransientReadFailure";
+        DocumentStore.Wait(operation.Value, statusCode, errorCode, retryAfter, clock());
         store.Save(operation);
         Release(dispatcher);
         return new WorkerResult { Status = "RetryWait", Key = operation.Value.Key };
     }
 
+    // The first wait. Dataverse service protection measures a 5-minute window and SharePoint
+    // throttling clears in seconds to minutes, so 30 seconds lets a short spike pass without
+    // adding visible delay to work that only hit a blip.
+    public const int FirstRetrySeconds = 30;
+
+    // The longest single wait, including an honored Retry-After. Re-checking every 15 minutes
+    // costs one request and never strands work behind a long or malformed server hint.
+    public const int MaxRetrySeconds = 900;
+
+    /// <summary>
+    /// The next attempt time: exponential from 30 seconds, each interval capped at 15 minutes.
+    /// A usable Retry-After (seconds or an HTTP date) lengthens the wait up to that same cap; an
+    /// unparseable, negative or very long one never throws and falls back to the backoff.
+    /// </summary>
     public static DateTime RetryAt(DateTime now, int attempt, string? retryAfter)
     {
-        var earliest = now.AddSeconds(Math.Min(900, 30 * Math.Pow(2, attempt - 1)));
+        // Clamping the exponent only keeps Math.Pow finite; the 15-minute cap applies first.
+        double backoff = FirstRetrySeconds * Math.Pow(2, Math.Max(0, Math.Min(attempt, 31) - 1));
+        var earliest = now.AddSeconds(Math.Min(MaxRetrySeconds, backoff));
+        var cap = now.AddSeconds(MaxRetrySeconds);
         if (string.IsNullOrWhiteSpace(retryAfter))
             return earliest;
+        var text = retryAfter!.Trim();
         DateTime requested;
-        if (
-            long.TryParse(
-                retryAfter,
-                NumberStyles.None,
-                CultureInfo.InvariantCulture,
-                out var seconds
-            )
-            && seconds >= 0
-            && seconds <= 604800
-        )
-            requested = now.AddSeconds(seconds);
+        if (long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds))
+            requested = seconds >= MaxRetrySeconds ? cap : now.AddSeconds(seconds);
         else if (
             DateTimeOffset.TryParseExact(
-                retryAfter,
+                text,
                 "r",
                 CultureInfo.InvariantCulture,
                 DateTimeStyles.AssumeUniversal,
                 out var date
             )
         )
-            requested = date.UtcDateTime;
+            requested = date.UtcDateTime > cap ? cap : date.UtcDateTime;
         else
-            throw new EvaluationBlockedException(
-                "Invalid or excessive Retry-After requires operator review."
-            );
-        if (requested > now.AddDays(7))
-            throw new EvaluationBlockedException("Excessive Retry-After requires operator review.");
+            return earliest;
         return requested > earliest ? requested : earliest;
     }
 
     private WorkerResult Retry(WorkerRequest request)
     {
         var operation = store.Require<OperationDocument>("asx_operation", request.Key);
-        var dispatcher = store.Find<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(service, request.Key)
-        );
-        if (
-            dispatcher?.Value.OperationKey == request.Key
-            || (operation.Value.ExternalSubmitted && !operation.Value.ExternalResponseKnown)
-        )
-            throw new EvaluationBlockedException(
-                "Unknown or active work requires controlled recovery, not retry."
-            );
+        bool expired = store.ReleaseExpired(request.Key, clock(), "Retry");
         if (operation.Value.Status == "Applied")
             return Done(operation);
-        if (operation.Value.Status != "Blocked" && operation.Value.Status != "RetryWait")
+        if (
+            !expired
+            && operation.Value.Status != "Blocked"
+            && operation.Value.Status != "RetryWait"
+            && !(operation.Value.ExternalSubmitted && !operation.Value.ExternalResponseKnown)
+        )
             throw new EvaluationBlockedException(
-                "Only blocked/waiting work can be explicitly retried."
+                "Only blocked, waiting or interrupted work can be explicitly retried."
             );
+        if (operation.Value.Status == "Superseded" || operation.Value.Status == "Cancelled")
+            throw new EvaluationBlockedException("Cancelled or superseded work cannot retry.");
+        if (operation.Value.ExternalSubmitted && !operation.Value.ExternalResponseKnown)
+        {
+            // The next claim reads back before writing: it adopts a folder the earlier create
+            // made, or creates it once.
+            operation.Value.Reprobe = true;
+            operation.Value.ExternalResponseKnown = true;
+        }
         operation.Value.Status = "Pending";
         operation.Value.NextAttemptUtc = null;
         operation.Value.RetryCount = 0;
         operation.Value.ProbeId = Guid.Empty;
         operation.Value.ErrorCode = null;
+        // Work stopped by a re-pointed destination follows it now, so the retry does not stop
+        // on the old path again.
+        if (
+            operation.Value.Folders.Length > 0
+            && !catalog.Removed(operation.Value.Folder.LibraryId)
+        )
+            Follow(
+                operation.Value,
+                catalog.Read(operation.Value.Folder.LibraryId, requireApproved: false)
+            );
         store.Save(operation);
         return new WorkerResult { Status = "Pending", Key = request.Key };
     }
@@ -951,14 +1159,9 @@ public sealed class WorkerCoordinator
     private WorkerResult Cancel(WorkerRequest request)
     {
         var operation = store.Require<OperationDocument>("asx_operation", request.Key);
-        var dispatcher = store.Find<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(service, request.Key)
-        );
-        if (dispatcher?.Value.OperationKey == request.Key || operation.Value.ExternalSubmitted)
-            throw new EvaluationBlockedException(
-                "Active or externally submitted work must finish controlled reconciliation before cancellation."
-            );
+        // Cancel works once no run holds a live claim. A folder an earlier create may have
+        // made stays in SharePoint; Cancel never deletes content.
+        store.ReleaseExpired(request.Key, clock(), "Cancel");
         if (operation.Value.Status == "Applied")
             return Done(operation);
         operation.Value.Status = "Cancelled";
@@ -982,124 +1185,269 @@ public sealed class WorkerCoordinator
         return result;
     }
 
+    public const string PlanningFailedNotice =
+        "Planning failed. Check that the site and library are approved, then use Retry in Blocked records.";
+
+    /// <summary>
+    /// Returns a Blocked outbox row to Pending so the dispatcher plans it again. Replanning
+    /// re-reads the current template, record and catalog, so a row blocked for a reason that
+    /// still holds simply blocks again.
+    /// </summary>
+    /// <param name="request">The outbox key to retry.</param>
+    /// <returns>Pending when the row was retried; otherwise its unchanged status.</returns>
+    private WorkerResult RetryOutbox(WorkerRequest request)
+    {
+        var job = store.Require<OutboxDocument>("asx_outbox", request.Key);
+        // A row waiting after a temporary failure is Pending with a next attempt; Retry ends
+        // the wait so it plans on the next dispatch.
+        if (
+            job.Value.Status == "Blocked"
+            || (job.Value.Status == "Pending" && job.Value.NextAttemptUtc != null)
+        )
+        {
+            job.Value.Status = "Pending";
+            job.Value.Notices = Array.Empty<string>();
+            job.Value.NextAttemptUtc = null;
+            job.Value.Attempts = 0;
+            store.Save(job);
+        }
+        return new WorkerResult
+        {
+            Status = job.Value.Status,
+            Key = request.Key,
+            Notices = job.Value.Notices,
+        };
+    }
+
     private WorkerResult FailOutbox(WorkerRequest request)
     {
         var job = store.Require<OutboxDocument>("asx_outbox", request.Key);
         if (job.Value.Status == "Pending")
         {
-            job.Value.Status = "Blocked";
-            job.Value.Notices = new[]
+            if (TransientFailure.Is(request))
             {
-                "Planning failed; inspect permissions/configuration and enqueue a new request after repair.",
-            };
+                // Stays Pending; ListOutbox skips it until the next attempt is due.
+                job.Value.Attempts++;
+                job.Value.NextAttemptUtc = RetryAt(clock(), job.Value.Attempts, null);
+                job.Value.Notices = new[] { TransientFailure.Notice(request, job.Value.Attempts) };
+            }
+            else
+            {
+                job.Value.Status = "Blocked";
+                job.Value.NextAttemptUtc = null;
+                job.Value.Notices = new[] { PlanningFailedNotice };
+            }
             store.Save(job);
         }
-        return new WorkerResult { Status = job.Value.Status, Key = request.Key };
+        return new WorkerResult
+        {
+            Status = job.Value.Status,
+            Key = request.Key,
+            Notices = job.Value.Notices,
+        };
     }
 
     private WorkerResult Fail(WorkerRequest request)
     {
         var dispatcher = Assert(request);
         var operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        if (TransientFailure.Is(request))
+            return ScheduleRetry(
+                operation,
+                dispatcher,
+                null,
+                request.StatusCode,
+                request.ErrorCode
+            );
         return Block(operation, dispatcher, "WorkerFailed");
     }
 
-    public WorkerResult PermitRecovery(WorkerRequest request, bool inTransaction)
+    /// <summary>
+    /// Whether the job has no write in SharePoint whose result is still to come, and is not
+    /// finished: an admin stop may end or hold it at its next step.
+    /// </summary>
+    private static bool Unsent(OperationDocument operation) =>
+        !operation.HistoryCompacted
+        && !operation.ExternalSubmitted
+        && operation.Folders.Length > 0
+        && operation.Status != "Applied"
+        && operation.Status != "Cancelled"
+        && operation.Status != "Superseded";
+
+    /// <summary>
+    /// Releases the writer this job holds before it stops: the run's own claim on its steps, or
+    /// a claim whose lease expired when the next run claims. A request with no recorded answer
+    /// can only be a read here (the job sent no write), so it is cleared too. Returns Busy while
+    /// another run's claim is live; that stop happens once it expires.
+    /// </summary>
+    private WorkerResult? ReleaseForStop(WorkerRequest request)
     {
-        if (!inTransaction)
-            throw new EvaluationBlockedException("Recovery requires a transaction.");
-        var dispatcher = store.Require<DispatcherDocument>(
+        var claim = store.Find<DispatcherDocument>(
             "asx_claim",
             WorkCoordination.Operation(service, request.Key)
         );
-        if (
-            dispatcher.Value.RunId == null
-            || dispatcher.Value.OperationKey != request.Key
-            || dispatcher.Value.RunId != request.RunId
-            || dispatcher.Value.Token != request.Token
-            || dispatcher.Value.LeaseUntilUtc > clock()
-            || string.IsNullOrWhiteSpace(request.Evidence)
-            || request.Evidence!.Length > 500
-        )
-            throw new EvaluationBlockedException(
-                "Expired exact writer identity and operator-confirmed termination/outstanding-call evidence required."
-            );
-        if (request.Key.StartsWith("librarycreate:", StringComparison.Ordinal))
+        if (claim?.Value.OperationKey != request.Key || claim.Value.RunId == null)
+            return null;
+        if (request.Command != "Claim")
+            claim = Assert(request);
+        else if (claim.Value.LeaseUntilUtc > clock())
+            return new WorkerResult { Status = "Busy", Key = request.Key };
+        claim.Value.HttpOutstanding = false;
+        Release(claim);
+        return null;
+    }
+
+    /// <summary>Ends unsent work for an admin stop with Cancel semantics and the notice shown.</summary>
+    private WorkerResult Stop(WorkerRequest request, string code, string notice)
+    {
+        var busy = ReleaseForStop(request);
+        if (busy != null)
+            return busy;
+        var operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        bool superseded = code == "Superseded";
+        operation.Value.Status = superseded ? "Superseded" : "Cancelled";
+        if (!superseded)
+            operation.Value.ErrorCode = code;
+        operation.Value.NextAttemptUtc = null;
+        operation.Value.ProbeId = Guid.Empty;
+        operation.Value.AbsenceVerified = false;
+        store.Save(operation);
+        Audit(request.Key, request.RunId ?? "worker", superseded ? "Superseded" : "Cancel");
+        return new WorkerResult
         {
-            var setup = store.Require<LibrarySetup>("asx_operation", request.Key);
-            if (setup.Value.Mutation == "CreateLibrary" && setup.Value.ListId == Guid.Empty)
-            {
-                if (
-                    string.IsNullOrWhiteSpace(request.ResponseBody)
-                    || request.ResponseBody!.Length > 16000
-                )
-                    throw new EvaluationBlockedException(
-                        "Recover the successful original create response from the terminated flow run. A same-name lookup is insufficient."
-                    );
-                var created = JsonWire
-                    .Read<ODataEnvelope<CreatedLibrary>>(request.ResponseBody)
-                    .Data;
-                if (
-                    created == null
-                    || created.Id == Guid.Empty
-                    || created.Title != setup.Value.Name
-                )
-                    throw new EvaluationBlockedException(
-                        "Original creation response must identify the requested library by ID and title."
-                    );
-                setup.Value.ListId = created.Id;
-                store.Save(setup);
-                Audit(
-                    request.Key,
-                    request.RunId,
-                    "RecoveredCreateResponse:" + DocumentStore.Hash(request.ResponseBody)
-                );
-            }
-        }
-        dispatcher.Value.HttpOutstanding = false;
-        dispatcher.Value.RecoveryPermitted = true;
-        dispatcher.Value.TerminationEvidence = request.Evidence;
-        store.Save(dispatcher);
-        Audit(request.Key, request.RunId, "OperatorRecoveryPermit");
-        return new WorkerResult { Status = "RecoveryPermitted", Key = request.Key };
+            Status = operation.Value.Status,
+            Key = request.Key,
+            Notices = new[] { notice },
+        };
     }
 
     private WorkerResult? StopUnavailable(WorkerRequest request)
     {
         var operation = store.Require<OperationDocument>("asx_operation", request.Key);
         if (
-            operation.Value.HistoryCompacted
-            || operation.Value.ExternalSubmitted
-            || operation.Value.Status == "Applied"
+            !Unsent(operation.Value)
+            || TemplateLifecycle.Active(
+                TemplateLifecycle.Find(service, operation.Value.Folder.TemplateId),
+                clock()
+            )
         )
             return null;
-        var binding = operation.Value.Folder;
-        if (TemplateLifecycle.Active(TemplateLifecycle.Find(service, binding.TemplateId), clock()))
-            return null;
-        var claim = store.Find<DispatcherDocument>(
-            "asx_claim",
-            WorkCoordination.Operation(service, request.Key)
+        return Stop(
+            request,
+            "TemplateUnavailable",
+            "Template is deleted, off or outside its active dates. Existing SharePoint content is unchanged."
         );
-        if (claim?.Value.OperationKey == request.Key && claim.Value.RunId != null)
-        {
-            // Only the holder may release an active writer. A different run cannot take it over.
-            if (request.Command == "Claim" && !claim.Value.RecoveryPermitted)
-                return new WorkerResult { Status = "Busy", Key = request.Key };
-            if (request.Command != "Claim")
-                claim = Assert(request);
-            Release(claim);
-        }
-        operation.Value.Status = "Cancelled";
-        operation.Value.ErrorCode = "TemplateUnavailable";
+    }
+
+    /// <summary>
+    /// Cancels unsent folder work whose library was removed from Documents, with the Cancel
+    /// semantics: nothing in SharePoint is deleted. A create already sent finishes first.
+    /// </summary>
+    private WorkerResult? StopRemoved(WorkerRequest request)
+    {
+        var operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        if (!Unsent(operation.Value) || !catalog.Removed(operation.Value.Folder.LibraryId))
+            return null;
+        return Stop(
+            request,
+            "DestinationRemoved",
+            "The library was removed from Documents. Unsent folder work was cancelled; nothing in SharePoint was deleted."
+        );
+    }
+
+    /// <summary>
+    /// Cancels unsent folder work for a table that is no longer enabled, like a removed
+    /// destination. A create already sent finishes first (see Current).
+    /// </summary>
+    private WorkerResult? StopTable(WorkerRequest request)
+    {
+        var operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        if (!Unsent(operation.Value) || IsAllowed(operation.Value.Folder.Table))
+            return null;
+        return Stop(request, "TableNotEnabled", TableNotEnabled(operation.Value.Folder.Table));
+    }
+
+    /// <summary>Shown when work for a table that is no longer enabled is cancelled.</summary>
+    public static string TableNotEnabled(string table) =>
+        "The table "
+        + table
+        + " is no longer enabled in Documents, so this work was cancelled; nothing in SharePoint was deleted. Enable the table and re-run the record to plan it again.";
+
+    /// <summary>
+    /// Stops unsent work that a newer plan of the record no longer selects, or whose revision
+    /// is no longer published, at any step: Superseded, as Claim always did, not a failure.
+    /// </summary>
+    private WorkerResult? StopSuperseded(WorkerRequest request)
+    {
+        var operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        if (!Unsent(operation.Value) || operation.Value.Status == "Blocked")
+            return null;
+        var binding = operation.Value.Folder;
+        var published = TemplateLifecycle
+            .Find(service, binding.TemplateId)
+            ?.GetAttributeValue<EntityReference>("asx_publishedrevisionid");
+        var selection = store.Find<RecordPlanDocument>(
+            "asx_outbox",
+            "recordplan:" + binding.TemplateId.ToString("N") + ":" + binding.RecordId.ToString("N")
+        );
+        bool retired = Retired(binding.Table, binding.RecordId);
+        bool replanned =
+            selection != null
+            && (
+                selection.Value.RevisionId != operation.Value.RevisionId
+                || !selection.Value.Operations.Contains(operation.Value.Key)
+            );
+        if (published?.Id == operation.Value.RevisionId && !retired && !replanned)
+            return null;
+        // The notice names the cause: only a newer plan or revision supersedes the job.
+        string reason =
+            retired ? "The record was deleted, so this folder job stopped."
+            : published == null
+                ? "The template revision this folder job used is no longer published, so the job stopped."
+            : replanned ? "Superseded by a newer plan of this record."
+            : "Superseded by a newer published revision of the template.";
+        return Stop(
+            request,
+            "Superseded",
+            reason + " Folders it already created are kept; nothing in SharePoint was deleted."
+        );
+    }
+
+    /// <summary>
+    /// Holds unsent work while its library or site is suspended: it waits in RetryWait with a
+    /// notice, and its next check backs off (at most 15 minutes apart), so it takes no dispatch
+    /// slot meanwhile and resumes by itself once both are approved again. Nothing is written
+    /// while suspended; a create already sent may finish (see Current).
+    /// </summary>
+    private WorkerResult? StopSuspended(WorkerRequest request)
+    {
+        var operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        if (
+            !Unsent(operation.Value)
+            || operation.Value.Status == "Blocked"
+            || operation.Value.NextAttemptUtc > clock()
+            || WorkCoordination.Stops(service, operation.Value.Folder.LibraryId) != "suspended"
+        )
+            return null;
+        var busy = ReleaseForStop(request);
+        if (busy != null)
+            return busy;
+        operation = store.Require<OperationDocument>("asx_operation", request.Key);
+        operation.Value.RetryCount++;
+        operation.Value.Status = "RetryWait";
+        operation.Value.NextAttemptUtc = RetryAt(clock(), operation.Value.RetryCount, null);
+        operation.Value.ProbeId = Guid.Empty;
+        operation.Value.AbsenceVerified = false;
+        operation.Value.ErrorCode =
+            "Waiting: the library or its site is suspended. This job resumes by itself once both are approved again; check "
+            + operation.Value.RetryCount.ToString(CultureInfo.InvariantCulture)
+            + ".";
         store.Save(operation);
         return new WorkerResult
         {
-            Status = "Cancelled",
+            Status = "RetryWait",
             Key = request.Key,
-            Notices = new[]
-            {
-                "Template is deleted, deactivated or outside its schedule. Existing SharePoint content is unchanged.",
-            },
+            Notices = new[] { operation.Value.ErrorCode },
         };
     }
 
@@ -1115,7 +1463,6 @@ public sealed class WorkerCoordinator
             || row.Value.RunId != request.RunId
             || row.Value.OperationKey != request.Key
             || row.Value.LeaseUntilUtc <= clock()
-            || row.Value.RecoveryPermitted
         )
             throw new EvaluationBlockedException("Stale or mismatched worker claim.");
         return row;
@@ -1123,7 +1470,6 @@ public sealed class WorkerCoordinator
 
     private bool MatchesSource(SourceVersion source)
     {
-        Allowed(source.Table);
         return !string.IsNullOrEmpty(source.Version)
             && service.Retrieve(source.Table, source.Id, new ColumnSet(false)).RowVersion
                 == source.Version;
@@ -1135,13 +1481,12 @@ public sealed class WorkerCoordinator
     private bool Retired(string table, Guid id) =>
         store.Find<OutboxDocument>("asx_outbox", RetirementKey(table, id)) != null;
 
-    private WorkerLibrary Current(
-        OperationDocument operation,
-        FolderStep binding,
-        bool begin = false
-    )
+    private WorkerLibrary Current(OperationDocument operation, FolderStep binding)
     {
-        Allowed(binding.Table);
+        // A create already sent to SharePoint may finish (response, reads, completion) after its
+        // table is removed, so its writer slot is released. Unsent work for the table stops here.
+        if (!operation.ExternalSubmitted)
+            Allowed(binding.Table);
         if (!operation.ExternalSubmitted && Retired(binding.Table, binding.RecordId))
             throw new EvaluationBlockedException(
                 "Deleted record requires decommission review; no new folder write."
@@ -1161,22 +1506,88 @@ public sealed class WorkerCoordinator
             throw new EvaluationBlockedException(
                 "A newer record evaluation no longer selects this unsubmitted operation."
             );
-        var library = catalog.Read(binding.LibraryId);
-        if (
-            library.EntryId != binding.EntryId
-            || !begin
-                && (
-                    library.PolicyRevision != operation.PolicyRevision
-                    || (
-                        operation.ApprovedAclHash != null
-                        && operation.ApprovedAclHash != library.AclHash
-                    )
-                )
-        )
-            throw new EvaluationBlockedException("Approved destination/policy generation changed.");
-        if (begin)
-            operation.PolicyRevision = library.PolicyRevision; // A fresh claim independently reads the currently approved library and ACL before any write.
+        // Re-read on every step so a suspension stops work before the next write. The library's
+        // policy generation is deliberately not compared: folders inherit the library's access.
+        // A create already sent may finish after a suspension; nothing unsent proceeds.
+        var library = catalog.Read(
+            binding.LibraryId,
+            requireApproved: !operation.ExternalSubmitted
+        );
+        if (library.EntryId != binding.EntryId)
+            throw new EvaluationBlockedException("Approved destination entry changed.");
         return library;
+    }
+
+    /// <summary>
+    /// Moves the job's stored server-relative paths from the entry path they were written
+    /// against to the destination's current one, after a re-point followed a renamed or moved
+    /// library or site. Paths outside the entry (the library root and ancestors) are read again.
+    /// </summary>
+    /// <returns>True when the destination moved since the job last ran.</returns>
+    internal static bool Follow(OperationDocument operation, WorkerLibrary library)
+    {
+        string current = library.Target.EntryPath;
+        string? old = operation.EntryPath ?? StoredEntry(operation);
+        operation.EntryPath = current;
+        if (old == null || old == current)
+            return false;
+        string? Map(string? path) =>
+            path == null ? null
+            : path == old ? current
+            : path.StartsWith(old + "/", StringComparison.Ordinal)
+                ? current + path.Substring(old.Length)
+            : path;
+        foreach (var folder in operation.Folders)
+            folder.PhysicalPath = Map(folder.PhysicalPath);
+        operation.ParentPath = Map(operation.ParentPath);
+        operation.AncestorPath = null;
+        operation.LibraryRootPath = null;
+        operation.LibraryRootId = Guid.Empty;
+        return true;
+    }
+
+    /// <summary>
+    /// The entry path a job stored before EntryPath existed wrote its paths against, read from its
+    /// top-level folder: the pinned parent while that folder is the current step, otherwise the
+    /// parent of the folder's recorded path. Null when no path was stored yet.
+    /// </summary>
+    private static string? StoredEntry(OperationDocument operation)
+    {
+        // The first top-level folder that has a usable stored path decides.
+        for (int i = 0; i < operation.Folders.Length; i++)
+        {
+            if (operation.Folders[i].ParentBinding != null)
+                continue;
+            if (operation.Cursor == i && operation.ParentPath != null)
+                return operation.ParentPath;
+            string? path = operation.Folders[i].PhysicalPath;
+            int slash = path?.LastIndexOf('/') ?? -1;
+            if (slash > 0)
+                return path!.Substring(0, slash);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Reads the moved destination again from the library down, discarding a read issued under
+    /// the old path. Nothing unsent is written before the new reads confirm it.
+    /// </summary>
+    private WorkerResult Restart(
+        StoredRow<OperationDocument> operation,
+        DispatcherDocument dispatcher,
+        WorkerLibrary library
+    )
+    {
+        operation.Value.AbsenceVerified = false;
+        if (operation.Value.ExternalSubmitted)
+        {
+            // A create sent before or during the move: the folder is adopted where the reads
+            // find it, or created once if they find none.
+            operation.Value.ExternalResponseKnown = true;
+            operation.Value.Reprobe = true;
+        }
+        Audit(operation.Value.Key, dispatcher.RunId ?? "worker", "DestinationMoved");
+        return Probe(operation, dispatcher, library, "Library");
     }
 
     private WorkerResult Probe(
@@ -1199,56 +1610,55 @@ public sealed class WorkerCoordinator
                         + "')?$select=Id,RootFolder/UniqueId,RootFolder/ServerRelativeUrl&$expand=RootFolder",
                 };
                 break;
-            case "FinalAcl":
-            case "Acl":
-                http = new HttpIntent
-                {
-                    RelativeUri =
-                        "_api/web/lists(guid'"
-                        + library.Target.ListId
-                        + "')/roleassignments?$select=Member/Id,Member/PrincipalType,RoleDefinitionBindings/Id,RoleDefinitionBindings/BasePermissions&$expand=Member,RoleDefinitionBindings",
-                };
-                break;
             case "Ancestor":
             case "FinalAncestor":
+                // An ancestor Documents created, or the approved entry, is read by its ID; one
+                // above the entry by its path, which is shorter than the folder's own.
+                var known = KnownFolder(operation.Value, library, operation.Value.AncestorPath!);
                 http = new HttpIntent
                 {
                     RelativeUri =
-                        "_api/web/GetFolderByServerRelativePath(decodedUrl='"
-                        + Uri.EscapeDataString(operation.Value.AncestorPath!.Replace("'", "''"))
-                        + "')?$select=UniqueId,ServerRelativeUrl,ListItemAllFields/HasUniqueRoleAssignments&$expand=ListItemAllFields",
+                        known != Guid.Empty
+                            ? SharePointRequests.ById(known, "$select=UniqueId,ServerRelativeUrl")
+                            : SharePointRequests.ByPath(
+                                "GetFolderByServerRelativePath",
+                                operation.Value.AncestorPath!,
+                                "$select=UniqueId,ServerRelativeUrl"
+                            ),
                 };
                 break;
             case "FinalParent":
             case "Parent":
+                // The parent's ID is always known: the approved entry, or the parent folder
+                // this job created or found. Its path is checked against the answer.
                 http = new HttpIntent
                 {
-                    RelativeUri =
-                        "_api/web/GetFolderByServerRelativePath(decodedUrl='"
-                        + Uri.EscapeDataString(operation.Value.ParentPath!.Replace("'", "''"))
-                        + "')?$select=UniqueId,ServerRelativeUrl,ListItemAllFields/HasUniqueRoleAssignments&$expand=ListItemAllFields",
+                    RelativeUri = SharePointRequests.ById(
+                        ParentId(operation.Value, library),
+                        "$select=UniqueId,ServerRelativeUrl"
+                    ),
                 };
                 break;
             case "ConflictFile":
                 http = new HttpIntent
                 {
-                    RelativeUri =
-                        "_api/web/GetFileByServerRelativePath(decodedUrl='"
-                        + Uri.EscapeDataString(
-                            (operation.Value.ParentPath + "/" + binding.Candidate).Replace(
-                                "'",
-                                "''"
-                            )
-                        )
-                        + "')?$select=UniqueId,ServerRelativeUrl",
+                    RelativeUri = SharePointRequests.ByPath(
+                        "GetFileByServerRelativePath",
+                        operation.Value.ParentPath + "/" + binding.Candidate,
+                        "$select=UniqueId,ServerRelativeUrl"
+                    ),
                 };
                 break;
             case "Folder":
-                http = SharePointRequests.FindFolder(
-                    library.Target,
-                    operation.Value.ParentPath!,
-                    binding.Candidate
-                );
+                // A folder already found is read again by its ID.
+                http =
+                    binding.PhysicalId != Guid.Empty
+                        ? SharePointRequests.FindFolder(binding.PhysicalId)
+                        : SharePointRequests.FindFolder(
+                            library.Target,
+                            operation.Value.ParentPath!,
+                            binding.Candidate
+                        );
                 break;
             default:
                 throw new EvaluationBlockedException("Unknown probe type.");
@@ -1269,6 +1679,29 @@ public sealed class WorkerCoordinator
             SiteUrl = library.Target.Web.AbsoluteUri.TrimEnd('/'),
             Http = http,
         };
+    }
+
+    /// <summary>The unique ID of the current folder's parent: the entry, or its parent folder.</summary>
+    private static Guid ParentId(OperationDocument operation, WorkerLibrary library)
+    {
+        var binding = operation.Folder;
+        return binding.ParentBinding == null
+            ? library.EntryId
+            : operation.Folders.Single(f => f.Node == binding.ParentBinding).PhysicalId;
+    }
+
+    /// <summary>The ID of a folder at this path that Documents already knows, or empty.</summary>
+    private static Guid KnownFolder(OperationDocument operation, WorkerLibrary library, string path)
+    {
+        if (string.Equals(path, library.Target.EntryPath, StringComparison.Ordinal))
+            return library.EntryId;
+        return operation
+                .Folders.FirstOrDefault(f =>
+                    f.PhysicalId != Guid.Empty
+                    && string.Equals(f.PhysicalPath, path, StringComparison.Ordinal)
+                )
+                ?.PhysicalId
+            ?? Guid.Empty;
     }
 
     private WorkerResult Block(
@@ -1296,7 +1729,6 @@ public sealed class WorkerCoordinator
         dispatcher.Value.RunId = null;
         dispatcher.Value.OperationKey = null;
         dispatcher.Value.Token = Guid.Empty;
-        dispatcher.Value.RecoveryPermitted = false;
         dispatcher.Value.Status = "Idle";
         store.Save(dispatcher);
     }
@@ -1313,9 +1745,12 @@ public sealed class WorkerCoordinator
         };
     }
 
+    private bool IsAllowed(string table) =>
+        allowedTables == null || allowedTables.Contains(table, StringComparer.Ordinal);
+
     private void Allowed(string table)
     {
-        if (allowedTables != null && !allowedTables.Contains(table, StringComparer.Ordinal))
+        if (!IsAllowed(table))
             throw new EvaluationBlockedException(
                 "Record source is outside the approved runtime scope."
             );

@@ -39,6 +39,7 @@ public sealed class BatchDocument : StoredDocument
 
 public sealed class BatchReplan
 {
+    private const int BatchNoticeLimit = 20;
     private readonly IOrganizationService service;
     private readonly DocumentStore store;
     private readonly string[] allowed;
@@ -63,12 +64,14 @@ public sealed class BatchReplan
                 || request.TemplateId == Guid.Empty
                 || request.RecordIds == null
                 || request.RecordIds.Length < 1
-                || request.RecordIds.Length > 5
+                || request.RecordIds.Length > Bounds.PreviewRecords
                 || request.RecordIds.Any(id => id == Guid.Empty)
                 || request.RecordIds.Distinct().Count() != request.RecordIds.Length
             )
                 throw new EvaluationBlockedException(
-                    "Select one to five unique records for a bounded batch review."
+                    "Select one to "
+                        + Bounds.PreviewRecords
+                        + " unique records for a bounded batch review."
                 );
             string key = "batch:" + request.RequestId.ToString("N");
             var old = store.Find<BatchDocument>("asx_outbox", key);
@@ -90,7 +93,8 @@ public sealed class BatchReplan
                 header.GetAttributeValue<EntityReference>("asx_publishedrevisionid")?.Id
                 ?? throw new EvaluationBlockedException("Publish before batch review.");
             var template = new TemplateStore(service).Read(revision);
-            if (template.Sources.Any(s => !allowed.Contains(s.Table)))
+            // Lookup source tables need not be enabled; only the template's own table must be.
+            if (!allowed.Contains(template.Table))
                 throw new EvaluationBlockedException("Batch source exceeds runtime scope.");
             int total = 0;
             var records = request
@@ -134,6 +138,15 @@ public sealed class BatchReplan
                                     + "/"
                                     + intent.RelativePath;
                             })
+                            // The batch row holds up to 1000 paths for five records inside the
+                            // 500,000-character payload limit, so each record lists at most 20
+                            // of its plan notices (about 12,000 characters).
+                            .Concat(intents.Notices.Take(BatchNoticeLimit))
+                            .Concat(
+                                intents.Notices.Count > BatchNoticeLimit
+                                    ? new[] { "More notices were not recorded." }
+                                    : Array.Empty<string>()
+                            )
                             .Concat(
                                 new[]
                                 {
@@ -167,7 +180,7 @@ public sealed class BatchReplan
         var current = TemplateLifecycle.Find(service, batch.Value.TemplateId);
         if (!TemplateLifecycle.Active(current, clock()))
             throw new EvaluationBlockedException(
-                "Template is deleted, deactivated or outside its schedule."
+                "Template is deleted, off or outside its active dates."
             );
         if (
             current!.GetAttributeValue<EntityReference>("asx_publishedrevisionid")?.Id
@@ -176,12 +189,13 @@ public sealed class BatchReplan
             throw new EvaluationBlockedException(
                 "Publication changed; request a new batch review."
             );
+        if (!allowed.Contains(TemplateStore.Text(current, "asx_table")))
+            throw new EvaluationBlockedException("Batch source exceeds runtime scope.");
         foreach (var record in batch.Value.Records)
         foreach (var source in record.Sources)
         {
             if (
-                !allowed.Contains(source.Table)
-                || string.IsNullOrEmpty(source.Version)
+                string.IsNullOrEmpty(source.Version)
                 || service.Retrieve(source.Table, source.Id, new ColumnSet(false)).RowVersion
                     != source.Version
             )

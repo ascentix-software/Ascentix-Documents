@@ -20,7 +20,15 @@ public sealed class PreviewTemplateApi : IPlugin
         try
         {
             var request = JsonWire.Read<PreviewRequest>((string)context.InputParameters["Request"]);
-            var template = new TemplateStore(service).Read(Guid.Parse(request.RevisionId));
+            if ((request.Draft == null) == string.IsNullOrEmpty(request.RevisionId))
+                throw new EvaluationBlockedException(
+                    "Send either the saved revision or the unsaved draft."
+                );
+            // Unsaved edits are validated and converted as Save does, and nothing is written.
+            var template =
+                request.Draft != null
+                    ? DraftTemplate.Build(service, request.Draft)
+                    : new TemplateStore(service).Read(Guid.Parse(request.RevisionId));
             var recordId = Guid.Parse(request.RecordId);
             var snapshot = new SnapshotReader(service).Read(template, recordId);
             context.OutputParameters["Result"] = JsonWire.Write(
@@ -65,7 +73,7 @@ public sealed class PublishTemplateApi : IPlugin
             throw new InvalidPluginExecutionException("Draft changed; reload before publishing.");
         // Validate current metadata and the structural/catalog contract before freezing a revision.
         var publishedTemplate = new TemplateStore(service).Read(revisionId);
-        RuntimeProfile.Read(service).ValidateSources(publishedTemplate);
+        var notices = RuntimeProfile.Read(service).ValidateSources(publishedTemplate);
         new SnapshotReader(service).ValidateMetadata(publishedTemplate);
         service.Execute(
             new UpdateRequest
@@ -95,7 +103,9 @@ public sealed class PublishTemplateApi : IPlugin
                 ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
             }
         );
-        context.OutputParameters["Result"] = "Published";
+        context.OutputParameters["Result"] = JsonWire.Write(
+            new PublishResult { Status = "Published", Notices = notices }
+        );
     }
 }
 
@@ -262,8 +272,6 @@ public sealed class RecordInvalidationPlugin : IPlugin
         var context = (IPluginExecutionContext)provider.GetService(typeof(IPluginExecutionContext));
         if (
             context.Stage != 40
-            || context.Mode != 0
-            || !context.IsInTransaction
             || !new[] { "Create", "Update", "CreateMultiple", "UpdateMultiple", "Delete" }.Contains(
                 context.MessageName
             )
@@ -272,36 +280,39 @@ public sealed class RecordInvalidationPlugin : IPlugin
         var service = (
             (IOrganizationServiceFactory)provider.GetService(typeof(IOrganizationServiceFactory))
         ).CreateOrganizationService(context.UserId);
-        var profile = RuntimeProfile.Read(service);
+        var profile = RuntimeProfile.ReadCapture(service);
+        if (!profile.Tables.Contains(context.PrimaryEntityName))
+            return;
         if (
             context.MessageName.StartsWith("Update", StringComparison.Ordinal)
             && !profile.ProcessRecordUpdates
         )
             return;
-        if (
-            context.UserId != profile.WorkerId
-            || !profile.Tables.Contains(context.PrimaryEntityName)
-        )
+        if (context.UserId != profile.WorkerId)
             throw new InvalidPluginExecutionException(
-                "Event registration differs from the approved planner identity/scope."
+                "Event registration differs from the approved planner identity."
             );
         Guid[] ids;
         if (context.MessageName.EndsWith("Multiple", StringComparison.Ordinal))
         {
+            var created =
+                context.OutputParameters != null
+                && context.OutputParameters.Contains("Ids")
+                && context.OutputParameters["Ids"] is Guid[] output
+                    ? output
+                    : null;
             var targets = context.InputParameters.Contains("Targets")
                 ? context.InputParameters["Targets"] as EntityCollection
                 : null;
             if (
                 targets == null
-                || targets.Entities.Count > 100
-                || targets.Entities.Any(e =>
-                    e.LogicalName != context.PrimaryEntityName || e.Id == Guid.Empty
-                )
+                || targets.Entities.Any(e => e.LogicalName != context.PrimaryEntityName)
             )
-                throw new InvalidPluginExecutionException(
-                    "Bulk invalidation requires at most 100 exact persisted record identities."
-                );
-            ids = targets.Entities.Select(e => e.Id).Distinct().ToArray();
+                throw new InvalidPluginExecutionException("Bulk event targets are inconsistent.");
+            ids = (created ?? targets.Entities.Select(e => e.Id).ToArray())
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToArray();
         }
         else
         {

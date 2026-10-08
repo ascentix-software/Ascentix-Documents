@@ -19,19 +19,15 @@ public sealed class CreateDraftApi : IPlugin
             (IOrganizationServiceFactory)provider.GetService(typeof(IOrganizationServiceFactory))
         ).CreateOrganizationService(context.InitiatingUserId);
         var draft = JsonWire.Read<DraftDto>((string)context.InputParameters["Request"]);
-        new FieldReference("root", draft.Table);
-        if (
-            draft.Sources == null
-            || draft.Destinations == null
-            || draft.Sources.Length < 1
-            || draft.Sources.Length > 6
-            || draft.Destinations.Length < 1
-            || draft.Destinations.Length > 10
-            || draft.Destinations.Any(d =>
-                d.Folders == null || d.Folders.Length < 1 || d.Folders.Length > 100
-            )
-        )
-            throw new InvalidPluginExecutionException("Draft exceeds the supported bounds.");
+        // Validates the whole draft before anything is written, as Preview does (spec 6.3).
+        try
+        {
+            DraftTemplate.Build(service, draft);
+        }
+        catch (EvaluationBlockedException error)
+        {
+            throw new InvalidPluginExecutionException(error.Message);
+        }
         Guid templateId;
         if (!string.IsNullOrEmpty(draft.TemplateId))
         {
@@ -157,18 +153,16 @@ public sealed class CreateDraftApi : IPlugin
         }
         int groupIndex = 0,
             conditionIndex = 0;
-        string Group(GroupDto group, string? parent, int depth)
+        string Group(GroupDto group, string? parent)
         {
             if (
-                depth > 10
-                || group == null
+                group == null
                 || group.Conditions == null
                 || group.Groups == null
                 || group.Conditions.Length + group.Groups.Length == 0
-                || ++groupIndex > 100
             )
-                throw new InvalidPluginExecutionException("Invalid condition group bounds.");
-            var key = "group_" + groupIndex;
+                throw new InvalidPluginExecutionException(DraftTemplate.GroupRefusal);
+            var key = "group_" + ++groupIndex;
             Row(
                 "asx_documentconditiongroup",
                 key,
@@ -180,12 +174,13 @@ public sealed class CreateDraftApi : IPlugin
             );
             foreach (var condition in group.Conditions)
             {
-                if (++conditionIndex > 100)
-                    throw new InvalidPluginExecutionException("Condition leaf limit exceeded.");
                 condition.ToModel();
+                // The lookup record's name and table are read on load, never stored.
+                condition.LiteralLabel = null;
+                condition.LiteralTable = null;
                 Row(
                     "asx_condition",
-                    "condition_" + conditionIndex,
+                    "condition_" + ++conditionIndex,
                     row =>
                     {
                         row["asx_groupkey"] = key;
@@ -194,7 +189,7 @@ public sealed class CreateDraftApi : IPlugin
                 );
             }
             foreach (var child in group.Groups)
-                Group(child, key, depth + 1);
+                Group(child, key);
             return key;
         }
         foreach (var source in draft.Sources)
@@ -204,10 +199,6 @@ public sealed class CreateDraftApi : IPlugin
         }
         foreach (var section in draft.Destinations)
         {
-            if (section.Name?.Length > 200)
-                throw new InvalidPluginExecutionException(
-                    "Destination names must be 200 characters or fewer."
-                );
             Row(
                 "asx_destination",
                 section.Key,
@@ -225,7 +216,7 @@ public sealed class CreateDraftApi : IPlugin
             int order = 0;
             foreach (var folder in section.Folders)
             {
-                var group = folder.Condition == null ? null : Group(folder.Condition, null, 0);
+                var group = folder.Condition == null ? null : Group(folder.Condition, null);
                 Row(
                     "asx_folder",
                     folder.Key,

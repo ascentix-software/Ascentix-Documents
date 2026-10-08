@@ -1,4 +1,9 @@
 'use strict';
+// Folder templates: the templates list, the read-first overview of a template with its Status
+// and Versions panels, and the editor (its header and steps; the destinations; the folder tree
+// with the folder panel, the field picker, the condition builder and test records; Review and
+// publish with the changes, a test record's result, what publishing does and the optional
+// re-run), and re-runs for existing records. Text is only ever set with textContent.
 (() => {
   const $ = (id) => document.getElementById(id);
   const state = {
@@ -10,20 +15,106 @@
     libraries: [],
     sections: [],
     saved: null,
+    // The template open in the editor (null for a new one until its first save).
     template: null,
     templates: [],
-    addedTables: new Set(),
-    expandedTables: new Set(),
-    sectionSequence: 0,
+    // Every template's revisions: the list's states and the overview's Versions read them.
+    revisions: [],
+    enabledTables: [],
+    // 'overview' shows a template read-only; 'edit' shows the editor.
+    view: 'overview',
+    step: 1,
+    // The template the overview shows: its row, the revision it reads, that revision's sources and
+    // destinations, its last re-run and the policies of its libraries.
+    overview: null,
+    // One GetPolicy per library per page load, shared by every reader, and why the last failed read
+    // of a library failed.
+    policyCache: new Map(),
+    policyErrors: new Map(),
+    listQuery: '',
+    // The overview's Folders groups that are open, by destination key.
+    openGroups: new Set(),
+    // An earlier version opened from Versions: it can be read, not saved or published.
+    readOnly: false,
     editBase: null,
     busy: false,
+    // The list's first load is done: its empty state is real, not "still loading".
+    loaded: false,
+    // Edits since the last load or save: autosave, Publish and the guards follow it.
+    unsaved: false,
+    // Autosave: 'idle', 'saving', 'saved' or 'error', when it last saved, why it failed, the save
+    // in flight, whether an edit made during it needs one more save, the number of edits so far,
+    // and the pause before the next save.
+    saveState: 'idle',
+    savedAt: null,
+    saveError: null,
+    saving: null,
+    saveAgain: false,
+    edits: 0,
+    saveTimer: null,
+    // Which open editor work belongs to: a save that answers after another template opened
+    // leaves the new one alone.
+    session: 0,
+    // Publish is under way: autosave waits for it. publishRun: the whole of Publish, from its
+    // first save to the overview; leaving the editor waits for it.
+    publishing: false,
+    publishRun: null,
+    // The published revision the draft is compared with ({ version, sources, sections }), and
+    // what changed since it (changesSince). snapshotFailed: the template has a published
+    // revision that could not be read, which is not the same as never having published, and
+    // snapshotError says why.
+    publishedSnapshot: null,
+    snapshotFailed: false,
+    snapshotError: null,
+    changes: null,
+    // The destination open in step 1, by key.
+    expanded: null,
+    // The last autosave found invalid conditions.
+    invalid: false,
+    // Step 2: the destination whose tree is shown (its key), and the Name box's selection when
+    // ＋ Field opened.
+    destination: null,
+    caret: null,
+    // Test records for this editing session ({ id, name, seq, busy }): each one's latest
+    // preview of the draft ({ plan, stale, error }), the record values read to say why a folder
+    // was skipped (by 'id|column'), and the pause before the next previews.
+    testRecords: [],
+    previewByRecord: new Map(),
+    recordValues: new Map(),
+    previewTimer: null,
+    // Step 3: the test record "Result for" shows, whether the admin wants the re-run (the box
+    // shows it unless something blocks it), the editing session Starts was set up for, and the
+    // template's record count ({ id, read }).
+    resultId: null,
+    rerunWanted: true,
+    startsSession: null,
+    count: null,
+    run: null,
+    runTotal: null,
+    batch: null,
+    // The data-focus-key that takes focus after the next render.
+    focusKey: null,
+    // Related tables whose fields could not be read, even after a retry.
+    failedTables: new Set(),
+    // Which template open the background preload belongs to.
+    preloadId: 0,
+    pickersStale: false,
+    // A list redraw waits for the list's open confirmation.
+    railStale: false,
   };
+  const OPERATOR = 'prvCreateasx_operatorcommand';
+  // The states of a re-run that has not ended.
+  const ACTIVE = ['Running', 'Waiting', 'Retrying', 'Paused', 'Blocked'];
+  // The open side panel (Status, Version history or Re-run): one at a time.
+  let panel = null;
+  // Dataverse IDs compare without case.
+  const same = (a, b) => !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
   const metadata = new Map();
   const xrm = window.parent?.Xrm || window.Xrm;
-  const message = (text, error = false) => {
-    $('status').textContent = text;
-    $('status').className = error ? 'error' : '';
-  };
+  const ui = window.AsxdUi;
+  // Results of an action show in the feedback line under the header of the page that ran it.
+  const message = (text, error = false) =>
+    ui.feedback(ui.activeTab(), text, error ? 'error' : 'success');
   const el = (tag, text, css) => {
     const node = document.createElement(tag);
     if (text != null) node.textContent = text;
@@ -45,15 +136,6 @@
     };
     return s;
   }
-  function input(value, change) {
-    const i = el('input');
-    i.value = value;
-    i.onchange = () => {
-      change(i.value);
-      dirty();
-    };
-    return i;
-  }
   function label(text, control) {
     const l = el('label', text);
     l.append(control);
@@ -65,54 +147,314 @@
     b.onclick = action;
     return b;
   }
-  function controls() {
-    $('newTemplate').disabled = state.busy || !state.root;
-    $('templateName').disabled = state.busy || !state.root || !!state.template;
-    $('revisionControls').hidden = !state.root;
-    $('templateActions').hidden = !state.root || $('author-view').hidden;
-    $('authorWorkspace').hidden = !state.root;
-    $('tablePrompt').hidden = !!state.root;
-    $('maintenanceContext').textContent = state.root
-      ? 'Selected table: ' +
-        display(state.root) +
-        '. Record: ' +
-        (Array.from($('record').options).find((o) => o.value === $('record').value)?.textContent ||
-          $('record').value ||
-          'Choose a preview record on Folder templates.')
-      : 'Choose a table on Folder templates first.';
-    $('table').disabled = state.busy || !state.tables.length;
-    $('record').disabled = state.busy || !state.root;
-    $('addDestination').disabled =
-      state.busy || !state.root || !state.libraries.length || state.sections.length >= 10;
-    $('chooseRecord').disabled = state.busy || !state.root;
-    $('loadRevision').disabled = state.busy || !$('savedRevision').value;
-    $('save').disabled = state.busy || !state.root || !state.sections.length;
-    $('preview').disabled = state.busy || !state.saved || !$('record').value;
-    $('publish').disabled = state.busy || !state.saved || state.saved.Status !== 'Draft';
+  const keyed = (node, key) => {
+    node.dataset.focusKey = key;
+    return node;
+  };
+  const plural = ui.plural;
+
+  // The name the unsaved-changes prompt and Retry use.
+  const templateLabel = () => $('templateName').value.trim() || 'this template';
+  const changeCount = (step) => (state.readOnly ? 0 : state.changes?.byStep[step] || 0);
+  const current = () => ({ sources: state.sources, sections: state.sections });
+  // Publish needs the Publisher role and something not yet published; unsaved edits are saved
+  // first.
+  function publishReason() {
+    if (!ui.can('prvCreateasx_publication')) return ui.needs('prvCreateasx_publication');
+    if (state.saved && state.saved.Status !== 'Draft' && !state.unsaved) return 'Already published';
+    return null;
   }
-  // Invalidates the saved preview and updates controls after an authoring edit.
-  function dirty() {
-    state.saved = null;
-    $('previewTrees').replaceChildren(
-      el('div', 'Draft changed. Save and preview again to refresh record results.', 'callout'),
+  // The version the draft becomes: a Draft keeps its number, anything else starts the next one;
+  // a new template starts at v1.
+  function draftVersion() {
+    const base = state.editBase;
+    return !base ? 1 : base.Status === 'Draft' ? base.Version : base.Version + 1;
+  }
+  // A new template's first save names it: its name cannot change until that save answers.
+  function lockName() {
+    const name = $('templateName');
+    const locked = !state.template && !!state.saving;
+    name.readOnly = locked;
+    if (locked) name.setAttribute('aria-disabled', 'true');
+    else name.removeAttribute('aria-disabled');
+  }
+  // The header's first row: the table, the name (typed in for a new template), the version the
+  // draft becomes, which version stays live, and the save status.
+  function renderHeader() {
+    if (!state.root) return;
+    $('editor-table').textContent = tableName(state.root.LogicalName) + ' ›';
+    const name = $('templateName');
+    const naming = !state.template;
+    // A new template's name becomes the heading once it is saved; focus stays on the heading.
+    if (!naming && !name.hidden && document.activeElement === name) $('editor-title').focus();
+    name.hidden = !naming;
+    name.disabled = state.busy;
+    lockName();
+    $('editor-name').textContent = naming
+      ? ''
+      : state.template.asx_name || tableName(state.root.LogicalName);
+    const base = state.editBase,
+      pill = $('editor-pill');
+    if (state.readOnly && base) {
+      const live = same(base.RevisionId, state.template?._asx_publishedrevisionid_value);
+      pill.textContent =
+        'v' +
+        base.Version +
+        ' · ' +
+        (live ? 'Live' : base.Status === 'Draft' ? 'Draft' : 'Replaced');
+      pill.dataset.tone = 'muted';
+    } else {
+      pill.textContent = 'Draft v' + draftVersion();
+      pill.dataset.tone = 'warning';
+    }
+    const live = state.readOnly
+      ? null
+      : (state.publishedSnapshot?.version ??
+        (state.template ? templateState(state.template).live : null));
+    $('editor-note').hidden = live == null;
+    $('editor-note').textContent = live == null ? '' : 'v' + live + ' stays live until you publish';
+  }
+  const clock = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
+  function renderSaveStatus() {
+    const status = $('save-status');
+    const failed = state.saveState === 'error';
+    status.classList.toggle('is-error', failed);
+    if (failed) {
+      status.textContent = "Couldn't save · ";
+      const retry = button('Retry', () => autosave(true), 'link');
+      retry.setAttribute('aria-label', 'Retry saving ' + templateLabel());
+      status.append(retry);
+      return;
+    }
+    status.textContent =
+      state.saveState === 'saving'
+        ? 'Saving…'
+        : state.saveState === 'saved'
+          ? 'Saved ' + clock.format(state.savedAt)
+          : '';
+  }
+  // The stepper: the current step, a dot on a step with changes, and the Folders step marked when
+  // its conditions are not valid. The name says it too.
+  const STEPS = ['Destinations', 'Folders', 'Review and publish'];
+  function renderStepper() {
+    STEPS.forEach((label, index) => {
+      const n = index + 1,
+        tab = $('step-tab-' + n),
+        selected = n === state.step;
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      tab.classList.toggle('is-current', selected);
+      const error = n === 2 && state.invalid && !state.readOnly;
+      const changed = n < 3 && changeCount(n) > 0;
+      tab.classList.toggle('has-error', error);
+      tab.querySelector('.step-dot').hidden = error || !changed;
+      if (error || changed)
+        tab.setAttribute('aria-label', label + (error ? ', has errors' : ', has changes'));
+      else tab.removeAttribute('aria-label');
+    });
+  }
+  // The footer: Back, the step's change count, and Next, or Publish on step 3.
+  function renderFooter() {
+    $('step-back').hidden = state.step === 1;
+    $('step-next').hidden = state.step === 3;
+    $('step-next').textContent = state.step === 1 ? 'Next: Folders' : 'Next: Review';
+    const n = state.step < 3 ? changeCount(state.step) : 0;
+    $('step-count').textContent = n ? plural(n, 'change', 'changes') + ' in this step' : '';
+    renderPublish();
+  }
+  // Publish names the version and the re-run, and follows the draft, the role and read-only.
+  function renderPublish() {
+    const publish = $('publish');
+    publish.hidden = state.readOnly || state.step !== 3 || (!state.saved && !state.sections.length);
+    if (!publish.dataset.busy)
+      publish.textContent = 'Publish v' + draftVersion() + (rerunChecked() ? ' and re-run' : '');
+    const reason = publish.hidden ? null : publishReason();
+    ui.disable(publish, 'publish-reason', reason);
+    publish.classList.toggle('primary', !reason);
+    publish.classList.toggle('secondary', !!reason);
+  }
+  // Publish and ＋ Add destination follow the draft, the role, the bound and read-only.
+  function renderActions() {
+    renderPublish();
+    const add = $('add-destination');
+    add.hidden = state.readOnly || !state.libraries.length;
+    $('no-library').hidden = !!state.libraries.length || state.readOnly;
+    ui.disable(
+      add,
+      'destination-reason',
+      state.sections.length >= ui.BOUNDS.destinations
+        ? 'A template can have up to ' +
+            ui.BOUNDS.destinations +
+            ' destinations, because each record plans all of them in one step that Dataverse stops after 2 minutes.'
+        : null,
     );
-    $('revision').textContent =
-      state.editBase?.Status === 'Draft'
-        ? 'Unsaved changes to this draft.'
-        : 'Unsaved changes. Saving starts the next draft revision.';
-    controls();
+  }
+  // Everything around the steps: header, save status, stepper, footer and actions.
+  function chrome() {
+    if (!state.root) return;
+    renderHeader();
+    renderSaveStatus();
+    renderStepper();
+    renderFooter();
+    renderActions();
+  }
+  // Shows a step. With focus, its first heading or control takes focus (Back and Next); a tab
+  // keeps the focus it has. Step 3 is drawn as it shows; the answer is its reads finishing.
+  function goStep(n, focus = true) {
+    state.step = n;
+    for (const i of [1, 2, 3]) $('step-' + i).hidden = i !== n;
+    renderStepper();
+    renderFooter();
+    const reading = n === 3 ? renderReview() : undefined;
+    if (focus) stepStart(n)?.focus();
+    return reading;
+  }
+  const stepStart = (n) =>
+    n === 1
+      ? $('destination-list').querySelector('.destination-card input') || $('add-destination')
+      : n === 2
+        ? $('folders-heading')
+        : ['review-title', 'publishing-title', 'result-record', 'result-choose']
+            .map($)
+            .find((node) => !node.hidden && !node.closest('[hidden]'));
+  // An edit: change tracking, the stepper, footer and folder tree follow it, and the autosave
+  // and the test-record previews wait for the pause after it.
+  function dirty() {
+    state.unsaved = true;
+    state.edits++;
+    state.changes = changesSince(state.publishedSnapshot, current());
+    renderStepper();
+    renderFooter();
+    renderActions();
+    renderTree();
+    if (state.step === 3) renderReview();
+    scheduleSave();
+    schedulePreview();
+  }
+  function scheduleSave() {
+    if (state.readOnly) return;
+    clearTimeout(state.saveTimer);
+    state.saveTimer = setTimeout(autosave, 1500);
+  }
+  // Saves the draft once edits pause. One save at a time: an edit made while one runs is saved
+  // by one more save after it, with the row version the first one returned. now: saving is
+  // asked for (leaving, Publish), so a name still being typed counts.
+  async function autosave(now = false) {
+    if (state.readOnly || !state.root || state.publishing) return undefined;
+    if (state.saving) {
+      state.saveAgain = true;
+      return state.saving;
+    }
+    if (!state.unsaved) return undefined;
+    // A new template is saved once it has a name and a destination, and not while its name is
+    // being typed: the pause counts from leaving the name box.
+    if (
+      !state.template &&
+      (!$('templateName').value.trim() ||
+        !state.sections.length ||
+        (!now && document.activeElement === $('templateName')))
+    )
+      return undefined;
+    state.invalid = !validate({ focus: false });
+    renderStepper();
+    if (state.invalid) {
+      // Not saved: the header stops saying it was.
+      state.saveState = '';
+      renderSaveStatus();
+      return undefined;
+    }
+    const edits = state.edits,
+      session = state.session;
+    state.saveState = 'saving';
+    renderSaveStatus();
+    const saving = (async () => {
+      try {
+        let refresh = null;
+        try {
+          await save();
+        } catch (error) {
+          // The draft was saved; only the reads after it failed.
+          if (!error.saved) throw error;
+          refresh = error.message;
+        }
+        if (session !== state.session) return;
+        // Edits made while this save was in flight are still unsaved.
+        state.unsaved = state.edits !== edits;
+        state.saveState = 'saved';
+        state.savedAt = new Date();
+        state.saveError = null;
+        if (refresh) ui.feedback('editor', refresh, 'error');
+        else ui.clearFeedback('editor');
+      } catch (error) {
+        if (session !== state.session) return;
+        state.unsaved = true;
+        state.saveState = 'error';
+        state.saveError = error.message || String(error);
+        state.saveAgain = false;
+        ui.feedback('editor', state.saveError, 'error');
+      } finally {
+        if (state.saving === saving) state.saving = null;
+        if (session === state.session) {
+          renderSaveStatus();
+          renderHeader();
+          renderActions();
+          // The version a save gave the draft shows on step 3 too.
+          if (state.step === 3) renderReview();
+        }
+      }
+      if (session === state.session && state.saveAgain && state.saveState === 'saved') {
+        state.saveAgain = false;
+        await autosave();
+      }
+    })();
+    state.saving = saving;
+    lockName();
+    return saving;
+  }
+  // Saves what can be saved now, without waiting for the pause: before another template, ＋ New
+  // or Close replace the editor. A Publish under way finishes first, so its start date, its
+  // re-run and the edits made while it ran are not cut short; Publish's own saves do not wait.
+  async function settleSave(inPublish = false) {
+    if (!inPublish) await state.publishRun;
+    clearTimeout(state.saveTimer);
+    await state.saving;
+    await autosave(true);
+    await state.saving;
+  }
+  // Saves now: Save draft in the unsaved-changes prompt, and Publish. Refuses with the reason
+  // when the draft could not be saved.
+  async function flushSave(inPublish = false) {
+    await settleSave(inPublish === true);
+    if (state.unsaved && !state.template && !state.readOnly) {
+      // A new template is saved once it has a name and a destination.
+      if (!$('templateName').value.trim()) {
+        $('templateName').focus();
+        throw new Error('Enter a template name of 200 characters or fewer.');
+      }
+      if (!state.sections.length) {
+        goStep(1, false);
+        $('add-destination').focus();
+        throw new Error('Add a destination first.');
+      }
+    }
+    if (state.invalid) {
+      goStep(2, false);
+      validate();
+      throw new Error('Fix the highlighted conditions first.');
+    }
+    if (state.saveState === 'error') throw new Error(state.saveError);
   }
   async function task(action) {
     if (state.busy) return;
     state.busy = true;
-    controls();
+    chrome();
     try {
       await action();
     } catch (error) {
       message(error.message || String(error), true);
     } finally {
       state.busy = false;
-      controls();
+      chrome();
     }
   }
   async function get(path) {
@@ -134,6 +476,9 @@
     return data.value;
   }
   const display = (item) => item.DisplayName?.UserLocalizedLabel?.Label || item.LogicalName;
+  const tableInfo = (table) =>
+    state.tables.find((t) => t.LogicalName === table) || metadata.get(table)?.info || null;
+  const tableName = (table) => display(tableInfo(table) || { LogicalName: table });
   function kind(attribute) {
     if (attribute.IsSecured || attribute.IsValidForRead === false) return null;
     const map = {
@@ -155,22 +500,31 @@
     };
     return map[attribute.AttributeType] || null;
   }
-  async function fields(table) {
-    if (metadata.has(table)) return metadata.get(table);
+  // A table's readable columns with their kinds, choice labels and lookup targets. Read once; a
+  // read in progress is shared, and a failed one is forgotten so it can be tried again.
+  const reading = new Map();
+  function fields(table) {
+    if (metadata.has(table)) return Promise.resolve(metadata.get(table));
+    if (!reading.has(table))
+      reading.set(
+        table,
+        readFields(table).finally(() => reading.delete(table)),
+      );
+    return reading.get(table);
+  }
+  async function readFields(table) {
     const base = "EntityDefinitions(LogicalName='" + table + "')/Attributes";
-    const values = await all(
-      base + '?$select=LogicalName,DisplayName,AttributeType,IsSecured,IsValidForRead',
-    );
-    const dates = await all(
-      base +
-        '/Microsoft.Dynamics.CRM.DateTimeAttributeMetadata?$select=LogicalName,DateTimeBehavior',
-    );
-    const choices = await all(
-      base +
-        '/Microsoft.Dynamics.CRM.MultiSelectPicklistAttributeMetadata?$select=LogicalName&$expand=OptionSet',
-    );
-    const singleChoices = (
-      await Promise.all(
+    const [values, dates, choices, singleChoices, lookups, info] = await Promise.all([
+      all(base + '?$select=LogicalName,DisplayName,AttributeType,IsSecured,IsValidForRead'),
+      all(
+        base +
+          '/Microsoft.Dynamics.CRM.DateTimeAttributeMetadata?$select=LogicalName,DateTimeBehavior',
+      ),
+      all(
+        base +
+          '/Microsoft.Dynamics.CRM.MultiSelectPicklistAttributeMetadata?$select=LogicalName&$expand=OptionSet',
+      ),
+      Promise.all(
         ['Picklist', 'State', 'Status'].map((type) =>
           all(
             base +
@@ -179,12 +533,20 @@
               'AttributeMetadata?$select=LogicalName&$expand=OptionSet',
           ),
         ),
-      )
-    ).flat();
-    const lookups = await all(
-      base +
-        '/Microsoft.Dynamics.CRM.LookupAttributeMetadata?$select=LogicalName,DisplayName,Targets,IsSecured,IsValidForRead',
-    );
+      ).then((lists) => lists.flat()),
+      all(
+        base +
+          '/Microsoft.Dynamics.CRM.LookupAttributeMetadata?$select=LogicalName,DisplayName,Targets,IsSecured,IsValidForRead',
+      ),
+      // A related table outside the document-enabled list still needs its display name.
+      state.tables.some((t) => t.LogicalName === table)
+        ? null
+        : get(
+            "EntityDefinitions(LogicalName='" +
+              table +
+              "')?$select=LogicalName,DisplayName,PrimaryNameAttribute",
+          ).catch(() => null),
+    ]);
     const columns = values.map((a) => ({
       Name: a.LogicalName,
       Label: display(a),
@@ -207,36 +569,193 @@
     }
     for (const d of [...choices, ...singleChoices]) {
       const c = columns.find((c) => c.Name === d.LogicalName);
-      if (c)
-        c.Options = (d.OptionSet?.Options || []).map((o) => ({
-          value: String(o.Value),
-          label: (o.Label?.UserLocalizedLabel?.Label || String(o.Value)) + ' (' + o.Value + ')',
-        }));
+      if (!c) continue;
+      // Labels only; the value is added only where two labels in one set are the same.
+      const options = (d.OptionSet?.Options || []).map((o) => ({
+        value: String(o.Value),
+        label: o.Label?.UserLocalizedLabel?.Label || String(o.Value),
+      }));
+      const seen = new Map();
+      options.forEach((o) => seen.set(o.label, (seen.get(o.label) || 0) + 1));
+      c.Options = options.map((o) =>
+        seen.get(o.label) > 1 ? { ...o, label: o.label + ' (' + o.value + ')' } : o,
+      );
+    }
+    const readable = lookups.filter((l) => !l.IsSecured && l.IsValidForRead !== false);
+    for (const l of readable) {
+      const c = columns.find((c) => c.Name === l.LogicalName);
+      if (c) c.Targets = l.Targets;
     }
     const result = {
       columns: columns.filter((c) => c.Kind).sort((a, b) => a.Label.localeCompare(b.Label)),
-      lookups: lookups.filter((l) => !l.IsSecured && l.IsValidForRead !== false),
+      lookups: readable,
+      info: info?.LogicalName ? info : null,
     };
     metadata.set(table, result);
     return result;
   }
+  const deprecated = (c) => c.Label.startsWith('(Deprecated)');
+  const lookupFor = (source) =>
+    state.lookups.find((l) => l.Lookup === source.Lookup && l.Table === source.Table);
+  // How a related source reads before its field: "Primary Contact".
+  const via = (source) => lookupFor(source)?.Label.split(' → ')[0] || source.Lookup;
   function availableFields() {
     return state.sources.flatMap((s) =>
       s.columns.map((c) => ({
         value: s.Alias + '.' + c.Name,
-        label:
-          (s.Alias === 'root'
-            ? 'Current record'
-            : state.lookups.find((l) => l.Lookup === s.Lookup && l.Table === s.Table)?.Label ||
-              s.Lookup ||
-              s.Alias) +
-          ' › ' +
-          c.Label,
+        label: (s.Alias === 'root' ? '' : via(s) + ' › ') + c.Label,
         kind: c.Kind,
         options: c.Options,
+        deprecated: deprecated(c),
       })),
     );
   }
+  // How a template's field reads, by alias and column: "Account Name" on the record itself,
+  // "Primary Contact › Full Name" on a related one; null when its sources do not have it.
+  function labelOf(sources) {
+    const root = sources.find((s) => s.Alias === 'root');
+    const lookups = metadata.get(root?.Table)?.lookups || [];
+    return (alias, column) => {
+      const source = sources.find((s) => s.Alias === alias);
+      const field = source?.columns.find((c) => c.Name === column);
+      if (!source || !field) return null;
+      if (alias === 'root') return field.Label;
+      const lookup = lookups.find((l) => l.LogicalName === source.Lookup);
+      return (lookup ? display(lookup) : source.Lookup) + ' › ' + field.Label;
+    };
+  }
+  // A folder name with its fields shown by label: {root.name} → [Account Name].
+  function readable(name) {
+    const label = labelOf(state.sources);
+    return String(name || '').replace(
+      /\{([a-z0-9_]+)\.([a-z0-9_]+)\}/gi,
+      (match, alias, column) => {
+        const text = label(alias, column);
+        return text ? '[' + text + ']' : match;
+      },
+    );
+  }
+  // Picker values: 'root.<column>' and, for a related record, 'lookup:<lookup>:<table>:<column>'
+  // until a field of it is used, when the source is added under its alias.
+  function pickerValue(field) {
+    const [alias, column] = String(field || '').split('.');
+    if (alias === 'root') return field;
+    const source = state.sources.find((s) => s.Alias === alias);
+    return source ? 'lookup:' + source.Lookup + ':' + source.Table + ':' + column : field;
+  }
+  function resolveField(value) {
+    if (!value.startsWith('lookup:')) return value;
+    const [, lookup, table, column] = value.split(':');
+    let source = state.sources.find((s) => s.Lookup === lookup && s.Table === table);
+    if (!source) {
+      if (state.sources.filter((s) => s.Alias !== 'root').length >= ui.BOUNDS.relatedRecords)
+        throw new Error(relatedReason());
+      let i = 1;
+      while (state.sources.some((s) => s.Alias === 'lookup_' + i)) i++;
+      source = {
+        Alias: 'lookup_' + i,
+        Table: table,
+        Lookup: lookup,
+        columns: metadata.get(table)?.columns || [],
+      };
+      state.sources.push(source);
+    }
+    return source.Alias + '.' + column;
+  }
+  const relatedReason = () =>
+    'A template can use up to ' +
+    ui.BOUNDS.relatedRecords +
+    ' related records, because Documents tracks each one so it can re-run records when it changes.';
+  // The draft uses as many related records as it may.
+  const relatedFull = () =>
+    state.sources.filter((s) => s.Alias !== 'root').length >= ui.BOUNDS.relatedRecords;
+  // The fields a picker offers: this record's, then one group per related record. The primary
+  // name comes first and deprecated fields last. At the related-record bound, the groups of
+  // related records not used yet are disabled. A related table still loading, or that failed
+  // twice, is a disabled group with a note: shown, never silently left out.
+  function fieldGroups(keep) {
+    const order = (columns, primary) =>
+      columns
+        .filter(keep)
+        .sort(
+          (a, b) =>
+            deprecated(a) - deprecated(b) ||
+            (a.Name === primary ? -1 : b.Name === primary ? 1 : a.Label.localeCompare(b.Label)),
+        );
+    const group = (label, columns, valueOf, disabled = false) => ({
+      label,
+      disabled,
+      note: null,
+      fields: columns.map((c) => ({ value: valueOf(c), label: c.Label, kind: c.Kind })),
+    });
+    const root = state.sources.find((s) => s.Alias === 'root');
+    const groups = [
+      group(
+        'This record',
+        order(root.columns, state.root.PrimaryNameAttribute),
+        (c) => 'root.' + c.Name,
+      ),
+    ];
+    const full = relatedFull();
+    const listed = new Set();
+    for (const lookup of state.lookups) {
+      const meta = metadata.get(lookup.Table);
+      listed.add(lookup.Lookup + ':' + lookup.Table);
+      if (!meta) {
+        groups.push({
+          label: lookup.Label,
+          disabled: true,
+          note: state.failedTables.has(lookup.Table)
+            ? "Couldn't load these fields"
+            : 'Loading fields…',
+          fields: [],
+        });
+        continue;
+      }
+      const used = state.sources.some(
+        (s) => s.Lookup === lookup.Lookup && s.Table === lookup.Table,
+      );
+      groups.push(
+        group(
+          lookup.Label,
+          order(meta.columns, tableInfo(lookup.Table)?.PrimaryNameAttribute),
+          (c) => 'lookup:' + lookup.Lookup + ':' + lookup.Table + ':' + c.Name,
+          full && !used,
+        ),
+      );
+    }
+    // A related record the draft uses whose lookup is no longer offered keeps its fields.
+    for (const source of state.sources)
+      if (source.Alias !== 'root' && !listed.has(source.Lookup + ':' + source.Table))
+        groups.push(
+          group(
+            source.Lookup + ' → ' + tableName(source.Table),
+            order(source.columns, null),
+            (c) => 'lookup:' + source.Lookup + ':' + source.Table + ':' + c.Name,
+          ),
+        );
+    return groups;
+  }
+  // The fields as one select with a group per record (the condition builder's Field).
+  function fieldSelect(keep) {
+    const picker = el('select');
+    for (const group of fieldGroups(keep)) {
+      const g = el('optgroup');
+      g.setAttribute('label', group.label);
+      g.disabled = group.disabled;
+      g.append(...group.fields.map((f) => option(f.value, f.label)));
+      if (group.note) {
+        const note = option('', group.note);
+        note.disabled = true;
+        g.append(note);
+      }
+      picker.append(g);
+    }
+    return picker;
+  }
+  const NAME_KINDS = ['Text', 'Number', 'Choice', 'DateOnly'];
+  // A name field's type, as ＋ Field lists it.
+  const KIND_LABEL = { Text: 'Text', Number: 'Number', Choice: 'Choice', DateOnly: 'Date' };
   const operators = (kind) =>
     ['Equal', 'NotEqual', 'IsNull', 'IsNotNull'].concat(
       ['Text', 'MultiChoice'].includes(kind)
@@ -245,186 +764,509 @@
           ? ['Greater', 'GreaterOrEqual', 'Less', 'LessOrEqual']
           : [],
     );
-  const operatorLabel = {
-    Equal: 'equals',
-    NotEqual: 'does not equal',
+  const unary = (operator) => ['IsNull', 'IsNotNull'].includes(operator);
+  // Operators as rule sentences say them: "Status is Active".
+  const SHORT = {
+    Equal: 'is',
+    NotEqual: 'is not',
+    Contains: 'contains',
+    DoesNotContain: "doesn't contain",
     IsNull: 'is empty',
     IsNotNull: 'has a value',
-    Contains: 'contains',
-    DoesNotContain: 'does not contain',
     Greater: 'greater than',
     GreaterOrEqual: 'at least',
     Less: 'less than',
     LessOrEqual: 'at most',
   };
-  function conditionGroup(group, depth = 0) {
-    const box = el('div', null, 'condition-group'),
-      toolbar = el('div', null, 'condition-toolbar');
-    toolbar.append(
-      select(
-        [
-          { value: 'true', label: 'All (AND)' },
-          { value: 'false', label: 'Any (OR)' },
-        ],
-        String(group.All),
-        (v) => (group.All = v === 'true'),
-      ),
+  // A date as the version chip shows it: "3 Oct".
+  const day = (value) => ui.time(value).textContent.split(',')[0];
+  // One condition as words: its field, the operator, and the value by its label (an option's
+  // label, Yes or No, the record's name, the date, or the other field).
+  function clause(c, sources) {
+    const label = labelOf(sources);
+    const named = (value) => {
+      const [alias, column] = String(value).split('.');
+      return label(alias, column) || 'Unavailable field';
+    };
+    const text = named(c.field) + ' ' + (SHORT[c.Operator] || c.Operator);
+    if (unary(c.Operator)) return text;
+    if (c.right) return text + ' ' + named(c.right);
+    const [alias, column] = String(c.field).split('.');
+    const field = sources.find((s) => s.Alias === alias)?.columns.find((f) => f.Name === column);
+    const option = (value) => field.Options?.find((o) => o.value === value)?.label ?? value;
+    switch (field?.Kind) {
+      case 'Choice':
+        return text + ' ' + option(c.Literal);
+      case 'MultiChoice':
+        return text + ' ' + String(c.Literal).split(',').map(option).join(', ');
+      case 'Boolean':
+        return text + ' ' + (c.Literal === 'false' ? 'No' : 'Yes');
+      case 'Lookup':
+        return text + ' ' + (c.label || 'Record not available');
+      case 'DateOnly':
+        // A date without a time is read in local time, so it is the same day everywhere.
+        return text + ' ' + (c.Literal ? day(c.Literal + 'T00:00') : '');
+      case 'DateTime':
+        return text + ' ' + (c.Literal ? day(c.Literal) : '');
+      default:
+        return text + ' ' + c.Literal;
+    }
+  }
+  // A folder's rule: "Always", or "◆ " and its rule sentence.
+  function ruleText(folder, sources) {
+    const sentence = folder.Condition
+      ? ui.ruleSentence(folder.Condition, (c) => clause(c, sources))
+      : '';
+    return sentence
+      ? { text: '◆ ' + sentence, conditional: true }
+      : { text: 'Always', conditional: false };
+  }
+  // The targets of the lookup a condition compares; a record ID column is its own table.
+  function lookupTargets(field) {
+    const [alias, column] = String(field).split('.');
+    const source = state.sources.find((s) => s.Alias === alias);
+    const found = source?.columns.find((c) => c.Name === column);
+    return found?.Targets || [source?.Table || state.root.LogicalName];
+  }
+  // An ISO time as YYYY-MM-DDTHH:mm in local time, for datetime-local inputs.
+  function localTime(value) {
+    if (!value) return '';
+    const d = new Date(value);
+    if (isNaN(d)) return '';
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  }
+  const lowerFirst = (text) => text.charAt(0).toLowerCase() + text.slice(1);
+  // A folder name as words, its fields by their labels: "P-Account Number".
+  const nameText = (name, sources = state.sources) =>
+    ui.tokens(name, labelOf(sources)).textContent || 'Unnamed folder';
+  // One condition group: "[All] of these are true", a line per condition, its nested groups as
+  // indented blocks, then ＋ Condition and ＋ Group. Groups are numbered in reading order, so
+  // every name is unique: "Conditions for General", then "Group 2 conditions", "Group 3
+  // conditions". The All/Any select is the group's focus target and where its error shows.
+  function conditionGroup(group, folder, path, depth, count) {
+    const number = ++count.n;
+    const groupName =
+      depth === 0 ? 'Conditions for ' + nameText(folder.Name) : 'Group ' + number + ' conditions';
+    const groupKey = 'group:' + folder.Key + ':' + path;
+    const box = el('div', null, depth === 0 ? 'condition-group' : 'condition-group nested');
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-label', groupName);
+    const match = el('select');
+    match.append(option('true', 'All'), option('false', 'Any'));
+    match.value = String(group.All !== false);
+    match.setAttribute('aria-label', 'Match, ' + groupName);
+    keyed(match, groupKey + ':match');
+    match.onchange = () => {
+      group.All = match.value === 'true';
+      dirty();
+    };
+    const sentence = el('div', null, 'sentence');
+    sentence.append(match, el('span', 'of these are true'));
+    box.append(sentence);
+    const name = (n) => 'condition ' + n + (depth === 0 ? '' : ' in group ' + number);
+    group.Conditions.forEach((condition, index) =>
+      box.append(conditionRow(group, condition, index, folder, path, name)),
     );
-    toolbar.append(
-      button('Add condition', () => {
-        const first = availableFields()[0];
-        if (!first) return;
-        group.Conditions.push({ field: first.value, Operator: 'Equal', Literal: '' });
+    group.Groups.forEach((child, index) => {
+      const childNumber = count.n + 1;
+      const inner = conditionGroup(child, folder, path + '.' + (index + 1), depth + 1, count);
+      const remove = button(
+        'Remove group',
+        () => {
+          group.Groups.splice(index, 1);
+          state.focusKey = groupKey + ':addgroup';
+          dirty();
+          render();
+        },
+        'link danger',
+      );
+      remove.setAttribute('aria-label', 'Remove group ' + childNumber);
+      keyed(remove, 'group:' + folder.Key + ':' + path + '.' + (index + 1) + ':remove');
+      inner.querySelector('.sentence').append(remove);
+      box.append(inner);
+    });
+    const add = button(
+      '＋ Condition',
+      () => {
+        group.Conditions.push({ field: firstField(), Operator: 'Equal', Literal: '' });
+        state.focusKey =
+          'cond:' + folder.Key + ':' + path + '.' + group.Conditions.length + ':field';
         dirty();
         render();
-      }),
+      },
+      'link',
     );
-    if (depth < 3)
-      toolbar.append(
-        button('Add group', () => {
-          group.Groups.push({ All: true, Conditions: [], Groups: [] });
-          dirty();
-          render();
-        }),
-      );
+    add.setAttribute('aria-label', 'Add condition to ' + lowerFirst(groupName));
+    keyed(add, groupKey + ':add');
+    const nested = button(
+      '＋ Group',
+      () => {
+        if (ui.blocked(nested)) return;
+        group.Groups.push({ All: true, Conditions: [], Groups: [] });
+        state.focusKey = groupKey + '.' + group.Groups.length + ':match';
+        dirty();
+        render();
+      },
+      'link',
+    );
+    nested.setAttribute('aria-label', 'Add group to ' + lowerFirst(groupName));
+    keyed(nested, groupKey + ':addgroup');
+    const toolbar = el('div', null, 'condition-toolbar row');
+    toolbar.append(add, nested);
     box.append(toolbar);
-    group.Conditions.forEach((c, index) => {
-      const row = el('div', null, 'condition-line'),
-        available = availableFields(),
-        selected = available.find((f) => f.value === c.field);
-      row.append(
-        select(available, c.field, (v) => {
-          c.field = v;
-          c.Operator = 'Equal';
-          c.Literal = '';
-          c.right = null;
-          render();
-        }),
+    // Level depth + 1 holds this group; a group inside it would be one level deeper.
+    if (depth + 1 >= ui.BOUNDS.conditionDepth)
+      ui.disable(
+        nested,
+        'depth-reason-' + (folder.Key + '-' + path).replace(/[^\w-]/g, '-'),
+        'Condition groups can be nested up to ' +
+          ui.BOUNDS.conditionDepth +
+          " levels deep, because deeper templates can't be sent to Dataverse.",
       );
-      row.append(
-        select(
-          operators(selected?.kind).map((op) => ({ value: op, label: operatorLabel[op] })),
-          c.Operator,
-          (v) => {
-            c.Operator = v;
-            if (['IsNull', 'IsNotNull'].includes(v)) c.right = null;
-            render();
-          },
-        ),
-      );
-      if (!selected)
-        row.append(
-          el('span', 'Unavailable field: ' + c.field + '. Select a replacement.', 'error'),
-        );
-      const unary = ['IsNull', 'IsNotNull'].includes(c.Operator);
-      if (!unary)
-        row.append(
-          select(
-            [
-              { value: 'literal', label: 'Compare to value' },
-              { value: 'field', label: 'Compare to field' },
-            ],
-            c.right ? 'field' : 'literal',
-            (v) => {
-              c.right =
-                v === 'field' ? available.find((f) => f.kind === selected?.kind)?.value : null;
-              render();
-            },
-          ),
-        );
-      if (c.right && !unary)
-        row.append(
-          select(
-            available.filter((f) => f.kind === selected?.kind),
-            c.right,
-            (v) => (c.right = v),
-          ),
-        );
-      else if (unary) row.append(el('span', 'No comparison value', 'hint'));
-      else if (selected?.kind === 'Boolean')
-        row.append(
-          select(
-            [
-              { value: 'true', label: 'Yes' },
-              { value: 'false', label: 'No' },
-            ],
-            c.Literal || 'true',
-            (v) => (c.Literal = v),
-          ),
-        );
-      else if (selected?.kind === 'Choice' && selected.options?.length)
-        row.append(
-          select(
-            [{ value: '', label: 'Select a value' }, ...selected.options],
-            c.Literal,
-            (v) => (c.Literal = v),
-          ),
-        );
-      else if (selected?.kind === 'MultiChoice' && selected.options?.length) {
-        const picker = el('select');
-        picker.multiple = true;
-        const chosen = new Set((c.Literal || '').split(','));
-        selected.options.forEach((o) => {
-          const item = option(o.value, o.label);
-          item.selected = chosen.has(o.value);
-          picker.append(item);
-        });
-        picker.onchange = () => {
-          c.Literal = Array.from(picker.selectedOptions, (o) => o.value).join(',');
-          dirty();
-        };
-        row.append(picker);
-      } else {
-        const editor = input(c.Literal, (v) => (c.Literal = v));
-        editor.oninput = () => {
-          c.Literal = editor.value;
-          dirty();
-        };
-        editor.placeholder =
-          {
-            Number: 'Invariant number, e.g. 1.25',
-            Choice: 'Choice numeric value',
-            MultiChoice: 'Choice values, e.g. 1,3',
-            Lookup: 'Record GUID',
-            DateOnly: 'YYYY-MM-DD',
-            DateTime: 'ISO timestamp with offset',
-          }[selected?.kind] || 'Text';
-        row.append(editor);
-      }
-      row.append(
-        button(
-          'Remove',
-          () => {
-            group.Conditions.splice(index, 1);
-            dirty();
-            render();
-          },
-          'remove',
-        ),
-      );
-      box.append(row);
-    });
-    group.Groups.forEach((child, index) => {
-      const nested = conditionGroup(child, depth + 1);
-      nested.append(
-        button(
-          'Remove group',
-          () => {
-            group.Groups.splice(index, 1);
-            dirty();
-            render();
-          },
-          'remove',
-        ),
-      );
-      box.append(nested);
-    });
-    if (!group.Conditions.length && !group.Groups.length)
-      box.append(el('p', 'Add at least one condition. Empty groups cannot be saved.', 'hint'));
     return box;
   }
+  function firstField() {
+    const primary = 'root.' + state.root.PrimaryNameAttribute;
+    const fields = availableFields();
+    return (fields.find((f) => f.value === primary) || fields[0])?.value || primary;
+  }
+  // One condition as a line: Field, operator (as rule sentences say it), value, and ✕.
+  function conditionRow(group, c, index, folder, path, names) {
+    const n = index + 1;
+    const name = names(n);
+    const key = 'cond:' + folder.Key + ':' + path + '.' + n;
+    const row = el('div', null, 'condition-line');
+    const available = availableFields();
+    const selected = available.find((f) => f.value === c.field);
+    const field = fieldSelect(() => true);
+    field.value = pickerValue(c.field);
+    field.setAttribute('aria-label', 'Field, ' + name);
+    keyed(field, key + ':field');
+    field.onchange = () => {
+      try {
+        c.field = resolveField(field.value);
+      } catch (error) {
+        message(error.message || String(error), true);
+        return;
+      }
+      Object.assign(c, { Operator: 'Equal', Literal: '', label: null, table: null, right: null });
+      state.focusKey = key + ':field';
+      dirty();
+      render();
+    };
+    row.append(field);
+    const operator = el('select');
+    operators(selected?.kind).forEach((op) => operator.append(option(op, SHORT[op])));
+    operator.value = c.Operator;
+    operator.setAttribute('aria-label', 'Operator, ' + name);
+    keyed(operator, key + ':operator');
+    operator.onchange = () => {
+      c.Operator = operator.value;
+      if (unary(c.Operator)) c.right = null;
+      state.focusKey = key + ':operator';
+      dirty();
+      render();
+    };
+    row.append(operator);
+    if (unary(c.Operator)) row.append(el('span', null, 'no-value'));
+    else {
+      // Fields of the same kind it can be compared with instead of a typed value, deprecated
+      // ones last.
+      const same = available
+        .filter((f) => f.kind === selected?.kind && f.value !== c.field)
+        .sort((a, b) => a.deprecated - b.deprecated);
+      row.append(valueControl(c, selected, name, key, same));
+    }
+    const remove = button(
+      '✕',
+      () => {
+        group.Conditions.splice(index, 1);
+        state.focusKey = group.Conditions[index]
+          ? key + ':field'
+          : 'group:' + folder.Key + ':' + path + ':add';
+        dirty();
+        render();
+      },
+      'icon danger',
+    );
+    remove.setAttribute('aria-label', 'Remove ' + name);
+    keyed(remove, key + ':remove');
+    row.append(remove);
+    if (!selected) {
+      // Named by its label when Documents still knows it, never by its internal name.
+      const shown = readable('{' + c.field + '}');
+      row.append(
+        el(
+          'p',
+          'Unavailable field' +
+            (shown.startsWith('{') ? '' : ': ' + shown) +
+            '. Select a replacement.',
+          'error',
+        ),
+      );
+    }
+    return row;
+  }
+  // The value control for a field kind; key is the row's focus-key prefix. Comparing with
+  // another field of the same kind is part of it: "Another field…" heads a Choice or Yes/No
+  // list, and the ▾ menu of the other controls; the other field's list starts with "A value",
+  // which goes back. Without a field of the same kind there is nothing to offer.
+  const FIELD = '__field',
+    VALUE = '__value';
+  function valueControl(condition, selected, name, key, same) {
+    const kind = selected?.kind,
+      options = selected?.options || [];
+    const named = (control) => {
+      control.setAttribute('aria-label', 'Value, ' + name);
+      return keyed(control, key + ':value');
+    };
+    const toField = () => {
+      condition.right = same[0]?.value || null;
+      state.focusKey = key + ':other';
+      dirty();
+      render();
+    };
+    const another = same.length ? [{ value: FIELD, label: 'Another field…' }] : [];
+    const list = (items, value, pick) => {
+      const s = el('select');
+      items.forEach((i) => s.append(option(i.value, i.label)));
+      s.value = value;
+      s.onchange = () => {
+        if (s.value === FIELD) return toField();
+        pick(s.value);
+        dirty();
+        return undefined;
+      };
+      return s;
+    };
+    if (condition.right) {
+      const other = list(
+        [
+          { value: VALUE, label: 'A value' },
+          ...same.map((f) => ({ value: f.value, label: f.label })),
+        ],
+        condition.right,
+        (v) => (condition.right = v),
+      );
+      other.onchange = () => {
+        if (other.value === VALUE) {
+          condition.right = null;
+          state.focusKey = key + ':value';
+          dirty();
+          render();
+          return;
+        }
+        condition.right = other.value;
+        dirty();
+      };
+      other.setAttribute('aria-label', 'Other field, ' + name);
+      return keyed(other, key + ':other');
+    }
+    if (kind === 'Boolean')
+      return named(
+        list(
+          [...another, { value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }],
+          condition.Literal || 'true',
+          (v) => (condition.Literal = v),
+        ),
+      );
+    // Choice values carry a prefix in the list, so none can be taken for "Another field…".
+    if (kind === 'Choice')
+      return named(
+        list(
+          [
+            ...another,
+            { value: '', label: 'Choose a value' },
+            ...options.map((o) => ({ value: 'value:' + o.value, label: o.label })),
+          ],
+          condition.Literal ? 'value:' + condition.Literal : '',
+          (v) => (condition.Literal = v.replace(/^value:/, '')),
+        ),
+      );
+    const control = typedValue(condition, kind, options, name, key, named);
+    if (!same.length) return control;
+    // The ▾ menu beside a typed value: Another field….
+    const wrap = el('span', null, 'value-control');
+    const more = button('▾', null, 'icon');
+    more.setAttribute('aria-label', 'Value options, ' + name);
+    more.setAttribute('aria-haspopup', 'menu');
+    more.setAttribute('aria-expanded', 'false');
+    keyed(more, key + ':options');
+    const menu = el('ul', null, 'menu');
+    menu.id = 'menu-' + key.replace(/[^\w-]/g, '-');
+    menu.setAttribute('role', 'menu');
+    menu.hidden = true;
+    more.setAttribute('aria-controls', menu.id);
+    const item = button('Another field…', toField, '');
+    item.setAttribute('role', 'menuitem');
+    item.tabIndex = -1;
+    const line = el('li');
+    line.setAttribute('role', 'none');
+    line.append(item);
+    menu.append(line);
+    ui.menu(more, menu);
+    wrap.append(control, more, menu);
+    return wrap;
+  }
+  // A typed value: several choices, a record, a number, a date or text.
+  function typedValue(condition, kind, options, name, key, named) {
+    if (kind === 'MultiChoice') {
+      const picker = el('select');
+      picker.multiple = true;
+      const chosen = new Set(String(condition.Literal || '').split(','));
+      options.forEach((o) => {
+        const item = option(o.value, o.label);
+        item.selected = chosen.has(o.value);
+        picker.append(item);
+      });
+      picker.onchange = () => {
+        condition.Literal = Array.from(picker.selectedOptions, (o) => o.value).join(',');
+        dirty();
+      };
+      return named(picker);
+    }
+    if (kind === 'Lookup') {
+      const wrap = el('span', null, 'lookup-value');
+      if (condition.Literal) {
+        const shown = condition.label || 'Record not available';
+        const chip = el('span', shown, 'chip');
+        const clear = button(
+          '✕',
+          () => {
+            condition.Literal = '';
+            condition.label = null;
+            condition.table = null;
+            state.focusKey = key + ':choose';
+            dirty();
+            render();
+          },
+          'remove',
+        );
+        clear.setAttribute('aria-label', 'Remove ' + shown + ', ' + name);
+        keyed(clear, key + ':clear');
+        chip.append(clear);
+        wrap.append(chip);
+      }
+      const choose = button('Choose record…', async () => {
+        const targets = lookupTargets(condition.field);
+        const picked = await xrm.Utility.lookupObjects({
+          entityTypes: targets,
+          defaultEntityType: targets[0],
+          allowMultiSelect: false,
+        });
+        if (!picked?.length) return;
+        condition.Literal = picked[0].id.replace(/[{}]/g, '').toLowerCase();
+        condition.label = picked[0].name;
+        condition.table = picked[0].entityType;
+        dirty();
+        ui.withFocus(render);
+      });
+      choose.setAttribute('aria-label', 'Choose record, ' + name);
+      keyed(choose, key + ':choose');
+      wrap.append(choose);
+      return wrap;
+    }
+    const field = el('input');
+    field.type = { Number: 'number', DateOnly: 'date', DateTime: 'datetime-local' }[kind] || 'text';
+    if (kind === 'Number') {
+      field.setAttribute('step', 'any');
+      field.setAttribute('inputmode', 'decimal');
+    }
+    field.value =
+      kind === 'DateTime' && condition.Literal
+        ? localTime(condition.Literal)
+        : condition.Literal || '';
+    field.oninput = () => {
+      condition.Literal =
+        kind === 'Number'
+          ? // As typed: reformatting would turn large or small numbers into exponent form.
+            field.value.trim()
+          : kind === 'DateTime'
+            ? field.value
+              ? new Date(field.value).toISOString()
+              : ''
+            : field.value;
+      dirty();
+    };
+    field.onchange = field.oninput;
+    return named(field);
+  }
+  // A number as the server reads it (decimal.Parse with a leading sign and a decimal point, in
+  // the invariant culture): no exponent, no thousands separators.
+  const DECIMAL = /^[+-]?(\d+(\.\d*)?|\.\d+)$/;
+  // Checks every condition at its control. With focus, the first invalid control takes it, or the
+  // footer names a problem in a folder that is not open; the autosave checks without focus.
+  // The problems the last check marked: the same ones are not marked, and announced, again.
+  let marked = '';
+  const errorId = (key) => key.replace(/[^\w-]/g, '_') + '-error';
+  function validate({ focus = true } = {}) {
+    const problems = [];
+    const visit = (group, folder, path) => {
+      if (!group.Conditions.length && !group.Groups.length)
+        problems.push([
+          'group:' + folder.Key + ':' + path + ':match',
+          'Add a condition or remove this group',
+        ]);
+      group.Conditions.forEach((c, i) => {
+        const kind = availableFields().find((f) => f.value === c.field)?.kind;
+        if (unary(c.Operator) || c.right) return;
+        const message =
+          kind === 'Number' && !DECIMAL.test(c.Literal)
+            ? 'Enter a number'
+            : (kind === 'DateOnly' || kind === 'DateTime') && !c.Literal
+              ? 'Pick a date'
+              : kind === 'Lookup' && !c.Literal
+                ? 'Choose a record'
+                : (kind === 'Choice' || kind === 'MultiChoice') && !c.Literal
+                  ? 'Choose a value'
+                  : null;
+        const part = kind === 'Lookup' ? ':choose' : ':value';
+        if (message)
+          problems.push(['cond:' + folder.Key + ':' + path + '.' + (i + 1) + part, message]);
+      });
+      group.Groups.forEach((g, i) => visit(g, folder, path + '.' + (i + 1)));
+    };
+    for (const section of state.sections)
+      for (const folder of section.Folders)
+        if (folder.Condition) visit(folder.Condition, folder, '1');
+    // The editor shows one folder at a time; problems in other folders have no control here.
+    const shown = problems.filter(([key]) =>
+      document.querySelector('[data-focus-key="' + key + '"]'),
+    );
+    const signature = JSON.stringify(problems);
+    const still =
+      signature === marked && shown.every(([key]) => document.getElementById(errorId(key)));
+    if (!focus && problems.length && still) return false;
+    marked = signature;
+    document.querySelectorAll('.condition-error').forEach((n) => n.remove());
+    document
+      .querySelectorAll('#conditions [aria-invalid]')
+      .forEach((n) => n.removeAttribute('aria-invalid'));
+    if (!problems.length) return true;
+    for (const [key, text] of shown) {
+      const control = document.querySelector('[data-focus-key="' + key + '"]');
+      const error = el('p', text, 'error condition-error');
+      error.id = errorId(key);
+      error.setAttribute('role', 'alert');
+      control.after(error);
+      control.setAttribute('aria-invalid', 'true');
+      control.setAttribute('aria-describedby', error.id);
+    }
+    if (!focus) return false;
+    const first = document.querySelector('[data-focus-key="' + problems[0][0] + '"]');
+    if (first) first.focus();
+    else
+      ui.feedback(
+        'editor',
+        problems[0][1] + ' in a folder that is not open. Select it in Folders.',
+        'error',
+      );
+    return false;
+  }
   let selectedSection = null,
-    selectedFolder = null;
+    selectedFolder = null,
+    // The folder whose name ＋ Field's open list inserts into.
+    popoverFolder = null;
   function folderIcon() {
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     icon.setAttribute('class', 'folder-icon');
@@ -448,422 +1290,1516 @@
   const siteName = (library) =>
     state.sites.find((s) => s.asx_siteid === library?._asx_siteid_value)?.asx_name ||
     'Unavailable site';
-  function showView(view) {
-    const target = ['access', 'administration', 'runtime', 'operations'].includes(view)
-      ? view
-      : 'author';
-    const admin = ['administration', 'runtime', 'operations'].includes(target);
-    $('author-view').hidden = target !== 'author';
-    $('templateActions').hidden = target !== 'author' || !state.root;
-    for (const id of ['access', 'runtime', 'operations', 'recordTools']) {
-      const panel = $(id);
-      panel.classList.add('admin-panel');
-      panel.hidden =
-        id === 'runtime' || id === 'operations' || id === 'recordTools' ? !admin : id !== target;
-      if (!panel.hidden) panel.open = true;
+  // A destination's name, else its place in the template: "Destination 2".
+  const sectionName = (section, index) =>
+    section.Name && section.Name !== section.Key ? section.Name : 'Destination ' + (index + 1);
+  const destinationName = (section) => sectionName(section, state.sections.indexOf(section));
+  // A destination's folders in tree order with their depth; a folder whose parent is missing
+  // starts its own tree after the others.
+  function treeOrder(section) {
+    const order = [],
+      visited = new Set();
+    const visit = (folder, depth) => {
+      if (visited.has(folder)) return;
+      visited.add(folder);
+      order.push([folder, depth]);
+      section.Folders.filter((f) => f.Parent === folder.Key).forEach((f) => visit(f, depth + 1));
+    };
+    section.Folders.filter((f) => !f.Parent).forEach((f) => visit(f, 0));
+    section.Folders.filter((f) => !visited.has(f)).forEach((f) => visit(f, 0));
+    return order;
+  }
+  const nodeKey = (section, folder) => 'node:' + section.Key + ':' + folder.Key;
+  // The published revision's destination with this key, if it has one.
+  const publishedSection = (key) =>
+    state.publishedSnapshot?.sections.find((s) => s.Key === key) || null;
+  // A test record's planned folders: one card per destination with its site, each folder
+  // indented by its depth in the path. Adjusted names and folders waiting for a value come first
+  // as notices; text, never markup.
+  function renderPreview(plan) {
+    const label = labelOf(state.sources);
+    const parts = (plan.Notices || []).map((notice) => el('p', notice, 'callout warning'));
+    for (const section of state.sections) {
+      const rows = (plan.Folders || []).filter((f) => f.Section === section.Key);
+      const card = el('div', null, 'preview-card');
+      card.append(
+        el('div', destinationName(section) + ' · ' + siteName(libraryFor(section)), 'eyebrow'),
+      );
+      if (!rows.length)
+        card.append(
+          el('p', 'No folders for this record: its conditions exclude this destination.', 'muted'),
+        );
+      for (const row of rows) {
+        const line = el('div', null, 'preview-node');
+        line.style.paddingLeft = (String(row.RelativePath || '').split('/').length - 1) * 18 + 'px';
+        line.append(folderIcon(), ui.tokens(row.Name, label));
+        card.append(line);
+      }
+      parts.push(card);
     }
-    if (target === 'access') window.AsxdSites?.open();
-    document.querySelectorAll('[data-view]').forEach((tab) => {
-      const active = tab.dataset.view === (admin ? 'administration' : target);
-      tab.classList.toggle('active', active);
-      tab.setAttribute('aria-pressed', String(active));
-    });
+    $('previewTrees').replaceChildren(...parts);
   }
-  function destinationName(section) {
-    return section.Name && section.Name !== section.Key
-      ? section.Name
-      : 'Destination ' + (state.sections.indexOf(section) + 1);
+  // Selection: the chosen destination's folder, else the first destination's top folder.
+  function normalizeSelection() {
+    if (!state.sections.includes(selectedSection)) {
+      selectedSection = state.sections[0] || null;
+      selectedFolder = null;
+    }
+    if (selectedSection && !selectedSection.Folders.includes(selectedFolder))
+      selectedFolder =
+        selectedSection.Folders.find((f) => !f.Parent) || selectedSection.Folders[0] || null;
   }
-  function addChild(section, folder) {
-    if (section.Folders.length >= 100) {
-      message('This destination has reached its 100-folder limit.', true);
+  // Step 2's tree: the destination pills, then the shown destination's folders in tree order,
+  // each with its rule and its New tag or edited dot. A folder removed since the published version
+  // shows after its parent's folders, with Undo.
+  function renderTree() {
+    normalizeSelection();
+    const section = selectedSection;
+    state.destination = section?.Key ?? null;
+    $('dest-pills').replaceChildren(
+      ...state.sections.map((s) => {
+        const pill = button(
+          destinationName(s),
+          () => {
+            selectedSection = s;
+            selectedFolder = null;
+            ui.withFocus(render);
+          },
+          'dest-pill',
+        );
+        pill.setAttribute('aria-pressed', String(s === section));
+        keyed(pill, 'pill:' + s.Key);
+        pill.dataset.nav = 'true';
+        return pill;
+      }),
+    );
+    $('dest-pills').hidden = !state.sections.length;
+    const host = $('folder-tree');
+    $('tree-actions').hidden = !section || state.readOnly;
+    if (!section) {
+      host.replaceChildren(el('p', 'No folders yet', 'empty'));
       return;
     }
-    do {
-      section.nodeSequence++;
-    } while (section.Folders.some((f) => f.Key === 'folder_' + section.nodeSequence));
+    const removed = state.readOnly
+      ? []
+      : (state.changes?.removed || []).filter((e) => e.destination === section.Key);
+    const rows = [],
+      visited = new Set(),
+      placed = new Set();
+    const removedUnder = (key, depth) => {
+      for (const entry of removed)
+        if (!placed.has(entry) && entry.folder.Parent === key) {
+          placed.add(entry);
+          rows.push(removedRow(section, entry, depth));
+          removedUnder(entry.folder.Key, depth + 1);
+        }
+    };
+    const walk = (folder, depth) => {
+      if (visited.has(folder)) return;
+      visited.add(folder);
+      rows.push(treeRow(section, folder, depth));
+      section.Folders.filter((f) => f.Parent === folder.Key).forEach((f) => walk(f, depth + 1));
+      removedUnder(folder.Key, depth + 1);
+    };
+    section.Folders.filter((f) => !f.Parent).forEach((f) => walk(f, 0));
+    section.Folders.filter((f) => !visited.has(f)).forEach((f) => walk(f, 0));
+    // A removed folder whose parent is in neither tree.
+    for (const entry of removed)
+      if (!placed.has(entry)) {
+        placed.add(entry);
+        rows.push(removedRow(section, entry, 0));
+        removedUnder(entry.folder.Key, 1);
+      }
+    host.replaceChildren(...rows);
+    const reason =
+      section.Folders.length >= ui.BOUNDS.foldersPerDestination ? FOLDER_REASON() : null;
+    // A folder at the deepest level takes no folder under it.
+    const deep =
+      selectedFolder && levels(section, selectedFolder) >= ui.BOUNDS.folderDepth
+        ? 'Folders can be nested up to ' + ui.BOUNDS.folderDepth + ' levels deep.'
+        : null;
+    // One reason for both, after the last of them; the depth reason only when that is the one.
+    ui.disable($('add-subfolder'), 'folder-depth-reason', null);
+    ui.disable($('add-subfolder'), 'folder-reason', reason);
+    ui.disable($('add-folder'), 'folder-reason', reason);
+    if (deep && !reason) ui.disable($('add-subfolder'), 'folder-depth-reason', deep);
+    // An Undo that would put back more folders than fit says why, with the same reason.
+    for (const undo of host.querySelectorAll('[data-over]'))
+      ui.disable(undo, 'folder-reason', FOLDER_REASON());
+  }
+  const FOLDER_REASON = () =>
+    'A destination can have up to ' +
+    ui.BOUNDS.foldersPerDestination +
+    " folders, because a record's folders for one destination are kept in one Dataverse row.";
+  // A folder's level: 1 for the top folder, 2 under it, and so on.
+  function levels(section, folder) {
+    let n = 1;
+    for (
+      let parent = section.Folders.find((f) => f.Key === folder.Parent);
+      parent && n <= section.Folders.length;
+      parent = section.Folders.find((f) => f.Key === parent.Parent)
+    )
+      n++;
+    return n;
+  }
+  // The folders Undo puts back: the folder, and each removed parent it needs first.
+  function restoreCount(section, folder) {
+    let n = 0;
+    for (let at = folder; at && n <= section.Folders.length + 1; n++) {
+      if (!at.Parent || section.Folders.some((f) => f.Key === at.Parent)) return n + 1;
+      const key = at.Parent;
+      at = state.changes?.removed.find(
+        (e) => e.destination === section.Key && e.folder.Key === key,
+      )?.folder;
+    }
+    return n;
+  }
+  const indent = (depth) => 10 + depth * 24 + 'px';
+  function treeRow(section, folder, depth) {
+    const row = el('div', null, 'tree-row');
+    row.setAttribute('data-focus-row', '');
+    row.style.paddingLeft = indent(depth);
+    const node = button(
+      '',
+      () => {
+        selectedSection = section;
+        selectedFolder = folder;
+        ui.withFocus(render);
+      },
+      'node',
+    );
+    keyed(node, nodeKey(section, folder));
+    node.dataset.nav = 'true';
+    if (folder === selectedFolder) {
+      node.setAttribute('aria-current', 'true');
+      row.classList.add('is-selected');
+    }
+    const name = ui.tokens(folder.Name, labelOf(state.sources));
+    if (!folder.Name) name.textContent = 'Unnamed folder';
+    node.append(folderIcon(), name);
+    const mark = state.readOnly ? null : state.changes?.marks.get(section.Key + '/' + folder.Key);
+    if (mark === 'new') node.append(el('span', 'New', 'tag new'));
+    else if (mark === 'edited') {
+      const dot = el('span', null, 'edit-dot');
+      dot.append(el('span', ' (edited)', 'sr-only'));
+      node.append(dot);
+    }
+    // The rule in words, also the node's description.
+    const ruled = ruleText(folder, state.sources);
+    const rule = el('span', ruled.text, ruled.conditional ? 'rule conditional' : 'rule');
+    rule.id = 'rule-' + section.Key + '-' + folder.Key;
+    node.setAttribute('aria-describedby', rule.id);
+    row.append(node, rule);
+    return row;
+  }
+  // A folder of the published version that the draft no longer has: struck through, with Undo.
+  function removedRow(section, entry, depth) {
+    const row = el('div', null, 'tree-row is-removed');
+    row.setAttribute('data-focus-row', '');
+    row.style.paddingLeft = indent(depth);
+    const glyph = el('span', null, 'removed-glyph');
+    glyph.setAttribute('aria-hidden', 'true');
+    const name = ui.tokens(entry.folder.Name, labelOf(state.publishedSnapshot?.sources || []));
+    const text = el('span', null, 'removed-name');
+    text.append(name);
+    const undo = button(
+      'Undo',
+      () => {
+        if (!ui.blocked(undo)) undoRemove(section, entry.folder);
+      },
+      'link',
+    );
+    undo.setAttribute('aria-label', 'Undo removing ' + (name.textContent || 'Unnamed folder'));
+    keyed(undo, 'undo:' + section.Key + ':' + entry.folder.Key);
+    if (
+      section.Folders.length + restoreCount(section, entry.folder) >
+      ui.BOUNDS.foldersPerDestination
+    )
+      undo.dataset.over = 'true';
+    row.append(glyph, text, el('span', 'Removed', 'tag removed'), undo);
+    return row;
+  }
+  // A field of the published version as the draft names it: its own fields as they are, a
+  // related record's under the draft's alias for it (added when the draft has none yet).
+  function draftField(field) {
+    const id = identity(state.publishedSnapshot?.sources || [], field);
+    if (id.startsWith('root.') || !id.includes(':')) return id;
+    const [source, column] = id.split('.');
+    const [lookup, table] = source.split(':');
+    return resolveField('lookup:' + lookup + ':' + table + ':' + column);
+  }
+  // Puts a removed folder back as it was published, its removed parent first.
+  function undoRemove(section, folder) {
+    let restored;
+    try {
+      restored = restore(section, folder);
+    } catch (error) {
+      ui.feedback('editor', error.message || String(error), 'error');
+      return;
+    }
+    selectedSection = section;
+    selectedFolder = restored;
+    state.focusKey = nodeKey(section, restored);
+    dirty();
+    render();
+  }
+  function restore(section, folder) {
+    const present = section.Folders.find((f) => f.Key === folder.Key);
+    if (present) return present;
+    if (folder.Parent && !section.Folders.some((f) => f.Key === folder.Parent)) {
+      const parent = state.changes?.removed.find(
+        (e) => e.destination === section.Key && e.folder.Key === folder.Parent,
+      );
+      if (parent) restore(section, parent.folder);
+    }
+    const copy = structuredClone(folder);
+    copy.Name = String(copy.Name ?? '').replace(
+      /\{([a-z0-9_]+\.[a-z0-9_]+)\}/gi,
+      (match, field) => '{' + draftField(field) + '}',
+    );
+    const walk = (g) => {
+      for (const c of g.Conditions) {
+        c.field = draftField(c.field);
+        if (c.right) c.right = draftField(c.right);
+      }
+      g.Groups.forEach(walk);
+    };
+    if (copy.Condition) walk(copy.Condition);
+    section.Folders.push(copy);
+    return copy;
+  }
+  // The folder panel: its path, name, ⋯ menu, Name with ＋ Field, Create this folder, its
+  // conditions and the test records. The controls stay in the page; only their contents follow
+  // the selected folder.
+  function renderFolderPanel() {
+    const section = selectedSection,
+      folder = selectedFolder;
+    $('folder-panel').hidden = !folder;
+    if (popoverFolder && popoverFolder !== folder) closeFieldPopover(false);
+    if (!folder) return;
+    const ancestors = [];
+    for (
+      let parent = section.Folders.find((f) => f.Key === folder.Parent), guard = 0;
+      parent && guard < section.Folders.length;
+      parent = section.Folders.find((f) => f.Key === parent.Parent), guard++
+    )
+      ancestors.unshift(nameText(parent.Name));
+    $('folder-path').textContent = [destinationName(section), ...ancestors]
+      .map((part) => part + ' ›')
+      .join(' ');
+    showName(folder);
+    const name = $('folder-name');
+    if (name.value !== folder.Name) name.value = folder.Name;
+    // The top folder is the destination itself; it is removed with its destination.
+    const menu = $('folder-menu');
+    menu.hidden = !folder.Parent;
+    const children = section.Folders.some((f) => f.Parent === folder.Key);
+    ui.disable(
+      $('menu-remove-folder'),
+      'remove-folder-reason',
+      children ? 'Remove its folders first' : null,
+    );
+    segmented(folder);
+    const conditions = $('conditions');
+    conditions.hidden = !folder.Condition;
+    conditions.replaceChildren(
+      ...(folder.Condition ? [conditionGroup(folder.Condition, folder, '1', 0, { n: 0 })] : []),
+    );
+    if (!$('field-popover').hidden) fillFieldOptions();
+    renderTestRecords();
+  }
+  // The parts that show the folder's name: its heading, "Shows as", the ⋯ menu's name and the
+  // warning for a top folder without a field.
+  function showName(folder) {
+    const label = labelOf(state.sources);
+    $('folder-title').replaceChildren(
+      folder.Name ? ui.tokens(folder.Name, label) : 'Unnamed folder',
+    );
+    $('folder-shows-as').replaceChildren('Shows as: ', ui.tokens(folder.Name, label));
+    $('folder-same').hidden = !!folder.Parent || /\{[^}]+\}/.test(folder.Name);
+    $('folder-menu').setAttribute('aria-label', 'More actions for ' + nameText(folder.Name));
+    const group = $('conditions').querySelector('.condition-group');
+    if (group) {
+      const groupName = 'Conditions for ' + nameText(folder.Name);
+      group.setAttribute('aria-label', groupName);
+      group.querySelector('select').setAttribute('aria-label', 'Match, ' + groupName);
+    }
+  }
+  // Typing a name: the folder, the parts that show it and the tree follow; the box itself is never
+  // redrawn while it is used.
+  function nameChanged() {
+    const folder = selectedFolder;
+    if (!folder) return;
+    folder.Name = $('folder-name').value;
+    showName(folder);
+    dirty();
+  }
+  $('folder-name').oninput = nameChanged;
+  // Adds a folder under the given parent, selects it and moves to its name.
+  function addChild(section, parentKey) {
+    // Keys of the published revision are skipped too: a new folder never takes the key of one
+    // removed since, so the change reads as removed plus added.
+    const used = new Set(
+      [...section.Folders, ...(publishedSection(section.Key)?.Folders || [])].map((f) => f.Key),
+    );
     const child = {
-      Key: 'folder_' + section.nodeSequence,
-      Parent: folder.Key,
+      Key: freshKey('folder_', used),
+      Parent: parentKey,
       Name: 'New folder',
       Condition: null,
     };
     section.Folders.push(child);
     selectedSection = section;
     selectedFolder = child;
+    state.focusKey = 'edit:name';
     dirty();
     render();
   }
-  function renderPreview(plan) {
-    $('previewTrees').replaceChildren();
-    if (!plan.Folders?.length) {
-      $('previewTrees').append(el('div', "No folders match this record's conditions.", 'callout'));
+  // ＋ Folder adds beside the selected folder; there is one top folder, so with it selected the
+  // new folder goes under it. ＋ Subfolder adds under the selected folder.
+  $('add-folder').onclick = () => {
+    if (ui.blocked($('add-folder')) || !selectedFolder || state.readOnly) return;
+    addChild(selectedSection, selectedFolder.Parent || selectedFolder.Key);
+  };
+  $('add-subfolder').onclick = () => {
+    if (ui.blocked($('add-subfolder')) || !selectedFolder || state.readOnly) return;
+    addChild(selectedSection, selectedFolder.Key);
+  };
+  ui.menu($('folder-menu'), $('folder-menu-list'));
+  $('menu-remove-folder').onclick = () => {
+    const section = selectedSection,
+      folder = selectedFolder;
+    if (ui.blocked($('menu-remove-folder')) || !folder?.Parent || state.readOnly) return;
+    section.Folders.splice(section.Folders.indexOf(folder), 1);
+    selectedFolder = section.Folders.find((f) => f.Key === folder.Parent) || null;
+    if (selectedFolder) state.focusKey = nodeKey(section, selectedFolder);
+    dirty();
+    render();
+  };
+
+  // ＋ Field: a searchable list of the fields a name can use. It inserts {alias.column} where the
+  // caret was in Name, replacing a selection. The caret is kept when it opens, before the list
+  // takes focus.
+  function openFieldPopover() {
+    const input = $('folder-name');
+    if (ui.blocked($('add-field')) || !selectedFolder) return;
+    const end = input.value.length;
+    state.caret = {
+      start: input.selectionStart ?? end,
+      end: input.selectionEnd ?? input.selectionStart ?? end,
+    };
+    popoverFolder = selectedFolder;
+    $('field-search').value = '';
+    fillFieldOptions();
+    $('field-popover').hidden = false;
+    $('add-field').setAttribute('aria-expanded', 'true');
+    $('field-search').focus();
+  }
+  function closeFieldPopover(focus = true) {
+    popoverFolder = null;
+    if ($('field-popover').hidden) return;
+    $('field-popover').hidden = true;
+    $('add-field').setAttribute('aria-expanded', 'false');
+    $('field-search').removeAttribute('aria-activedescendant');
+    if (focus) $('folder-name').focus();
+  }
+  // The list, filtered by the search text across groups; a group with no match is left out. A
+  // related table still loading or unavailable says so while nothing is searched.
+  function fillFieldOptions() {
+    const search = $('field-search');
+    const query = search.value.trim().toLowerCase();
+    const active = $(search.getAttribute('aria-activedescendant') || '')?.dataset.value;
+    const list = $('field-options');
+    list.replaceChildren();
+    search.removeAttribute('aria-activedescendant');
+    let n = 0;
+    for (const group of fieldGroups((c) => NAME_KINDS.includes(c.Kind))) {
+      const fields = group.fields.filter((f) => f.label.toLowerCase().includes(query));
+      const note = group.note && (!query || group.label.toLowerCase().includes(query));
+      if (!fields.length && !note) continue;
+      const box = el('li', null, 'field-group');
+      box.setAttribute('role', 'group');
+      box.setAttribute('aria-label', group.label);
+      if (group.disabled) box.setAttribute('aria-disabled', 'true');
+      const heading = el('span', group.label, 'group-label');
+      heading.setAttribute('aria-hidden', 'true');
+      box.append(heading);
+      for (const field of fields) {
+        const item = el('li', null, 'field-option');
+        item.id = 'field-opt-' + n++;
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-selected', 'false');
+        item.dataset.value = field.value;
+        if (group.disabled) item.setAttribute('aria-disabled', 'true');
+        item.append(el('span', field.label, 'label'), el('span', KIND_LABEL[field.kind], 'kind'));
+        item.onclick = () => chooseField(item);
+        box.append(item);
+      }
+      if (note) {
+        const item = el('li', group.note, 'field-note');
+        item.id = 'field-opt-' + n++;
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-disabled', 'true');
+        item.setAttribute('aria-selected', 'false');
+        box.append(item);
+      }
+      list.append(box);
+    }
+    // At the related-record bound the reason says why some groups are off.
+    const full = relatedFull();
+    $('related-reason').hidden = !full;
+    $('related-reason').textContent = full ? relatedReason() : '';
+    if (full) search.setAttribute('aria-describedby', 'related-reason');
+    else search.removeAttribute('aria-describedby');
+    const again = [...list.querySelectorAll('[role=option]')].find(
+      (o) => o.dataset.value === active,
+    );
+    if (again) activate(again);
+  }
+  const choosable = () =>
+    [...$('field-options').querySelectorAll('[role=option]')].filter(
+      (o) => o.getAttribute('aria-disabled') !== 'true',
+    );
+  function activate(item) {
+    for (const o of $('field-options').querySelectorAll('[aria-selected=true]'))
+      o.setAttribute('aria-selected', 'false');
+    item.setAttribute('aria-selected', 'true');
+    $('field-search').setAttribute('aria-activedescendant', item.id);
+    item.scrollIntoView?.({ block: 'nearest' });
+  }
+  function chooseField(item) {
+    if (item.getAttribute('aria-disabled') === 'true') return;
+    let field;
+    try {
+      field = resolveField(item.dataset.value);
+    } catch (error) {
+      ui.feedback('editor', error.message || String(error), 'error');
       return;
     }
-    for (const section of state.sections) {
-      const rows = plan.Folders.filter((f) => f.Section === section.Key);
-      const card = el('div', null, 'preview-card'),
-        library = libraryFor(section);
-      card.append(
-        el('div', destinationName(section), 'eyebrow'),
-        el('h3', library?.asx_name || 'Unavailable library'),
-        el('p', siteName(library), 'hint'),
-      );
-      if (!rows.length)
-        card.append(el('p', 'This destination is excluded by its conditions.', 'hint'));
-      for (const row of rows) {
-        const line = el('div', null, 'preview-node'),
-          text = el('span');
-        text.append(el('strong', row.Name), el('span', row.RelativePath, 'preview-note'));
-        line.append(folderIcon(), text);
-        card.append(line);
+    closeFieldPopover(false);
+    insertAtCaret($('folder-name'), '{' + field + '}');
+  }
+  // Puts text where the caret was, replacing what was selected, and leaves the caret after it.
+  function insertAtCaret(input, text) {
+    const v = input.value;
+    const { start, end } = state.caret ?? { start: v.length, end: v.length };
+    input.value = v.slice(0, start) + text + v.slice(end);
+    const at = start + text.length;
+    input.focus();
+    input.setSelectionRange?.(at, at);
+    input.selectionStart = input.selectionEnd = at;
+    state.caret = null;
+    nameChanged();
+  }
+  $('add-field').onclick = () =>
+    $('field-popover').hidden ? openFieldPopover() : closeFieldPopover();
+  $('field-search').oninput = () => fillFieldOptions();
+  $('field-search').addEventListener('keydown', (event) => {
+    const items = choosable();
+    const index = items.findIndex(
+      (o) => o.id === $('field-search').getAttribute('aria-activedescendant'),
+    );
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (!items.length) return;
+      const next =
+        event.key === 'ArrowDown'
+          ? Math.min(index + 1, items.length - 1)
+          : index < 0
+            ? items.length - 1
+            : Math.max(index - 1, 0);
+      activate(items[next]);
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      if (index >= 0) chooseField(items[index]);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      closeFieldPopover();
+    }
+  });
+  // A click in the list keeps focus in the search box; Tab out of the popover or a click outside
+  // it closes it where focus went.
+  $('field-options').addEventListener('mousedown', (event) => event.preventDefault());
+  $('field-popover').addEventListener('focusout', (event) => {
+    const next = event.relatedTarget;
+    if (next && !$('field-popover').contains(next) && next !== $('add-field'))
+      closeFieldPopover(false);
+  });
+  document.addEventListener('click', (event) => {
+    if (
+      !$('field-popover').hidden &&
+      !$('field-popover').contains(event.target) &&
+      !$('add-field').contains(event.target)
+    )
+      closeFieldPopover(false);
+  });
+
+  // Create this folder: Always, or Only when its conditions match. Two radios; arrow keys switch
+  // and choose.
+  const modes = () => $('create-mode').querySelectorAll('[role=radio]');
+  function segmented(folder) {
+    const conditional = !!folder.Condition;
+    modes().forEach((radio, index) => {
+      const on = (index === 1) === conditional;
+      radio.setAttribute('aria-checked', String(on));
+      radio.tabIndex = on ? 0 : -1;
+    });
+    // A top folder's conditions decide the whole destination.
+    $('help-include-root').hidden = !!folder.Parent;
+    if (folder.Parent) $('create-mode').removeAttribute('aria-describedby');
+    else $('create-mode').setAttribute('aria-describedby', 'help-include-root');
+  }
+  // The conditions a folder had when Always was chosen, for this editing session: Only when…
+  // brings them back, so a key press on the radios never loses them.
+  const lastCondition = new WeakMap();
+  // Only when… brings back the folder's last conditions, else starts with one condition on the
+  // record's name; Always sets them aside.
+  function setMode(conditional, focusKey) {
+    const folder = selectedFolder;
+    if (!folder || state.readOnly) return;
+    if (conditional !== !!folder.Condition) {
+      if (conditional)
+        folder.Condition = lastCondition.get(folder) || {
+          All: true,
+          Conditions: [{ field: firstField(), Operator: 'Equal', Literal: '' }],
+          Groups: [],
+        };
+      else {
+        lastCondition.set(folder, folder.Condition);
+        folder.Condition = null;
       }
-      card.append(el('p', 'Desired names only · Library access is inherited', 'hint'));
-      $('previewTrees').append(card);
+      dirty();
+    }
+    state.focusKey = focusKey;
+    render();
+  }
+  modes()[0].onclick = () => setMode(false, 'mode:always');
+  modes()[1].onclick = () => setMode(true, 'cond:' + selectedFolder?.Key + ':1.1:field');
+  $('create-mode').addEventListener('keydown', (event) => {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+    if (!step || modes()[0].disabled) return;
+    event.preventDefault();
+    const index = [...modes()].indexOf(document.activeElement);
+    const next = (index + step + 2) % 2;
+    setMode(next === 1, next === 1 ? 'mode:when' : 'mode:always');
+  });
+
+  // Test records: up to the preview bound, each previewed with the draft as it is now. Each row
+  // says whether the selected folder is Created or Skipped for that record.
+  function renderTestRecords() {
+    const folder = selectedFolder,
+      section = selectedSection;
+    $('test-record-list').replaceChildren(
+      ...state.testRecords.map((record) => testRecordRow(record, section, folder)),
+    );
+    const bound = ui.BOUNDS.previewRecords;
+    ui.disable(
+      $('add-test-record'),
+      'test-record-reason',
+      state.testRecords.length >= bound
+        ? 'Preview covers up to ' +
+            bound +
+            " records at a time so it finishes within Dataverse's 2-minute limit."
+        : null,
+    );
+    renderResult();
+  }
+  const created = (plan, section, folder) =>
+    !!folder &&
+    (plan?.Folders || []).some((f) => f.Section === section?.Key && f.Node === folder.Key);
+  function testRecordRow(record, section, folder) {
+    const result = state.previewByRecord.get(record.id);
+    const row = el('div', null, 'test-record');
+    row.append(el('strong', record.name));
+    let text = null,
+      kind = 'pending';
+    if (result?.error) [text, kind] = ['Preview failed: ' + result.error, 'failed'];
+    else if (result?.stale) [text, kind] = ['Out of date', 'stale'];
+    else if (result?.plan)
+      [text, kind] = created(result.plan, section, folder)
+        ? ['Created', 'created']
+        : ['Skipped', 'skipped'];
+    row.dataset.state = kind;
+    if (record.busy) row.setAttribute('aria-busy', 'true');
+    if (kind === 'skipped') {
+      const why = skipValue(record, folder);
+      if (why) row.append(el('span', why, 'why'));
+    }
+    row.append(text === null ? el('span', null, 'skeleton') : el('span', text, 'state'));
+    const remove = button(
+      '✕',
+      () => {
+        const index = state.testRecords.indexOf(record);
+        state.testRecords.splice(index, 1);
+        state.previewByRecord.delete(record.id);
+        const next = state.testRecords[index] || state.testRecords[index - 1];
+        renderTestRecords();
+        (next
+          ? document.querySelector('[data-focus-key="test:' + next.id + '"]')
+          : $('add-test-record')
+        )?.focus();
+      },
+      'icon',
+    );
+    remove.setAttribute('aria-label', 'Remove ' + record.name + ' from test records');
+    keyed(remove, 'test:' + record.id);
+    row.append(remove);
+    return row;
+  }
+  // Why a record skipped the folder: the value of the first field of this record that the
+  // folder's own conditions test, read once per record and field. Nothing for related records'
+  // fields, or when a folder above it was skipped already.
+  function skipValue(record, folder) {
+    const result = state.previewByRecord.get(record.id);
+    const section = selectedSection;
+    if (!folder?.Condition || !result?.plan) return '';
+    const parent = section.Folders.find((f) => f.Key === folder.Parent);
+    if (parent && !created(result.plan, section, parent)) return '';
+    const first = (g) => {
+      for (const c of g.Conditions) if (String(c.field).startsWith('root.')) return c.field;
+      for (const child of g.Groups) {
+        const found = first(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const column = first(folder.Condition)?.slice(5);
+    if (!column) return '';
+    const key = record.id + '|' + column;
+    const values = state.recordValues;
+    if (values.has(key)) return values.get(key) ?? '';
+    values.set(key, null);
+    // A lookup's value is read through its _value property.
+    const attribute = state.sources
+      .find((s) => s.Alias === 'root')
+      ?.columns.find((c) => c.Name === column)?.Targets
+      ? '_' + column + '_value'
+      : column;
+    xrm.WebApi.retrieveRecord(state.root.LogicalName, record.id, '?$select=' + attribute)
+      .then(
+        (row) => {
+          const value =
+            row?.[attribute + '@OData.Community.Display.V1.FormattedValue'] ?? row?.[attribute];
+          values.set(key, value == null ? '' : String(value));
+        },
+        () => values.set(key, ''),
+      )
+      .then(() => {
+        if (values === state.recordValues) renderTestRecords();
+      });
+    return '';
+  }
+  // Previews the draft for each test record once edits pause.
+  function schedulePreview() {
+    clearTimeout(state.previewTimer);
+    if (!state.testRecords.length || state.readOnly) return;
+    state.previewTimer = setTimeout(() => state.testRecords.forEach(previewRecord), 800);
+  }
+  // One preview of the draft for one record. Only the latest one of a record is kept; a draft the
+  // server would refuse is not sent, and its rows read Out of date.
+  async function previewRecord(record) {
+    if (!state.root) return;
+    const seq = ++record.seq,
+      session = state.session;
+    let request = null;
+    try {
+      if (validate({ focus: false }))
+        request = { RevisionId: '', Draft: payload(), RecordId: record.id };
+    } catch {
+      request = null;
+    }
+    if (!request) {
+      state.previewByRecord.set(record.id, {
+        ...state.previewByRecord.get(record.id),
+        stale: true,
+        error: null,
+      });
+      record.busy = false;
+      renderTestRecords();
+      return;
+    }
+    record.busy = true;
+    renderTestRecords();
+    let result;
+    try {
+      const plan = JSON.parse(
+        await api('asx_PreviewTemplate', { Request: JSON.stringify(request) }),
+      );
+      result = { plan, stale: false, error: null };
+    } catch (error) {
+      result = { plan: null, stale: false, error: error.message || String(error) };
+    }
+    if (seq !== record.seq || session !== state.session || !state.testRecords.includes(record))
+      return;
+    state.previewByRecord.set(record.id, result);
+    record.busy = false;
+    renderTestRecords();
+  }
+  // ＋ Add in step 2 and Choose record… in step 3: a record of the template's table becomes a
+  // test record and is previewed at once. The answer is the added record, or null.
+  async function addTestRecord(control) {
+    if (ui.blocked(control) || !state.root || state.readOnly) return null;
+    const session = state.session,
+      table = state.root.LogicalName;
+    const picked = await xrm.Utility.lookupObjects({
+      entityTypes: [table],
+      defaultEntityType: table,
+      allowMultiSelect: false,
+    });
+    if (!picked?.length || session !== state.session) return null;
+    const id = picked[0].id.replace(/[{}]/g, '').toLowerCase();
+    if (
+      state.testRecords.some((r) => r.id === id) ||
+      state.testRecords.length >= ui.BOUNDS.previewRecords
+    )
+      return null;
+    const record = { id, name: picked[0].name, seq: 0, busy: false };
+    state.testRecords.push(record);
+    renderTestRecords();
+    previewRecord(record);
+    return record;
+  }
+  $('add-test-record').onclick = () => addTestRecord($('add-test-record'));
+
+  // Step 3, Review and publish: what changed since the published version, the result for a test
+  // record, and what publishing does, with the optional re-run and when the version starts.
+  // A change line, in words: names in bold, field tokens as chips. The draft names what it has;
+  // the published version names what the draft no longer has.
+  function changeText(entry) {
+    const text = el('span', null, 'text');
+    const draftLabel = labelOf(state.sources);
+    const publishedLabel = labelOf(state.publishedSnapshot?.sources || []);
+    const named = (name, label) => (name ? ui.tokens(name, label) : el('span', 'Unnamed folder'));
+    const bold = (...parts) => {
+      const strong = el('strong');
+      strong.append(...parts);
+      return strong;
+    };
+    if (!entry.destination) {
+      const where = (libraryId) => {
+        const library = state.libraries.find((l) => same(l.asx_libraryid, libraryId));
+        return library ? siteName(library) + ' › ' + library.asx_name : 'Unavailable library';
+      };
+      const parts = {
+        added: () => ['Destination ', bold(entry.name), ' added'],
+        removed: () => [
+          'Destination ',
+          bold(entry.name),
+          ' removed. Its folders stay in SharePoint.',
+        ],
+        renamed: () => ['Destination ', bold(entry.before), ' renamed to ', bold(entry.after)],
+        library: () => ['Destination ', bold(entry.name), ' now uses ' + where(entry.after)],
+      }[entry.kind];
+      text.append(...(parts ? parts() : [entry.name]));
+      return text;
+    }
+    const section = state.sections.find((s) => s.Key === entry.destination);
+    const destination = section
+      ? destinationName(section)
+      : publishedSection(entry.destination)?.Name || entry.destination;
+    const folder = section?.Folders.find((f) => f.Key === entry.key);
+    const name = folder ? folder.Name : entry.name;
+    switch (entry.kind) {
+      case 'added': {
+        // Its path under the top folder: "Projects › P-[Project Number]".
+        const path = bold();
+        (folder ? folderPath(section, folder) : [{ Name: entry.name }]).forEach((f, i) =>
+          path.append(...(i ? [' › '] : []), named(f.Name, draftLabel)),
+        );
+        text.append('Folder ', path, ' added to ' + destination);
+        break;
+      }
+      case 'removed':
+        text.append(
+          'Folder ',
+          bold(named(entry.name, publishedLabel)),
+          ' removed from ' + destination + '. Existing ',
+          named(entry.name, publishedLabel),
+          ' folders stay in SharePoint.',
+        );
+        break;
+      case 'renamed':
+        text.append(
+          'Folder ',
+          bold(named(entry.before, publishedLabel)),
+          ' renamed to ',
+          bold(named(entry.after, draftLabel)),
+          ' in ' + destination,
+        );
+        break;
+      case 'moved': {
+        const parent = section?.Folders.find((f) => f.Key === entry.after);
+        text.append(
+          'Folder ',
+          bold(named(name, draftLabel)),
+          ' moved under ',
+          bold(parent ? named(parent.Name, draftLabel) : 'Unnamed folder'),
+          ' in ' + destination,
+        );
+        break;
+      }
+      case 'condition': {
+        const sentence = folder?.Condition
+          ? ui.ruleSentence(folder.Condition, (c) => clause(c, state.sources))
+          : '';
+        text.append(
+          bold(named(name, draftLabel)),
+          sentence ? ' now created only ' + lowerFirst(sentence) : ' now always created',
+        );
+        break;
+      }
+      default:
+        text.append(named(name, draftLabel));
+    }
+    return text;
+  }
+  // A folder and the folders above it, without the top folder (the record's own folder).
+  function folderPath(section, folder) {
+    const path = [folder];
+    for (
+      let parent = section.Folders.find((f) => f.Key === folder.Parent), guard = 0;
+      parent?.Parent && guard < section.Folders.length;
+      parent = section.Folders.find((f) => f.Key === parent.Parent), guard++
+    )
+      path.unshift(parent);
+    return path;
+  }
+  // One line of the change list: its mark, its words, and a link to the step that holds it.
+  function changeRow(entry) {
+    const row = el('div', null, 'change-row');
+    const [glyph, tone] =
+      entry.kind === 'added'
+        ? ['＋', 'added']
+        : entry.kind === 'removed'
+          ? ['−', 'removed']
+          : ['◆', 'edited'];
+    const mark = el('span', glyph, 'mark');
+    mark.dataset.tone = tone;
+    mark.setAttribute('aria-hidden', 'true');
+    const step = entry.destination ? 2 : 1;
+    const name = !entry.destination
+      ? entry.name
+      : entry.kind === 'removed'
+        ? nameText(entry.name, state.publishedSnapshot?.sources || [])
+        : nameText(
+            state.sections
+              .find((s) => s.Key === entry.destination)
+              ?.Folders.find((f) => f.Key === entry.key)?.Name ?? entry.name,
+          );
+    const link = button(STEPS[step - 1], () => showChange(entry), 'link');
+    link.setAttribute('aria-label', 'Show ' + name + ' in ' + STEPS[step - 1]);
+    row.append(mark, changeText(entry), link);
+    return row;
+  }
+  // A change line's link: its step, with the destination's card open or the folder selected,
+  // and focus on it (on Undo for a removed folder).
+  function showChange(entry) {
+    const section = state.sections.find((s) => s.Key === (entry.destination || entry.key));
+    if (!entry.destination) {
+      goStep(1, !section);
+      if (!section) return;
+      state.expanded = section.Key;
+      state.focusKey = 'dest:' + section.Key + ':name';
+      render();
+      return;
+    }
+    goStep(2, !section);
+    if (!section) return;
+    const folder = section.Folders.find((f) => f.Key === entry.key);
+    selectedSection = section;
+    selectedFolder = folder || null;
+    state.focusKey = folder ? nodeKey(section, folder) : 'undo:' + section.Key + ':' + entry.key;
+    render();
+  }
+  // The re-run box's words: the folders it adds, else that it applies the changes.
+  function rerunText(changes) {
+    const added = [
+      ...new Set(
+        (changes?.folders || []).filter((e) => e.kind === 'added').map((e) => nameText(e.name)),
+      ),
+    ];
+    const collection = (
+      tableInfo(state.root?.LogicalName)?.DisplayCollectionName?.UserLocalizedLabel?.Label ||
+      'records'
+    ).toLowerCase();
+    return (
+      (added.length
+        ? 'Adds ' + added.join(', ') + ' folders to existing '
+        : 'Applies these changes to existing ') +
+      collection +
+      '. Progress shows in Monitor.'
+    );
+  }
+  const LATER_REASON = 'Re-run after the template starts, from Re-run for existing records.';
+  const rerunChecked = () => $('publish-rerun').checked && !ui.blocked($('publish-rerun'));
+  // The re-run needs the Operator role, and a template that has started: a re-run of a template
+  // that starts later stops at once. Either one unticks the box and says why.
+  function renderRerun() {
+    const box = $('publish-rerun');
+    const reason =
+      ui.needs(OPERATOR) || ($('publish-starts').value === 'later' ? LATER_REASON : null);
+    ui.disable(box, 'publish-rerun-reason', reason);
+    box.checked = !reason && state.rerunWanted;
+    $('publish-rerun-desc').textContent = state.root ? rerunText(state.changes) : '';
+    $('publish-start-label').hidden = $('publish-starts').value !== 'later';
+    renderPublish();
+  }
+  $('publish-rerun').onchange = () => {
+    if (!ui.blocked($('publish-rerun'))) state.rerunWanted = $('publish-rerun').checked;
+    renderRerun();
+  };
+  // A blocked box keeps its tick as it is.
+  $('publish-rerun').addEventListener('click', (event) => {
+    if (ui.blocked($('publish-rerun'))) event.preventDefault();
+  });
+  $('publish-starts').onchange = renderRerun;
+  $('publish-start').onchange = renderRerun;
+  // Starts opens on the template's start when it is still ahead, else Now.
+  function initStarts() {
+    if (state.startsSession === state.session) return;
+    state.startsSession = state.session;
+    const stored = state.template?.asx_startsutc;
+    const ahead = !!stored && new Date(stored) > new Date();
+    $('publish-starts').value = ahead ? 'later' : 'now';
+    $('publish-start').value = ahead ? localTime(stored) : '';
+  }
+  // The start to write after publishing: an ISO time, null to clear one still ahead (Now), or
+  // undefined when it stays as it is.
+  function startsValue() {
+    const stored = state.template?.asx_startsutc || null;
+    const ahead = !!stored && new Date(stored) > new Date();
+    if ($('publish-starts').value !== 'later') return ahead ? null : undefined;
+    if (!$('publish-start').value) {
+      $('publish-start').focus();
+      throw new Error('Pick a date');
+    }
+    const start = new Date($('publish-start').value).toISOString();
+    const end = state.template?.asx_endsutc;
+    if (end && new Date(end) <= new Date(start))
+      throw new Error('The end must be after the start.');
+    return stored && new Date(stored).getTime() === new Date(start).getTime() ? undefined : start;
+  }
+  // Step 3 as it shows: the change list (none on a first publish; the reason when the published
+  // version could not be read), Result for, the Publishing card and the re-run box. The answer
+  // is the consequences' reads finishing.
+  function renderReview() {
+    if (!state.root) return undefined;
+    initStarts();
+    const first = !state.publishedSnapshot && !state.snapshotFailed;
+    const listed = !first && !state.readOnly;
+    $('review-title').hidden = $('change-list').hidden = !listed;
+    $('review-changes').setAttribute('aria-labelledby', listed ? 'review-title' : 'result-label');
+    $('review-title').textContent = listed ? 'Changes since v' + liveVersion() : '';
+    const changes = state.changes || { destinations: [], folders: [] };
+    $('change-list').replaceChildren(
+      ...(!listed
+        ? []
+        : state.snapshotFailed
+          ? [el('p', state.snapshotError, 'error')]
+          : [...changes.destinations, ...changes.folders].map(changeRow)),
+    );
+    $('publishing').hidden = state.readOnly;
+    $('publishing-title').textContent = 'Publishing v' + draftVersion();
+    renderRerun();
+    renderResult();
+    return renderConsequences();
+  }
+  // The published version: the one compared with, else the template's live one.
+  const liveVersion = () =>
+    state.publishedSnapshot?.version ??
+    (state.template ? templateState(state.template).live : null) ??
+    draftVersion() - 1;
+  // The template's record count, read once per template: the table's row-count snapshot, so it
+  // is always "about". Null without the Operator role (no call), before the first save, or when
+  // the server refuses it.
+  function recordCount() {
+    const id = state.template?.asx_templateid;
+    if (!id || !ui.can(OPERATOR)) return Promise.resolve(null);
+    if (!same(state.count?.id, id))
+      state.count = {
+        id,
+        read: ui
+          .api('asx_ManageWork', { Command: 'CountRecords', TemplateId: id })
+          .then((counted) => counted?.Run?.Total ?? null)
+          .catch(() => null),
+      };
+    return state.count.read;
+  }
+  // What publishing does, as two bullets: new records, and existing records with the table's
+  // count. The paused warning follows automation.
+  let reviewReads = 0;
+  async function renderConsequences() {
+    const seq = ++reviewReads;
+    const [automation, count] = await Promise.all([ui.automation(), recordCount()]);
+    if (seq !== reviewReads || !state.root) return;
+    const table = tableName(state.root.LogicalName);
+    const first = !state.publishedSnapshot && !state.snapshotFailed;
+    const line = (tone, strong, rest) => {
+      const item = el('li');
+      const text = el('span');
+      text.append(el('strong', strong), rest);
+      item.append(ui.dot(tone), text);
+      return item;
+    };
+    $('consequences').replaceChildren(
+      line('ok', 'New ' + table + ' records', ' get v' + draftVersion() + ' folders from now on.'),
+      line(
+        'pending',
+        (count == null ? 'Existing ' : 'About ' + count.toLocaleString('en-US') + ' existing ') +
+          table +
+          ' records',
+        first
+          ? ' get folders when they are re-run.'
+          : ' keep their v' +
+              liveVersion() +
+              ' folders until they are re-run. Folders are never removed.',
+      ),
+    );
+    $('publish-paused').hidden = automation?.Enabled !== false;
+    $('publish-paused').textContent = $('publish-paused').hidden
+      ? ''
+      : "Automation is paused, so no folders are created until it's on.";
+  }
+  // Result for: the test records in a select (the first by default), or Choose record… when
+  // there are none, and the chosen one's planned folders.
+  let shownPlan = null;
+  function renderResult() {
+    const records = state.testRecords;
+    const picker = $('result-record');
+    picker.hidden = !records.length;
+    $('result-choose').hidden = !!records.length;
+    if (!records.some((r) => r.id === state.resultId)) state.resultId = records[0]?.id ?? null;
+    const signature = records.map((r) => r.id + '|' + r.name).join('\n');
+    if (picker.dataset.records !== signature) {
+      picker.replaceChildren(...records.map((r) => option(r.id, r.name)));
+      picker.dataset.records = signature;
+    }
+    picker.value = state.resultId ?? '';
+    const record = records.find((r) => r.id === state.resultId);
+    const trees = $('previewTrees');
+    const result = record ? state.previewByRecord.get(record.id) : null;
+    trees.classList.toggle('is-stale', !!result?.stale);
+    if (record?.busy) trees.setAttribute('aria-busy', 'true');
+    else trees.removeAttribute('aria-busy');
+    if (!record) {
+      clearResult();
+      return;
+    }
+    if (result?.error) {
+      shownPlan = null;
+      trees.replaceChildren(el('p', 'Preview failed: ' + result.error, 'error'));
+      return;
+    }
+    if (!result?.plan) {
+      shownPlan = null;
+      trees.replaceChildren(...[0, 1].map(() => el('div', null, 'skeleton')));
+      return;
+    }
+    renderPreview(result.plan);
+    if (shownPlan === result.plan) return;
+    shownPlan = result.plan;
+    const folders = result.plan.Folders || [];
+    $('preview-status').textContent =
+      'Preview updated: ' +
+      plural(new Set(folders.map((f) => f.Section)).size, 'destination', 'destinations') +
+      ', ' +
+      plural(folders.length, 'folder', 'folders') +
+      '.';
+  }
+  function clearResult() {
+    shownPlan = null;
+    $('previewTrees').replaceChildren();
+    $('previewTrees').classList.remove('is-stale');
+    $('preview-status').textContent = '';
+  }
+  $('result-record').dataset.nav = 'true';
+  $('result-record').onchange = () => {
+    state.resultId = $('result-record').value;
+    renderResult();
+  };
+  $('result-choose').onclick = async () => {
+    const record = await addTestRecord($('result-choose'));
+    if (record) {
+      state.resultId = record.id;
+      renderResult();
+      $('result-record').focus();
+    }
+  };
+  // Publish: this step is the confirmation. Edits not saved yet are saved first; once the server
+  // has published, the start date is written and then the re-run starts, so a refused publish
+  // changes nothing and Now clears a later start before the run reads it. Edits made while it
+  // ran are saved as the next version. It ends on the overview with what happened.
+  async function publish() {
+    const control = $('publish');
+    if (ui.blocked(control) || state.publishing || state.publishRun) return;
+    const session = state.session;
+    state.publishRun = ui.busy(control, 'Publishing…', 'editor', async () => {
+      const start = startsValue();
+      const rerun = rerunChecked();
+      await flushSave(true);
+      if (session !== state.session) return;
+      // A new template without a name cannot be saved yet.
+      if (!state.saved) {
+        $('templateName').focus();
+        return;
+      }
+      const next = state.editBase.Version;
+      const id = state.template.asx_templateid;
+      state.publishing = true;
+      let result;
+      try {
+        result = JSON.parse(
+          await api('asx_PublishTemplate', {
+            RevisionId: state.saved.RevisionId,
+            RowVersion: state.saved.RowVersion,
+          }),
+        );
+      } catch (error) {
+        state.publishing = false;
+        if (state.unsaved) scheduleSave();
+        throw error;
+      }
+      let scheduled = null,
+        started = null,
+        refused = null;
+      try {
+        if (start !== undefined)
+          await xrm.WebApi.updateRecord('asx_template', id, { asx_startsutc: start });
+      } catch (error) {
+        scheduled = error.message || String(error);
+      }
+      if (rerun && !scheduled)
+        try {
+          started = await ui.api('asx_ManageWork', {
+            Command: 'StartTemplateRun',
+            TemplateId: id,
+            RequestId: crypto.randomUUID(),
+          });
+        } catch (error) {
+          refused = error.message || String(error);
+        }
+      // Edits made while it ran are saved as the next version, with the row version publishing
+      // gave the revision. If they cannot be read back or saved, the editor stays open with them
+      // and says why.
+      let kept = true;
+      if (session === state.session && state.unsaved) {
+        try {
+          const loaded = await reloadBasis(state.saved.RevisionId);
+          state.publishedSnapshot = {
+            version: next,
+            ...toModel(loaded, (table) => metadata.get(table)?.columns || []),
+          };
+          state.changes = changesSince(state.publishedSnapshot, current());
+          state.template = await reloadTemplate(id);
+          state.publishing = false;
+          await flushSave(true);
+          // An edit typed while that save ran is not saved yet: the editor stays open with it.
+          kept = !state.unsaved;
+        } catch (error) {
+          kept = false;
+          ui.feedback('editor', error.message || String(error), 'error');
+        }
+      }
+      state.publishing = false;
+      const mine = session === state.session;
+      if (mine && kept) resetEditor();
+      let notices = [...(result.Notices || []), ...(started?.Notices || [])];
+      try {
+        await loadTemplates();
+        if (mine && kept) await showOverview(id);
+        else if (state.view === 'overview' && same(state.overview?.template.asx_templateid, id))
+          await showOverview(id);
+      } catch (error) {
+        notices = [...notices, error.message || String(error)];
+      }
+      if (mine && !kept) {
+        state.changes = changesSince(state.publishedSnapshot, current());
+        chrome();
+      }
+      const rerunAction = {
+        label: 'Re-run existing records…',
+        onClick: (event) => openRerun(event?.currentTarget),
+      };
+      if (scheduled)
+        ui.feedback(
+          'templates',
+          ['Published v' + next + '.', scheduled, ...notices].join(' '),
+          'error',
+          rerun ? rerunAction : null,
+        );
+      else if (refused)
+        ui.feedback(
+          'templates',
+          ['Published v' + next + ". The re-run didn't start: " + refused, ...notices].join(' '),
+          'error',
+          rerunAction,
+        );
+      else if (started)
+        ui.feedback(
+          'templates',
+          ['Published v' + next + '. Re-run started.', ...notices].join(' '),
+          'success',
+          {
+            label: 'Follow it in Monitor →',
+            onClick: () => ui.navigate('monitor', { run: started.Key }),
+          },
+        );
+      else ui.feedback('templates', ['Published v' + next + '.', ...notices].join(' '));
+      if (mine && kept) $('overview-title').focus();
+    });
+    try {
+      await state.publishRun;
+    } finally {
+      state.publishRun = null;
     }
   }
-  function render() {
-    $('destinations').replaceChildren();
-    $('destinationCount').textContent =
-      state.sections.length + (state.sections.length === 1 ? ' destination' : ' destinations');
-    if (!state.sections.includes(selectedSection)) {
-      selectedSection = state.sections[0] || null;
-      selectedFolder = null;
-    }
-    if (selectedSection && !selectedSection.Folders.includes(selectedFolder))
-      selectedFolder = selectedSection.Folders.find((f) => !f.Parent) || selectedSection.Folders[0];
-    if (!state.sections.length)
-      $('destinations').append(
-        el(
-          'div',
-          state.root
-            ? 'No destination sections yet. Add a library with an approved, applied access policy.'
-            : 'Select a business table to begin.',
-          'empty',
-        ),
-      );
-    state.sections.forEach((section, index) => {
-      const card = el(
-          'div',
-          null,
-          'destination-section' + (section === selectedSection ? ' selected-section' : ''),
-        ),
-        library = libraryFor(section);
-      card.append(
-        button(
-          destinationName(section),
-          () => {
-            selectedSection = section;
-            selectedFolder = section.Folders.find((f) => !f.Parent);
-            render();
-          },
-          'quiet section-heading',
-        ),
-        el('p', library?.asx_name || 'Unavailable library', 'hint'),
-      );
-      const tree = el('div', null, 'tree'),
-        visited = new Set();
-      const addNode = (folder, depth) => {
-        if (visited.has(folder)) return;
-        visited.add(folder);
-        const node = button(
-          '',
-          () => {
-            selectedSection = section;
-            selectedFolder = folder;
-            render();
-          },
-          'node' + (section === selectedSection && folder === selectedFolder ? ' active' : ''),
-        );
-        node.style.paddingLeft = 8 + depth * 12 + 'px';
-        node.setAttribute(
-          'aria-pressed',
-          String(section === selectedSection && folder === selectedFolder),
-        );
-        node.append(folderIcon(), el('span', folder.Name || 'Unnamed folder', 'name'));
-        if (folder.Condition) {
-          const dot = el('span', null, 'dot');
-          dot.title = 'Conditional folder';
-          node.append(dot);
-        }
-        tree.append(node);
-        section.Folders.filter((f) => f.Parent === folder.Key).forEach((f) =>
-          addNode(f, depth + 1),
-        );
-      };
-      section.Folders.filter((f) => !f.Parent).forEach((f) => addNode(f, 0));
-      section.Folders.filter((f) => !visited.has(f)).forEach((f) => addNode(f, 0));
-      card.append(tree);
-      const parent =
-        section === selectedSection ? selectedFolder : section.Folders.find((f) => !f.Parent);
-      if (parent) {
-        card.append(
-          button('＋ Add child folder', () => addChild(section, parent), 'secondary wide'),
-        );
-        card.append(el('p', 'Add inside: ' + (parent.Name || 'Unnamed folder'), 'hint'));
-      }
-      $('destinations').append(card);
-    });
-    const editor = $('folderEditor');
-    editor.replaceChildren();
-    if (!selectedSection || !selectedFolder) {
-      editor.append(
-        el('div', 'Select a destination and folder to edit its name and conditions.', 'empty'),
-      );
-      controls();
+  $('publish').onclick = publish;
+  // Sites & access, from a link in the editor: edits that can be saved are saved first, so the
+  // page asks only about those that cannot.
+  async function toAccess(link = null) {
+    await settleSave();
+    return ui.navigate('access', link);
+  }
+  // Step 1: one destination open at a time, with its name, site, library and who can open its
+  // folders; the others as one line each.
+  function renderDestinations() {
+    const list = $('destination-list');
+    if (!state.root) {
+      list.replaceChildren();
       return;
     }
-    const section = selectedSection,
-      folder = selectedFolder,
+    if (!state.sections.some((s) => s.Key === state.expanded))
+      state.expanded = state.sections[0]?.Key ?? null;
+    list.replaceChildren(
+      ...state.sections.map((s) =>
+        s.Key === state.expanded ? destinationCard(s) : destinationRow(s),
+      ),
+    );
+  }
+  // The Library list's last option goes to Sites & access to set one up.
+  const SETUP = '__setup';
+  function destinationCard(section) {
+    const key = 'dest:' + section.Key,
       library = libraryFor(section),
       siteId = library?._asx_siteid_value || '';
-    editor.append(el('h2', destinationName(section)));
-    const destinationInput = input(section.Name === section.Key ? '' : section.Name || '', (v) => {
-      section.Name = v.trim();
-      render();
-    });
-    destinationInput.oninput = () => {
-      section.Name = destinationInput.value;
+    const card = el('section', null, 'destination-card');
+    const main = el('div', null, 'destination-main');
+    const top = el('div', null, 'card-top');
+    top.setAttribute('data-actions', '');
+    const remove = button(
+      'Remove',
+      async () => {
+        const ok = await ui.confirmInline(remove, {
+          text:
+            'Remove ' +
+            destinationName(section) +
+            ' and its ' +
+            plural(section.Folders.length, 'folder', 'folders') +
+            ' from this draft? Nothing changes in SharePoint until you publish.',
+          confirm: 'Remove destination',
+          keep: 'Keep destination',
+          danger: true,
+        });
+        if (!ok) return;
+        state.sections.splice(state.sections.indexOf(section), 1);
+        dirty();
+        render();
+        stepStart(1)?.focus();
+      },
+      'link danger',
+    );
+    remove.setAttribute('aria-label', 'Remove ' + destinationName(section));
+    keyed(remove, key + ':remove');
+    top.append(
+      el('span', 'Destination ' + (state.sections.indexOf(section) + 1), 'eyebrow'),
+      remove,
+    );
+    const name = el('input');
+    name.value = section.Name === section.Key ? '' : section.Name || '';
+    name.maxLength = 200;
+    name.setAttribute('maxlength', '200');
+    keyed(name, key + ':name');
+    name.oninput = () => {
+      section.Name = name.value;
+      remove.setAttribute('aria-label', 'Remove ' + destinationName(section));
       dirty();
     };
-    destinationInput.maxLength = 200;
-    destinationInput.placeholder = 'e.g. Account onboarding';
-    editor.append(label('Destination name', destinationInput));
-    const pickers = el('div', null, 'picker-grid'),
-      sites = state.sites.filter((s) =>
-        state.libraries.some((l) => l._asx_siteid_value === s.asx_siteid),
-      );
-    pickers.append(
-      label(
-        'Site',
-        select(
-          [
-            { value: '', label: 'Choose a site' },
-            ...sites.map((s) => ({ value: s.asx_siteid, label: s.asx_name })),
-          ],
-          siteId,
-          (v) => {
-            const next = state.libraries.find((l) => l._asx_siteid_value === v);
-            section.LibraryId = next?.asx_libraryid || '';
-            render();
-          },
-        ),
-      ),
+    name.onchange = name.oninput;
+    const sites = state.sites.filter((s) =>
+      state.libraries.some((l) => l._asx_siteid_value === s.asx_siteid),
     );
-    pickers.append(
-      label(
-        'Library',
-        select(
-          [
-            { value: '', label: 'Choose a library' },
-            ...state.libraries
-              .filter((l) => l._asx_siteid_value === siteId)
-              .map((l) => ({ value: l.asx_libraryid, label: l.asx_name })),
-          ],
-          library?.asx_libraryid || '',
-          (v) => {
-            section.LibraryId = v;
-            render();
-          },
-        ),
-      ),
-    );
-    editor.append(pickers);
-    editor.append(
-      el(
-        'p',
-        'Existing folders at the resolved path are reused. Use unique naming fields when records need separate folders.',
-        'hint',
-      ),
-    );
-    editor.append(
-      button(
-        'View this library’s team access →',
-        () => {
-          showView('access');
-          window.AsxdSites?.selectLibrary(section.LibraryId);
-        },
-        'quiet small',
-      ),
-      el('div', null, 'divider'),
-    );
-    const heading = el('div', null, 'row between');
-    heading.append(
-      el('h3', folder.Parent ? 'Folder details' : 'Root folder'),
-      el('span', folder.Parent ? 'Child folder' : 'Section root', 'badge gray'),
-    );
-    editor.append(heading);
-    editor.append(
-      label(
-        'Readable folder name',
-        input(folder.Name, (v) => {
-          folder.Name = v;
-          render();
-        }),
-      ),
-    );
-    const descendants = new Set([folder.Key]);
-    let growing = true;
-    while (growing) {
-      growing = false;
-      for (const f of section.Folders)
-        if (descendants.has(f.Parent) && !descendants.has(f.Key)) {
-          descendants.add(f.Key);
-          growing = true;
-        }
-    }
-    if (folder.Parent)
-      editor.append(
-        label(
-          'Parent folder',
-          select(
-            section.Folders.filter((f) => !descendants.has(f.Key)).map((f) => ({
-              value: f.Key,
-              label: f.Name || 'Unnamed folder',
-            })),
-            folder.Parent,
-            (v) => {
-              folder.Parent = v;
-              render();
-            },
-          ),
-        ),
-      );
-    const activeAlias =
-      folder.NameSource || folder.Name.match(/\{([a-z][a-z0-9_]*)\./)?.[1] || 'root';
-    const activeSource = state.sources.find((s) => s.Alias === activeAlias) || state.sources[0];
-    const sourceKey =
-      activeSource.Alias === 'root' ? 'root' : activeSource.Lookup + ':' + activeSource.Table;
-    const sourcePicker = select(
+    const site = select(
       [
-        { value: 'root', label: 'This record' },
-        ...state.lookups.map((l) => ({ value: l.Lookup + ':' + l.Table, label: l.Label })),
+        { value: '', label: 'Choose a site' },
+        ...sites.map((s) => ({ value: s.asx_siteid, label: s.asx_name })),
       ],
-      sourceKey,
-      () => {},
+      siteId,
+      (v) => {
+        section.LibraryId =
+          state.libraries.find((l) => l._asx_siteid_value === v)?.asx_libraryid || '';
+        ui.withFocus(render);
+      },
     );
-    sourcePicker.onchange = () =>
-      task(async () => {
-        const key = sourcePicker.value;
-        let source = state.sources[0];
-        if (key !== 'root') {
-          const lookup = state.lookups.find((l) => l.Lookup + ':' + l.Table === key);
-          if (!lookup) throw new Error('This related record is no longer available.');
-          source = state.sources.find(
-            (s) => s.Lookup === lookup.Lookup && s.Table === lookup.Table,
-          );
-          if (!source) {
-            if (state.sources.length >= 6)
-              throw new Error('A template can use up to five related records.');
-            const meta = await fields(lookup.Table);
-            let i = 1;
-            while (state.sources.some((s) => s.Alias === 'lookup_' + i)) i++;
-            source = {
-              Alias: 'lookup_' + i,
-              Table: lookup.Table,
-              Lookup: lookup.Lookup,
-              columns: meta.columns,
-            };
-            state.sources.push(source);
-          }
-        }
-        folder.NameSource = source.Alias;
+    keyed(site, key + ':site');
+    const chosen = library?.asx_libraryid || '';
+    const libraries = el('select');
+    [
+      { value: '', label: 'Choose a library' },
+      ...state.libraries
+        .filter((l) => l._asx_siteid_value === siteId)
+        .map((l) => ({ value: l.asx_libraryid, label: l.asx_name })),
+      { value: SETUP, label: 'Set up a library in Sites & access…' },
+    ].forEach((o) => libraries.append(option(o.value, o.label)));
+    libraries.value = chosen;
+    keyed(libraries, key + ':library');
+    const setUp = () => {
+      libraries.value = chosen;
+      return toAccess();
+    };
+    // Arrow keys move through the list without leaving the page; Enter or a pick with the
+    // pointer goes to Sites & access. Leaving the list keeps the library.
+    let browsing = false;
+    libraries.addEventListener('keydown', (event) => {
+      browsing = event.key !== 'Enter';
+      if (event.key === 'Enter' && libraries.value === SETUP) {
+        event.preventDefault();
+        setUp();
+      }
+    });
+    libraries.addEventListener('pointerdown', () => (browsing = false));
+    libraries.addEventListener('focusout', () => {
+      browsing = false;
+      if (libraries.value === SETUP) libraries.value = chosen;
+    });
+    libraries.onchange = () => {
+      if (libraries.value === SETUP) return browsing ? undefined : setUp();
+      section.LibraryId = libraries.value;
+      dirty();
+      ui.withFocus(render);
+      return undefined;
+    };
+    const pickers = el('div', null, 'picker-grid');
+    pickers.append(label('Site', site), label('Library', libraries));
+    main.append(top, label('Name', name), pickers);
+    const who = el('div', null, 'who-can-open');
+    const change = button(
+      'Change in Sites & access',
+      () => toAccess({ library: section.LibraryId }),
+      'link',
+    );
+    change.dataset.nav = 'true';
+    who.append(el('h3', 'Who can open these folders'), whoCanOpen(section), change);
+    card.append(main, who);
+    return card;
+  }
+  // The teams a library's policy lists, as Sites & access lists them: a deleted team shows while
+  // it still has applied access.
+  function listedTeams(policy) {
+    const teams = new Map((policy.Teams || []).map((t) => [String(t.TeamId).toLowerCase(), t]));
+    const applied = (teamId) =>
+      policy.Policy?.Applied?.find((a) => same(a.TeamId, teamId))?.Access || 'None';
+    return (policy.Policy?.Desired || []).flatMap((entry) => {
+      const team = teams.get(String(entry.TeamId).toLowerCase());
+      const access = team?.Deleted ? applied(entry.TeamId) : entry.Access;
+      if (access === 'None') return [];
+      const name = team?.Name || entry.TeamId;
+      return [{ name: team?.Deleted ? 'Deleted team: ' + name : name, access }];
+    });
+  }
+  // Who can open a destination's folders, from its library's policy. Without the Security
+  // Administrator role the policy is not read, and the panel says what is needed.
+  function whoCanOpen(section) {
+    const box = el('div', null, 'team-lines');
+    if (!ui.can('prvCreateasx_policy')) {
+      box.append(el('p', ui.needs('prvCreateasx_policy'), 'reason'));
+      return box;
+    }
+    if (!section.LibraryId) return box;
+    box.append(el('div', null, 'skeleton'));
+    policyFor(section.LibraryId).then((policy) => {
+      box.replaceChildren(
+        ...(policy ? listedTeams(policy) : []).map((t) =>
+          el('p', t.name + ' · ' + t.access, 'team-line'),
+        ),
+      );
+      // A failed read says why in the footer rather than showing no teams.
+      if (!policy && state.policyErrors.has(section.LibraryId))
+        ui.feedback('editor', state.policyErrors.get(section.LibraryId), 'error');
+    });
+    return box;
+  }
+  // A destination not open: its number, name, site and library, its teams, and Edit.
+  function destinationRow(section) {
+    const name = destinationName(section),
+      library = libraryFor(section);
+    const row = el('div', null, 'destination-row');
+    const teams = el('span', null, 'teams');
+    const edit = button(
+      'Edit',
+      () => {
+        state.expanded = section.Key;
+        state.focusKey = 'dest:' + section.Key + ':name';
         render();
+      },
+      'link',
+    );
+    edit.setAttribute('aria-label', 'Edit ' + name);
+    keyed(edit, 'dest:' + section.Key + ':edit');
+    edit.dataset.nav = 'true';
+    row.append(
+      el('span', 'Destination ' + (state.sections.indexOf(section) + 1), 'eyebrow'),
+      el('strong', name),
+      el('span', siteName(library) + ' › ' + (library?.asx_name || 'Unavailable library'), 'where'),
+      teams,
+      edit,
+    );
+    if (ui.can('prvCreateasx_policy') && section.LibraryId)
+      policyFor(section.LibraryId).then((policy) => {
+        if (!policy) return;
+        const listed = listedTeams(policy);
+        teams.textContent =
+          plural(listed.length, 'team', 'teams') +
+          (listed.length
+            ? ' · ' + listed.map((t) => t.name + ' (' + t.access + ')').join(', ')
+            : '');
       });
-    editor.append(
-      label('Get name fields from', sourcePicker),
-      el(
-        'p',
-        'Choose this record or a related record, then insert a field into this folder’s name. Each folder can use different records.',
-        'hint',
-      ),
-    );
-    const nameFields = availableFields().filter((f) =>
-      f.value.startsWith(activeSource.Alias + '.'),
-    );
-    const tokenRow = el('div', null, 'token-row'),
-      tokenPicker = select(nameFields, nameFields[0]?.value, () => {});
-    tokenPicker.setAttribute('aria-label', 'Field to insert');
-    tokenPicker.onchange = () => {};
-    tokenRow.append(
-      tokenPicker,
-      button('Insert field', () => {
-        if (tokenPicker.value) {
-          folder.Name += '{' + tokenPicker.value + '}';
-          dirty();
-          render();
-        }
-      }),
-    );
-    editor.append(label('Insert into folder name', tokenRow));
-    editor.append(
-      el('div', null, 'divider'),
-      el('h3', 'When should this folder appear?'),
-      label(
-        'Include folder',
-        select(
-          [
-            { value: 'always', label: 'Always' },
-            { value: 'conditional', label: 'When conditions match' },
-          ],
-          folder.Condition ? 'conditional' : 'always',
-          (v) => {
-            folder.Condition = v === 'always' ? null : { All: true, Conditions: [], Groups: [] };
-            render();
-          },
-        ),
-      ),
-    );
-    if (!folder.Parent)
-      editor.append(
-        el(
-          'p',
-          'If this condition does not match, this destination and all its child folders are skipped. Existing folders are kept.',
-          'hint',
-        ),
-      );
-    if (folder.Condition) editor.append(conditionGroup(folder.Condition));
-    editor.append(
-      el(
-        'div',
-        'Library-level inheritance: every child inherits the selected library’s access. Sensitive placement alone gives no team access.',
-        'notice',
-      ),
-    );
-    const actions = el('div', null, 'row wrap');
-    actions.style.marginTop = '16px';
-    if (folder.Parent)
-      actions.append(
-        button(
-          'Remove folder',
-          () => {
-            if (section.Folders.some((f) => f.Parent === folder.Key)) {
-              message('Remove child folders first.', true);
-              return;
-            }
-            section.Folders.splice(section.Folders.indexOf(folder), 1);
-            selectedFolder = null;
-            dirty();
-            render();
-          },
-          'remove',
-        ),
-      );
-    actions.append(
-      button(
-        'Remove destination',
-        () => {
-          state.sections.splice(state.sections.indexOf(section), 1);
-          selectedSection = null;
-          selectedFolder = null;
-          dirty();
-          render();
-        },
-        'remove',
-      ),
-    );
-    editor.append(actions);
-    controls();
+    return row;
+  }
+  // A version opened read-only: its fields and actions are off; opening a folder or another
+  // destination still works. Step 2's controls stay in the page, so the next render turns them
+  // back on.
+  const editorControls = () => [
+    ...$('destination-list').querySelectorAll('input, select, button'),
+    ...$('step-2').querySelectorAll('input, select, button'),
+    ...$('step-3').querySelectorAll('input, select, button'),
+  ];
+  function lockEditor() {
+    for (const control of editorControls())
+      if (!control.dataset.nav && !control.disabled) {
+        control.disabled = true;
+        control.dataset.locked = 'true';
+      }
+  }
+  function unlockEditor() {
+    for (const control of editorControls())
+      if (control.dataset.locked) {
+        control.disabled = false;
+        delete control.dataset.locked;
+      }
+  }
+  function render() {
+    unlockEditor();
+    normalizeSelection();
+    renderDestinations();
+    renderTree();
+    renderFolderPanel();
+    chrome();
+    if (state.readOnly) lockEditor();
+    if (state.focusKey) {
+      const target = document.querySelector('[data-focus-key="' + state.focusKey + '"]');
+      state.focusKey = null;
+      target?.focus();
+    }
   }
   // Serializes the selected table, sources, destinations, folders, and conditions for draft APIs.
   function payload() {
@@ -877,9 +2813,9 @@
         if (!f) throw new Error('A condition field is unavailable.');
         used.add(c.field);
         const [Source, Column] = c.field.split('.');
-        const unary = ['IsNull', 'IsNotNull'].includes(c.Operator);
-        const right = !unary && c.right ? fieldMap.get(c.right) : null;
-        if (c.right && !unary && (!right || right.kind !== f.kind))
+        const single = unary(c.Operator);
+        const right = !single && c.right ? fieldMap.get(c.right) : null;
+        if (c.right && !single && (!right || right.kind !== f.kind))
           throw new Error('Comparison fields must have the same available type.');
         if (right) used.add(c.right);
         const [RightSource, RightColumn] = right ? c.right.split('.') : [null, null];
@@ -887,8 +2823,8 @@
           Source,
           Column,
           Operator: c.Operator,
-          LiteralKind: unary || right ? null : f.kind,
-          Literal: unary || right ? null : f.kind === 'Boolean' ? c.Literal || 'true' : c.Literal,
+          LiteralKind: single || right ? null : f.kind,
+          Literal: single || right ? null : f.kind === 'Boolean' ? c.Literal || 'true' : c.Literal,
           RightSource,
           RightColumn,
         };
@@ -932,6 +2868,7 @@
       Destinations: destinations,
     };
   }
+  // The template APIs that take named parameters (LoadDraft, PublishTemplate) or one Request.
   async function api(name, parameters) {
     const request = {
       ...parameters,
@@ -952,296 +2889,1113 @@
     if (!response.ok) throw new Error(body.error?.message || 'Server operation failed.');
     return body.Result;
   }
-  async function revisions() {
-    $('savedRevision').replaceChildren(option('', 'Select a saved revision'));
-    if (state.template)
-      state.template = await xrm.WebApi.retrieveRecord(
-        'asx_template',
-        state.template.asx_templateid,
-        '?$select=asx_templateid,asx_name,asx_table,asx_disabled,asx_startsutc,asx_endsutc',
-      );
-    renderAvailability();
-    if (!state.template) return;
+  // The template row as the list, the overview, the bar, the chip and Status read it. The one
+  // copy of this $select.
+  const TEMPLATE_SELECT =
+    '?$select=asx_templateid,asx_name,asx_table,asx_disabled,asx_startsutc,asx_endsutc,_asx_publishedrevisionid_value';
+  // Every revision of every template, newest first. The publisher is the last writer of a
+  // published revision: publishing updates it, and the server freezes it afterwards.
+  const REVISION_SELECT =
+    '?$select=asx_revisionid,asx_version,asx_status,_asx_templateid_value,modifiedon,_modifiedby_value&$orderby=asx_version desc';
+  const BY = '_modifiedby_value@OData.Community.Display.V1.FormattedValue';
+  const reloadTemplate = (templateId) =>
+    xrm.WebApi.retrieveRecord('asx_template', templateId, TEMPLATE_SELECT);
+  async function latestRevision() {
     const rows = await xrm.WebApi.retrieveMultipleRecords(
       'asx_revision',
-      '?$select=asx_revisionid,asx_version,asx_status&$filter=_asx_templateid_value eq ' +
+      '?$select=asx_revisionid&$filter=_asx_templateid_value eq ' +
         state.template.asx_templateid +
-        '&$orderby=asx_version desc',
-    );
-    if (rows.nextLink) throw new Error('Revision list exceeds the completeness bound.');
-    rows.entities.forEach((r) =>
-      $('savedRevision').append(
-        option(r.asx_revisionid, 'Revision ' + r.asx_version + ' · ' + r.asx_status),
-      ),
+        '&$orderby=asx_version desc&$top=1',
     );
     return rows.entities[0]?.asx_revisionid;
   }
-  function renderAvailability() {
-    const t = state.template;
-    const local = (v) => {
-      if (!v) return '';
-      const d = new Date(v);
-      return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  const revisionsOf = (templateId) =>
+    state.revisions.filter((r) => same(r._asx_templateid_value, templateId));
+  // A template's state from its published pointer, its Draft revision and its switch.
+  function templateState(t) {
+    const rows = revisionsOf(t.asx_templateid);
+    const live =
+      rows.find((r) => same(r.asx_revisionid, t._asx_publishedrevisionid_value))?.asx_version ??
+      null;
+    const draft = rows.find((r) => r.asx_status === 'Draft')?.asx_version ?? null;
+    const off = !!t.asx_disabled;
+    return {
+      live,
+      draft,
+      off,
+      label: off ? 'Off' : live ? 'Live v' + live : draft ? 'Draft v' + draft : 'Draft',
+      tone: off ? 'muted' : live ? 'ok' : 'warning',
     };
-    $('templateActive').checked = !t?.asx_disabled;
-    $('templateStart').value = local(t?.asx_startsutc);
-    $('templateEnd').value = local(t?.asx_endsutc);
-    $('useSchedule').checked = !!(t?.asx_startsutc || t?.asx_endsutc);
-    $('scheduleFields').hidden = !$('useSchedule').checked;
-    $('saveAvailability').disabled = !t;
-    $('deleteTemplate').disabled = !t;
-    $('templateAvailability').textContent = !t
-      ? 'Save a template first.'
-      : t.asx_disabled
-        ? 'Deactivated'
-        : t.asx_endsutc && new Date(t.asx_endsutc) <= new Date()
-          ? 'Ended'
-          : t.asx_startsutc && new Date(t.asx_startsutc) > new Date()
-            ? 'Scheduled'
-            : 'Active (requires a published revision)';
   }
-  $('useSchedule').onchange = () => {
-    $('scheduleFields').hidden = !$('useSchedule').checked;
-  };
-  $('saveAvailability').onclick = () =>
-    task(async () => {
-      if (!state.template) throw new Error('Select a saved template first.');
-      const start =
-          $('useSchedule').checked && $('templateStart').value
-            ? new Date($('templateStart').value).toISOString()
-            : null,
-        end =
-          $('useSchedule').checked && $('templateEnd').value
-            ? new Date($('templateEnd').value).toISOString()
-            : null;
-      if (start && end && end <= start) throw new Error('End date must be after start date.');
-      await xrm.WebApi.updateRecord('asx_template', state.template.asx_templateid, {
-        asx_disabled: !$('templateActive').checked,
-        asx_startsutc: start,
-        asx_endsutc: end,
+  // A library's policy, read once per page load and shared; null without the Security
+  // Administrator role (no call) or when the read fails, which a later caller tries again.
+  function policyFor(libraryId) {
+    if (!libraryId || !ui.can('prvCreateasx_policy')) return Promise.resolve(null);
+    if (!state.policyCache.has(libraryId)) {
+      const read = ui
+        .api('asx_SecurityAdmin', { Command: 'GetPolicy', LibraryId: libraryId })
+        .catch((error) => {
+          if (state.policyCache.get(libraryId) === read) state.policyCache.delete(libraryId);
+          state.policyErrors.set(libraryId, error.message || String(error));
+          return null;
+        });
+      state.policyCache.set(libraryId, read);
+    }
+    return state.policyCache.get(libraryId);
+  }
+  // The number of teams a policy gives access (listedTeams).
+  const teamCount = (policy) => listedTeams(policy).length;
+  // A template's re-run from Monitor's TemplateRuns list (running, or ended in the last day);
+  // null without the Operator role (no call), when there is none, or when the read fails.
+  async function lastRun(templateId) {
+    if (!ui.can(OPERATOR)) return null;
+    try {
+      const runs = await ui.api('asx_ManageWork', {
+        Command: 'ListProblems',
+        List: 'TemplateRuns',
       });
-      await revisions();
-      message('Template availability saved. Existing SharePoint content is unchanged.');
-    });
-  $('deleteTemplate').onclick = () =>
-    task(async () => {
-      if (!state.template) throw new Error('Select a saved template first.');
-      const answer = await xrm.Navigation.openConfirmDialog({
-        title: 'Delete template?',
-        text: 'This deletes the template and all its revisions. No new work will start. Existing SharePoint folders, documents and access remain unchanged. A request already sent to SharePoint may finish.',
-        confirmButtonLabel: 'Delete template',
-      });
-      if (!answer.confirmed) return;
-      await xrm.WebApi.deleteRecord('asx_template', state.template.asx_templateid);
-      state.saved = null;
-      state.editBase = null;
-      state.sections = [];
-      state.template = null;
-      await loadTemplates();
-      await revisions();
-      render();
-      $('revision').textContent = 'Template deleted';
-      message('Template deleted. Existing SharePoint content is unchanged.');
-    });
-  $('savedRevision').onchange = controls;
-  // Loads a saved revision into the authoring state and records its edit identity and row version.
-  async function loadRevision() {
-    const loaded = JSON.parse(await api('asx_LoadDraft', { RevisionId: $('savedRevision').value }));
-    if (loaded.Draft.Table !== state.root.LogicalName)
-      throw new Error('Revision belongs to another table.');
-    const sources = await Promise.all(
-      loaded.Draft.Sources.map(async (source) => ({
-        Alias: source.Alias,
-        Table: source.Table,
-        Lookup: source.Lookup,
-        columns: (await fields(source.Table)).columns,
-      })),
-    );
+      return (runs.Problems || []).find((p) => same(p.Run?.TemplateId, templateId))?.Run || null;
+    } catch {
+      return null;
+    }
+  }
+  // A loaded revision as the editor and the overview hold it. Pure: columnsOf(table) answers the
+  // columns of each source table, which the caller has read with fields() first.
+  function toModel(loaded, columnsOf) {
     const group = (g) => ({
       All: g.All,
-      Groups: g.Groups.map(group),
-      Conditions: g.Conditions.map((c) => ({
+      Groups: (g.Groups || []).map(group),
+      Conditions: (g.Conditions || []).map((c) => ({
         field: c.Source + '.' + c.Column,
         Operator: c.Operator,
         Literal: c.Literal || '',
         right: c.RightSource ? c.RightSource + '.' + c.RightColumn : null,
+        label: c.LiteralLabel || null,
+        table: c.LiteralTable || null,
       })),
     });
-    state.sources = sources;
-    state.sections = loaded.Draft.Destinations.map((d) => ({
-      ...d,
-      nodeSequence: 0,
-      Folders: d.Folders.map((f) => ({ ...f, Condition: f.Condition ? group(f.Condition) : null })),
-    }));
+    return {
+      sources: loaded.Draft.Sources.map((source) => ({
+        Alias: source.Alias,
+        Table: source.Table,
+        Lookup: source.Lookup,
+        columns: columnsOf(source.Table),
+      })),
+      sections: loaded.Draft.Destinations.map((d) => ({
+        ...d,
+        Folders: d.Folders.map((f) => ({
+          ...f,
+          Condition: f.Condition ? group(f.Condition) : null,
+        })),
+      })),
+    };
+  }
+
+  // Change tracking: the draft against the published revision, by destination and folder Key.
+  // A field as the same field whatever alias a revision gave its related record:
+  // 'root.<column>', or '<lookup>:<table>.<column>'.
+  function identity(sources, field) {
+    const [alias, column] = String(field || '').split('.');
+    if (alias === 'root') return field;
+    const source = sources.find((s) => s.Alias === alias);
+    return source ? source.Lookup + ':' + source.Table + '.' + column : field;
+  }
+  // A folder name with its field tokens as identities.
+  const canonicalName = (sources, name) =>
+    String(name ?? '').replace(
+      /\{([a-z0-9_]+\.[a-z0-9_]+)\}/gi,
+      (match, field) => '{' + identity(sources, field) + '}',
+    );
+  const GUID_LITERAL = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  // A literal as compared: a date and time as one ISO form, a record ID in lower case.
+  function canonicalLiteral(value) {
+    const text = String(value ?? '');
+    if (/^\d{4}-\d{2}-\d{2}T/.test(text) && !isNaN(new Date(text)))
+      return new Date(text).toISOString();
+    return GUID_LITERAL.test(text) ? text.toLowerCase() : text;
+  }
+  // A condition group as compared: identities instead of aliases, canonical literals, and no
+  // display-only parts (a chosen record's name and table).
+  function canonicalGroup(sources, group) {
+    if (!group) return 'null';
+    const walk = (g) => ({
+      All: !!g.All,
+      Conditions: (g.Conditions || []).map((c) => {
+        const single = unary(c.Operator);
+        return {
+          field: identity(sources, c.field),
+          Operator: c.Operator,
+          right: !single && c.right ? identity(sources, c.right) : null,
+          Literal: single || c.right ? null : canonicalLiteral(c.Literal),
+        };
+      }),
+      Groups: (g.Groups || []).map(walk),
+    });
+    return JSON.stringify(walk(group));
+  }
+  // The first key with this prefix that is not used: 'folder_1', 'folder_2', ...
+  function nextKey(prefix, used) {
+    let n = 1;
+    while (used.has(prefix + n)) n++;
+    return prefix + n;
+  }
+  // A new key for the draft. When the published revision could not be read its keys are unknown,
+  // so the key takes a time-and-random part no earlier key can have.
+  function freshKey(prefix, used) {
+    if (!state.snapshotFailed) return nextKey(prefix, used);
+    let key;
+    do key = prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    while (used.has(key));
+    return key;
+  }
+  // What changed from snapshot to current ({ sources, sections } each): destinations added,
+  // removed, renamed or moved to another library; folders added, removed, renamed, moved or with
+  // other conditions. Each list holds the added, then the removed, then the edited, in tree
+  // order. marks tells the draft's new and edited folders by 'destinationKey/folderKey';
+  // removed keeps each removed folder as it was; byStep counts the changes of steps 1 and 2.
+  function changesSince(snapshot, current) {
+    const changes = {
+      destinations: [],
+      folders: [],
+      marks: new Map(),
+      removed: [],
+      byStep: { 1: 0, 2: 0 },
+    };
+    if (!snapshot || !current) return changes;
+    const before = new Map(snapshot.sections.map((s) => [s.Key, s]));
+    const after = new Set(current.sections.map((s) => s.Key));
+    const named = (section, list) => sectionName(section, list.sections.indexOf(section));
+    const stored = (section) => {
+      const name = (section.Name || '').trim();
+      return name && name !== section.Key ? name : '';
+    };
+    for (const section of current.sections)
+      if (!before.has(section.Key)) {
+        changes.destinations.push({
+          kind: 'added',
+          key: section.Key,
+          name: named(section, current),
+        });
+        for (const folder of section.Folders)
+          changes.marks.set(section.Key + '/' + folder.Key, 'new');
+      }
+    for (const section of snapshot.sections)
+      if (!after.has(section.Key))
+        changes.destinations.push({
+          kind: 'removed',
+          key: section.Key,
+          name: named(section, snapshot),
+        });
+    const added = [],
+      removed = [],
+      edited = [];
+    for (const section of current.sections) {
+      const old = before.get(section.Key);
+      if (!old) continue;
+      const name = named(section, current);
+      if (stored(section) !== stored(old))
+        changes.destinations.push({
+          kind: 'renamed',
+          key: section.Key,
+          name,
+          before: named(old, snapshot),
+          after: name,
+        });
+      if (section.LibraryId !== old.LibraryId)
+        changes.destinations.push({
+          kind: 'library',
+          key: section.Key,
+          name,
+          before: old.LibraryId,
+          after: section.LibraryId,
+        });
+      const was = new Map(old.Folders.map((f) => [f.Key, f]));
+      const kept = new Set(section.Folders.map((f) => f.Key));
+      for (const [folder] of treeOrder(section)) {
+        const entry = { destination: section.Key, key: folder.Key, name: folder.Name };
+        const prior = was.get(folder.Key);
+        const mark = section.Key + '/' + folder.Key;
+        if (!prior) {
+          added.push({ kind: 'added', ...entry });
+          changes.marks.set(mark, 'new');
+          continue;
+        }
+        const edits = [];
+        if (
+          canonicalName(snapshot.sources, prior.Name) !==
+          canonicalName(current.sources, folder.Name)
+        )
+          edits.push({ kind: 'renamed', ...entry, before: prior.Name, after: folder.Name });
+        if ((prior.Parent ?? null) !== (folder.Parent ?? null))
+          edits.push({ kind: 'moved', ...entry, before: prior.Parent, after: folder.Parent });
+        if (
+          canonicalGroup(snapshot.sources, prior.Condition) !==
+          canonicalGroup(current.sources, folder.Condition)
+        )
+          edits.push({ kind: 'condition', ...entry });
+        if (edits.length) changes.marks.set(mark, 'edited');
+        edited.push(...edits);
+      }
+      for (const [folder] of treeOrder(old))
+        if (!kept.has(folder.Key)) {
+          removed.push({
+            kind: 'removed',
+            destination: section.Key,
+            key: folder.Key,
+            name: folder.Name,
+          });
+          changes.removed.push({ destination: section.Key, folder });
+        }
+    }
+    changes.folders = [...added, ...removed, ...edited];
+    changes.byStep = { 1: changes.destinations.length, 2: changes.folders.length };
+    return changes;
+  }
+
+  // The overview: one template read top to bottom (destinations, folders, status, versions),
+  // with Edit template to open the editor.
+  async function showOverview(templateId) {
+    state.view = 'overview';
+    panel?.close(false);
+    $('template-overview').hidden = false;
+    $('template-editor').hidden = true;
+    // The re-run read needs nothing else, so it runs beside the others.
+    const reading = lastRun(templateId);
+    try {
+      const template = await reloadTemplate(templateId);
+      const index = state.templates.findIndex((t) => same(t.asx_templateid, templateId));
+      if (index >= 0) state.templates[index] = template;
+      const rows = revisionsOf(templateId);
+      const revisionId =
+        template._asx_publishedrevisionid_value ||
+        rows.find((r) => r.asx_status === 'Draft')?.asx_revisionid ||
+        rows[0]?.asx_revisionid ||
+        null;
+      let model = { sources: [], sections: [] };
+      if (revisionId) {
+        const loaded = JSON.parse(await api('asx_LoadDraft', { RevisionId: revisionId }));
+        // A table whose fields cannot be read shows its field tokens as written.
+        await Promise.all(loaded.Draft.Sources.map((s) => fields(s.Table).catch(() => null)));
+        model = toModel(loaded, (table) => metadata.get(table)?.columns || []);
+      }
+      const [run, policies] = await Promise.all([
+        reading,
+        Promise.all(model.sections.map(async (d) => [d.LibraryId, await policyFor(d.LibraryId)])),
+      ]);
+      // Another template opens with its first destination's folders shown.
+      if (!same(state.overview?.template.asx_templateid, templateId))
+        state.openGroups = new Set(model.sections.slice(0, 1).map((d) => d.Key));
+      state.overview = { template, revisionId, model, run, policies: new Map(policies) };
+    } catch (error) {
+      state.overview = null;
+      throw error;
+    } finally {
+      renderList();
+      renderOverview();
+    }
+  }
+  function renderOverview() {
+    const o = state.overview;
+    $('overview-actions').hidden = !o;
+    $('overview-pill').hidden = !o;
+    if (!o) {
+      $('overview-title').textContent = 'Folder templates';
+      $('overview-meta').textContent = '';
+      const empty = el('div', null, 'empty-panel');
+      empty.append(el('h2', 'No template selected'));
+      $('overview-cards').replaceChildren(empty);
+      return;
+    }
+    const t = o.template,
+      s = templateState(t),
+      name = t.asx_name || tableName(t.asx_table);
+    $('overview-title').textContent = name;
+    $('overview-pill').textContent =
+      !s.off && s.live && s.draft ? 'Live v' + s.live + ' · Draft v' + s.draft : s.label;
+    $('overview-pill').dataset.tone = s.tone;
+    const published = state.revisions.find((r) =>
+      same(r.asx_revisionid, t._asx_publishedrevisionid_value),
+    );
+    $('overview-meta').textContent =
+      tableName(t.asx_table) +
+      ' table' +
+      (published?.modifiedon
+        ? ' · published ' +
+          day(published.modifiedon) +
+          (published[BY] ? ' by ' + published[BY] : '')
+        : '');
+    $('overview-menu').setAttribute('aria-label', 'More actions for ' + name);
+    // Re-run needs a published version; its separator goes with it.
+    $('menu-rerun').hidden = $('menu-rerun-separator').hidden = !t._asx_publishedrevisionid_value;
+    $('overview-edit').textContent = s.draft ? 'Continue Draft v' + s.draft : 'Edit template';
+    $('overview-cards').replaceChildren(
+      destinationsCard(o),
+      foldersCard(o),
+      scheduleCard(o),
+      versionsCard(o),
+    );
+  }
+  // A card whose head action is "Edit": named for what it edits, for screen readers.
+  function card(options, editLabel) {
+    const made = ui.card(options);
+    if (editLabel) made.head.querySelector('.card-action').setAttribute('aria-label', editLabel);
+    return made;
+  }
+  const edit = (step) => () => task(() => openEditor(step));
+  function destinationsCard(o) {
+    const sections = o.model.sections;
+    const made = card(
+      {
+        title: 'Destinations',
+        summary: plural(sections.length, 'library', 'libraries'),
+        action: { label: 'Edit', onClick: edit(1), key: 'overview:destinations' },
+      },
+      'Edit destinations',
+    );
+    sections.forEach((section, index) => {
+      const library = libraryFor(section),
+        row = el('div', null, 'card-row dest-row');
+      row.append(
+        el('strong', sectionName(section, index)),
+        el(
+          'span',
+          siteName(library) + ' › ' + (library?.asx_name || 'Unavailable library'),
+          'muted',
+        ),
+      );
+      const policy = o.policies.get(section.LibraryId);
+      if (policy) row.append(el('span', plural(teamCount(policy), 'team', 'teams'), 'teams'));
+      made.body.append(row);
+    });
+    return made.card;
+  }
+  function foldersCard(o) {
+    const { sources, sections } = o.model;
+    const folders = sections.flatMap((d) => d.Folders);
+    const conditional = folders.filter((f) => ruleText(f, sources).conditional).length;
+    const made = card(
+      {
+        title: 'Folders',
+        summary: plural(folders.length, 'folder', 'folders') + ' · ' + conditional + ' conditional',
+        action: { label: 'Edit', onClick: edit(2), key: 'overview:folders' },
+      },
+      'Edit folders',
+    );
+    const label = labelOf(sources);
+    sections.forEach((section, index) => {
+      const open = state.openGroups.has(section.Key);
+      const toggle = button(
+        '',
+        () => {
+          if (open) state.openGroups.delete(section.Key);
+          else state.openGroups.add(section.Key);
+          ui.withFocus(renderOverview);
+        },
+        'group-row',
+      );
+      toggle.setAttribute('aria-expanded', String(open));
+      keyed(toggle, 'folders:' + section.Key);
+      const glyph = el('span', open ? '▾' : '▸', 'glyph');
+      glyph.setAttribute('aria-hidden', 'true');
+      toggle.append(glyph, el('span', sectionName(section, index), 'group-name'));
+      if (!open)
+        toggle.append(el('span', plural(section.Folders.length, 'folder', 'folders'), 'count'));
+      made.body.append(toggle);
+      if (!open) return;
+      for (const [folder, depth] of treeOrder(section)) {
+        const row = el('div', null, 'card-row folder-row'),
+          rule = ruleText(folder, sources);
+        row.style.paddingLeft = 36 + 20 * depth + 'px';
+        row.append(
+          folderIcon(),
+          ui.tokens(folder.Name, label),
+          el('span', rule.text, rule.conditional ? 'rule conditional' : 'rule'),
+        );
+        made.body.append(row);
+      }
+    });
+    return made.card;
+  }
+  // "Off", or "On" with its start (when still ahead) and its end: "On · no end date".
+  function scheduleText(t) {
+    if (t.asx_disabled) return 'Off';
+    return (
+      'On' +
+      (t.asx_startsutc && new Date(t.asx_startsutc) > new Date()
+        ? ' · starts ' + day(t.asx_startsutc)
+        : '') +
+      (t.asx_endsutc ? ' · ends ' + day(t.asx_endsutc) : ' · no end date')
+    );
+  }
+  function scheduleCard(o) {
+    const made = card(
+      {
+        title: 'Status and runs',
+        summary: scheduleText(o.template),
+        action: {
+          label: 'Edit',
+          onClick: () => openSchedule(made.head.querySelector('.card-action')),
+          key: 'overview:schedule',
+        },
+      },
+      'Edit status',
+    );
+    const run = o.run;
+    if (run) {
+      const row = el('div', null, 'card-row run-row');
+      row.append(
+        el('span', ACTIVE.includes(run.State) ? 'Re-run in progress' : 'Last re-run'),
+        el(
+          'strong',
+          (run.StartedUtc ? day(run.StartedUtc) + ' · ' : '') +
+            Number(run.Planned || 0).toLocaleString('en-US') +
+            ' of ' +
+            (run.TotalEstimated ? 'about ' : '') +
+            Number(run.Total || 0).toLocaleString('en-US') +
+            ' records',
+        ),
+      );
+      made.body.append(row);
+    }
+    return made.card;
+  }
+  // One version: its number, Live, Replaced or Draft, when and by whom it was last saved, and
+  // View, which opens it read-only in the editor.
+  function versionRow(r, t, before = null) {
+    const [text, tone] = same(r.asx_revisionid, t._asx_publishedrevisionid_value)
+      ? ['Live', 'ok']
+      : r.asx_status === 'Draft'
+        ? ['Draft', 'muted']
+        : ['Replaced', 'muted'];
+    const row = el('div', null, 'card-row version-row'),
+      status = el('span', text, 'state');
+    status.dataset.tone = tone;
+    const view = button(
+      'View',
+      () => {
+        before?.();
+        return task(() => openVersion(r.asx_revisionid));
+      },
+      'link',
+    );
+    view.setAttribute('aria-label', 'View v' + r.asx_version);
+    keyed(view, 'version:' + r.asx_revisionid);
+    row.append(
+      el('span', 'v' + r.asx_version, 'v'),
+      status,
+      el(
+        'span',
+        [r.modifiedon ? day(r.modifiedon) : '', r[BY]].filter(Boolean).join(' · '),
+        'muted',
+      ),
+      view,
+    );
+    return row;
+  }
+  // The draft, the live version and the one it replaced; All versions lists every one.
+  function versionsCard(o) {
+    const t = o.template,
+      rows = revisionsOf(t.asx_templateid);
+    const live = rows.find((r) => same(r.asx_revisionid, t._asx_publishedrevisionid_value));
+    const shown = [
+      rows.find((r) => r.asx_status === 'Draft'),
+      live,
+      live && rows.find((r) => r.asx_version < live.asx_version),
+    ].filter(Boolean);
+    const made = ui.card({
+      title: 'Versions',
+      summary: String(rows.length),
+      action: {
+        label: 'All versions',
+        onClick: () => openHistory(made.head.querySelector('.card-action')),
+        key: 'overview:versions',
+      },
+    });
+    [...new Set(shown)]
+      .sort((a, b) => b.asx_version - a.asx_version)
+      .forEach((r) => made.body.append(versionRow(r, t)));
+    return made.card;
+  }
+
+  // The editor: Edit template opens the latest revision of the overview's template; View opens
+  // one version read-only; Close returns to the overview, asking first about unsaved edits.
+  async function openEditor(step = 1) {
+    const t = state.overview?.template;
+    if (t && (!state.root || !same(state.template?.asx_templateid, t.asx_templateid)))
+      await selectTemplate(t.asx_table, t.asx_templateid);
+    state.step = step;
+    showEditor();
+  }
+  function showEditor() {
+    state.view = 'edit';
+    panel?.close(false);
+    $('template-overview').hidden = true;
+    $('template-editor').hidden = false;
+    goStep(state.step, false);
+    chrome();
+    renderList();
+    $('editor-title').focus();
+  }
+  async function openVersion(revisionId) {
+    const t = state.overview.template;
+    if (!state.root || !same(state.template?.asx_templateid, t.asx_templateid))
+      await selectTemplate(t.asx_table, t.asx_templateid);
+    // The viewed version replaces the latest one selectTemplate loaded.
+    await reloadVersion(revisionId);
+    state.readOnly = true;
+    state.changes = null;
+    render();
+    await openEditor(1);
+  }
+  // A new editor session: nothing saving, nothing to compare yet, step 1.
+  function resetSession() {
+    clearTimeout(state.saveTimer);
+    clearTimeout(state.previewTimer);
+    state.session++;
+    Object.assign(state, {
+      saveState: 'idle',
+      savedAt: null,
+      saveError: null,
+      saving: null,
+      saveAgain: false,
+      edits: 0,
+      publishedSnapshot: null,
+      snapshotFailed: false,
+      snapshotError: null,
+      changes: null,
+      expanded: null,
+      invalid: false,
+      step: 1,
+      resultId: null,
+      rerunWanted: true,
+      count: null,
+    });
+    for (const i of [1, 2, 3]) $('step-' + i).hidden = i !== 1;
+    ui.clearFeedback('editor');
+  }
+  // Clears the editor, so the next Edit template loads the saved version again.
+  function resetEditor() {
+    resetSession();
+    Object.assign(state, {
+      saved: null,
+      editBase: null,
+      sections: [],
+      template: null,
+      root: null,
+      unsaved: false,
+      readOnly: false,
+      run: null,
+      batch: null,
+    });
+    // The background reads of the closed template take no more tables.
+    state.preloadId++;
+    selectedSection = null;
+    selectedFolder = null;
+    $('templateName').value = '';
+    clearResult();
+    render();
+  }
+  async function closeEditor() {
+    // Edits that can be saved are saved; the question is only for those that cannot.
+    await settleSave();
+    // A Publish that was under way ended on the overview already.
+    if (state.view !== 'edit') return;
+    if (!(await ui.confirmLeave())) return;
+    const id = state.template?.asx_templateid || state.overview?.template.asx_templateid;
+    panel?.close(false);
+    resetEditor();
+    if (id) await task(() => showOverview(id));
+    else {
+      state.view = 'overview';
+      $('template-overview').hidden = false;
+      $('template-editor').hidden = true;
+      renderList();
+      renderOverview();
+    }
+    (state.overview ? $('overview-edit') : $('overview-title')).focus();
+  }
+  $('editor-close').onclick = closeEditor;
+  $('overview-edit').onclick = edit(1);
+
+  // The steps are tabs: a click shows its step; arrow keys, Home and End move focus only, and
+  // Enter or Space shows the focused one.
+  const stepTabs = [1, 2, 3].map((n) => $('step-tab-' + n));
+  stepTabs.forEach((tab, index) => (tab.onclick = () => goStep(index + 1, false)));
+  $('editor-steps').addEventListener('keydown', (event) => {
+    const index = stepTabs.indexOf(document.activeElement);
+    const target = {
+      ArrowRight: index + 1,
+      ArrowLeft: index - 1,
+      Home: 0,
+      End: stepTabs.length - 1,
+    }[event.key];
+    if (index < 0 || target === undefined) return;
+    event.preventDefault();
+    const next = stepTabs[(target + stepTabs.length) % stepTabs.length];
+    stepTabs.forEach((tab) => (tab.tabIndex = tab === next ? 0 : -1));
+    next.focus();
+  });
+  $('step-back').onclick = () => goStep(state.step - 1);
+  $('step-next').onclick = () => goStep(state.step + 1);
+
+  // The overview's ⋯ menu: keyboard, focus and closing come from AsxdUi.menu; choosing an item
+  // closes it.
+  ui.menu($('overview-menu'), $('overview-menu-list'));
+  $('menu-rerun').onclick = () => openRerun($('overview-menu'));
+  $('menu-delete').onclick = deleteTemplate;
+  for (const close of document.querySelectorAll('.panel-close'))
+    close.onclick = () => panel?.close();
+
+  // Every version of the overview's template, in a side panel.
+  function openHistory(invoker) {
+    const t = state.overview.template;
+    $('history-list').replaceChildren(
+      ...revisionsOf(t.asx_templateid).map((r) => versionRow(r, t, () => panel?.close(false))),
+    );
+    panel = ui.sidePanel($('history-panel'), invoker);
+  }
+
+  // The Status panel's switch names the state it shows: "Template is on" or "Template is off".
+  function setTemplateOn(on) {
+    $('schedule-on').setAttribute('aria-checked', String(on));
+    $('schedule-on-label').textContent = on ? 'Template is on' : 'Template is off';
+  }
+  function openSchedule(invoker) {
+    const t = state.overview.template;
+    setTemplateOn(!t.asx_disabled);
+    $('templateStart').value = localTime(t.asx_startsutc);
+    $('templateEnd').value = localTime(t.asx_endsutc);
+    ui.clearFeedback('schedule');
+    panel = ui.sidePanel($('schedule-panel'), invoker);
+  }
+  $('schedule-on').onclick = () =>
+    setTemplateOn($('schedule-on').getAttribute('aria-checked') !== 'true');
+  $('saveAvailability').onclick = () => {
+    if (ui.blocked($('saveAvailability'))) return undefined;
+    return ui.busy($('saveAvailability'), 'Saving…', 'schedule', async () => {
+      const start = $('templateStart').value
+        ? new Date($('templateStart').value).toISOString()
+        : null;
+      const end = $('templateEnd').value ? new Date($('templateEnd').value).toISOString() : null;
+      if (start && end && end <= start) throw new Error('Active until must be after Active from.');
+      const id = state.overview.template.asx_templateid;
+      await xrm.WebApi.updateRecord('asx_template', id, {
+        asx_disabled: $('schedule-on').getAttribute('aria-checked') !== 'true',
+        asx_startsutc: start,
+        asx_endsutc: end,
+      });
+      const template = await reloadTemplate(id);
+      state.overview.template = template;
+      const index = state.templates.findIndex((t) => same(t.asx_templateid, id));
+      if (index >= 0) state.templates[index] = template;
+      if (same(state.template?.asx_templateid, id)) state.template = template;
+      renderList();
+      renderOverview();
+      chrome();
+      ui.feedback('schedule', 'Status saved.');
+    });
+  };
+
+  async function deleteTemplate() {
+    const t = state.overview.template;
+    const name = t.asx_name || tableName(t.asx_table);
+    const ok = await ui.confirmInline($('overview-menu'), {
+      text:
+        'Delete ' +
+        name +
+        ' and all its versions? No new folder work starts for it. Folders, documents and access in SharePoint stay as they are. Work already sent to SharePoint may still finish.',
+      confirm: 'Delete template',
+      keep: 'Keep template',
+      danger: true,
+    });
+    if (!ok) return;
+    // Its place in the list: focus goes to the template that takes it.
+    const place = [...$('template-groups').querySelectorAll('.list-row')].findIndex(
+      (r) => r.dataset.focusKey === 'template:' + t.asx_templateid,
+    );
+    const done = await ui.busy($('overview-menu'), 'Deleting…', 'templates', async () => {
+      await xrm.WebApi.deleteRecord('asx_template', t.asx_templateid);
+      panel?.close(false);
+      if (same(state.template?.asx_templateid, t.asx_templateid)) resetEditor();
+      state.overview = null;
+      await loadTemplates();
+      renderOverview();
+      ui.feedback('templates', name + ' deleted. Nothing in SharePoint changed.');
+      return true;
+    });
+    if (!done) return;
+    const next = place < 0 ? null : $('template-groups').querySelectorAll('.list-row')[place];
+    (next || $('template-search')).focus();
+  }
+
+  // Edits that can be saved are saved before another template replaces them; the others ask
+  // first. True when it may.
+  async function mayDiscard(control, what) {
+    await settleSave();
+    if (!state.unsaved || !state.root) return true;
+    return railAsk(control, {
+      text:
+        'Open ' +
+        what +
+        '? Your unsaved changes to ' +
+        ($('templateName').value.trim() || 'this template') +
+        ' are discarded.',
+      confirm: 'Open ' + what,
+      keep: 'Keep editing',
+    });
+  }
+
+  // Loads a saved version into the editor with its version number, edit identity and row version.
+  async function reloadVersion(revisionId) {
+    const loaded = JSON.parse(await api('asx_LoadDraft', { RevisionId: revisionId }));
+    if (loaded.Draft.Table !== state.root.LogicalName)
+      throw new Error('This version belongs to another table.');
+    await Promise.all(loaded.Draft.Sources.map((source) => fields(source.Table)));
+    const model = toModel(loaded, (table) => metadata.get(table).columns);
+    state.sources = model.sources;
+    state.sections = model.sections;
     state.saved = {
       RevisionId: loaded.RevisionId,
       RowVersion: loaded.RowVersion,
       Status: loaded.Status,
     };
-    state.editBase = { ...state.saved };
-    $('revision').textContent =
-      loaded.Status +
-      ' revision ' +
-      loaded.RevisionId +
-      (loaded.Status === 'Draft'
-        ? '. Saves update this draft until you publish it.'
-        : '. Editing starts the next draft; this published version keeps running.');
-    $('previewTrees').replaceChildren(
-      el('div', 'Revision loaded. Choose a record and run preview.', 'callout'),
-    );
+    state.editBase = { ...state.saved, Version: loaded.Version };
+    state.unsaved = false;
+    selectedSection = null;
+    selectedFolder = null;
     render();
-    message('Saved revision loaded. Stable section and folder identities are preserved.');
   }
-  $('loadRevision').onclick = () => task(loadRevision);
-  async function selectTemplate(table, templateId = null, create = false) {
-    $('table').value = table;
-    state.template = create
-      ? null
-      : state.templates.find((t) => t.asx_templateid === templateId) ||
-        state.templates.find((t) => t.asx_table === table) ||
-        null;
-    $('templateName').value = state.template?.asx_name || 'New template';
-    state.addedTables.add(table);
-    state.expandedTables.add(table);
-    renderTemplateTree();
-    state.editBase = null;
-    state.root = state.tables.find((t) => t.LogicalName === $('table').value);
-    batchReview = null;
-    $('queueBatch').disabled = true;
-    if (!state.root) {
-      state.template = null;
-      renderAvailability();
-      state.sources = [];
-      state.sections = [];
-      state.saved = null;
-      $('record').replaceChildren(option('', 'Select a table first'));
-      $('record').value = '';
-      state.lookups = [];
-      $('savedRevision').replaceChildren(option('', 'Select a table first'));
-      $('savedRevision').value = '';
-      dirty();
-      render();
-      message('Select a business table to begin.');
-      return;
+  // Reads a version's row version and status again and leaves the editor's edits as they are.
+  async function reloadBasis(revisionId) {
+    const loaded = JSON.parse(await api('asx_LoadDraft', { RevisionId: revisionId }));
+    state.saved = {
+      RevisionId: loaded.RevisionId,
+      RowVersion: loaded.RowVersion,
+      Status: loaded.Status,
+    };
+    state.editBase = { ...state.saved, Version: loaded.Version };
+    return loaded;
+  }
+  // The published revision the draft is compared with: the loaded one when it is the published
+  // one, else read (once more when the first read fails); null without one. When it cannot be
+  // read, state.snapshotFailed is set, the footer says why, and there are no change marks.
+  async function publishedModel() {
+    const id = state.template?._asx_publishedrevisionid_value;
+    if (!id) return null;
+    if (same(id, state.saved?.RevisionId))
+      return structuredClone({ version: state.editBase.Version, ...current() });
+    const read = () => api('asx_LoadDraft', { RevisionId: id });
+    let loaded;
+    try {
+      loaded = JSON.parse(await read().catch(read));
+    } catch (error) {
+      state.snapshotFailed = true;
+      state.snapshotError = error.message || String(error);
+      ui.feedback('editor', state.snapshotError, 'error');
+      return null;
     }
-    const meta = await fields(state.root.LogicalName);
-    state.sources = [
-      { Alias: 'root', Table: state.root.LogicalName, Lookup: null, columns: meta.columns },
-    ];
-    state.sections = [];
-    state.saved = null;
+    await Promise.all(loaded.Draft.Sources.map((s) => fields(s.Table).catch(() => null)));
+    return {
+      version: loaded.Version,
+      ...toModel(loaded, (table) => metadata.get(table)?.columns || []),
+    };
+  }
+  // Each table's fields take about seven metadata requests at once, and Dataverse serves 52
+  // concurrent requests per user before it answers 429. Four tables at a time stay well inside
+  // that, beside the page's other reads.
+  const PRELOAD_TABLES = 4;
+  async function preload(tables, id) {
+    const queue = tables.filter((t) => !metadata.has(t));
+    queue.forEach((t) => state.failedTables.delete(t));
+    // A worker stops taking tables once another template opens (a newer preload id).
+    const worker = async () => {
+      while (queue.length && id === state.preloadId) {
+        const table = queue.shift();
+        try {
+          await fields(table);
+        } catch {
+          // One retry: a 429 or a dropped request usually passes the second time.
+          try {
+            await fields(table);
+          } catch {
+            state.failedTables.add(table);
+          }
+        }
+        if (id === state.preloadId) refreshPickers();
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(PRELOAD_TABLES, queue.length) }, worker));
+  }
+  // Redraws the pickers as related tables arrive, unless the admin is typing in the editor or
+  // answering a confirmation there. A skipped redraw marks them stale, and it runs once focus
+  // moves: out of the field, or back to the invoker when the confirmation closes.
+  function refreshPickers() {
+    if (!state.root) return;
+    // The open ＋ Field list follows at once: its search box is not redrawn.
+    if (!$('field-popover').hidden) fillFieldOptions();
+    const editor = $('template-editor');
+    const active = document.activeElement;
+    state.pickersStale =
+      !!editor.querySelector('.confirm[role=group]') ||
+      (editor.contains(active) && active.tagName === 'INPUT');
+    if (!state.pickersStale) ui.withFocus(render);
+  }
+  // After the focus change settles: during focusout, focus has not reached its next element yet.
+  for (const type of ['focusout', 'focusin'])
+    $('template-editor').addEventListener(type, () => {
+      if (state.pickersStale) setTimeout(refreshPickers, 0);
+    });
+  async function selectTemplate(table, templateId = null) {
+    const root = state.tables.find((t) => t.LogicalName === table);
+    if (!root) throw new Error(tableName(table) + ' is not available for document management.');
+    state.template = templateId ? await reloadTemplate(templateId) : null;
+    $('templateName').value = state.template?.asx_name || '';
+    resetSession();
+    Object.assign(state, {
+      root,
+      editBase: null,
+      saved: null,
+      unsaved: false,
+      readOnly: false,
+      sections: [],
+      run: null,
+      batch: null,
+    });
+    selectedSection = null;
+    selectedFolder = null;
+    // Test records belong to one template's editing session.
+    state.testRecords = [];
+    state.previewByRecord = new Map();
+    state.recordValues = new Map();
+    panel?.close(false);
+    ui.clearFeedback('templates');
+    clearResult();
+    const meta = await fields(table);
+    state.sources = [{ Alias: 'root', Table: table, Lookup: null, columns: meta.columns }];
+    // The label reads the target's display name once its metadata is in.
     state.lookups = meta.lookups.flatMap((l) =>
       l.Targets.map((Table) => ({
         Lookup: l.LogicalName,
         Table,
-        Label: display(l) + ' → ' + Table,
+        get Label() {
+          return display(l) + ' → ' + tableName(Table);
+        },
       })),
     );
-    const rows = await get(
-      state.root.EntitySetName +
-        '?$select=' +
-        state.root.PrimaryIdAttribute +
-        ',' +
-        state.root.PrimaryNameAttribute +
-        '&$top=20',
-    );
-    $('record').replaceChildren(option('', 'Select a record'));
-    rows.value.forEach((r) =>
-      $('record').append(
-        option(
-          r[state.root.PrimaryIdAttribute],
-          r[state.root.PrimaryNameAttribute] || r[state.root.PrimaryIdAttribute],
-        ),
-      ),
-    );
-    $('record').disabled = false;
-    const latest = await revisions();
+    const id = ++state.preloadId;
+    // The tables the draft uses load before the first render (reloadVersion); the other related
+    // tables load after it, in the background.
+    const latest = state.template ? await latestRevision() : null;
     if (latest) {
-      $('savedRevision').value = latest;
-      await loadRevision();
-      return;
+      await reloadVersion(latest);
+      state.publishedSnapshot = await publishedModel();
+      state.changes = changesSince(state.publishedSnapshot, current());
     }
-    dirty();
     render();
-    message(
-      state.libraries.length
-        ? 'Choose approved destinations and define folders.'
-        : 'No approved, applied-policy libraries are available. A security administrator must approve the catalog first.',
-    );
+    preload([...new Set(meta.lookups.flatMap((l) => l.Targets))], id);
   }
-  $('table').onchange = () =>
-    task(async () => {
-      await loadTemplates();
-      await selectTemplate($('table').value);
-      $('tablePicker').hidden = true;
-    });
-  $('addTable').onclick = () => {
-    $('tablePicker').hidden = !$('tablePicker').hidden;
-  };
-  $('newTemplate').onclick = () => task(() => selectTemplate(state.root.LogicalName, null, true));
-  async function loadTemplates() {
+  $('go-access').onclick = () => toAccess();
+  // Tables are added, removed and repaired in Settings.
+  // Settings opens on its Tables card.
+  $('manage-tables').onclick = () => ui.navigate('settings', { table: '' });
+  // Every row of a paged read.
+  async function pages(table, query) {
     const rows = [];
-    let options = '?$select=asx_templateid,asx_name,asx_table&$orderby=asx_name';
+    let options = query;
     do {
-      const result = await xrm.WebApi.retrieveMultipleRecords('asx_template', options);
+      const result = await xrm.WebApi.retrieveMultipleRecords(table, options);
       rows.push(...result.entities);
       options = result.nextLink
         ? new URL(result.nextLink, xrm.Utility.getGlobalContext().getClientUrl()).search
         : null;
     } while (options);
-    state.templates = rows;
-    renderTemplateTree();
+    return rows;
   }
-  function renderTemplateTree() {
-    const tree = $('templateTree');
-    tree.replaceChildren();
-    const tables = [...new Set([...state.templates.map((t) => t.asx_table), ...state.addedTables])]
-      .filter(Boolean)
-      .sort();
-    for (const table of tables) {
-      const section = el('details'),
-        summary = el(
-          'summary',
-          display(state.tables.find((t) => t.LogicalName === table) || { LogicalName: table }),
-        );
-      section.open = state.expandedTables.has(table);
-      section.ontoggle = () => {
-        if (section.open) state.expandedTables.add(table);
-        else state.expandedTables.delete(table);
-      };
-      section.append(summary);
-      for (const template of state.templates.filter((t) => t.asx_table === table)) {
-        const item = button(
-          template.asx_name || table,
-          () => task(() => selectTemplate(table, template.asx_templateid)),
-          'template-item',
-        );
-        item.setAttribute(
-          'aria-pressed',
-          String(template.asx_templateid === state.template?.asx_templateid),
-        );
-        section.append(item);
-      }
-      section.append(
-        button(
-          '＋ New template',
-          () => task(() => selectTemplate(table, null, true)),
-          'template-item',
-        ),
-      );
-      tree.append(section);
+  async function loadEnabledTables() {
+    const rows = await pages(
+      'asx_runtimetable',
+      '?$select=asx_logicalname&$orderby=asx_logicalname',
+    );
+    state.enabledTables = [...new Set(rows.map((r) => r.asx_logicalname).filter(Boolean))].sort();
+  }
+  // A confirmation in the list. A redraw asked for while it is open waits, and runs once it closes.
+  async function railAsk(control, options) {
+    try {
+      return await ui.confirmInline(control, options);
+    } finally {
+      if (state.railStale) renderList();
     }
-    if (!tables.length) tree.append(el('p', 'Add a table to create its first template.', 'hint'));
   }
-  $('addDestination').onclick = () => {
-    if (state.sections.length >= 10) return;
-    do {
-      state.sectionSequence++;
-    } while (state.sections.some((s) => s.Key === 'destination_' + state.sectionSequence));
-    state.sections.push({
-      Key: 'destination_' + state.sectionSequence,
-      LibraryId: state.libraries[0].asx_libraryid,
-      nodeSequence: 0,
+  async function loadTemplates() {
+    const [templates, revisions] = await Promise.all([
+      pages('asx_template', TEMPLATE_SELECT + '&$orderby=asx_name'),
+      pages('asx_revision', REVISION_SELECT),
+    ]);
+    state.templates = templates;
+    state.revisions = revisions;
+    renderList();
+  }
+  // Opens a template's overview from the list, asking first when editor changes would be lost.
+  async function pick(control, t) {
+    if (state.view === 'edit') {
+      if (!(await mayDiscard(control, t.asx_name || tableName(t.asx_table)))) return;
+      resetEditor();
+    }
+    $('new-template-table').hidden = true;
+    // The list redraws with the overview; focus moves to the redrawn row it was on.
+    const focused = document.activeElement === control;
+    await task(() => showOverview(t.asx_templateid));
+    if (focused)
+      document.querySelector('[data-focus-key="template:' + t.asx_templateid + '"]')?.focus();
+  }
+  // The list's tables in order: enabled tables by name, then tables no longer enabled.
+  function listTables() {
+    const byName = (a, b) => tableName(a).localeCompare(tableName(b));
+    const tables = [...new Set(state.templates.map((t) => t.asx_table).filter(Boolean))];
+    return {
+      enabled: tables.filter((t) => state.enabledTables.includes(t)).sort(byName),
+      disabled: tables.filter((t) => !state.enabledTables.includes(t)).sort(byName),
+    };
+  }
+  // The template the list marks as selected: the one the editor or the overview shows.
+  const selectedId = () =>
+    state.view === 'edit'
+      ? state.template?.asx_templateid
+      : state.overview?.template.asx_templateid;
+  function listRow(t) {
+    const s = templateState(t),
+      status = el('span', s.label, 'row-state');
+    status.dataset.tone = s.tone;
+    const row = button('', () => pick(row, t), 'list-row');
+    row.append(el('span', t.asx_name || tableName(t.asx_table), 'row-name'), status);
+    keyed(row, 'template:' + t.asx_templateid);
+    if (same(t.asx_templateid, selectedId())) row.setAttribute('aria-current', 'true');
+    return row;
+  }
+  // The templates list: one group per table, each template with its state; the search filters
+  // by name.
+  function renderList() {
+    renderPicker();
+    const host = $('template-groups');
+    // Never under an open confirmation (as Monitor's lists): railAsk redraws when it closes.
+    state.railStale = !!host.querySelector('.confirm[role=group]');
+    if (state.railStale) return;
+    host.replaceChildren();
+    $('new-template').hidden = !state.enabledTables.length;
+    if (!state.loaded) return;
+    const { enabled, disabled } = listTables();
+    if (!enabled.length && !disabled.length && !state.enabledTables.length) {
+      host.append(el('p', 'No tables yet', 'empty'));
+      return;
+    }
+    const query = state.listQuery.trim().toLowerCase();
+    const group = (table) => {
+      const rows = state.templates.filter(
+        (t) =>
+          t.asx_table === table && (t.asx_name || tableName(table)).toLowerCase().includes(query),
+      );
+      if (!rows.length) return null;
+      const box = el('div', null, 'list-group');
+      box.append(el('span', tableName(table), 'group-label'), ...rows.map(listRow));
+      return box;
+    };
+    host.append(...enabled.map(group).filter(Boolean));
+    const others = disabled.map(group).filter(Boolean);
+    if (others.length) host.append(el('p', 'Not enabled', 'rail-group'), ...others);
+  }
+  // Narrow screens: the list as one select above the overview, in the list's order and with its
+  // names, a group per table.
+  function renderPicker() {
+    const picker = $('template-picker');
+    const { enabled, disabled } = listTables();
+    picker.replaceChildren(
+      ...[...enabled, ...disabled].map((table) => {
+        const group = el('optgroup');
+        group.setAttribute('label', tableName(table));
+        group.append(
+          ...state.templates
+            .filter((t) => t.asx_table === table)
+            .map((t) => option(t.asx_templateid, t.asx_name || tableName(table))),
+        );
+        return group;
+      }),
+    );
+    picker.value = selectedId() || '';
+    // Shown once the list has loaded, even empty: ＋ New stays beside it on narrow screens.
+    picker.closest('label').hidden = !state.loaded;
+  }
+  $('template-picker').onchange = async () => {
+    const picker = $('template-picker');
+    const t = state.templates.find((x) => same(x.asx_templateid, picker.value));
+    if (t) await pick(picker, t);
+    renderPicker();
+  };
+  $('template-search').oninput = () => {
+    state.listQuery = $('template-search').value;
+    renderList();
+  };
+  // ＋ New: the table first when there is more than one. Arrow keys move through the tables
+  // without opening one; Enter, or a pick with the pointer, opens it.
+  const tablePicker = $('new-template-table');
+  let browsing = false;
+  $('new-template').onclick = () => {
+    const tables = [...state.enabledTables].sort((a, b) =>
+      tableName(a).localeCompare(tableName(b)),
+    );
+    if (tables.length === 1) return newTemplate($('new-template'), tables[0]);
+    tablePicker.replaceChildren(
+      option('', 'Choose a table'),
+      ...tables.map((t) => option(t, tableName(t))),
+    );
+    tablePicker.value = '';
+    tablePicker.hidden = false;
+    tablePicker.focus();
+    return undefined;
+  };
+  // Leaving the picker ends a keyboard browse, so a later pick with the pointer opens.
+  for (const type of ['pointerdown', 'focusout'])
+    tablePicker.addEventListener(type, () => (browsing = false));
+  tablePicker.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      browsing = false;
+      tablePicker.hidden = true;
+      $('new-template').focus();
+      return;
+    }
+    browsing = event.key !== 'Enter';
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    chooseTable();
+  });
+  tablePicker.onchange = () => {
+    if (!browsing) chooseTable();
+  };
+  function chooseTable() {
+    if (!tablePicker.value) return;
+    tablePicker.hidden = true;
+    newTemplate($('new-template'), tablePicker.value);
+  }
+  async function newTemplate(control, table) {
+    if (state.view === 'edit' && !(await mayDiscard(control, 'a new template'))) return;
+    await task(async () => {
+      resetEditor();
+      await selectTemplate(table, null);
+      showEditor();
+    });
+  }
+  $('add-destination').onclick = () => {
+    if (ui.blocked($('add-destination')) || !state.libraries.length || state.readOnly) return;
+    // Keys of the published revision are skipped too, as for folders.
+    const used = new Set(
+      [...state.sections, ...(state.publishedSnapshot?.sections || [])].map((s) => s.Key),
+    );
+    const library = state.libraries[0];
+    const section = {
+      Key: freshKey('destination_', used),
+      // A new destination is named after its library.
+      Name: library.asx_name,
+      LibraryId: library.asx_libraryid,
       Folders: [
         {
           Key: 'root',
@@ -1250,326 +4004,264 @@
           Condition: null,
         },
       ],
-    });
-    selectedSection = state.sections[state.sections.length - 1];
-    selectedFolder = selectedSection.Folders[0];
+    };
+    state.sections.push(section);
+    // The new destination opens in step 1, and its top folder in step 2.
+    state.expanded = section.Key;
+    selectedSection = section;
+    selectedFolder = section.Folders[0];
+    state.focusKey = 'dest:' + section.Key + ':name';
     dirty();
     render();
   };
-  $('chooseRecord').onclick = () =>
-    task(async () => {
-      if (!state.root) throw new Error('Select a business table first.');
-      const selected = await xrm.Utility.lookupObjects({
-        allowMultiSelect: false,
-        defaultEntityType: state.root.LogicalName,
-        entityTypes: [state.root.LogicalName],
-      });
-      if (!selected?.length) return;
-      const record = selected[0],
-        id = record.id.replace(/[{}]/g, '');
-      if (record.entityType !== state.root.LogicalName || !/^[0-9a-f-]{36}$/i.test(id))
-        throw new Error('The selected record does not match this table.');
-      if (![...$('record').options].some((o) => o.value === id))
-        $('record').append(option(id, record.name || id));
-      $('record').value = id;
-      $('record').onchange();
-    });
-  $('inspectRecord').onclick = () =>
-    task(async () => {
-      if (!state.root || !$('record').value) throw new Error('Select a table and record first.');
-      if (!state.template) throw new Error('Select a saved template first.');
-      const result = JSON.parse(
-        await api('asx_ManageWork', {
-          Request: JSON.stringify({
-            Command: 'InspectRecord',
-            TemplateId: state.template.asx_templateid,
-            RecordId: $('record').value,
-          }),
-        }),
-      );
-      $('result').textContent = [
-        'Status: ' + result.Status,
-        ...(result.Record?.OperationStates || []).map((v) => 'Folder operation: ' + v),
-        ...(result.Notices || []),
-      ].join('\n');
-      message('Current record result: ' + result.Status);
-    });
-  function readableObservation(value, depth = 0) {
-    if (value == null) return 'None';
-    if (typeof value !== 'object') return String(value);
-    return Object.entries(value)
-      .map(
-        ([key, item]) =>
-          '  '.repeat(depth) +
-          (Array.isArray(value)
-            ? 'Item ' + (Number(key) + 1)
-            : key.replace(/([a-z])([A-Z])/g, '$1 $2')) +
-          ': ' +
-          (item && typeof item === 'object'
-            ? '\n' + readableObservation(item, depth + 1)
-            : readableObservation(item, depth + 1)),
-      )
-      .join('\n');
-  }
-  function batchSummary(batch) {
-    return (
-      (batch?.Records || [])
-        .map(
-          (record, i) =>
-            'Record ' + (i + 1) + ' (' + record.Id + ')\n' + (record.Impact || []).join('\n'),
-        )
-        .join('\n\n') || 'No records in this review.'
-    );
-  }
-  let batchReview = null;
-  $('previewBatch').onclick = () =>
-    task(async () => {
-      if (!state.root) throw new Error('Select a table first.');
-      $('queueBatch').disabled = true;
-      batchReview = null;
-      const selected = await xrm.Utility.lookupObjects({
-        allowMultiSelect: true,
-        defaultEntityType: state.root.LogicalName,
-        entityTypes: [state.root.LogicalName],
-      });
-      if (!selected?.length) return;
-      if (selected.length > 5 || selected.some((r) => r.entityType !== state.root.LogicalName))
-        throw new Error('Select one to five records from this table.');
-      if (!state.template) throw new Error('Select a saved template first.');
-      batchReview = JSON.parse(
-        await api('asx_ManageWork', {
-          Request: JSON.stringify({
-            Command: 'PreviewBatch',
-            TemplateId: state.template.asx_templateid,
-            RecordIds: selected.map((r) => r.id.replace(/[{}]/g, '')),
-            RequestId: crypto.randomUUID(),
-          }),
-        }),
-      );
-      $('batchReview').textContent = batchSummary(batchReview.Batch);
-      $('queueBatch').disabled = false;
-    });
-  $('queueBatch').onclick = () =>
-    task(async () => {
-      if (!batchReview) throw new Error('Review a batch first.');
-      const result = JSON.parse(
-        await api('asx_ManageWork', {
-          Request: JSON.stringify({
-            Command: 'QueueBatch',
-            Key: batchReview.Key,
-            RowVersion: batchReview.RowVersion,
-          }),
-        }),
-      );
-      $('batchReview').textContent = batchSummary(result.Batch);
-      $('queueBatch').disabled = true;
-      batchReview = null;
-      message('Reviewed batch queued. Physical results remain pending.');
-    });
-  $('record').onchange = () => {
-    $('previewTrees').replaceChildren(
-      el('div', 'Record changed. Run preview to see this record’s folders.', 'callout'),
-    );
-    controls();
+  $('templateName').oninput = () => {
+    if (!state.template) dirty();
   };
-  $('save').onclick = () =>
-    task(async () => {
-      state.saved = JSON.parse(
-        await api('asx_CreateDraft', { Request: JSON.stringify(payload()) }),
+  // The pause before saving a new template counts from leaving its name box.
+  $('templateName').addEventListener('blur', () => {
+    if (!state.template && state.unsaved) scheduleSave();
+  });
+
+  // Saves the draft. The version follows CreateDraftApi: a Draft is saved in place, anything
+  // else starts the next version; a new template starts at v1. It never redraws the editor, so
+  // the field being typed in stays as it is.
+  async function save() {
+    const base = state.editBase,
+      session = state.session;
+    const name = $('templateName').value.trim();
+    const saved = JSON.parse(await api('asx_CreateDraft', { Request: JSON.stringify(payload()) }));
+    // Another template opened meanwhile: this answer is not about it.
+    if (session !== state.session) return;
+    // What the save made is recorded at once, so a failed read below cannot make the next save
+    // create a second template or a second draft.
+    state.saved = saved;
+    state.template = state.template || {
+      asx_templateid: saved.TemplateId,
+      asx_name: name,
+      asx_table: state.root.LogicalName,
+    };
+    state.editBase = {
+      ...saved,
+      Version: !base ? 1 : base.Status === 'Draft' ? base.Version : base.Version + 1,
+    };
+    // A draft saved in place changes nothing else; a new template or version is read back.
+    if (base?.Status === 'Draft') return;
+    try {
+      // The saved version's own number: a version opened from Version history is not the latest.
+      const revision = await xrm.WebApi.retrieveRecord(
+        'asx_revision',
+        saved.RevisionId,
+        '?$select=asx_version',
       );
-      state.template = { asx_templateid: state.saved.TemplateId };
+      if (session !== state.session) return;
+      if (revision?.asx_version) state.editBase.Version = revision.asx_version;
+      const template = await reloadTemplate(saved.TemplateId);
+      if (session !== state.session) return;
+      state.template = template;
       await loadTemplates();
-      state.editBase = { ...state.saved };
-      $('revision').textContent = 'Saved draft ' + state.saved.RevisionId;
-      await revisions();
-      $('savedRevision').value = state.saved.RevisionId;
-      message('Draft saved. Preview it, then publish with the Publisher role.');
-    });
-  $('preview').onclick = () =>
-    task(async () => {
-      const result = JSON.parse(
-        await api('asx_PreviewTemplate', {
-          Request: JSON.stringify({
-            RevisionId: state.saved.RevisionId,
-            RecordId: $('record').value,
-          }),
-        }),
+    } catch (error) {
+      const refused = new Error(
+        'Draft saved, but the page could not refresh: ' + (error.message || String(error)),
       );
-      renderPreview(result);
-      message('Caller-authorized preview completed. No folders were created.');
-    });
-  $('publish').onclick = () =>
-    task(async () => {
-      const result = await api('asx_PublishTemplate', {
-        RevisionId: state.saved.RevisionId,
-        RowVersion: state.saved.RowVersion,
-      });
-      state.saved.Status = result;
-      state.editBase = { ...state.saved };
-      $('revision').textContent = 'Published ' + state.saved.RevisionId;
-      await revisions();
-      $('savedRevision').value = state.saved.RevisionId;
-      await loadRevision();
-      message(
-        'Revision published. Provisioning follows the separately configured runtime profile.',
-      );
-    });
-  const security = { runtime: null, operations: [] };
-  const etag = (row) => (row['@odata.etag'] || '').replace(/^W\/"|"$/g, '');
-  function runtimeResult(result) {
-    security.runtime = result;
-    $('runtimeWorker').value = result.WorkerId;
-    $('runtimeTables').value = result.Tables.join(',');
-    $('runtimeSites').value = result.SharePointHosts.join(',');
-    $('runtimeEnabled').checked = result.Enabled;
-    $('runtimeRecordUpdates').checked = result.ProcessRecordUpdates === true;
-    $('runtimeStatus').textContent = result.Enabled
-      ? 'Runtime enabled; flow activation and role assignments are separate.'
-      : 'Runtime disabled.';
+      refused.saved = true;
+      throw refused;
+    }
   }
-  $('loadRuntime').onclick = () =>
-    task(async () => {
-      if (!(await runtimeRows()).length)
-        throw new Error(
-          'No runtime profile is installed. An administrator must choose the worker identity and allowed tables, then install the disabled worker setup before this profile can be loaded or edited.',
-        );
-      runtimeResult(
-        JSON.parse(await api('asx_RuntimeAdmin', { Request: JSON.stringify({ Command: 'Get' }) })),
-      );
-    });
-  $('saveRuntime').onclick = () =>
-    task(async () => {
-      if (!security.runtime) throw new Error('Load the current runtime profile first.');
-      runtimeResult(
-        JSON.parse(
-          await api('asx_RuntimeAdmin', {
-            Request: JSON.stringify({
-              Command: 'Save',
-              RowVersion: security.runtime.RowVersion,
-              WorkerId: $('runtimeWorker').value,
-              Tables: $('runtimeTables')
-                .value.split(',')
-                .map((v) => v.trim())
-                .filter(Boolean),
-              SharePointHosts: $('runtimeSites')
-                .value.split(',')
-                .map((v) => v.trim())
-                .filter(Boolean),
-              Enabled: $('runtimeEnabled').checked,
-              ProcessRecordUpdates: $('runtimeRecordUpdates').checked,
-            }),
-          }),
+  // Unsaved edits, a save in flight and a Publish under way ask before the page changes; Save
+  // draft saves them first. Either answer lets Publish finish before the page goes. A version
+  // opened read-only has nothing to save: leaving it never asks.
+  ui.setDirtyGuard(() =>
+    state.publishRun ||
+    (state.root &&
+      !state.readOnly &&
+      (state.unsaved || state.saving || state.saveState === 'error'))
+      ? {
+          template: templateLabel(),
+          save: flushSave,
+          discard: async () => {
+            clearTimeout(state.saveTimer);
+            state.unsaved = false;
+            await state.publishRun;
+          },
+        }
+      : null,
+  );
+
+  // Re-run for existing records, of the template the editor or the overview shows.
+  const rerunTemplate = () => (state.view === 'edit' ? state.template : state.overview?.template);
+  async function openRerun(invoker = document.activeElement) {
+    const t = rerunTemplate();
+    panel = ui.sidePanel($('rerun-panel'), invoker);
+    $('rerun-impact').replaceChildren();
+    $('rerun-these').hidden = true;
+    ui.clearFeedback('rerun');
+    preventError(null);
+    const [count, runs] = await Promise.all([
+      ui
+        .api('asx_ManageWork', {
+          Command: 'CountRecords',
+          TemplateId: t.asx_templateid,
+        })
+        .catch(() => null),
+      ui
+        .api('asx_ManageWork', { Command: 'ListProblems', List: 'TemplateRuns' })
+        .catch(() => ({ Problems: [] })),
+    ]);
+    state.run =
+      (runs?.Problems || []).find(
+        (p) => same(p.Run?.TemplateId, t.asx_templateid) && ACTIVE.includes(p.Run.State),
+      ) || null;
+    const total = count?.Run
+      ? (count.Run.TotalEstimated ? 'about ' : '') + count.Run.Total.toLocaleString('en-US')
+      : null;
+    state.runTotal = total;
+    $('rerun-all').textContent = total ? 'Re-run all ' + total + ' records' : 'Re-run all records';
+    $('rerun-all').hidden = !!state.run;
+    $('rerun-progress').hidden = !state.run;
+    if (state.run) {
+      const run = state.run.Run;
+      $('rerun-progress').replaceChildren(
+        el(
+          'span',
+          'Re-run in progress: ' +
+            run.Planned.toLocaleString('en-US') +
+            ' of ' +
+            (run.TotalEstimated ? 'about ' : '') +
+            run.Total.toLocaleString('en-US') +
+            ' · ',
         ),
+        button('Open in Monitor', () => ui.navigate('monitor', { run: state.run.Key }), 'link'),
       );
-      message('Runtime profile saved with version checking.');
-    });
-  $('loadOperations').onclick = () =>
-    task(async () => {
-      const rows = await xrm.WebApi.retrieveMultipleRecords(
-        'asx_operation',
-        '?$select=asx_payload&$orderby=createdon desc&$top=50',
-      );
-      security.operations = rows.entities.map((r) => JSON.parse(r.asx_payload));
-      $('operation').replaceChildren(option('', 'Select an operation'));
-      security.operations.forEach((o) =>
-        $('operation').append(option(o.Key, o.Status + ' · ' + o.Key)),
-      );
-      message('Latest operations loaded. This is a bounded activity view.');
-    });
-  $('operation').onchange = () =>
-    task(async () => {
-      if (!$('operation').value) return;
-      const result = JSON.parse(
-        await api('asx_ManageWork', {
-          Request: JSON.stringify({ Command: 'Inspect', Key: $('operation').value }),
-        }),
-      );
-      $('operationStatus').textContent =
-        result.Status +
-        '\n' +
-        (result.Notices || []).join('\n') +
-        (result.LeaseUntilUtc ? '\nClaim expiry: ' + result.LeaseUntilUtc : '');
-      $('recoveryResponse').value = '';
-      $('recoveryRun').value = result.RunId || '';
-      $('recoveryToken').value = result.RunId ? result.Token : '';
-    });
-  async function manage(command) {
-    if (!$('operation').value) throw new Error('Select an operation.');
-    const result = JSON.parse(
-      await api('asx_ManageWork', {
-        Request: JSON.stringify({ Command: command, Key: $('operation').value }),
-      }),
-    );
-    $('operationStatus').textContent = result.Status;
-    message('Operator action recorded: ' + result.Status);
+    }
+    // Every re-run action needs the Operator role; one reason line names it for all three.
+    const role = ui.needs(OPERATOR);
+    for (const id of ['rerun-all', 'rerun-preview', 'rerun-these'])
+      ui.disable($(id), 'rerun-role-reason', role);
+    ($('rerun-all').hidden ? $('rerun-preview') : $('rerun-all')).focus();
   }
-  $('retryOperation').onclick = () => task(() => manage('Retry'));
-  $('cancelOperation').onclick = () => task(() => manage('Cancel'));
-  $('recoverOperation').onclick = () =>
-    task(async () => {
-      if (!$('operation').value)
-        throw new Error('Select the expired operation before recording recovery evidence.');
-      if (
-        !$('recoveryRun').value ||
-        !validGuid($('recoveryToken').value) ||
-        !$('recoveryEvidence').value.trim()
-      )
-        throw new Error(
-          'Provide the exact prior run, a valid claim token and verified termination evidence. Recovery is unavailable without all three.',
-        );
-      if (!$('operation').value) throw new Error('Select an operation.');
-      const result = JSON.parse(
-        await api('asx_RecoverWorker', {
-          Request: JSON.stringify({
-            Key: $('operation').value,
-            RunId: $('recoveryRun').value,
-            Token: $('recoveryToken').value,
-            Evidence: $('recoveryEvidence').value,
-            ResponseBody: $('recoveryResponse').value || null,
-          }),
-        }),
-      );
-      message('Recovery audit recorded: ' + result.Status);
+  $('rerun-all').onclick = async () => {
+    if (ui.blocked($('rerun-all'))) return;
+    const t = rerunTemplate();
+    // A re-run applies the published version.
+    const version = templateState(t).live ?? state.editBase?.Version;
+    const ok = await ui.confirmInline($('rerun-all'), {
+      text:
+        'Re-run v' +
+        version +
+        ' for all ' +
+        (state.runTotal ? state.runTotal + ' ' : '') +
+        tableName(t.asx_table) +
+        ' records? Documents works through them in the background, after other work, so this can take a while. You can close this page and follow it in Monitor.',
+      confirm: 'Re-run all records',
+      keep: 'Not now',
     });
-  $('replanRecord').onclick = () =>
-    task(async () => {
-      if (!state.root || !$('record').value) throw new Error('Select a table and record first.');
-      if (!state.template) throw new Error('Select a saved template first.');
-      const result = JSON.parse(
-        await api('asx_ManageWork', {
-          Request: JSON.stringify({
-            Command: 'Replan',
-            TemplateId: state.template.asx_templateid,
-            RecordId: $('record').value,
-            RequestId: crypto.randomUUID(),
-          }),
-        }),
-      );
-      if (result.Status === 'Inactive') {
-        message('No work queued. The template is deactivated or outside its scheduled dates.');
-        return;
-      }
-      message(
-        'Published template replan queued: ' +
-          result.Key +
-          '. Editor changes are not published by this action.',
-      );
+    if (!ok) return;
+    await ui.busy($('rerun-all'), 'Starting…', 'rerun', async () => {
+      const started = await ui.api('asx_ManageWork', {
+        Command: 'StartTemplateRun',
+        TemplateId: t.asx_templateid,
+        RequestId: crypto.randomUUID(),
+      });
+      ui.feedback('rerun', ['Re-run started.', ...(started.Notices || [])].join(' '), 'success', {
+        label: 'Follow it in Monitor →',
+        onClick: () => ui.navigate('monitor', { run: started.Key }),
+      });
     });
-  const validGuid = (value) =>
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value || '');
-  async function runtimeRows() {
-    const rows = await xrm.WebApi.retrieveMultipleRecords(
-      'asx_runtime',
-      "?$select=asx_runtimeid&$filter=asx_name eq 'Default'",
-    );
-    if (rows.nextLink || rows.entities.length > 1) throw new Error('Runtime setup is ambiguous.');
-    return rows.entities;
+  };
+  // A pick over the preview bound is refused at the button, with the traced reason (row 18).
+  function preventError(text) {
+    const control = $('rerun-preview');
+    // Made on demand, so it is looked up directly rather than as page markup.
+    let note = document.getElementById('rerun-reason');
+    if (!text) {
+      note?.remove();
+      describe(control, null);
+      return;
+    }
+    if (!note) {
+      note = el('p', null, 'error');
+      note.id = 'rerun-reason';
+      note.setAttribute('role', 'alert');
+      control.closest('[data-actions]').after(note);
+    }
+    note.textContent = text;
+    describe(control, 'rerun-reason');
   }
+  // Adds or drops the preview error in the button's description, keeping any role reason.
+  function describe(control, id) {
+    const refs = (control.getAttribute('aria-describedby') || '')
+      .split(' ')
+      .filter((r) => r && r !== 'rerun-reason');
+    if (id) refs.push(id);
+    if (refs.length) control.setAttribute('aria-describedby', refs.join(' '));
+    else control.removeAttribute('aria-describedby');
+  }
+  $('rerun-preview').onclick = async () => {
+    if (ui.blocked($('rerun-preview'))) return;
+    const t = rerunTemplate();
+    const picked = await xrm.Utility.lookupObjects({
+      entityTypes: [t.asx_table],
+      defaultEntityType: t.asx_table,
+      allowMultiSelect: true,
+    });
+    if (!picked?.length) return;
+    const bound = ui.BOUNDS.previewRecords;
+    if (picked.length > bound) {
+      preventError(
+        'Preview covers up to ' +
+          bound +
+          " records at a time so it finishes within Dataverse's 2-minute limit. To re-run every record, use Re-run all.",
+      );
+      return;
+    }
+    preventError(null);
+    await ui.busy($('rerun-preview'), 'Previewing…', 'rerun', async () => {
+      state.batch = await ui.api('asx_ManageWork', {
+        Command: 'PreviewBatch',
+        TemplateId: t.asx_templateid,
+        RecordIds: picked.map((r) => r.id.replace(/[{}]/g, '').toLowerCase()),
+        RequestId: crypto.randomUUID(),
+      });
+      const names = new Map(picked.map((r) => [r.id.replace(/[{}]/g, '').toLowerCase(), r.name]));
+      $('rerun-impact').replaceChildren(
+        ...(state.batch.Batch?.Records || []).map((record) => {
+          const card = el('section', null, 'impact');
+          card.append(el('h4', names.get(String(record.Id).toLowerCase()) || 'Record'));
+          const lines = el('ul');
+          lines.append(
+            ...(record.Impact || []).map((line) =>
+              el('li', line.replace(/^Resolve or create expected path: [^/]+\//, '')),
+            ),
+          );
+          card.append(lines);
+          return card;
+        }),
+      );
+      $('rerun-these').hidden = false;
+    });
+  };
+  $('rerun-these').onclick = () =>
+    ui.blocked($('rerun-these')) ||
+    ui.busy($('rerun-these'), 'Re-running…', 'rerun', async () => {
+      await ui.api('asx_ManageWork', {
+        Command: 'QueueBatch',
+        Key: state.batch.Key,
+        RowVersion: state.batch.RowVersion,
+      });
+      $('rerun-these').hidden = true;
+      ui.feedback(
+        'rerun',
+        'Re-run queued for ' +
+          plural((state.batch.Batch?.Records || []).length, 'record', 'records') +
+          '.',
+      );
+    });
+
   window.AsxdAdmin = {
     refreshCatalog: async () => {
       const rows = await xrm.WebApi.retrieveMultipleRecords(
         'asx_library',
-        '?$select=asx_libraryid,asx_name,_asx_siteid_value,asx_entryurl&$filter=asx_approved eq true and asx_policyapplied eq true',
+        '?$select=asx_libraryid,asx_name,_asx_siteid_value,asx_entryurl&$filter=asx_approved eq true',
       );
       if (rows.nextLink) throw new Error('Use a narrower destination catalog.');
       state.libraries = rows.entities;
@@ -1578,49 +4270,63 @@
         '?$select=asx_siteid,asx_name&$filter=asx_approved eq true',
       );
       state.sites = sites.entities;
-      controls();
+      chrome();
     },
+    changesSince,
+    changeText,
+    nextKey,
+    // The page's state, for tests.
+    state: () => state,
   };
-  document
-    .querySelectorAll('[data-view]')
-    .forEach((tab) => (tab.onclick = () => showView(tab.dataset.view)));
-  window.addEventListener('hashchange', () => showView(location.hash.slice(1)));
-  showView(location.hash.slice(1));
-  render();
-  if (!xrm?.WebApi || !xrm?.Utility) {
-    message(
-      'Open this admin page inside its Dataverse app to connect. No simulated records or changes are active.',
-      true,
-    );
-    $('table').replaceChildren(option('', 'Dataverse connection required'));
-    return;
+  // The first template listed, in the list's order.
+  function firstListed() {
+    const { enabled, disabled } = listTables();
+    for (const table of [...enabled, ...disabled]) {
+      const found = state.templates.find((t) => t.asx_table === table);
+      if (found) return found;
+    }
+    return null;
   }
-  task(async () => {
-    state.tables = (
-      await all(
-        'EntityDefinitions?$select=LogicalName,DisplayName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,IsDocumentManagementEnabled&$filter=IsDocumentManagementEnabled eq true',
-      )
-    )
-      .filter((t) => t.PrimaryNameAttribute)
-      .sort((a, b) => display(a).localeCompare(display(b)));
-    $('table').replaceChildren(option('', 'Select a business table'));
-    state.tables.forEach((t) => $('table').append(option(t.LogicalName, display(t))));
-    $('table').disabled = false;
-    const catalog = await xrm.WebApi.retrieveMultipleRecords(
-      'asx_library',
-      '?$select=asx_libraryid,asx_name,_asx_siteid_value,asx_entryurl&$filter=asx_approved eq true and asx_policyapplied eq true',
-    );
-    if (catalog.nextLink)
-      throw new Error('Approved library catalog exceeded the current completeness bound.');
-    state.libraries = catalog.entities;
-    const sites = await xrm.WebApi.retrieveMultipleRecords(
-      'asx_site',
-      '?$select=asx_siteid,asx_name&$filter=asx_approved eq true',
-    );
-    if (sites.nextLink) throw new Error('Approved site catalog is incomplete.');
-    state.sites = sites.entities;
-    await loadTemplates();
+  async function start() {
     render();
-    message('Connected. Select a document-enabled table to start a new draft.');
-  });
+    clearResult();
+    if (!xrm?.WebApi || !xrm?.Utility) return;
+    ui.problemPill($('overview-problems'));
+    renderOverview();
+    await task(async () => {
+      state.tables = (
+        await all(
+          'EntityDefinitions?$select=LogicalName,DisplayName,DisplayCollectionName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,IsDocumentManagementEnabled&$filter=IsDocumentManagementEnabled eq true',
+        )
+      )
+        .filter((t) => t.PrimaryNameAttribute)
+        .sort((a, b) => display(a).localeCompare(display(b)));
+      const catalog = await xrm.WebApi.retrieveMultipleRecords(
+        'asx_library',
+        '?$select=asx_libraryid,asx_name,_asx_siteid_value,asx_entryurl&$filter=asx_approved eq true',
+      );
+      if (catalog.nextLink)
+        throw new Error('Approved library catalog exceeded the current completeness bound.');
+      state.libraries = catalog.entities;
+      const sites = await xrm.WebApi.retrieveMultipleRecords(
+        'asx_site',
+        '?$select=asx_siteid,asx_name&$filter=asx_approved eq true',
+      );
+      if (sites.nextLink) throw new Error('Approved site catalog is incomplete.');
+      state.sites = sites.entities;
+      await loadEnabledTables();
+      state.loaded = true;
+      await loadTemplates();
+      // A link to a template shows it; otherwise the first one listed.
+      const linked = ui.deeplink()?.template;
+      const shown = state.templates.find((t) => same(t.asx_templateid, linked)) || firstListed();
+      if (shown) await showOverview(shown.asx_templateid);
+      else renderOverview();
+      // A link to a step opens the template's editor there.
+      const step = Number(ui.deeplink()?.step);
+      if (shown && same(shown.asx_templateid, linked) && [1, 2, 3].includes(step))
+        await openEditor(step);
+    });
+  }
+  ui.onTab('templates', start);
 })();

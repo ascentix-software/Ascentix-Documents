@@ -2,7 +2,7 @@
 
 ## Install and operate
 
-- [Preview release notes and limitations](public-preview.md)
+- [Beta release notes and limitations](public-beta.md)
 - [Managed installation](customer-installation.md)
 - [Worker identity and connections](worker-installation.md)
 - [Operations and retention](operations.md)
@@ -11,7 +11,7 @@
 
 - [Draft saving and publication](draft-save-lifecycle.md)
 - [Template availability and deletion](template-lifecycle.md)
-- [System-wide record-update processing](record-update-processing.md)
+- [Record changes](record-update-processing.md)
 
 ## Develop
 

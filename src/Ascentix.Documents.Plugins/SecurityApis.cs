@@ -47,7 +47,8 @@ public sealed class RuntimeAdminApi : IPlugin
             RuntimeAdministration.Execute(
                 service,
                 JsonWire.Read<RuntimeRequest>((string)context.InputParameters["Request"]),
-                context.IsInTransaction
+                context.IsInTransaction,
+                context.UserId
             )
         );
     }
@@ -66,6 +67,54 @@ public sealed class ManageWorkApi : IPlugin
             context
         );
         var request = JsonWire.Read<WorkerRequest>((string)context.InputParameters["Request"]);
+        // Monitor (spec 6.1, 6.2, 6.7). Summary only reads.
+        if (request.Command == "Summary")
+        {
+            context.OutputParameters["Result"] = JsonWire.Write(
+                new WorkerResult
+                {
+                    Status = "Summary",
+                    Summary = ProblemList.Summary(service, DateTime.UtcNow),
+                }
+            );
+            return;
+        }
+        if (request.Command == "ListProblems")
+        {
+            // Writes only to start the lookup of a 0.1.0.3-era lost create (decision D6).
+            context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
+            context.OutputParameters["Result"] = JsonWire.Write(
+                ProblemList.List(
+                    service,
+                    request,
+                    DateTime.UtcNow,
+                    RuntimeProfile.Read(service).Tables
+                )
+            );
+            return;
+        }
+        if (request.Command == "RerunRecord")
+        {
+            context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
+            context.OutputParameters["Result"] = JsonWire.Write(
+                MissedChanges.Rerun(
+                    service,
+                    request,
+                    RuntimeProfile.Read(service).Tables,
+                    () => DateTime.UtcNow
+                )
+            );
+            return;
+        }
+        if (request.Command == "DismissCaptureJob")
+        {
+            // Deletes a system job, not a Documents row: the transport passes it through and the
+            // caller's own privilege decides (decision D12). No InternalWrite.
+            context.OutputParameters["Result"] = JsonWire.Write(
+                MissedChanges.Dismiss(service, request.JobId)
+            );
+            return;
+        }
         if (request.Command == "InspectRecord")
         {
             context.OutputParameters["Result"] = JsonWire.Write(
@@ -75,7 +124,20 @@ public sealed class ManageWorkApi : IPlugin
         }
         if (request.Command == "Inspect")
         {
+            // Writes only to start the lookup of a 0.1.0.3-era lost create (decision D6).
+            context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
             var store = new DocumentStore(service);
+            LibraryRecovery? recovery = null;
+            string rowVersion = "";
+            if (request.Key.StartsWith("librarycreate:", StringComparison.Ordinal))
+            {
+                var setup = new LibraryProvisioning(service).PickUp(
+                    store.Require<LibrarySetup>("asx_operation", request.Key)
+                );
+                recovery = setup.Value.Recovery;
+                // The setup row's version, which ResolveSetup requires back.
+                rowVersion = setup.Row.RowVersion;
+            }
             var operation = store.Require<OperationDocument>("asx_operation", request.Key).Value;
             var claim = store
                 .Find<DispatcherDocument>(
@@ -96,6 +158,8 @@ public sealed class ManageWorkApi : IPlugin
                     RunId = owns ? claim!.RunId : null,
                     Token = owns ? claim!.Token : Guid.Empty,
                     LeaseUntilUtc = owns ? claim!.LeaseUntilUtc : (DateTime?)null,
+                    Recovery = recovery,
+                    RowVersion = rowVersion,
                 }
             );
             return;
@@ -112,15 +176,55 @@ public sealed class ManageWorkApi : IPlugin
             return;
         }
         if (
+            request.Command == "StartTemplateRun"
+            || request.Command == "PauseTemplateRun"
+            || request.Command == "ResumeTemplateRun"
+            || request.Command == "CancelTemplateRun"
+            || request.Command == "CountRecords"
+        )
+        {
+            // CountRecords only reads; the others write through the guarded transport as the caller.
+            if (request.Command != "CountRecords")
+                context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
+            var profile = RuntimeProfile.Read(service);
+            // The table's row count and the starter's name are read as the worker, which reads
+            // every enabled table and users; the caller may hold only the Operator role.
+            var runs = new TemplateRun(
+                service,
+                profile.Tables,
+                worker: (
+                    (IOrganizationServiceFactory)
+                        provider.GetService(typeof(IOrganizationServiceFactory))
+                ).CreateOrganizationService(profile.WorkerId)
+            );
+            context.OutputParameters["Result"] = JsonWire.Write(
+                request.Command switch
+                {
+                    "StartTemplateRun" => runs.Start(request, context.UserId),
+                    "PauseTemplateRun" => runs.Pause(request.Key),
+                    "ResumeTemplateRun" => runs.Resume(request.Key),
+                    "CancelTemplateRun" => runs.Cancel(request.Key),
+                    _ => runs.Count(request.TemplateId),
+                }
+            );
+            return;
+        }
+        if (
             request.Command != "Retry"
             && request.Command != "Cancel"
             && request.Command != "Replan"
             && request.Command != "Queue"
+            && request.Command != "RetryOutbox"
         )
             throw new InvalidPluginExecutionException("Unsupported operator action.");
         context.SharedVariables[DocumentWorkerApi.InternalWrite] = true;
         context.OutputParameters["Result"] = JsonWire.Write(
-            request.Key?.StartsWith("librarycreate:", StringComparison.Ordinal) == true
+            request.Command == "RetryOutbox"
+                ? new WorkerCoordinator(
+                    service,
+                    allowedTables: RuntimeProfile.Read(service).Tables
+                ).Execute(request, context.IsInTransaction)
+            : request.Key?.StartsWith("librarycreate:", StringComparison.Ordinal) == true
                 ? new LibraryProvisioning(service).Execute(request, context.IsInTransaction)
             : request.Key?.StartsWith("catalogprobe:", StringComparison.Ordinal) == true
                 ? new CatalogWorker(service).Execute(request, context.IsInTransaction)
@@ -139,15 +243,28 @@ public sealed class CatalogGuard : IPlugin
     public void Execute(IServiceProvider provider)
     {
         var context = (IPluginExecutionContext)provider.GetService(typeof(IPluginExecutionContext));
-        bool transported = ApiWriteService.Authorizes(context, true);
+        bool transported = ApiWriteService.Authorizes(context);
         string message = context.MessageName;
+        // A site or library is deleted only by the catalog API's Remove command, once nothing
+        // refers to it any more.
+        if (
+            message == "Delete"
+            && context.Stage == 20
+            && context.IsInTransaction
+            && (
+                context.PrimaryEntityName == "asx_site"
+                || context.PrimaryEntityName == "asx_library"
+            )
+            && ApiWriteService.AuthorizesCatalogRemoval(context)
+        )
+            return;
         if (
             context.Stage != 20
             || !context.IsInTransaction
             || (message != "Create" && message != "Update")
         )
             throw new InvalidPluginExecutionException(
-                "Catalog deletion and nontransactional writes are unsupported."
+                "Catalog rows are deleted only by Remove in the Sites panel; nontransactional writes are unsupported."
             );
         var parent = context.ParentContext;
         bool marked =
@@ -176,9 +293,14 @@ public sealed class CatalogGuard : IPlugin
                     && target.GetAttributeValue<Guid>(primary) != target.Id
                 )
                     throw new InvalidPluginExecutionException("Catalog record identity differs.");
+                // Re-point follows a renamed or moved site or library: only its addresses (and
+                // the host inside the stored site identity) change, never its IDs.
+                bool repoint = ApiWriteService.AuthorizesCatalogRepoint(context);
                 if (
-                    (target.Contains("asx_collectionid") || target.Contains("asx_identity"))
-                    && !ApiWriteService.AuthorizesCatalogIdentityUpgrade(context)
+                    (
+                        target.Contains("asx_collectionid")
+                        || target.Contains("asx_identity") && !repoint
+                    ) && !ApiWriteService.AuthorizesCatalogIdentityUpgrade(context)
                 )
                     throw new InvalidPluginExecutionException(
                         "Site identity fields require the verified identity upgrade operation."
@@ -195,9 +317,12 @@ public sealed class CatalogGuard : IPlugin
                             "asx_nativeparentid",
                         }
                 )
-                    if (target.Contains(field))
+                    if (
+                        target.Contains(field)
+                        && !(repoint && (field == "asx_url" || field == "asx_entryurl"))
+                    )
                         throw new InvalidPluginExecutionException(
-                            "Approved catalog physical identities are immutable; register a new destination for changes."
+                            "Approved catalog physical identities are immutable. Use Re-point to follow a renamed or moved site or library."
                         );
                 foreach (
                     var field in new[] { "asx_policyrevision", "asx_policyapplied", "asx_aclhash" }
@@ -234,7 +359,7 @@ public sealed class CatalogGuard : IPlugin
                 (IOrganizationServiceFactory)
                     provider.GetService(typeof(IOrganizationServiceFactory))
             ).CreateOrganizationService(context.UserId);
-            if (RuntimeProfile.Read(service).WorkerId != context.UserId)
+            if (RuntimeProfile.ReadCapture(service).WorkerId != context.UserId)
                 throw new InvalidPluginExecutionException(
                     "Team retirement requires the configured worker."
                 );
@@ -255,17 +380,9 @@ public sealed class CatalogGuard : IPlugin
                 );
             return;
         }
-        if (
-            context.PrimaryEntityName == "asx_runtime"
-            && message == "Create"
-            && target != null
-            && !target.GetAttributeValue<bool>("asx_enabled")
-            && !target.GetAttributeValue<bool>("asx_processrecordupdates")
-        )
-            return;
         if (!trusted)
             throw new InvalidPluginExecutionException(
-                "Security/runtime configuration is writable only through guarded product APIs."
+                "Security configuration is writable only through guarded product APIs."
             );
     }
 }
@@ -277,8 +394,6 @@ public sealed class TeamRetirementPlugin : IPlugin
         var context = (IPluginExecutionContext)provider.GetService(typeof(IPluginExecutionContext));
         if (
             context.Stage != 40
-            || context.Mode != 0
-            || !context.IsInTransaction
             || context.MessageName != "Delete"
             || context.PrimaryEntityName != "team"
             || context.PrimaryEntityId == Guid.Empty
@@ -287,17 +402,19 @@ public sealed class TeamRetirementPlugin : IPlugin
         var service = (
             (IOrganizationServiceFactory)provider.GetService(typeof(IOrganizationServiceFactory))
         ).CreateOrganizationService(context.UserId);
-        if (RuntimeProfile.Read(service).WorkerId != context.UserId)
-            throw new InvalidPluginExecutionException(
-                "Team lifecycle identity differs from runtime."
-            );
         var store = new DocumentStore(service);
         var registration = store.Find<TeamRegistration>(
             "asx_teamregistration",
             "team:" + context.PrimaryEntityId.ToString("N")
         );
-        if (registration == null)
+        // A registration the worker already finished, after it removed the team's access
+        // before this event was processed, stays finished.
+        if (registration == null || registration.Value.Status == TeamDirectory.Finished)
             return;
+        if (RuntimeProfile.ReadCapture(service).WorkerId != context.UserId)
+            throw new InvalidPluginExecutionException(
+                "Team lifecycle identity differs from runtime."
+            );
         registration.Value.Enabled = false;
         registration.Value.Status = "Revoking";
         store.Save(registration);

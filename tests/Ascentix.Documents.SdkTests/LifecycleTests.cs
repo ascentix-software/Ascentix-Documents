@@ -53,7 +53,10 @@ public sealed class LifecycleTests
     [Fact]
     public void RootUpdateFiltersAgainstCurrentPublishedDependencies()
     {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
         var f = Setup();
+        RuntimeSeed.RecordUpdatesStoredOn(f.Service);
         var unrelated = new Entity("account", f.RecordId) { ["telephone1"] = "555" };
         new RecordInvalidationPlugin().Execute(
             new Provider(f, Event(f, "Update", new ParameterCollection { ["Target"] = unrelated }))
@@ -67,9 +70,12 @@ public sealed class LifecycleTests
     }
 
     [Fact]
-    public void BulkRootEventsAreBoundedAndUseExactWorkerIdentity()
+    public void BulkRootEventsUseExactWorkerIdentity()
     {
+        // Kept code: covers "Update folders when records change", out of 0.1.0.4.
+        using var recordUpdates = RecordUpdatesSwitch.On();
         var f = Setup();
+        RuntimeSeed.RecordUpdatesStoredOn(f.Service);
         var targets = new EntityCollection(
             new[]
             {
@@ -89,17 +95,31 @@ public sealed class LifecycleTests
                 new Provider(f, Event(f, "Create", new ParameterCollection(), Guid.NewGuid()))
             )
         );
-        var oversized = new EntityCollection(
-            Enumerable.Range(0, 101).Select(_ => new Entity("account", Guid.NewGuid())).ToList()
+    }
+
+    /// <summary>
+    /// "Update folders when records change" is out of 0.1.0.4: a record Update event is not
+    /// captured even when the stored setting is still on from an earlier release.
+    /// </summary>
+    [Theory]
+    [InlineData("Update")]
+    [InlineData("UpdateMultiple")]
+    public void RecordUpdateEventIsNotCapturedWhileTheSettingIsOutOfTheRelease(string message)
+    {
+        var f = Setup();
+        RuntimeSeed.RecordUpdatesStoredOn(f.Service);
+        Assert.True(
+            f.Service.Rows.Values.Single(r => r.LogicalName == "asx_runtime")
+                .GetAttributeValue<bool>("asx_processrecordupdates")
         );
-        Assert.Throws<InvalidPluginExecutionException>(() =>
-            new RecordInvalidationPlugin().Execute(
-                new Provider(
-                    f,
-                    Event(f, "CreateMultiple", new ParameterCollection { ["Targets"] = oversized })
-                )
-            )
-        );
+        var related = new Entity("account", f.RecordId) { ["name"] = "Changed" };
+        var inputs =
+            message == "Update"
+                ? new ParameterCollection { ["Target"] = related }
+                : new ParameterCollection { ["Targets"] = new EntityCollection(new[] { related }) };
+        new RecordInvalidationPlugin().Execute(new Provider(f, Event(f, message, inputs)));
+        Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_outbox");
+        Assert.False(RuntimeProfile.ReadCapture(f.Service).ProcessRecordUpdates);
     }
 
     [Theory]
@@ -122,12 +142,52 @@ public sealed class LifecycleTests
         new RecordInvalidationPlugin().Execute(
             new Provider(f, Event(f, message, new ParameterCollection()))
         );
-        Assert.Equal(new[] { "asx_runtime" }, reads);
+        Assert.Equal(new[] { "asx_runtime", "asx_runtimetable" }, reads);
         Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_outbox");
         new RecordInvalidationPlugin().Execute(
             new Provider(f, Event(f, "Create", new ParameterCollection()))
         );
         Assert.Single(f.Service.Rows.Values, r => r.LogicalName == "asx_outbox");
+    }
+
+    [Fact]
+    public void TeamDeleteEventProcessedAfterTheWorkerFinishedTheRegistrationLeavesItFinished()
+    {
+        var f = Setup();
+        Guid team = Guid.NewGuid();
+        f.Store.Create(
+            "asx_teamregistration",
+            new TeamRegistration
+            {
+                Key = "team:" + team.ToString("N"),
+                TeamId = team,
+                Enabled = false,
+                Status = TeamDirectory.Finished,
+            }
+        );
+        var context = GuardTests.ContextProxy.Create(
+            new Dictionary<string, object>
+            {
+                ["Stage"] = 40,
+                ["Mode"] = 0,
+                ["IsInTransaction"] = true,
+                ["MessageName"] = "Delete",
+                ["PrimaryEntityName"] = "team",
+                ["PrimaryEntityId"] = team,
+                ["CorrelationId"] = Guid.NewGuid(),
+                ["UserId"] = f.RecordId,
+                ["SharedVariables"] = new ParameterCollection(),
+            }
+        );
+        new TeamRetirementPlugin().Execute(new Provider(f, context));
+        Assert.Empty(f.Service.Updates);
+        Assert.Equal(
+            TeamDirectory.Finished,
+            f.Store.Require<TeamRegistration>(
+                "asx_teamregistration",
+                "team:" + team.ToString("N")
+            ).Value.Status
+        );
     }
 
     [Fact]
@@ -273,6 +333,39 @@ public sealed class LifecycleTests
     }
 
     [Fact]
+    public void SignInToAGroupTeamCreatesNoWork()
+    {
+        // Dataverse adds a person to a group team when they first sign in. The group itself is
+        // granted on the library, so there is nothing to sync.
+        var f = Setup();
+        Guid team = Guid.NewGuid();
+        f.Store.Create(
+            "asx_teamregistration",
+            new TeamRegistration
+            {
+                Key = "team:" + team.ToString("N"),
+                TeamId = team,
+                Enabled = true,
+                Group = true,
+                Status = "Enabled",
+            }
+        );
+        var inputs = new ParameterCollection
+        {
+            ["Target"] = new EntityReference("team", team),
+            ["RelatedEntities"] = new EntityReferenceCollection
+            {
+                new EntityReference("systemuser", Guid.NewGuid()),
+            },
+            ["Relationship"] = new Relationship("teammembership_association"),
+        };
+        new TeamMembershipInvalidationPlugin().Execute(
+            new Provider(f, Event(f, "Associate", inputs))
+        );
+        Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_outbox");
+    }
+
+    [Fact]
     public void OtherRelationshipsProduceNoProductWork()
     {
         var f = Setup();
@@ -331,16 +424,7 @@ public sealed class LifecycleTests
     {
         var f = new DurableWorkerTests.Fixture(seedBinding: false);
         f.SeedTemplate();
-        f.Service.Seed(
-            new Entity("asx_runtime", Guid.NewGuid())
-            {
-                ["asx_name"] = "Default",
-                ["asx_processrecordupdates"] = true,
-                ["asx_workeruserid"] = f.RecordId.ToString(),
-                ["asx_allowedtables"] = "[\"account\"]",
-                ["asx_sharepointhosts"] = "[\"example.sharepoint.com\"]",
-            }
-        );
+        RuntimeSeed.Seed(f.Service, f.RecordId, "account");
         return f;
     }
 

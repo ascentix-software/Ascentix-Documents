@@ -11,6 +11,23 @@ public sealed class TeamRegistration : StoredDocument
 
     [DataMember]
     public bool Enabled { get; set; }
+
+    /// <summary>
+    /// True for an Entra or Microsoft 365 group team, which is granted through its group, so a
+    /// person signing in creates no membership work. teamtype is fixed when a team is created.
+    /// Null for registrations written before this was stored, until their next registration or
+    /// Apply; those keep queuing membership events, which then change nothing.
+    /// </summary>
+    [DataMember]
+    public bool? Group { get; set; }
+
+    /// <summary>
+    /// The team's name when Documents last read it, so a team deleted in Dataverse is still
+    /// shown by name. Null for registrations written before this was stored, until the team's
+    /// next access run.
+    /// </summary>
+    [DataMember]
+    public string? Name { get; set; }
 }
 
 [DataContract]
@@ -24,6 +41,26 @@ public sealed class TeamPerson
 
     [DataMember]
     public string Login { get; set; } = "";
+
+    /// <summary>
+    /// True for the group claim of an Entra or Microsoft 365 group team, which SharePoint resolves
+    /// with ensureuser before it is added. Missing in documents written before group teams.
+    /// </summary>
+    [DataMember]
+    public bool Group { get; set; }
+}
+
+public sealed class TeamSnapshot
+{
+    public TeamPerson[] People { get; set; } = Array.Empty<TeamPerson>();
+
+    public string[] Skipped { get; set; } = Array.Empty<string>();
+
+    /// <summary>
+    /// True when the team has more people than one access run can store; People then holds
+    /// the first ones only, always the same ones while the team is unchanged.
+    /// </summary>
+    public bool Incomplete { get; set; }
 }
 
 [DataContract]
@@ -102,10 +139,41 @@ public sealed class PolicyDocument : StoredDocument
     public PolicyRole ContributeRole { get; set; } = new PolicyRole();
 
     [DataMember]
-    public string BaselineHash { get; set; } = "";
-
-    [DataMember]
     public string[] ResidualAccess { get; set; } = Array.Empty<string>();
+
+    /// <summary>What the last access run skipped or reconciled, for admins to review.</summary>
+    [DataMember]
+    public string[] Notices { get; set; } = Array.Empty<string>();
+
+    /// <summary>
+    /// The admin applied Desired while the queued run could not be replaced yet: a flow held it
+    /// or SharePoint had not answered its write. The next access review replaces the run and
+    /// queues Desired as soon as it can. Rows written before 0.1.0.4 read as false.
+    /// </summary>
+    [DataMember]
+    public bool ApplyPending { get; set; }
+
+    /// <summary>
+    /// The last access run applied the library grants but left some team membership unsynced:
+    /// members SharePoint refused, or a team too large for one run. Its notices say which.
+    /// Rows written before 0.1.0.4 read as false.
+    /// </summary>
+    [DataMember]
+    public bool MembershipIncomplete { get; set; }
+
+    /// <summary>
+    /// The admin accepted that Documents stops this library's permission inheritance. The next
+    /// queued access run carries it and it is cleared here.
+    /// </summary>
+    [DataMember]
+    public bool BreakInheritance { get; set; }
+
+    /// <summary>
+    /// The last access run stopped because the library inherits its site's permissions and no
+    /// consent was given. Apply access with BreakInheritance resolves it.
+    /// </summary>
+    [DataMember]
+    public bool Inherits { get; set; }
 }
 
 [DataContract]
@@ -128,6 +196,14 @@ public sealed class ManagedGroup : StoredDocument
 
     [DataMember]
     public string Title { get; set; } = "";
+
+    /// <summary>
+    /// Group claims Documents put in this group for a group team. A claim no longer wanted is
+    /// removed; any other non-person member was added by hand and is left in place. Documents
+    /// written before group teams read it as empty (StoredDocument fills missing lists).
+    /// </summary>
+    [DataMember]
+    public string[]? Principals { get; set; }
     public string Marker =>
         "Ascentix Documents v1; group=" + Nonce.ToString("D") + "; team=" + TeamId.ToString("D");
 }
@@ -167,7 +243,17 @@ public sealed class MembershipDocument : StoredDocument
     public SitePerson[] Observed { get; set; } = Array.Empty<SitePerson>();
 
     [DataMember]
+    public string[] Skipped { get; set; } = Array.Empty<string>();
+
+    [DataMember]
     public bool Complete { get; set; }
+
+    /// <summary>
+    /// The team had more people than one access run can store, so its group's members are
+    /// left as they are this run. Rows written before 0.1.0.4 read as false.
+    /// </summary>
+    [DataMember]
+    public bool Incomplete { get; set; }
 }
 
 [DataContract]
@@ -196,6 +282,27 @@ public sealed class SecurityRequest
 
     [DataMember]
     public PolicyRole ContributeRole { get; set; } = new PolicyRole();
+
+    /// <summary>
+    /// The admin saw and accepted that a group team gives access to more people than the
+    /// Dataverse team holds (see TeamPrincipal.BroaderAccess).
+    /// </summary>
+    [DataMember]
+    public bool AcknowledgeBroaderAccess { get; set; }
+
+    /// <summary>
+    /// ApplyPolicy: the admin saw and accepted that Documents stops the library's permission
+    /// inheritance, keeping a copy of the site's permissions.
+    /// </summary>
+    [DataMember]
+    public bool BreakInheritance { get; set; }
+
+    /// <summary>
+    /// RetryAccessRun and CancelAccessRun: the access run the admin saw on the library, so a
+    /// newer run queued meanwhile is never retried or cancelled by mistake.
+    /// </summary>
+    [DataMember]
+    public string? OperationKey { get; set; }
 }
 
 [DataContract]
@@ -212,6 +319,41 @@ public sealed class SecurityResult
 
     [DataMember]
     public string[] Diff { get; set; } = Array.Empty<string>();
+
+    /// <summary>The status of the library's queued access run, such as Blocked or RetryWait.</summary>
+    [DataMember]
+    public string? RunStatus { get; set; }
+
+    /// <summary>What the queued access run reports first: why it stopped or why it waits.</summary>
+    [DataMember]
+    public string? RunNotice { get; set; }
+
+    /// <summary>When a waiting access run checks again (UTC).</summary>
+    [DataMember]
+    public DateTime? RunNextAttemptUtc { get; set; }
+
+    /// <summary>
+    /// The teams of the policy's wanted and applied access, with their names, so a team deleted
+    /// in Dataverse is shown as one instead of being read by ID.
+    /// </summary>
+    [DataMember]
+    public PolicyTeam[] Teams { get; set; } = Array.Empty<PolicyTeam>();
+}
+
+/// <summary>A team of a library's access, as the library shows it.</summary>
+[DataContract]
+public sealed class PolicyTeam
+{
+    [DataMember]
+    public Guid TeamId { get; set; }
+
+    /// <summary>The team's name, or its last known name once deleted; null when none is known.</summary>
+    [DataMember]
+    public string? Name { get; set; }
+
+    /// <summary>True when the team was deleted in Dataverse.</summary>
+    [DataMember]
+    public bool Deleted { get; set; }
 }
 
 [DataContract]
@@ -237,12 +379,6 @@ public sealed class SecurityOperation : OperationDocument
 
     [DataMember]
     public PolicyRole ContributeRole { get; set; } = new PolicyRole();
-
-    [DataMember]
-    public string BaselineHash { get; set; } = "";
-
-    [DataMember]
-    public string ExpectedAclHash { get; set; } = "";
 
     [DataMember]
     public int MutationMemberId { get; set; }
@@ -292,8 +428,32 @@ public sealed class SecurityOperation : OperationDocument
     [DataMember]
     public int MutationRole { get; set; }
 
+    /// <summary>What this run skipped or reconciled; copied to the policy when it completes.</summary>
     [DataMember]
-    public string[] Residual { get; set; } = Array.Empty<string>();
+    public string[] Notices { get; set; } = Array.Empty<string>();
+
+    /// <summary>Member changes SharePoint rejected in this run, keyed by group, so they are not retried.</summary>
+    [DataMember]
+    public string[] SkippedMembers { get; set; } = Array.Empty<string>();
+
+    /// <summary>How many member changes were skipped in this run, including any not detailed.</summary>
+    [DataMember]
+    public int SkippedCount { get; set; }
+
+    /// <summary>Consecutive read-backs that did not yet show a confirmed grant write.</summary>
+    [DataMember]
+    public int ReadbackMisses { get; set; }
+
+    /// <summary>The group claim SharePoint resolved in this run, so it is added next.</summary>
+    [DataMember]
+    public string? EnsuredLogin { get; set; }
+
+    /// <summary>
+    /// The admin consented to stopping the library's permission inheritance for this run. Without
+    /// it an inheriting library blocks the run with a notice.
+    /// </summary>
+    [DataMember]
+    public bool BreakInheritance { get; set; }
 }
 
 [DataContract]

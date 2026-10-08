@@ -67,7 +67,7 @@ sequenceDiagram
     participant Flow as Power Automate dispatcher
     participant API as Worker API + planner
     participant SP as SharePoint
-    User->>DV: Create or update a business record
+    User->>DV: Create a business record
     DV->>Queue: Queue relevant active-template work
     DV-->>User: Complete record save
     Flow->>API: ListOutbox / Plan
@@ -90,7 +90,7 @@ sequenceDiagram
     DV-->>User: Link to the SharePoint folder
 ```
 
-Saving the business record queues work; SharePoint provisioning happens afterward. The event path requires configured registrations and an active published template. Updates are filtered for fields used by the template. Ordinary record editing does not require the user to manually write product queue rows.
+Saving the business record queues work; SharePoint provisioning happens afterward. The event path requires configured registrations and an active published template. Changes to an existing record don't queue folder work in this release; use Re-run for existing records. Ordinary record editing does not require the user to manually write product queue rows.
 
 One table can have multiple named templates. Each template can produce folders in several destinations simultaneously. For example, an Account template can produce a General folder in one library and a Sensitive folder in another. If one destination fails, another can already have completed; the overall record can therefore be partially provisioned.
 
@@ -121,7 +121,7 @@ The template is the long-lived identity. A revision is a version of its configur
 
 A destination chooses an approved site/library and entry path, then defines the record root and descendants. Library access is configured separately from the folder tree. Existing valid folders at the expected path can be reused regardless of who created them. A file occupying a folder path is a conflict. Reusing a folder can cause records to share documents, so naming is a business decision as well as a formatting choice.
 
-Existing native record roots are reused to keep navigation stable. Template changes are additive provisioning instructions; they are not a request to rename, move or delete existing SharePoint content. Explicit replan is available for existing records; publishing alone should not be interpreted as a completed backfill.
+Existing native record roots are reused to keep navigation stable. Template changes are additive provisioning instructions; they are not a request to rename, move or delete existing SharePoint content. An explicit re-run (Re-run for existing records) is available for existing records; publishing alone should not be interpreted as a completed backfill.
 
 ## 4. Sites, libraries and team access
 
@@ -162,14 +162,14 @@ flowchart TD
     Prepare --> Post[Execute SharePoint create request]
     Post -->|Known response| Verify
     Post -->|Outcome uncertain| Unknown[ExternalUnknown: retain unresolved writer]
-    Unknown --> Recovery[Establish old run is stopped; authorize recovery]
+    Unknown --> Recovery[Look SharePoint up; admin chooses from the finding]
     Recovery --> Inspect
     Verify --> Complete[Complete native navigation and durable result]
 ```
 
 Dataverse and SharePoint do not share a transaction. SharePoint can create a folder even if its response is lost. The persisted claim, submission intent and later readback let the system distinguish a safe retry from an uncertain external write. A timeout or lease expiry alone cannot prove that an old SharePoint request has stopped.
 
-Claims serialize writers for a site. A shared connection budget caps active site writers at two, and HTTP admission applies pacing and shared `Retry-After` backoff. The solution flows run their loops serially and disable connector-level retries; the server coordinates retry decisions. Two is a ceiling, not a promise that every dispatcher run uses two concurrent requests.
+Claims serialize writers for a site: each site has one writer at a time, which keeps its writes in order. Sites do not limit one another. HTTP admission applies shared pacing and shared `Retry-After` backoff across all writers. The solution flows run their loops serially and disable connector-level retries; the server coordinates retry decisions.
 
 Transient reads can be rescheduled. Ambiguous writes retain state for controlled recovery. Completion is based on verification, rather than merely receiving a successful create response. Parent completion gates child work.
 
@@ -233,4 +233,4 @@ These are the implementation entry points used for this guide. Source links are 
 | Native navigation | [NativeLocations.cs](../src/Ascentix.Documents.Dataverse/NativeLocations.cs) |
 | Concurrency and retention | [WorkCoordination.cs](../src/Ascentix.Documents.Dataverse/WorkCoordination.cs), [WorkRetention.cs](../src/Ascentix.Documents.Dataverse/WorkRetention.cs) |
 
-For operational procedures see [operations](operations.md). See the [preview release notes](public-preview.md) for evaluation limits.
+For operational procedures see [operations](operations.md). See the [beta release notes](public-beta.md) for evaluation limits.

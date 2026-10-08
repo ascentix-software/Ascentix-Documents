@@ -32,7 +32,6 @@ public sealed class ApiWriteGuardTests
     [InlineData("Update", "asx_DocumentWorker")]
     [InlineData("Update", "asx_RuntimeAdmin")]
     [InlineData("Create", "asx_SecurityAdmin")]
-    [InlineData("Update", "asx_RecoverWorker")]
     public void ExactApiTransportAllowsSingleTargetWrites(string message, string api)
     {
         new StateGuard().Execute(new Provider(Setup("valid", message, api)));
@@ -89,13 +88,16 @@ public sealed class ApiWriteGuardTests
         );
     }
 
-    [Fact]
-    public void RecoveryCannotWriteCatalog()
+    [Theory]
+    [InlineData("asx_RecoverWorker", "asx_operation")]
+    [InlineData("asx_RecoverWorker", "asx_library")]
+    public void TheRemovedRecoveryApiAuthorizesNothing(string api, string table)
     {
         Assert.Throws<InvalidPluginExecutionException>(() =>
-            new CatalogGuard().Execute(
-                new Provider(Setup("valid", "Update", "asx_RecoverWorker", "asx_library"))
-            )
+            new StateGuard().Execute(new Provider(Setup("valid", "Update", api, table)))
+        );
+        Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(new Provider(Setup("valid", "Update", api, table)))
         );
     }
 
@@ -130,6 +132,122 @@ public sealed class ApiWriteGuardTests
         );
     }
 
+    [Theory]
+    [InlineData("asx_library", "asx_entryurl")]
+    [InlineData("asx_site", "asx_url")]
+    [InlineData("asx_site", "asx_identity")]
+    public void RepointMayChangeOnlyAddresses(string table, string field)
+    {
+        new CatalogGuard().Execute(
+            new Provider(Setup("repoint:" + field, "Update", "asx_DocumentWorker", table))
+        );
+    }
+
+    [Theory]
+    [InlineData("repoint:asx_listid", "asx_DocumentWorker", "asx_library")]
+    [InlineData("repoint:asx_entryid", "asx_DocumentWorker", "asx_library")]
+    [InlineData("repoint:asx_webid", "asx_DocumentWorker", "asx_site")]
+    [InlineData("repoint:asx_collectionid", "asx_DocumentWorker", "asx_site")]
+    [InlineData("probe:asx_entryurl", "asx_DocumentWorker", "asx_library")]
+    [InlineData("admin:asx_entryurl", "asx_CatalogAdmin", "asx_library")]
+    [InlineData("admin:asx_url", "asx_SecurityAdmin", "asx_site")]
+    public void AddressesChangeOnlyThroughAVerifiedRepoint(string variant, string api, string table)
+    {
+        var error = Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(new Provider(Setup(variant, "Update", api, table)))
+        );
+        Assert.DoesNotContain("register a new destination", error.Message);
+    }
+
+    [Theory]
+    [InlineData("RemoveLibrary", "asx_library")]
+    [InlineData("RemoveSite", "asx_site")]
+    public void CatalogRowsAreDeletedOnlyByRemove(string command, string table)
+    {
+        new CatalogGuard().Execute(
+            new Provider(Setup("remove:" + command, "Delete", "asx_CatalogAdmin", table))
+        );
+        Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(
+                new Provider(Setup("remove:Approve", "Delete", "asx_CatalogAdmin", table))
+            )
+        );
+        Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(
+                new Provider(Setup("remove:" + command, "Delete", "asx_DocumentWorker", table))
+            )
+        );
+        Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(
+                new Provider(Setup("direct", "Delete", "asx_CatalogAdmin", table))
+            )
+        );
+        // Only the row the request names.
+        Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(
+                new Provider(
+                    Setup("remove:" + command + "-other", "Delete", "asx_CatalogAdmin", table)
+                )
+            )
+        );
+        Assert.Throws<InvalidPluginExecutionException>(() =>
+            new CatalogGuard().Execute(
+                new Provider(
+                    Setup(
+                        "remove:" + (command == "RemoveSite" ? "RemoveLibrary" : "RemoveSite"),
+                        "Delete",
+                        "asx_CatalogAdmin",
+                        table
+                    )
+                )
+            )
+        );
+    }
+
+    [Fact]
+    public void RemoveTransportDeletesOnlyTheRowItNames()
+    {
+        var library = Guid.NewGuid();
+        var api = Context(
+            new Dictionary<string, object>
+            {
+                ["Stage"] = 30,
+                ["Mode"] = 0,
+                ["IsInTransaction"] = true,
+                ["UserId"] = Guid.NewGuid(),
+                ["CorrelationId"] = Guid.NewGuid(),
+                ["MessageName"] = "asx_CatalogAdmin",
+                ["InputParameters"] = new ParameterCollection
+                {
+                    ["Request"] =
+                        "{\"Command\":\"RemoveLibrary\",\"CatalogId\":\"" + library + "\"}",
+                },
+                ["SharedVariables"] = new ParameterCollection
+                {
+                    [DocumentWorkerApi.InternalWrite] = true,
+                },
+            }
+        );
+        var inner = new Capture();
+        var service = new ApiWriteService(inner, api);
+        DeleteRequest Delete(string table, Guid id) =>
+            new DeleteRequest { Target = new EntityReference(table, id) };
+        foreach (
+            var refused in new[]
+            {
+                Delete("asx_library", Guid.NewGuid()),
+                Delete("asx_site", library),
+                Delete("asx_operation", library),
+                Delete("asx_policy", Guid.NewGuid()),
+            }
+        )
+            Assert.Throws<InvalidPluginExecutionException>(() => service.Execute(refused));
+        Assert.Null(inner.Last);
+        var allowed = Delete("asx_library", library);
+        service.Execute(allowed);
+        Assert.Same(allowed, inner.Last);
+    }
+
     private static IPluginExecutionContext Setup(
         string variant,
         string message,
@@ -148,12 +266,29 @@ public sealed class ApiWriteGuardTests
             target["asx_siteid"] = Guid.NewGuid();
         if (variant == "immutable")
             target["asx_listid"] = Guid.NewGuid().ToString();
+        if (variant.Contains(":") && !variant.StartsWith("remove:", StringComparison.Ordinal))
+            target[variant.Substring(variant.IndexOf(':') + 1)] = "changed";
         var input = new ParameterCollection
         {
             ["Request"] = "{\"Command\":\"Cancel\",\"Key\":\"catalogprobe:test\"}",
         };
         if (variant == "identity-upgrade")
             input["Request"] = "{\"Command\":\"CompleteSiteIdentity\"}";
+        if (variant.StartsWith("repoint:", StringComparison.Ordinal))
+            input["Request"] = "{\"Command\":\"Complete\",\"Key\":\"catalogprobe:repoint:abc\"}";
+        if (variant.StartsWith("remove:", StringComparison.Ordinal))
+            input["Request"] =
+                "{\"Command\":\""
+                + variant.Substring(7).Replace("-other", "")
+                + "\",\"CatalogId\":\""
+                + (
+                    variant.EndsWith("-other", StringComparison.Ordinal)
+                        ? Guid.NewGuid()
+                        : target.Id
+                )
+                + "\"}";
+        if (variant.StartsWith("probe:", StringComparison.Ordinal))
+            input["Request"] = "{\"Command\":\"Complete\",\"Key\":\"catalogprobe:abc\"}";
         var apiValues = new Dictionary<string, object>
         {
             ["Stage"] = 30,
@@ -166,8 +301,9 @@ public sealed class ApiWriteGuardTests
             ["SharedVariables"] = new ParameterCollection(),
         };
         var api = Context(apiValues);
-        string operation = message.StartsWith("Create", StringComparison.Ordinal)
-            ? "Create"
+        string operation =
+            message == "Delete" ? "Delete"
+            : message.StartsWith("Create", StringComparison.Ordinal) ? "Create"
             : "Update";
         string tag = ApiWriteService.Tag(api, operation, target);
         if (variant == "wrong-caller")
@@ -201,6 +337,8 @@ public sealed class ApiWriteGuardTests
             }
         );
         var inputs = new ParameterCollection { ["Target"] = target };
+        if (message == "Delete")
+            inputs["Target"] = target.ToEntityReference();
         if (message.EndsWith("Multiple", StringComparison.Ordinal) || variant == "bulk")
         {
             var rows = new EntityCollection();

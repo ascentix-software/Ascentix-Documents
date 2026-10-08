@@ -54,9 +54,15 @@ public sealed class SharePointTarget
     {
         if (parent != EntryPath && !parent.StartsWith(EntryPath + "/", StringComparison.Ordinal))
             throw new EvaluationBlockedException("Parent is outside the approved entry.");
+        // The entry may be the library root, so only its first segment may sit at the root;
+        // SharePoint reserves "Forms" only there.
+        bool first = true;
         foreach (var segment in parent.Substring(EntryPath.Length).Split('/'))
             if (segment.Length > 0)
-                FolderNames.Validate(segment);
+            {
+                FolderNames.Validate(segment, first);
+                first = false;
+            }
         if (parent.Contains("//") || parent.EndsWith("/", StringComparison.Ordinal))
             throw new EvaluationBlockedException("Parent path is not canonical.");
     }
@@ -83,24 +89,71 @@ public static class SharePointRequests
     private static string List(SharePointTarget target) =>
         "_api/web/lists(guid'" + target.ListId.ToString("D") + "')";
 
+    /// <summary>
+    /// A read of the folder or file at a server-relative path, with the path passed as an OData
+    /// parameter alias in the query string and never in the URL path. The HTTP with Microsoft
+    /// Entra ID connector refuses a request whose URL path exceeds its maxUrlLength (401 "The
+    /// length of the URL for this request exceeds the configured maxUrlLength value."). That is
+    /// the ASP.NET httpRuntime setting, which applies to the URL path only (default 260
+    /// characters; the connector's configured value is not published):
+    /// https://learn.microsoft.com/dotnet/api/system.web.configuration.httpruntimesection.maxurllength
+    /// SharePoint documents parameter aliases for method parameters ("Using parameter aliases in
+    /// REST service calls"):
+    /// https://learn.microsoft.com/sharepoint/dev/sp-add-ins/determine-sharepoint-rest-service-endpoint-uris
+    /// The URL path is then the same short text for every folder, and a 400-character path,
+    /// escaped, stays far inside the 16,384-character request URL limit of Power Automate:
+    /// https://learn.microsoft.com/power-automate/limits-and-config
+    /// </summary>
+    /// <param name="function">GetFolderByServerRelativePath or GetFileByServerRelativePath.</param>
+    /// <param name="path">The decoded server-relative path.</param>
+    /// <param name="query">The rest of the query string, such as "$select=...".</param>
+    /// <summary>The notice for a read whose address the connector would refuse.</summary>
+    public const string AddressTooLongNotice =
+        "This SharePoint address is too long for the HTTP connector: its query string would pass 2,048 characters. Nothing was sent; shorten the names.";
+
+    public static string ByPath(string function, string path, string query)
+    {
+        string alias = SharePointAddress.Alias(path) + "&" + query;
+        // Never sent when the connector would refuse it; planning keeps folders inside this
+        // (FolderPlanner), so only an address an admin chose can reach it.
+        if (alias.Length > SharePointAddress.MaxQueryString)
+            throw new EvaluationBlockedException(AddressTooLongNotice);
+        return "_api/web/" + function + "(decodedUrl=@p)?" + alias;
+    }
+
+    /// <summary>A read of the folder with this unique ID: the same short address for any path.</summary>
+    public static string ById(Guid id, string query)
+    {
+        if (id == Guid.Empty)
+            throw new EvaluationBlockedException("Folder ID required.");
+        return "_api/web/GetFolderById('" + id.ToString("D") + "')?" + query;
+    }
+
     public static HttpIntent FindFolder(SharePointTarget target, string parent, string name)
     {
         target.ValidateParent(parent);
-        FolderNames.Validate(name);
-        string path = parent + "/" + name;
+        FolderNames.Validate(name, parent == target.EntryPath);
         return new HttpIntent
         {
-            RelativeUri =
-                "_api/web/GetFolderByServerRelativePath(decodedUrl='"
-                + Uri.EscapeDataString(path.Replace("'", "''"))
-                + "')?$select=Exists,UniqueId,ServerRelativeUrl,ListItemAllFields/Id,ListItemAllFields/UniqueId,ListItemAllFields/FileLeafRef,ListItemAllFields/FileRef,ListItemAllFields/FSObjType,ListItemAllFields/HasUniqueRoleAssignments&$expand=ListItemAllFields",
+            RelativeUri = ByPath(
+                "GetFolderByServerRelativePath",
+                parent + "/" + name,
+                SharePointAddress.FolderLookup
+            ),
         };
     }
+
+    /// <summary>
+    /// Reads a folder Documents already found by its unique ID, with the same fields as a
+    /// lookup by path, so a long path never makes the address longer.
+    /// </summary>
+    public static HttpIntent FindFolder(Guid id) =>
+        new HttpIntent { RelativeUri = ById(id, SharePointAddress.FolderLookup) };
 
     public static HttpIntent CreateFolder(SharePointTarget target, string parent, string name)
     {
         target.ValidateParent(parent);
-        FolderNames.Validate(name);
+        FolderNames.Validate(name, parent == target.EntryPath);
         // Folder path is decoded ResourcePath input; never URL-escape the field value itself.
         var origin = target.Web.GetLeftPart(UriPartial.Authority);
         return new HttpIntent
@@ -140,17 +193,31 @@ public static class SharePointRequests
     public static HttpIntent AddMember(int ownedGroupId, string approvedLogin)
     {
         Positive(ownedGroupId);
-        if (
-            string.IsNullOrWhiteSpace(approvedLogin)
-            || approvedLogin.Length > 500
-            || approvedLogin.IndexOfAny(new[] { '\r', '\n' }) >= 0
-        )
-            throw new EvaluationBlockedException("Approved normalized login required.");
+        Login(approvedLogin);
         return new HttpIntent
         {
             Method = "POST",
             RelativeUri = "_api/web/sitegroups(" + ownedGroupId + ")/users",
             Body = JsonWire.Write(new AddMemberBody { Login = approvedLogin }),
+        };
+    }
+
+    /// <summary>
+    /// Resolves a group claim to a site principal with SPWeb.EnsureUser so it can be added to the
+    /// Documents group. POST _api/web/ensureuser with { "logonName": ... } is documented in the
+    /// Webs REST API reference:
+    /// https://learn.microsoft.com/previous-versions/office/developer/sharepoint-rest-reference/dn499819(v=office.15)
+    /// EnsureUser returns the principal already on the site when there is one, so repeating it
+    /// is harmless.
+    /// </summary>
+    public static HttpIntent EnsurePrincipal(string approvedLogin)
+    {
+        Login(approvedLogin);
+        return new HttpIntent
+        {
+            Method = "POST",
+            RelativeUri = "_api/web/ensureuser",
+            Body = JsonWire.Write(new EnsureUserBody { Login = approvedLogin }),
         };
     }
 
@@ -170,10 +237,18 @@ public static class SharePointRequests
         };
     }
 
-    public static HttpIntent ReadLibraryAssignments(SharePointTarget target) =>
+    /// <summary>
+    /// Stops the library inheriting its site's permissions. copyRoleAssignments=true keeps a copy
+    /// of the site's current permissions as the library's starting point; clearSubscopes=false
+    /// leaves folders and items with their own permissions as they are.
+    /// </summary>
+    public static HttpIntent BreakInheritance(SharePointTarget target) =>
         new HttpIntent
         {
-            RelativeUri = List(target) + "/roleassignments?$expand=Member,RoleDefinitionBindings",
+            Method = "POST",
+            RelativeUri =
+                List(target)
+                + "/breakroleinheritance(copyRoleAssignments=true,clearSubscopes=false)",
         };
 
     public static HttpIntent ChangeOwnedGrant(
@@ -198,6 +273,16 @@ public static class SharePointRequests
                 + resolvedRoleId
                 + ")",
         };
+    }
+
+    private static void Login(string approvedLogin)
+    {
+        if (
+            string.IsNullOrWhiteSpace(approvedLogin)
+            || approvedLogin.Length > 500
+            || approvedLogin.IndexOfAny(new[] { '\r', '\n' }) >= 0
+        )
+            throw new EvaluationBlockedException("Approved normalized login required.");
     }
 
     private static void Positive(int id)
@@ -258,6 +343,13 @@ public sealed class AddMemberBody
 
     [DataMember(Name = "__metadata")]
     public MemberMetadata Metadata { get; set; } = new MemberMetadata();
+}
+
+[DataContract]
+public sealed class EnsureUserBody
+{
+    [DataMember(Name = "logonName")]
+    public string Login { get; set; } = "";
 }
 
 [DataContract]

@@ -6,6 +6,7 @@ using Ascentix.Documents.Dataverse;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Metadata;
+using Microsoft.Xrm.Sdk.Metadata.Query;
 using Microsoft.Xrm.Sdk.Query;
 using Xunit;
 
@@ -49,6 +50,291 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
+    public void NativeLocationIsNamedAfterTheRootFolder()
+    {
+        var fixture = new Fixture();
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        var row = fixture.Service.Rows[completed.LocationId];
+        Assert.Equal(fixture.Binding.Candidate, row.GetAttributeValue<string>("name"));
+    }
+
+    [Fact]
+    public void ALongRootFolderNameIsCutToTheLocationNameLimit()
+    {
+        var fixture = new Fixture();
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        var binding = JsonWire.Read<FolderStep>(JsonWire.Write(fixture.Binding));
+        binding.Key += "-long";
+        binding.Candidate = new string('a', 200);
+        binding.PhysicalId = completed.PhysicalId;
+        binding.PhysicalPath = "/sites/proto/General/" + binding.Candidate;
+        var id = new NativeLocations(fixture.Service).Complete(
+            binding,
+            fixture.NativeParent,
+            fixture.EntryUrl,
+            fixture.NativeSite
+        );
+        var row = fixture.Service.Rows[id];
+        Assert.Equal(new string('a', 160), row.GetAttributeValue<string>("name"));
+        Assert.Equal(binding.Candidate, row.GetAttributeValue<string>("relativeurl"));
+    }
+
+    [Fact]
+    public void AnOlderNativeLocationTakesTheFolderNameButAnAdminRenameStays()
+    {
+        var fixture = new Fixture();
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        var binding = JsonWire.Read<FolderStep>(JsonWire.Write(fixture.Binding));
+        binding.PhysicalId = completed.PhysicalId;
+        binding.PhysicalPath = "/sites/proto/General/" + binding.Candidate;
+        void CompleteAgain() =>
+            new NativeLocations(fixture.Service).Complete(
+                binding,
+                fixture.NativeParent,
+                fixture.EntryUrl,
+                fixture.NativeSite
+            );
+        // A location created by an earlier version carries the old generated name.
+        string Name() =>
+            fixture.Service.Rows[completed.LocationId].GetAttributeValue<string>("name");
+        fixture.Service.Rows[completed.LocationId]["name"] = "Documents " + binding.Section;
+        CompleteAgain();
+        Assert.Equal(binding.Candidate, Name());
+        fixture.Service.Rows[completed.LocationId]["name"] = "Client folder";
+        CompleteAgain();
+        Assert.Equal("Client folder", Name());
+    }
+
+    /// <summary>The site collection Dataverse computed for a location; null when missing.</summary>
+    private static object? SiteCollection(Fixture fixture, Guid location) =>
+        fixture.Service.Rows[location].GetAttributeValue<object>("sitecollectionid");
+
+    /// <summary>The updates sent to the location, each checked against the version read.</summary>
+    private static UpdateRequest[] LocationUpdates(Fixture fixture, Guid location)
+    {
+        var updates = fixture
+            .Service.Updates.Where(u =>
+                u.Target.LogicalName == "sharepointdocumentlocation" && u.Target.Id == location
+            )
+            .ToArray();
+        Assert.All(
+            updates,
+            u =>
+            {
+                Assert.Equal(ConcurrencyBehavior.IfRowVersionMatches, u.ConcurrencyBehavior);
+                Assert.False(string.IsNullOrEmpty(u.Target.RowVersion));
+            }
+        );
+        return updates;
+    }
+
+    [Fact]
+    public void ALibraryLocationMissingItsSiteCollectionIsRepairedBeforeTheRecordLocationIsMade()
+    {
+        var fixture = new Fixture();
+        // Made before the site finished validation, so Dataverse left the site collection empty.
+        fixture.Service.Rows[fixture.NativeParent]["sitecollectionid"] = null;
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        Assert.Equal("Applied", completed.Status);
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, fixture.NativeParent));
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, completed.LocationId));
+        var repair = Assert.Single(LocationUpdates(fixture, fixture.NativeParent));
+        Assert.Equal(
+            new EntityReference("sharepointsite", fixture.NativeSite),
+            repair.Target.GetAttributeValue<EntityReference>("parentsiteorlocation")
+        );
+        Assert.Empty(LocationUpdates(fixture, completed.LocationId));
+    }
+
+    [Fact]
+    public void AnExistingRecordLocationMissingItsSiteCollectionIsRepairedOnComplete()
+    {
+        var fixture = new Fixture();
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        var binding = JsonWire.Read<FolderStep>(JsonWire.Write(fixture.Binding));
+        binding.PhysicalId = completed.PhysicalId;
+        binding.PhysicalPath = "/sites/proto/General/" + binding.Candidate;
+        // Both rows were made while the site was unvalidated.
+        fixture.Service.Rows[fixture.NativeParent]["sitecollectionid"] = null;
+        fixture.Service.Rows[completed.LocationId]["sitecollectionid"] = null;
+        fixture.Service.Updates.Clear();
+        fixture.Service.Transaction(() =>
+            new NativeLocations(fixture.Service).Complete(
+                binding,
+                fixture.NativeParent,
+                fixture.EntryUrl,
+                fixture.NativeSite
+            )
+        );
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, fixture.NativeParent));
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, completed.LocationId));
+        var repair = Assert.Single(LocationUpdates(fixture, completed.LocationId));
+        Assert.Equal(
+            new EntityReference("sharepointdocumentlocation", fixture.NativeParent),
+            repair.Target.GetAttributeValue<EntityReference>("parentsiteorlocation")
+        );
+        Assert.Single(LocationUpdates(fixture, fixture.NativeParent));
+    }
+
+    [Fact]
+    public void ARecordLocationRepairAlsoRenamesItInOneWrite()
+    {
+        var fixture = new Fixture();
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        var binding = JsonWire.Read<FolderStep>(JsonWire.Write(fixture.Binding));
+        binding.PhysicalId = completed.PhysicalId;
+        binding.PhysicalPath = "/sites/proto/General/" + binding.Candidate;
+        fixture.Service.Rows[completed.LocationId]["sitecollectionid"] = null;
+        fixture.Service.Rows[completed.LocationId]["name"] = "Documents " + binding.Section;
+        fixture.Service.Updates.Clear();
+        new NativeLocations(fixture.Service).Complete(
+            binding,
+            fixture.NativeParent,
+            fixture.EntryUrl,
+            fixture.NativeSite
+        );
+        Assert.Single(LocationUpdates(fixture, completed.LocationId));
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, completed.LocationId));
+        Assert.Equal(
+            binding.Candidate,
+            fixture.Service.Rows[completed.LocationId].GetAttributeValue<string>("name")
+        );
+    }
+
+    [Fact]
+    public void LocationsThatHaveTheirSiteCollectionAreNotWritten()
+    {
+        var fixture = new Fixture();
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        var binding = JsonWire.Read<FolderStep>(JsonWire.Write(fixture.Binding));
+        binding.PhysicalId = completed.PhysicalId;
+        binding.PhysicalPath = "/sites/proto/General/" + binding.Candidate;
+        new NativeLocations(fixture.Service).Complete(
+            binding,
+            fixture.NativeParent,
+            fixture.EntryUrl,
+            fixture.NativeSite
+        );
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, completed.LocationId));
+        Assert.DoesNotContain(
+            fixture.Service.Updates,
+            u => u.Target.LogicalName == "sharepointdocumentlocation"
+        );
+    }
+
+    [Fact]
+    public void ARecordLocationUnderAnUnvalidatedSiteCompletesWithoutFaulting()
+    {
+        var fixture = new Fixture();
+        fixture.Service.UnvalidatedSites.Add(fixture.NativeSite);
+        fixture.Service.Rows[fixture.NativeParent]["sitecollectionid"] = null;
+        var verified = fixture.ObserveAndFinalize(
+            fixture.Preflight(fixture.Claim()),
+            fixture.Item(Guid.NewGuid(), null)
+        );
+        var completed = fixture.Call("Complete", verified);
+        Assert.Equal("Applied", completed.Status);
+        // The site is still unvalidated: the repair runs once and the record row stays missing
+        // until a later run, with no write that cannot help.
+        Assert.Null(SiteCollection(fixture, fixture.NativeParent));
+        Assert.Null(SiteCollection(fixture, completed.LocationId));
+        Assert.Single(LocationUpdates(fixture, fixture.NativeParent));
+        Assert.Empty(LocationUpdates(fixture, completed.LocationId));
+    }
+
+    [Fact]
+    public void ALibraryLocationMadeUnderAnUnvalidatedSiteIsRepairedWhenReused()
+    {
+        var fixture = new Fixture();
+        fixture.Service.UnvalidatedSites.Add(fixture.NativeSite);
+        var native = new NativeLocations(fixture.Service);
+        Guid Ensure() =>
+            fixture.Service.Transaction(() =>
+                native.EnsureLibrary(
+                    fixture.SiteId,
+                    Guid.NewGuid(),
+                    fixture.ListId,
+                    fixture.NativeSite,
+                    "https://example.sharepoint.com/sites/proto",
+                    "/sites/proto/Archive",
+                    "Archive"
+                )
+            );
+        var library = Ensure();
+        Assert.Null(SiteCollection(fixture, library));
+        // Reused while the site is still unvalidated: the repair leaves it missing and faults
+        // nothing.
+        Assert.Equal(library, Ensure());
+        Assert.Null(SiteCollection(fixture, library));
+        fixture.Service.UnvalidatedSites.Clear();
+        fixture.Service.Updates.Clear();
+        Assert.Equal(library, Ensure());
+        Assert.Equal(fixture.NativeSite, SiteCollection(fixture, library));
+        Assert.Single(LocationUpdates(fixture, library));
+        fixture.Service.Updates.Clear();
+        Ensure();
+        Assert.Empty(LocationUpdates(fixture, library));
+    }
+
+    [Fact]
+    public void TheDoubleComputesTheSiteCollectionAndRefusesWritesToIt()
+    {
+        var service = new MemoryService();
+        var site = Guid.NewGuid();
+        var id = service.Create(
+            new Entity("sharepointdocumentlocation")
+            {
+                ["parentsiteorlocation"] = new EntityReference("sharepointsite", site),
+            }
+        );
+        Assert.Equal(site, service.Rows[id].GetAttributeValue<object>("sitecollectionid"));
+        Assert.Throws<InvalidOperationException>(() =>
+            service.Create(new Entity("sharepointdocumentlocation") { ["sitecollectionid"] = site })
+        );
+        Assert.Throws<InvalidOperationException>(() =>
+            service.Execute(
+                new UpdateRequest
+                {
+                    Target = new Entity("sharepointdocumentlocation", id)
+                    {
+                        RowVersion = service.Rows[id].RowVersion,
+                        ["sitecollectionid"] = site,
+                    },
+                    ConcurrencyBehavior = ConcurrencyBehavior.IfRowVersionMatches,
+                }
+            )
+        );
+    }
+
+    [Fact]
     public void NativeLocationAndCompletionRollbackTogetherOnCasConflict()
     {
         var fixture = new Fixture();
@@ -75,28 +361,48 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
-    public void ExpiredClaimsNeverTakeOverWithoutSeparateRecoveryPermit()
+    public void AnExpiredClaimIsTakenOverWithoutAnyOperatorStep()
     {
         var fixture = new Fixture();
         var claim = fixture.Claim();
         fixture.Now = fixture.Now.AddMinutes(6);
-        Assert.Equal("Quarantined", fixture.Claim("run-2").Status);
         Assert.Throws<EvaluationBlockedException>(() => fixture.Call("Renew", claim));
-        var request = new WorkerRequest
-        {
-            Key = fixture.Operation.Key,
-            RunId = "run-1",
-            Token = claim.Token,
-            Evidence =
-                "Operator verified prior run terminated and outstanding calls resolved: test receipt",
-        };
-        var permitted = fixture.Service.Transaction(() =>
-            fixture.Coordinator.PermitRecovery(request, true)
-        );
-        Assert.Equal("RecoveryPermitted", permitted.Status);
         var recovered = fixture.Claim("run-2");
         Assert.Equal("Read", recovered.Status);
         Assert.NotEqual(claim.Token, recovered.Token);
+        Assert.Contains(
+            fixture.Service.Rows.Values,
+            r =>
+                r.LogicalName == "asx_attempt"
+                && r.GetAttributeValue<string>("asx_payload").Contains("RecoveryClaim")
+        );
+    }
+
+    [Fact]
+    public void AClaimA0103PermitLeftIsAnOrdinaryExpiredClaim()
+    {
+        var fixture = new Fixture();
+        var claim = fixture.Claim();
+        var row = fixture.Service.Rows[
+            DocumentStore.StableId(
+                "asx_claim:" + WorkCoordination.Operation(fixture.Service, fixture.Operation.Key)
+            )
+        ];
+        // 0.1.0.3 evidence recovery stored these two members on the claim.
+        // The two members are removed first so the payload carries each exactly once, whether or
+        // not the current model still writes them.
+        var payload = System.Text.RegularExpressions.Regex.Replace(
+            row.GetAttributeValue<string>("asx_payload"),
+            "\"(RecoveryPermitted|TerminationEvidence)\":[^,}]*,?",
+            ""
+        );
+        row["asx_payload"] = payload.Replace(
+            "\"HttpOutstanding\"",
+            "\"RecoveryPermitted\":true,\"TerminationEvidence\":\"Run ended.\",\"HttpOutstanding\""
+        );
+        Assert.Equal("Quarantined", fixture.Claim("run-2").Status);
+        fixture.Now = fixture.Now.AddMinutes(6);
+        Assert.Equal("Read", fixture.Claim("run-3").Status);
     }
 
     [Fact]
@@ -120,25 +426,38 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
-    public void KnownCreateResponseStillRequiresIndependentFolderAndFinalPolicyReads()
+    public void KnownCreateResponseStillRequiresIndependentFolderAndFinalParentReads()
     {
         var fixture = new Fixture();
         var absent = fixture.Observe(fixture.Preflight(fixture.Claim()), Rows<ItemObservation>());
         var prepared = fixture.Call("PrepareCreate", absent);
         var read = fixture.Call("CreateResponse", prepared, CreateBody(), 200);
         Assert.Throws<EvaluationBlockedException>(() => fixture.Call("Complete", read));
-        var finalAcl = fixture.Observe(read, Rows(fixture.Item(Guid.NewGuid(), null)));
-        Assert.Equal("FinalAcl", finalAcl.ProbeKind);
-        Assert.Throws<EvaluationBlockedException>(() => fixture.Call("Complete", finalAcl));
+        var finalParent = fixture.Observe(read, Rows(fixture.Item(Guid.NewGuid(), null)));
+        Assert.Equal("FinalParent", finalParent.ProbeKind);
+        Assert.Throws<EvaluationBlockedException>(() => fixture.Call("Complete", finalParent));
     }
 
     [Fact]
-    public void FinalAclDriftBlocksAppliedAndReleasesKnownWriter()
+    public void FinalParentIdentityChangeBlocksAppliedAndReleasesKnownWriter()
     {
         var fixture = new Fixture();
         var read = fixture.Preflight(fixture.Claim());
-        var finalAcl = fixture.Observe(read, Rows(fixture.Item(Guid.NewGuid(), null)));
-        var drift = fixture.Observe(finalAcl, Rows<AclAssignment>());
+        var finalParent = fixture.Observe(read, Rows(fixture.Item(Guid.NewGuid(), null)));
+        Assert.Equal("FinalParent", finalParent.ProbeKind);
+        var drift = fixture.Observe(
+            finalParent,
+            JsonWire.Write(
+                new ODataEnvelope<FolderObservation>
+                {
+                    Data = new FolderObservation
+                    {
+                        Id = Guid.NewGuid(),
+                        Path = "/sites/proto/General",
+                    },
+                }
+            )
+        );
         Assert.Equal("Blocked", drift.Status);
         Assert.NotEqual(
             "Applied",
@@ -166,7 +485,7 @@ public sealed class DurableWorkerTests
         Assert.Throws<EvaluationBlockedException>(() =>
             fixture.Observe(claim, fixture.LibraryBody())
         );
-        Assert.Equal("Acl", next.ProbeKind);
+        Assert.Equal("Parent", next.ProbeKind);
     }
 
     [Fact]
@@ -274,7 +593,7 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
-    public void WorkerRejectsMissingTransactionAndIncompleteAcl()
+    public void WorkerRejectsMissingTransaction()
     {
         var fixture = new Fixture();
         Assert.Throws<EvaluationBlockedException>(() =>
@@ -288,8 +607,6 @@ public sealed class DurableWorkerTests
                 false
             )
         );
-        var partial = new ODataRows<AclAssignment> { Rows = fixture.Acl.Rows, Next = "next-page" };
-        Assert.Throws<EvaluationBlockedException>(() => SharePointObservations.AclHash(partial));
     }
 
     [Fact]
@@ -331,6 +648,43 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
+    public void InFlightWorkForARemovedTableStopsBeforeItsNextWrite()
+    {
+        var f = new Fixture();
+        f.AllowedTables = new[] { "account" };
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+        f.AllowedTables = new[] { "contact" };
+        var stopped = f.Call("PrepareCreate", work);
+        Assert.Equal("Cancelled", stopped.Status);
+        Assert.Contains(stopped.Notices, n => n.Contains("account is no longer enabled"));
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.False(stored.ExternalSubmitted);
+        Assert.Equal("TableNotEnabled", stored.ErrorCode);
+    }
+
+    [Fact]
+    public void SentCreateForARemovedTableFinishesAndReleasesItsWriterSlot()
+    {
+        var f = new Fixture();
+        f.AllowedTables = new[] { "account" };
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        string[] Writers() =>
+            f
+                .Store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey)
+                .Value.Writers;
+        Assert.NotEmpty(Writers());
+        f.AllowedTables = new[] { "contact" };
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        Assert.Equal("Read", work.Status);
+        var verified = f.ObserveAndFinalize(work, f.Item(Guid.NewGuid(), null));
+        Assert.Equal("Applied", f.Call("Complete", verified).Status);
+        Assert.Empty(Writers());
+    }
+
+    [Fact]
     public void WorkerSourceScopeIsCheckedBeforeReadingQueuedBusinessRecord()
     {
         var fixture = new Fixture(seedBinding: false);
@@ -359,20 +713,34 @@ public sealed class DurableWorkerTests
         var fixture = new Fixture();
         Assert.Throws<EvaluationBlockedException>(() => RuntimeProfile.Read(fixture.Service));
         var worker = Guid.NewGuid();
-        fixture.Service.Seed(
-            new Entity("asx_runtime", Guid.NewGuid())
-            {
-                ["asx_name"] = "Default",
-                ["asx_workeruserid"] = worker.ToString(),
-                ["asx_enabled"] = false,
-                ["asx_allowedtables"] = "[\"account\"]",
-                ["asx_sharepointhosts"] = "[\"example.sharepoint.com\"]",
-            }
-        );
+        RuntimeSeed.Seed(fixture.Service, worker, "account");
         var profile = RuntimeProfile.Read(fixture.Service);
         Assert.Equal(worker, profile.WorkerId);
         Assert.False(profile.Enabled);
         Assert.Equal(new[] { "account" }, profile.Tables);
+    }
+
+    /// <summary>
+    /// Adds a SharePoint report of hand-set (unique) permissions to a folder or folder-item read.
+    /// The product no longer requests this field, so the edit works on the JSON text.
+    /// </summary>
+    /// <param name="body">A serialized folder observation or folder lookup observation.</param>
+    /// <returns>The same body with <c>ListItemAllFields/HasUniqueRoleAssignments</c> set to true.</returns>
+    internal static string WithUniquePermissions(string body)
+    {
+        body = System.Text.RegularExpressions.Regex.Replace(
+            body,
+            "\"HasUniqueRoleAssignments\":(true|false|null),?",
+            ""
+        );
+        body = body.Replace("\"ListItemAllFields\":null", "\"ListItemAllFields\":{}");
+        if (!body.Contains("\"ListItemAllFields\":{"))
+            body = body.Replace("{\"d\":{", "{\"d\":{\"ListItemAllFields\":{},");
+        return body.Replace(
+                "\"ListItemAllFields\":{",
+                "\"ListItemAllFields\":{\"HasUniqueRoleAssignments\":true,"
+            )
+            .Replace(",}", "}");
     }
 
     private static string Rows<T>(params T[] values) =>
@@ -397,7 +765,7 @@ public sealed class DurableWorkerTests
                 new ODataEnvelope<ODataRows<T>> { Data = new ODataRows<T> { Rows = values } }
             );
 
-    private static string CreateBody() =>
+    internal static string CreateBody() =>
         JsonWire.Write(
             new ODataEnvelope<CreateObservation>
             {
@@ -481,18 +849,21 @@ public sealed class DurableWorkerTests
     }
 
     [Fact]
-    public void RetryAfterHonorsServerDelayAndRejectsUnboundedInput()
+    public void RetryAfterHonorsServerDelayUpToTheFifteenMinuteCap()
     {
         var now = new DateTime(2026, 9, 8, 8, 0, 0, DateTimeKind.Utc);
-        Assert.Equal(now.AddHours(1), WorkerCoordinator.RetryAt(now, 1, "3600"));
+        Assert.Equal(now.AddMinutes(10), WorkerCoordinator.RetryAt(now, 1, "600"));
+        Assert.Equal(now.AddMinutes(15), WorkerCoordinator.RetryAt(now, 1, "3600"));
         Assert.Equal(
-            now.AddMinutes(30),
+            now.AddMinutes(12),
+            WorkerCoordinator.RetryAt(now, 1, now.AddMinutes(12).ToString("r"))
+        );
+        Assert.Equal(
+            now.AddMinutes(15),
             WorkerCoordinator.RetryAt(now, 1, now.AddMinutes(30).ToString("r"))
         );
         Assert.Equal(now.AddSeconds(60), WorkerCoordinator.RetryAt(now, 2, "1"));
-        Assert.Throws<EvaluationBlockedException>(() =>
-            WorkerCoordinator.RetryAt(now, 1, "999999999999")
-        );
+        Assert.Equal(now.AddMinutes(15), WorkerCoordinator.RetryAt(now, 1, "999999999999"));
     }
 
     [Fact]
@@ -618,13 +989,10 @@ public sealed class DurableWorkerTests
                 IncludedSections = Array.Empty<string>(),
             }
         );
-        Assert.Throws<EvaluationBlockedException>(() => f.Call("PrepareCreate", absent));
-        Assert.False(
-            f.Store.Require<OperationDocument>(
-                "asx_operation",
-                f.Operation.Key
-            ).Value.ExternalSubmitted
-        );
+        Assert.Equal("Superseded", f.Call("PrepareCreate", absent).Status);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.False(stored.ExternalSubmitted);
+        Assert.Equal("Superseded", stored.Status);
     }
 
     [Fact]
@@ -726,13 +1094,17 @@ public sealed class DurableWorkerTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void NestedEntryCannotInheritAnUnreviewedIntermediateScope(bool driftAtFinal)
+    [InlineData("None")]
+    [InlineData("EmptyId")]
+    [InlineData("OtherPath")]
+    public void FolderUnderAncestorsWithHandSetPermissionsIsCreatedUnlessAncestorIdentityChanges(
+        string finalChange
+    )
     {
         var f = new Fixture();
         string entry = "/sites/proto/General/Archive/Entry";
         f.Service.Rows[f.LibraryId]["asx_entryurl"] = "https://example.sharepoint.com" + entry;
+        f.Service.Rows[f.NativeParent]["relativeurl"] = "General/Archive/Entry";
         var work = f.Claim();
         work = f.Observe(
             work,
@@ -751,51 +1123,106 @@ public sealed class DurableWorkerTests
                 }
             )
         );
-        work = f.Observe(work, f.AclBody());
-        string parent = JsonWire.Write(
-            new ODataEnvelope<FolderObservation>
-            {
-                Data = new FolderObservation
+        string parent = WithUniquePermissions(
+            JsonWire.Write(
+                new ODataEnvelope<FolderObservation>
                 {
-                    Id = f.EntryId,
-                    Path = entry,
-                    Item = new ParentListItem { UniquePermissions = false },
-                },
-            }
+                    Data = new FolderObservation { Id = f.EntryId, Path = entry },
+                }
+            )
         );
-        string ancestor(bool unique) =>
+        string Ancestor(Guid id, string path) =>
+            WithUniquePermissions(
+                JsonWire.Write(
+                    new ODataEnvelope<FolderObservation>
+                    {
+                        Data = new FolderObservation { Id = id, Path = path },
+                    }
+                )
+            );
+        var ancestorId = Guid.NewGuid();
+        work = f.Observe(work, parent);
+        Assert.Equal("Ancestor", work.ProbeKind);
+        work = f.Observe(work, Ancestor(ancestorId, "/sites/proto/General/Archive"));
+        Assert.Equal("Folder", work.ProbeKind);
+        work = f.Observe(work, Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Path = entry + "/Example";
+        work = f.Observe(work, Rows(item));
+        Assert.Equal("FinalParent", work.ProbeKind);
+        work = f.Observe(work, parent);
+        Assert.Equal("FinalAncestor", work.ProbeKind);
+        work = f.Observe(
+            work,
+            Ancestor(
+                finalChange == "EmptyId" ? Guid.Empty : ancestorId,
+                finalChange == "OtherPath"
+                    ? "/sites/proto/General/Moved"
+                    : "/sites/proto/General/Archive"
+            )
+        );
+        if (finalChange != "None")
+        {
+            // The kept identity and path checks still stop the work at the final read.
+            Assert.Equal("Blocked", work.Status);
+            Assert.Equal(
+                "ObservationMismatch",
+                f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value.ErrorCode
+            );
+            return;
+        }
+        Assert.Equal("Verified", work.Status);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+    }
+
+    [Fact]
+    public void ChildFolderUnderAParentWithHandSetPermissionsIsCreatedAndApplied()
+    {
+        var f = new Fixture(false);
+        var child = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        child.Key += "-child";
+        child.Node = "invoices";
+        child.ParentBinding = "root";
+        child.OriginalName = child.Candidate = "Invoices";
+        f.Operation.Folders = new[] { f.Binding, child };
+        f.Store.Create("asx_operation", f.Operation);
+        var root = Guid.NewGuid();
+        var work = f.ObserveAndFinalize(f.Preflight(f.Claim()), f.Item(root, null));
+        Assert.Equal("Pending", f.Call("Complete", work).Status);
+        work = f.Claim("child-run");
+        work = f.Observe(work, f.LibraryBody());
+        string parent = WithUniquePermissions(
             JsonWire.Write(
                 new ODataEnvelope<FolderObservation>
                 {
                     Data = new FolderObservation
                     {
-                        Id = Guid.NewGuid(),
-                        Path = "/sites/proto/General/Archive",
-                        Item = new ParentListItem { UniquePermissions = unique },
+                        Id = root,
+                        Path = "/sites/proto/General/Example",
                     },
                 }
-            );
-        work = f.Observe(work, parent);
-        Assert.Equal("Ancestor", work.ProbeKind);
-        work = f.Observe(work, ancestor(!driftAtFinal));
-        if (driftAtFinal)
-        {
-            Assert.Equal("Folder", work.ProbeKind);
-            var item = f.Item(Guid.NewGuid(), null);
-            item.Path = entry + "/Example";
-            work = f.Observe(work, Rows(item));
-            work = f.Observe(work, f.AclBody());
-            work = f.Observe(work, parent);
-            Assert.Equal("FinalAncestor", work.ProbeKind);
-            work = f.Observe(work, ancestor(true));
-        }
-        Assert.Equal("Blocked", work.Status);
-        Assert.DoesNotContain(
-            f.Service.Rows.Values,
-            r =>
-                r.LogicalName == "sharepointdocumentlocation"
-                && r.GetAttributeValue<EntityReference>("regardingobjectid") != null
+            )
         );
+        work = f.Observe(work, parent);
+        Assert.Equal("Folder", work.ProbeKind);
+        work = f.Observe(work, Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Name = "Invoices";
+        item.Path += "/Invoices";
+        // The new folder also reports hand-set permissions, for example from a SharePoint policy.
+        work = f.Observe(work, WithUniquePermissions(Rows(item)));
+        Assert.Equal("FinalParent", work.ProbeKind);
+        work = f.Observe(work, parent);
+        Assert.Equal("Verified", work.Status);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
     }
 
     [Fact]
@@ -855,16 +1282,10 @@ public sealed class DurableWorkerTests
         );
         work = f.Claim("child-run");
         work = f.Observe(work, f.LibraryBody());
-        work = f.Observe(work, f.AclBody());
         string parent = JsonWire.Write(
             new ODataEnvelope<FolderObservation>
             {
-                Data = new FolderObservation
-                {
-                    Id = root,
-                    Path = "/sites/proto/General/Example",
-                    Item = new ParentListItem { UniquePermissions = false },
-                },
+                Data = new FolderObservation { Id = root, Path = "/sites/proto/General/Example" },
             }
         );
         work = f.Observe(work, parent);
@@ -872,7 +1293,6 @@ public sealed class DurableWorkerTests
         item.Name = "Invoices";
         item.Path += "/Invoices";
         work = f.Observe(work, Rows(item));
-        work = f.Observe(work, f.AclBody());
         work = f.Observe(work, parent);
         Assert.Equal("Verified", work.Status);
         work = f.Call("Complete", work);
@@ -898,37 +1318,1582 @@ public sealed class DurableWorkerTests
         );
     }
 
+    private const string Moved = "/sites/proto/Shared Documents";
+
+    /// <summary>Re-points the fixture library after SharePoint renamed it, as the worker does.</summary>
+    private static void Repointed(Fixture f, string entryPath)
+    {
+        string key = CatalogAdministration.RepointPrefix + Guid.NewGuid().ToString("N");
+        f.Store.Create(
+            "asx_operation",
+            new CatalogProbe
+            {
+                Key = key,
+                Status = "Captured",
+                Repoint = true,
+                CatalogId = f.LibraryId,
+                SiteId = f.SiteId,
+                ListId = f.ListId,
+                EntryId = f.EntryId,
+                NativeSiteId = f.NativeSite,
+                WebId = Guid.Parse(f.Service.Rows[f.SiteId].GetAttributeValue<string>("asx_webid")),
+                WebUrl = "https://example.sharepoint.com/sites/proto",
+                EntryUrl = "https://example.sharepoint.com" + entryPath,
+            }
+        );
+        Assert.Equal(
+            "Approved",
+            f.Service.Transaction(() =>
+                new CatalogAdministration(f.Service).ApplyRepoint(key)
+            ).Status
+        );
+    }
+
+    private static string Folder(Guid id, string path) =>
+        JsonWire.Write(
+            new ODataEnvelope<FolderObservation>
+            {
+                Data = new FolderObservation { Id = id, Path = path },
+            }
+        );
+
+    private static string Library(Fixture f, string root) =>
+        JsonWire.Write(
+            new ODataEnvelope<LibraryObservation>
+            {
+                Data = new LibraryObservation
+                {
+                    Id = f.ListId,
+                    Root = new FolderObservation { Id = f.EntryId, Path = root },
+                },
+            }
+        );
+
     [Fact]
-    public void FreshClaimRevalidatesCurrentApprovedPolicyButInFlightGenerationChangesBlock()
+    public void InFlightFolderWorkFollowsARepointedLibraryAndReadsAgainUnderTheNewPath()
+    {
+        var f = new Fixture(false);
+        var child = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        child.Key += "-child";
+        child.Node = "invoices";
+        child.ParentBinding = "root";
+        child.OriginalName = child.Candidate = "Invoices";
+        f.Operation.Folders = new[] { f.Binding, child };
+        f.Store.Create("asx_operation", f.Operation);
+        var root = Guid.NewGuid();
+        var work = f.ObserveAndFinalize(f.Preflight(f.Claim()), f.Item(root, null));
+        Assert.Equal("Pending", f.Call("Complete", work).Status);
+        work = f.Claim("child-run");
+        work = f.Observe(work, f.LibraryBody());
+        Assert.Equal("Parent", work.ProbeKind);
+        // SharePoint renames the library while the child step's parent read is in flight.
+        Repointed(f, Moved);
+        Assert.Equal(
+            "https://example.sharepoint.com" + Moved,
+            f.Service.Rows[f.LibraryId].GetAttributeValue<string>("asx_entryurl")
+        );
+        Assert.Equal(
+            "Shared Documents",
+            f.Service.Rows[f.NativeParent].GetAttributeValue<string>("relativeurl")
+        );
+        // The answer to the read issued under the old path is discarded; the job reads again.
+        work = f.Observe(work, Folder(root, "/sites/proto/General/Example"));
+        Assert.Equal("Library", work.ProbeKind);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.Equal(Moved, stored.EntryPath);
+        Assert.Equal(Moved + "/Example", stored.Folders[0].PhysicalPath);
+        Assert.Equal(Moved + "/Example", stored.ParentPath);
+        work = f.Observe(work, Library(f, Moved));
+        Assert.Equal("Parent", work.ProbeKind);
+        // The parent is read by its ID; its answer must show the moved path.
+        Assert.StartsWith(
+            "_api/web/GetFolderById('" + root.ToString("D") + "')",
+            work.Http!.RelativeUri
+        );
+        work = f.Observe(work, Folder(root, Moved + "/Example"));
+        Assert.Equal("Folder", work.ProbeKind);
+        work = f.Observe(work, Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        Assert.Contains("Shared Documents/Example", work.Http!.Body!.Replace("\\/", "/"));
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Name = "Invoices";
+        item.Path = Moved + "/Example/Invoices";
+        work = f.Observe(work, Rows(item));
+        Assert.Equal("FinalParent", work.ProbeKind);
+        work = f.Observe(work, Folder(root, Moved + "/Example"));
+        Assert.Equal("Verified", work.Status);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        Assert.Single(
+            f.Service.Rows.Values,
+            r =>
+                r.LogicalName == "sharepointdocumentlocation"
+                && r.GetAttributeValue<EntityReference>("regardingobjectid") != null
+        );
+    }
+
+    /// <summary>A two-folder job whose top folder exists, as stored before EntryPath existed.</summary>
+    private static Guid StoredBeforeEntryPath(Fixture f, bool claimChild)
+    {
+        var child = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        child.Key += "-child";
+        child.Node = "invoices";
+        child.ParentBinding = "root";
+        child.OriginalName = child.Candidate = "Invoices";
+        f.Operation.Folders = new[] { f.Binding, child };
+        f.Store.Create("asx_operation", f.Operation);
+        var root = Guid.NewGuid();
+        var work = f.ObserveAndFinalize(f.Preflight(f.Claim()), f.Item(root, null));
+        Assert.Equal("Pending", f.Call("Complete", work).Status);
+        if (claimChild)
+        {
+            work = f.Observe(f.Claim("child-run"), f.LibraryBody());
+            Assert.Equal("Parent", work.ProbeKind);
+            // The run stops; its claim expires.
+            f.Now = f.Now.AddMinutes(6);
+        }
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key);
+        stored.Value.EntryPath = null;
+        f.Store.Save(stored);
+        return root;
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void JobStoredBeforeEntryPathFollowsARepointWithoutBlocking(bool pinned)
+    {
+        var f = new Fixture(false);
+        var root = StoredBeforeEntryPath(f, pinned);
+        Repointed(f, Moved);
+        var work = f.Claim("after-rename");
+        Assert.Equal("Library", work.ProbeKind);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.Equal(Moved, stored.EntryPath);
+        Assert.Equal(Moved + "/Example", stored.Folders[0].PhysicalPath);
+        Assert.Equal(Moved + "/Example", stored.ParentPath);
+        work = f.Observe(work, Library(f, Moved));
+        // The parent is read by its ID; its answer must show the moved path.
+        Assert.StartsWith(
+            "_api/web/GetFolderById('" + root.ToString("D") + "')",
+            work.Http!.RelativeUri
+        );
+        work = f.Observe(work, Folder(root, Moved + "/Example"));
+        Assert.Equal("Folder", work.ProbeKind);
+        work = f.Observe(work, Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+    }
+
+    [Fact]
+    public void RetryOfAJobStoredBeforeEntryPathFollowsTheRepoint()
+    {
+        var f = new Fixture(false);
+        StoredBeforeEntryPath(f, claimChild: true);
+        Repointed(f, Moved);
+        var stopped = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key);
+        stopped.Value.Status = "Blocked";
+        stopped.Value.ErrorCode = "ObservationMismatch";
+        f.Store.Save(stopped);
+        Assert.Equal(
+            "Pending",
+            f.Execute(new WorkerRequest { Command = "Retry", Key = f.Operation.Key }).Status
+        );
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.Equal(Moved, stored.EntryPath);
+        Assert.Equal(Moved + "/Example", stored.Folders[0].PhysicalPath);
+        Assert.Equal(Moved + "/Example", stored.ParentPath);
+        Assert.Equal("Library", f.Claim("after-retry").ProbeKind);
+    }
+
+    [Fact]
+    public void SubmittedCreateDuringARepointIsReadBackUnderTheNewPathAndNotRepeated()
     {
         var f = new Fixture();
-        var next = Guid.NewGuid();
-        f.Service.Rows[f.LibraryId]["asx_policyrevision"] = next.ToString();
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        // The create was sent; the library is renamed before its response is recorded.
+        Repointed(f, Moved);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        Assert.Equal("Library", work.ProbeKind);
+        work = f.Observe(work, Library(f, Moved));
+        work = f.Observe(work, Folder(f.EntryId, Moved));
+        Assert.Equal("Folder", work.ProbeKind);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Path = Moved + "/Example";
+        work = f.Observe(work, Rows(item));
+        Assert.Equal("FinalParent", work.ProbeKind);
+        work = f.Observe(work, Folder(f.EntryId, Moved));
+        Assert.Equal("Verified", work.Status);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        Assert.Single(f.Results, r => r.Status == "Create");
+    }
+
+    [Fact]
+    public void RunningJobKeepsItsSiteWriterWhenTheSiteIsRepointed()
+    {
+        var f = new Fixture();
         var work = f.Claim();
         Assert.Equal("Library", work.ProbeKind);
+        // The site moved; the admin updated its SharePoint site record and re-pointed it.
+        const string moved = "https://example.sharepoint.com/sites/moved";
+        f.Service.Rows[f.NativeSite]["absoluteurl"] = moved;
+        string key = CatalogAdministration.RepointPrefix + Guid.NewGuid().ToString("N");
+        f.Store.Create(
+            "asx_operation",
+            new CatalogProbe
+            {
+                Key = key,
+                Status = "Captured",
+                Repoint = true,
+                CatalogId = f.SiteId,
+                SiteId = f.SiteId,
+                NativeSiteId = f.NativeSite,
+                WebId = Guid.Parse(f.Service.Rows[f.SiteId].GetAttributeValue<string>("asx_webid")),
+                WebUrl = moved,
+            }
+        );
+        f.Service.Transaction(() => new CatalogAdministration(f.Service).ApplyRepoint(key));
+        Assert.Equal(moved, f.Service.Rows[f.SiteId].GetAttributeValue<string>("asx_url"));
         Assert.Equal(
-            next,
+            moved + "/General",
+            f.Service.Rows[f.LibraryId].GetAttributeValue<string>("asx_entryurl")
+        );
+        Assert.Equal(
+            new[] { WorkCoordination.SiteUrl(moved) },
+            f.Store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey).Value.Writers
+        );
+        // The run's read under the old address is discarded and issued again at the new one.
+        work = f.Observe(work, f.LibraryBody());
+        Assert.Equal("Library", work.ProbeKind);
+        Assert.Equal(moved, work.SiteUrl);
+        work = f.Observe(work, Library(f, "/sites/moved/General"));
+        work = f.Observe(work, Folder(f.EntryId, "/sites/moved/General"));
+        Assert.Equal("Folder", work.ProbeKind);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Path = "/sites/moved/General/Example";
+        work = f.Observe(work, Rows(item));
+        work = f.Observe(work, Folder(f.EntryId, "/sites/moved/General"));
+        Assert.Equal("Verified", work.Status);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        Assert.Empty(
+            f.Store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey).Value.Writers
+        );
+    }
+
+    private static CatalogResult RemoveLibrary(Fixture f) =>
+        f.Service.Transaction(() =>
+            new CatalogAdministration(f.Service).Execute(
+                new CatalogRequest { Command = "RemoveLibrary", CatalogId = f.LibraryId },
+                true
+            )
+        );
+
+    /// <summary>An earlier, superseded revision used the library, so removal keeps its row.</summary>
+    private static void UsedBySupersededRevision(Fixture f)
+    {
+        var old = Guid.NewGuid();
+        f.Service.Seed(
+            new Entity("asx_revision", old)
+            {
+                ["asx_templateid"] = new EntityReference("asx_template", f.TemplateId),
+                ["asx_status"] = "Published",
+            }
+        );
+        f.Service.Seed(
+            new Entity("asx_destination", Guid.NewGuid())
+            {
+                ["asx_revisionid"] = new EntityReference("asx_revision", old),
+                ["asx_key"] = "general",
+                ["asx_libraryid"] = new EntityReference("asx_library", f.LibraryId),
+            }
+        );
+    }
+
+    /// <summary>Drives the job to a prepared create and renews its claim, as the flow does.</summary>
+    private static WorkerResult PreparedAndRenewed(Fixture f)
+    {
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        Assert.Equal("Renewed", f.Call("Renew", work).Status);
+        return work;
+    }
+
+    private static WorkerResult Begin(Fixture f, WorkerResult work) =>
+        f.Service.Transaction(() =>
+            WorkCoordination.BeginHttp(
+                f.Service,
+                new WorkerRequest
+                {
+                    Command = "BeginHttp",
+                    Key = f.OperationKey ?? f.Operation.Key,
+                    RunId = "run-1",
+                    Token = work.Token,
+                },
+                f.Now
+            )
+        );
+
+    private static void AssertNotSent(Fixture f, WorkerResult refused)
+    {
+        Assert.Equal("Stopped", refused.Status);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.False(stored.ExternalSubmitted, "The create was never sent");
+        Assert.Equal("Pending", stored.Status);
+        var claim = f
+            .Store.Require<DispatcherDocument>(
+                "asx_claim",
+                WorkCoordination.Operation(f.Service, f.Operation.Key)
+            )
+            .Value;
+        Assert.Null(claim.RunId);
+        Assert.False(claim.HttpOutstanding);
+        Assert.Empty(
+            f.Store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey).Value.Writers
+        );
+    }
+
+    [Fact]
+    public void RemoveBetweenRenewAndPermitSendsNoWriteAndCancelsTheJob()
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = PreparedAndRenewed(f);
+        Assert.Equal("Removed", RemoveLibrary(f).Status);
+        AssertNotSent(f, Begin(f, work));
+        // The run's later calls hold a released claim and stop.
+        Assert.Throws<EvaluationBlockedException>(() => Begin(f, work));
+        Assert.Equal("Cancelled", f.Claim("next-run").Status);
+        Assert.Equal(
+            "DestinationRemoved",
+            f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value.ErrorCode
+        );
+    }
+
+    [Theory]
+    [InlineData("asx_library")]
+    [InlineData("asx_site")]
+    public void SuspendBetweenRenewAndPermitSendsNoWriteAndStopsAtTheNextClaim(string table)
+    {
+        var f = new Fixture();
+        var work = PreparedAndRenewed(f);
+        f.Service.Transaction(() =>
+            new CatalogAdministration(f.Service, () => f.Now).Execute(
+                new CatalogRequest
+                {
+                    Command = table == "asx_site" ? "SuspendSite" : "SuspendLibrary",
+                    CatalogId = table == "asx_site" ? f.SiteId : f.LibraryId,
+                    CatalogRowVersion = f.Service
+                        .Rows[table == "asx_site" ? f.SiteId : f.LibraryId]
+                        .RowVersion,
+                },
+                true
+            )
+        );
+        AssertNotSent(f, Begin(f, work));
+        // The next claim holds the job while suspended; nothing was sent, so nothing waits for
+        // recovery, and it resumes by itself once approved again.
+        Assert.Equal("RetryWait", f.Claim("next-run").Status);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.False(stored.ExternalSubmitted);
+        Assert.Contains("suspended", stored.ErrorCode);
+    }
+
+    [Fact]
+    public void WriteAlreadyPermittedBeforeRemovalFinishes()
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = PreparedAndRenewed(f);
+        Assert.Equal("Permit", Begin(f, work).Status);
+        Assert.Equal("Removed", RemoveLibrary(f).Status);
+        // The worker API records the HTTP outcome before the step, as for every response.
+        Assert.Null(
+            f.Service.Transaction(() =>
+                WorkCoordination.Response(
+                    f.Service,
+                    new WorkerRequest
+                    {
+                        Command = "CreateResponse",
+                        Key = f.Operation.Key,
+                        RunId = "run-1",
+                        Token = work.Token,
+                        HttpStatus = 200,
+                    },
+                    f.Now
+                )
+            )
+        );
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var verified = f.ObserveAndFinalize(work, f.Item(Guid.NewGuid(), null));
+        Assert.Equal("Applied", f.Call("Complete", verified).Status);
+    }
+
+    [Theory]
+    [InlineData("RemoveLibrary")]
+    [InlineData("RemoveSite")]
+    public void RemoveSerializesWithAConcurrentPermitOnTheSiteWriter(string command)
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = PreparedAndRenewed(f);
+        string writer = WorkCoordination.Operation(f.Service, f.Operation.Key);
+        // A permit grant read the writer row before the removal committed.
+        var seenByPermit = f.Store.Require<DispatcherDocument>("asx_claim", writer);
+        if (command == "RemoveSite")
+        {
+            Assert.Equal("Removed", RemoveLibrary(f).Status);
+            seenByPermit = f.Store.Require<DispatcherDocument>("asx_claim", writer);
+        }
+        var removed = f.Service.Transaction(() =>
+            new CatalogAdministration(f.Service).Execute(
+                new CatalogRequest
+                {
+                    Command = command,
+                    CatalogId = command == "RemoveSite" ? f.SiteId : f.LibraryId,
+                },
+                true
+            )
+        );
+        Assert.Equal("Removed", removed.Status);
+        // The removal saved the writer row, so the permit's write of the row it read conflicts
+        // and is retried against the removal.
+        Assert.Throws<InvalidOperationException>(() =>
+            f.Service.Transaction(() =>
+            {
+                f.Store.Save(seenByPermit);
+                return 0;
+            })
+        );
+        Assert.Equal("Stopped", Begin(f, work).Status);
+    }
+
+    [Fact]
+    public void ReadPermitIsStillGrantedForARemovedDestination()
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = f.Claim();
+        Assert.Equal("Removed", RemoveLibrary(f).Status);
+        Assert.Equal("Permit", Begin(f, work).Status);
+    }
+
+    private static DispatcherDocument WriterOf(Fixture f) =>
+        f
+            .Store.Require<DispatcherDocument>(
+                "asx_claim",
+                WorkCoordination.Operation(f.Service, f.Operation.Key)
+            )
+            .Value;
+
+    private static OperationDocument StoredJob(Fixture f) =>
+        f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+
+    [Theory]
+    [InlineData("removed")]
+    [InlineData("unavailable")]
+    public void StopAfterAnUnansweredReadPermitReleasesTheWriter(string stop)
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = f.Claim();
+        // The read was permitted, then the run ended before its answer was recorded.
+        Assert.Equal("Permit", Begin(f, work).Status);
+        if (stop == "removed")
+            Assert.Equal("Removed", RemoveLibrary(f).Status);
+        else
+            f.Service.Rows[f.TemplateId]["asx_disabled"] = true;
+        f.Now = f.Now.AddMinutes(6);
+        Assert.Equal("Cancelled", f.Claim("run-2").Status);
+        Assert.Null(WriterOf(f).RunId);
+        Assert.False(WriterOf(f).HttpOutstanding);
+        Assert.Empty(
+            f.Store.Require<ConnectionBudget>("asx_claim", WorkCoordination.BudgetKey).Value.Writers
+        );
+    }
+
+    [Fact]
+    public void JobANewerPlanNoLongerSelectsStopsAsSupersededMidDrive()
+    {
+        var f = new Fixture();
+        var work = f.Claim();
+        // A record update planned the record again while this job was reading.
+        f.Store.Create(
+            "asx_outbox",
+            new RecordPlanDocument
+            {
+                Key = "recordplan:" + f.TemplateId.ToString("N") + ":" + f.RecordId.ToString("N"),
+                Table = "account",
+                TemplateId = f.TemplateId,
+                RecordId = f.RecordId,
+                RevisionId = f.RevisionId,
+                Status = "Selection",
+                Operations = new[] { "folderjob:newer" },
+            }
+        );
+        var stopped = f.Observe(work, f.LibraryBody());
+        Assert.Equal("Superseded", stopped.Status);
+        // A multi-folder job may already have created earlier folders; they are kept.
+        Assert.Contains(stopped.Notices, n => n.Contains("Folders it already created are kept"));
+        Assert.Equal("Superseded", StoredJob(f).Status);
+        Assert.Null(WriterOf(f).RunId);
+        Assert.DoesNotContain(f.Results, r => r.Status == "Create");
+    }
+
+    [Theory]
+    [InlineData("deleted", "The record was deleted, so this folder job stopped.")]
+    [InlineData(
+        "unpublished",
+        "The template revision this folder job used is no longer published, so the job stopped."
+    )]
+    [InlineData("republished", "Superseded by a newer published revision of the template.")]
+    public void StoppedJobsNoticeNamesWhyItStopped(string cause, string reason)
+    {
+        var f = new Fixture();
+        var work = f.Claim();
+        if (cause == "deleted")
+            f.Store.Create(
+                "asx_outbox",
+                new OutboxDocument
+                {
+                    Key = WorkerCoordinator.RetirementKey("account", f.RecordId),
+                    Status = "DecommissionReview",
+                    Table = "account",
+                    RecordId = f.RecordId,
+                }
+            );
+        else
+            f.Service.Rows[f.TemplateId]["asx_publishedrevisionid"] =
+                cause == "unpublished" ? null : new EntityReference("asx_revision", Guid.NewGuid());
+        var stopped = f.Observe(work, f.LibraryBody());
+        Assert.Equal("Superseded", stopped.Status);
+        Assert.Equal(
+            reason + " Folders it already created are kept; nothing in SharePoint was deleted.",
+            Assert.Single(stopped.Notices)
+        );
+        Assert.DoesNotContain(f.Results, r => r.Status == "Create");
+    }
+
+    [Fact]
+    public void FolderJobOfARemovedTableIsCancelledWithANotice()
+    {
+        var f = new Fixture { AllowedTables = new[] { "account" } };
+        var work = f.Claim();
+        f.AllowedTables = new[] { "contact" };
+        var stopped = f.Observe(work, f.LibraryBody());
+        Assert.Equal("Cancelled", stopped.Status);
+        Assert.Contains(stopped.Notices, n => n.Contains("account"));
+        Assert.Equal("Cancelled", StoredJob(f).Status);
+        Assert.Equal("TableNotEnabled", StoredJob(f).ErrorCode);
+        Assert.Null(WriterOf(f).RunId);
+        Assert.DoesNotContain(f.Results, r => r.Status == "Create");
+    }
+
+    [Fact]
+    public void OutboxRowsOfARemovedTableAreCancelledWithANotice()
+    {
+        var f = new Fixture(seedBinding: false) { AllowedTables = new[] { "account", "contact" } };
+        f.SeedTemplate();
+        var queued = f.Execute(
+            new WorkerRequest
+            {
+                Command = "Queue",
+                TemplateId = f.TemplateId,
+                RecordId = f.RecordId,
+                RequestId = Guid.NewGuid(),
+            }
+        );
+        f.Store.Create(
+            "asx_outbox",
+            new OutboxDocument
+            {
+                Key = "related:contact",
+                RelatedTable = "contact",
+                RelatedRecordId = Guid.NewGuid(),
+            }
+        );
+        f.AllowedTables = new[] { "lead" };
+        foreach (var key in new[] { queued.Key, "related:contact" })
+        {
+            var planned = f.Execute(new WorkerRequest { Command = "Plan", Key = key });
+            Assert.Equal("Cancelled", planned.Status);
+            var row = f.Store.Require<OutboxDocument>("asx_outbox", key).Value;
+            Assert.Equal("Cancelled", row.Status);
+            Assert.Contains(row.Notices, n => n.Contains("no longer enabled"));
+        }
+        Assert.Empty(f.Store.Pending("asx_outbox"));
+    }
+
+    [Theory]
+    [InlineData("asx_library")]
+    [InlineData("asx_site")]
+    public void JobOfASuspendedDestinationWaitsAndResumesByItselfAfterReapproval(string table)
+    {
+        var f = new Fixture();
+        Guid id = table == "asx_site" ? f.SiteId : f.LibraryId;
+        var work = f.Claim();
+        f.Service.Rows[id]["asx_approved"] = false;
+        Assert.Equal("RetryWait", f.Observe(work, f.LibraryBody()).Status);
+        var waiting = StoredJob(f);
+        Assert.Equal("RetryWait", waiting.Status);
+        Assert.Contains("suspended", waiting.ErrorCode);
+        Assert.Null(WriterOf(f).RunId);
+        // It takes no dispatch slot until its next check is due.
+        Assert.DoesNotContain(
+            f.Operation.Key,
+            f.Execute(new WorkerRequest { Command = "ListOperations" }).Keys
+        );
+        f.Now = waiting.NextAttemptUtc!.Value;
+        Assert.Contains(
+            f.Operation.Key,
+            f.Execute(new WorkerRequest { Command = "ListOperations" }).Keys
+        );
+        // Still suspended: it waits again, longer.
+        Assert.Equal("RetryWait", f.Claim("run-2").Status);
+        Assert.Equal(2, StoredJob(f).RetryCount);
+        Assert.True(StoredJob(f).NextAttemptUtc > f.Now);
+        // Approved again, it resumes by itself at its next check.
+        f.Service.Rows[id]["asx_approved"] = true;
+        f.Now = StoredJob(f).NextAttemptUtc!.Value;
+        var prepared = f.Call(
+            "PrepareCreate",
+            f.Observe(f.Preflight(f.Claim("run-3")), Rows<ItemObservation>())
+        );
+        Assert.Equal("Create", prepared.Status);
+        var verified = f.ObserveAndFinalize(
+            f.Call("CreateResponse", prepared, CreateBody(), 200),
+            f.Item(Guid.NewGuid(), null)
+        );
+        Assert.Equal("Applied", f.Call("Complete", verified).Status);
+    }
+
+    [Fact]
+    public void JobStoredBeforeEntryPathUsesTheFirstTopFolderWithAStoredPath()
+    {
+        var f = new Fixture(false);
+        var first = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        var second = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        second.Key += "-second";
+        second.Node = "second";
+        second.OriginalName = second.Candidate = "Second";
+        second.PhysicalId = Guid.NewGuid();
+        second.PhysicalPath = "/sites/proto/General/Second";
+        second.Status = "Applied";
+        var child = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        child.Key += "-child";
+        child.Node = "invoices";
+        child.ParentBinding = "second";
+        child.OriginalName = child.Candidate = "Invoices";
+        f.Operation.Folders = new[] { first, second, child };
+        f.Operation.Cursor = 2;
+        f.Store.Create("asx_operation", f.Operation);
+        Repointed(f, Moved);
+        var work = f.Claim("after-rename");
+        Assert.Equal("Library", work.ProbeKind);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.Equal(Moved + "/Second", stored.Folders[1].PhysicalPath);
+        Assert.Equal(Moved + "/Second", stored.ParentPath);
+    }
+
+    [Fact]
+    public void RemovingALibraryCancelsItsUnsentFolderWorkAtTheNextStep()
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = f.Claim();
+        Assert.Equal("Library", work.ProbeKind);
+        Assert.Equal("Removed", RemoveLibrary(f).Status);
+        var cancelled = f.Observe(work, f.LibraryBody());
+        Assert.Equal("Cancelled", cancelled.Status);
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.Equal("Cancelled", stored.Status);
+        Assert.Equal("DestinationRemoved", stored.ErrorCode);
+        Assert.Null(
+            f.Store.Require<DispatcherDocument>(
+                "asx_claim",
+                WorkCoordination.Operation(f.Service, f.Operation.Key)
+            ).Value.RunId
+        );
+        Assert.DoesNotContain(f.Results, r => r.Status == "Create");
+    }
+
+    [Fact]
+    public void FolderCreateSentBeforeRemovalFinishes()
+    {
+        var f = new Fixture();
+        UsedBySupersededRevision(f);
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        work = f.Call("PrepareCreate", work);
+        Assert.Equal("Create", work.Status);
+        Assert.Equal("Removed", RemoveLibrary(f).Status);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var verified = f.ObserveAndFinalize(work, f.Item(Guid.NewGuid(), null));
+        Assert.Equal("Applied", f.Call("Complete", verified).Status);
+    }
+
+    [Fact]
+    public void ExistingRecordFolderIsAdoptedUnderTheRepointedLibraryAndNotDuplicated()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        f.OperationKey = f.PlanRecord().Keys.Single();
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        work = f.Call("PrepareCreate", work);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var folder = Guid.NewGuid();
+        work = f.ObserveAndFinalize(work, f.Item(folder, null));
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        var first = f.OperationKey;
+        Repointed(f, Moved);
+        f.OperationKey = f.PlanRecord().Keys.Single();
+        Assert.NotEqual(first, f.OperationKey);
+        var planned = f.Store.Require<OperationDocument>("asx_operation", f.OperationKey).Value;
+        Assert.Equal(Moved, planned.EntryPath);
+        Assert.NotEqual(Guid.Empty, planned.Folders[0].LocationId);
+        int creates = f.Results.Count(r => r.Status == "Create");
+        work = f.Claim("after-rename");
+        work = f.Observe(work, Library(f, Moved));
+        work = f.Observe(work, Folder(f.EntryId, Moved));
+        Assert.Equal("Folder", work.ProbeKind);
+        Assert.Contains(Uri.EscapeDataString(Moved + "/Example"), work.Http!.RelativeUri);
+        var item = f.Item(folder, null);
+        item.Path = Moved + "/Example";
+        work = f.Observe(work, Rows(item));
+        Assert.Equal("FinalParent", work.ProbeKind);
+        work = f.Observe(work, Folder(f.EntryId, Moved));
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        Assert.Equal(creates, f.Results.Count(r => r.Status == "Create"));
+        var location = Assert.Single(
+            f.Service.Rows.Values,
+            r =>
+                r.LogicalName == "sharepointdocumentlocation"
+                && r.GetAttributeValue<EntityReference>("regardingobjectid") != null
+        );
+        Assert.Equal("Example", location.GetAttributeValue<string>("relativeurl"));
+        Assert.Equal(
+            Moved + "/Example",
+            f.Store.Require<OperationDocument>("asx_operation", f.OperationKey)
+                .Value.Folders[0]
+                .PhysicalPath
+        );
+    }
+
+    [Fact]
+    public void InFlightFolderJobSurvivesPolicyGenerationChange()
+    {
+        var f = new Fixture();
+        var work = f.Preflight(f.Claim());
+        f.StartPolicyUpdate();
+        work = f.Observe(work, Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+        work = f.Call("PrepareCreate", work);
+        f.StartPolicyUpdate();
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        work = f.ObserveAndFinalize(work, f.Item(Guid.NewGuid(), null));
+        f.StartPolicyUpdate();
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+    }
+
+    [Fact]
+    public void PlanSucceedsWhileLibraryPolicyIsBeingApplied()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        f.StartPolicyUpdate();
+        var planned = f.PlanRecord();
+        Assert.Equal("Planned", planned.Status);
+        Assert.Single(planned.Keys);
+        Assert.StartsWith("folderjob:", planned.Keys[0]);
+        Assert.Equal(
+            "Example",
             f.Store.Require<OperationDocument>(
                 "asx_operation",
-                f.Operation.Key
-            ).Value.PolicyRevision
+                planned.Keys[0]
+            ).Value.Folder.Candidate
         );
-        work = f.Preflight(work);
-        f.Service.Rows[f.LibraryId]["asx_policyrevision"] = Guid.NewGuid().ToString();
-        Assert.Throws<EvaluationBlockedException>(() => f.Observe(work, Rows<ItemObservation>()));
-        Assert.False(
+    }
+
+    [Fact]
+    public void ChildFolderNamedFormsIsCreatedBelowTheRoot()
+    {
+        var f = new Fixture(false);
+        var child = JsonWire.Read<FolderStep>(JsonWire.Write(f.Binding));
+        child.Key += "-child";
+        child.Node = "forms";
+        child.ParentBinding = "root";
+        child.OriginalName = child.Candidate = "Forms";
+        f.Operation.Folders = new[] { f.Binding, child };
+        f.Store.Create("asx_operation", f.Operation);
+        var root = Guid.NewGuid();
+        var work = f.ObserveAndFinalize(f.Preflight(f.Claim()), f.Item(root, null));
+        Assert.Equal("Pending", f.Call("Complete", work).Status);
+        work = f.Claim("child-run");
+        work = f.Observe(work, f.LibraryBody());
+        string parent = JsonWire.Write(
+            new ODataEnvelope<FolderObservation>
+            {
+                Data = new FolderObservation { Id = root, Path = "/sites/proto/General/Example" },
+            }
+        );
+        work = f.Observe(work, parent);
+        Assert.Equal("ReadyToCreate", f.Observe(work, Rows<ItemObservation>()).Status);
+        work = f.Call("PrepareCreate", f.Results.Last());
+        Assert.Equal("Create", work.Status);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Name = "Forms";
+        item.Path += "/Forms";
+        work = f.Observe(work, Rows(item));
+        Assert.Equal("FinalParent", work.ProbeKind);
+        work = f.Observe(work, parent);
+        Assert.Equal("Verified", work.Status);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+    }
+
+    /// <summary>The record's plan row, which carries the waiting marker.</summary>
+    private static RecordPlanDocument Selection(Fixture f) =>
+        f
+            .Store.Require<RecordPlanDocument>(
+                "asx_outbox",
+                "recordplan:" + f.TemplateId.ToString("N") + ":" + f.RecordId.ToString("N")
+            )
+            .Value;
+
+    /// <summary>The keys of the outbox rows an admin list finds by their indexed status.</summary>
+    private static string[] Listed(Fixture f, string status)
+    {
+        var query = new QueryExpression("asx_outbox") { ColumnSet = new ColumnSet("asx_payload") };
+        query.Criteria.AddCondition("asx_status", ConditionOperator.Equal, status);
+        return f
+            .Service.RetrieveMultiple(query)
+            .Entities.Select(row =>
+                JsonWire.Read<StoredDocument>(row.GetAttributeValue<string>("asx_payload")).Key
+            )
+            .ToArray();
+    }
+
+    [Fact]
+    public void BlankRecordNameWaitsWithANoticeAndIsPlannedOnceFilledIn()
+    {
+        var f = new Fixture(seedBinding: false) { RecordUpdates = false };
+        f.SeedTemplate();
+        f.Service.Rows[f.RecordId]["name"] = null;
+        var waiting = f.PlanRecord();
+        Assert.Equal("Planned", waiting.Status);
+        Assert.Empty(waiting.Keys);
+        // Record updates are off, so filling in the field alone plans nothing: the notice says
+        // to re-run the record.
+        const string notice =
+            "Folder 'general/root' is waiting for 'root.name' to have a value. Fill in 'root.name', then re-run the record.";
+        Assert.Equal(new[] { notice }, waiting.Notices);
+        var marked = Selection(f);
+        Assert.Equal(WorkerCoordinator.WaitingStatus, marked.Status);
+        Assert.Equal(new[] { notice }, marked.Waiting);
+        Assert.Equal(f.RecordId, marked.RecordId);
+        Assert.Equal(f.TemplateId, marked.TemplateId);
+        // The marker is an indexed status, so the admin list finds the record without reading
+        // every payload.
+        Assert.Contains(marked.Key, Listed(f, WorkerCoordinator.WaitingStatus));
+        var inspected = RecordInspection.Read(
+            f.Service,
+            new WorkerRequest { TemplateId = f.TemplateId, RecordId = f.RecordId },
+            new[] { "account" }
+        );
+        // The record reports that it waits, whatever its folder jobs show.
+        Assert.Equal(WorkerCoordinator.WaitingStatus, inspected.Status);
+        Assert.Contains(notice, inspected.Notices);
+        // A replan once the field is filled in plans the folder and clears the marker.
+        f.Service.Rows[f.RecordId]["name"] = "Example";
+        var planned = f.PlanRecord();
+        Assert.Equal("Planned", planned.Status);
+        Assert.Empty(planned.Notices);
+        Assert.Equal(
+            "Example",
             f.Store.Require<OperationDocument>(
                 "asx_operation",
-                f.Operation.Key
-            ).Value.ExternalSubmitted
+                Assert.Single(planned.Keys)
+            ).Value.Folder.Candidate
         );
+        Assert.Equal("Selection", Selection(f).Status);
+        Assert.Empty(Selection(f).Waiting);
+        Assert.Empty(Listed(f, WorkerCoordinator.WaitingStatus));
+        Assert.DoesNotContain(
+            notice,
+            RecordInspection
+                .Read(
+                    f.Service,
+                    new WorkerRequest { TemplateId = f.TemplateId, RecordId = f.RecordId },
+                    new[] { "account" }
+                )
+                .Notices
+        );
+    }
+
+    [Theory]
+    [InlineData(true, "The folder is created when 'root.name' has a value.")]
+    [InlineData(false, "Fill in 'root.name', then re-run the record.")]
+    [InlineData(null, "Fill in 'root.name', then re-run the record.")]
+    public void WaitingNoticeSaysHowTheFolderIsCreatedForTheRecordUpdateSetting(
+        bool? updates,
+        string followUp
+    )
+    {
+        var f = new Fixture(seedBinding: false) { RecordUpdates = updates };
+        // Kept code: "Update folders when records change" is out of 0.1.0.4, so the worker API
+        // passes false; true covers the wording kept for when it returns.
+        f.SeedTemplate();
+        f.Service.Rows[f.RecordId]["name"] = null;
+        Assert.Equal(
+            "Folder 'general/root' is waiting for 'root.name' to have a value. " + followUp,
+            Assert.Single(f.PlanRecord().Notices)
+        );
+    }
+
+    [Fact]
+    public void WaitingOnARelatedRecordsFieldNeedsAReplanEvenWithRecordUpdatesOn()
+    {
+        // Kept code: "Update folders when records change" is out of 0.1.0.4, so the worker API
+        // passes false; true covers the wording kept for when it returns.
+        // Only the record's own Update event plans it again; a related record's change does not.
+        var wait = new Ascentix.Documents.Domain.FolderWait(
+            "general",
+            "root",
+            new FieldReference("customer", "name"),
+            ""
+        );
+        Assert.Equal(
+            "Fill in 'customer.name', then re-run the record.",
+            WorkerCoordinator.WaitFollowUp(wait, true)
+        );
+        Assert.Equal(
+            "The folder is created when a change to the record gives it a usable name of its own.",
+            WorkerCoordinator.WaitFollowUp(
+                new Ascentix.Documents.Domain.FolderWait("general", "b", null, ""),
+                true
+            )
+        );
+        Assert.Equal(
+            "Change the record so the folder gets a usable name of its own, then re-run the record.",
+            WorkerCoordinator.WaitFollowUp(
+                new Ascentix.Documents.Domain.FolderWait("general", "b", null, ""),
+                false
+            )
+        );
+        var tooLong = new Ascentix.Documents.Domain.FolderWait(
+            "general",
+            "b",
+            null,
+            "",
+            Ascentix.Documents.Domain.FolderWaitReason.PathTooLong
+        );
+        Assert.Equal(
+            "Shorten the record's value or the template's folder names, then re-run the record.",
+            WorkerCoordinator.WaitFollowUp(tooLong, false)
+        );
+        Assert.Equal(
+            "The folder is created when a change to the record makes its path short enough; after shortening the template's folder names, re-run the record.",
+            WorkerCoordinator.WaitFollowUp(tooLong, true)
+        );
+    }
+
+    [Fact]
+    public void WaitingRecordWhoseTableIsRemovedLeavesTheWaitingList()
+    {
+        var f = new Fixture(seedBinding: false) { RecordUpdates = false };
+        f.SeedTemplate();
+        f.Service.Rows[f.RecordId]["name"] = null;
+        f.PlanRecord();
+        Assert.Equal(WorkerCoordinator.WaitingStatus, Selection(f).Status);
+        var queued = f.Execute(
+            new WorkerRequest
+            {
+                Command = "Queue",
+                TemplateId = f.TemplateId,
+                RecordId = f.RecordId,
+                RequestId = Guid.NewGuid(),
+            }
+        );
+        f.AllowedTables = new[] { "lead" };
+        Assert.Equal(
+            "Cancelled",
+            f.Execute(new WorkerRequest { Command = "Plan", Key = queued.Key }).Status
+        );
+        Assert.Equal("Selection", Selection(f).Status);
+        Assert.Empty(Listed(f, WorkerCoordinator.WaitingStatus));
+    }
+
+    [Fact]
+    public void DuplicateSiblingWaitsAndIsPlannedWhenTheRecordChanges()
+    {
+        // Kept code: "Update folders when records change" is out of 0.1.0.4, so the worker API
+        // passes false; true covers the wording kept for when it returns.
+        var f = new Fixture(seedBinding: false) { RecordUpdates = true };
+        f.SeedTemplate();
+        foreach (
+            var (key, expression, order) in new[] { ("a", "{root.name}", 1), ("b", "Example", 2) }
+        )
+            f.Service.Seed(
+                new Entity("asx_folder", Guid.NewGuid())
+                {
+                    ["asx_revisionid"] = new EntityReference("asx_revision", f.RevisionId),
+                    ["asx_key"] = key,
+                    ["asx_sectionkey"] = "general",
+                    ["asx_parentkey"] = "root",
+                    ["asx_expression"] = expression,
+                    ["asx_order"] = order,
+                }
+            );
+        var waiting = f.PlanRecord();
+        Assert.Equal("Planned", waiting.Status);
+        Assert.Equal(
+            new[]
+            {
+                "Folder 'general/b' has the same name 'Example' as 'general/a'; it waits until the names differ. The folder is created when a change to the record gives it a usable name of its own.",
+            },
+            waiting.Notices
+        );
+        Assert.Equal(WorkerCoordinator.WaitingStatus, Selection(f).Status);
+        Assert.Equal(
+            new[] { "root", "a" },
+            f.Store.Require<OperationDocument>("asx_operation", Assert.Single(waiting.Keys))
+                .Value.Folders.Select(folder => folder.Node)
+        );
+        // A replan after the record changes plans the folder that waited.
+        f.Service.Rows[f.RecordId]["name"] = "Other";
+        var planned = f.PlanRecord();
+        Assert.Empty(planned.Notices);
+        Assert.Equal("Selection", Selection(f).Status);
+        Assert.Equal(
+            new[] { "Other", "Other", "Example" },
+            f.Store.Require<OperationDocument>("asx_operation", Assert.Single(planned.Keys))
+                .Value.Folders.Select(folder => folder.Candidate)
+        );
+    }
+
+    [Fact]
+    public void RecordNameSharePointForbidsIsCleanedAndApplied()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        f.Service.Rows[f.RecordId]["name"] = "Smith & Sons: Holdings";
+        var planned = f.PlanRecord();
+        Assert.Equal("Planned", planned.Status);
+        const string notice =
+            "Folder name 'Smith & Sons: Holdings' was adjusted to 'Smith & Sons- Holdings' for SharePoint.";
+        Assert.Equal(new[] { notice }, planned.Notices);
+        f.OperationKey = Assert.Single(planned.Keys);
+        Assert.Equal(
+            "Smith & Sons- Holdings",
+            f.Store.Require<OperationDocument>(
+                "asx_operation",
+                f.OperationKey
+            ).Value.Folder.Candidate
+        );
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        Assert.Equal("ReadyToCreate", work.Status);
+        work = f.Call("PrepareCreate", work);
+        Assert.Contains("Smith & Sons- Holdings", work.Http!.Body, StringComparison.Ordinal);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var item = f.Item(Guid.NewGuid(), null);
+        item.Name = "Smith & Sons- Holdings";
+        item.Path = "/sites/proto/General/Smith & Sons- Holdings";
+        work = f.ObserveAndFinalize(work, item);
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        var inspected = RecordInspection.Read(
+            f.Service,
+            new WorkerRequest { TemplateId = f.TemplateId, RecordId = f.RecordId },
+            new[] { "account" }
+        );
+        Assert.Equal("Applied", inspected.Status);
+        Assert.Equal("Smith & Sons- Holdings", Assert.Single(inspected.Record!.Folders).Candidate);
+        Assert.Contains(notice, inspected.Notices);
+    }
+
+    [Fact]
+    public void PlanAndClaimSucceedWhenLibraryHasNoPolicyRevisionOrAclFingerprint()
+    {
+        foreach (var seeded in new[] { false, true })
+        {
+            var f = new Fixture(seedBinding: seeded);
+            f.SeedTemplate();
+            f.Service.Rows[f.LibraryId].Attributes.Remove("asx_policyrevision");
+            f.Service.Rows[f.LibraryId].Attributes.Remove("asx_aclhash");
+            f.Service.Rows[f.LibraryId]["asx_policyapplied"] = false;
+            if (seeded)
+                Assert.Equal("Library", f.Claim().ProbeKind);
+            else
+            {
+                var planned = f.PlanRecord();
+                Assert.Equal("Planned", planned.Status);
+                Assert.Single(planned.Keys);
+            }
+        }
+    }
+
+    [Fact]
+    public void ASiteKeepsOneWriterSoItsWritesStayInOrder()
+    {
+        var f = new Fixture();
+        Assert.Equal("Library", f.Claim().ProbeKind);
+        var second = JsonWire.Read<OperationDocument>(JsonWire.Write(f.Operation));
+        second.Key += ":second";
+        second.Folders[0].Key += ":second";
+        f.Store.Create("asx_operation", second);
+        f.OperationKey = second.Key;
+        Assert.Equal("Busy", f.Claim("run-2").Status);
+        f.OperationKey = null;
+        var held = f.Store.Require<DispatcherDocument>(
+            "asx_claim",
+            WorkCoordination.Operation(f.Service, f.Operation.Key)
+        );
+        Assert.Equal(f.Operation.Key, held.Value.OperationKey);
+        Assert.Equal("run-1", held.Value.RunId);
+    }
+
+    [Fact]
+    public void FolderJobClaimsASiteThatALibrarySetupAwaitingRecoveryStillHeld()
+    {
+        var f = new Fixture();
+        // A library setup on the same site whose create answer was lost, left holding the site's
+        // writer by an earlier 0.1.0.4 build.
+        const string setupKey = "librarycreate:legacy";
+        f.Store.Create(
+            "asx_operation",
+            new LibrarySetup
+            {
+                Key = setupKey,
+                Status = "RecoveryRequired",
+                SiteId = f.SiteId,
+                WebUrl = "https://example.sharepoint.com/sites/proto",
+                Name = "Lost",
+                Mutation = "CreateLibrary",
+                ExternalSubmitted = true,
+                WritePermitted = true,
+            }
+        );
+        string site = WorkCoordination.Operation(f.Service, f.Operation.Key);
+        Assert.Equal(site, WorkCoordination.Operation(f.Service, setupKey));
+        var token = Guid.NewGuid();
+        f.Store.Create(
+            "asx_claim",
+            new DispatcherDocument
+            {
+                Key = site,
+                Status = "Claimed",
+                OperationKey = setupKey,
+                RunId = "setup-run",
+                Token = token,
+                LeaseUntilUtc = f.Now.AddMinutes(-20),
+                HttpOutstanding = true,
+            }
+        );
+        Assert.Equal("Library", f.Claim().ProbeKind);
+        var setup = f.Store.Require<LibrarySetup>("asx_operation", setupKey).Value;
+        Assert.Equal("Reconciling", setup.Status);
+        Assert.True(setup.Reconcile);
+        RuntimeSeed.Seed(f.Service, Guid.NewGuid(), "account");
+        var inspected = ManageWork(f, _ => f.Service, Guid.NewGuid(), "Inspect", setupKey);
+        Assert.Equal("Reconciling", inspected.Status);
+        Assert.Equal("Checking", inspected.Recovery!.State);
+    }
+
+    [Fact]
+    public void ClaimAndDriveSucceedWhilePolicyIsBeingApplied()
+    {
+        var f = new Fixture();
+        f.StartPolicyUpdate();
+        var work = f.Observe(f.Preflight(f.Claim()), Rows<ItemObservation>());
+        work = f.Call("PrepareCreate", work);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        work = f.ObserveAndFinalize(work, f.Item(Guid.NewGuid(), null));
+        Assert.Equal("Applied", f.Call("Complete", work).Status);
+        Assert.NotEmpty(f.Results);
+        Assert.DoesNotContain(
+            f.Results,
+            r => r.Http?.RelativeUri.IndexOf("roleassignments", StringComparison.Ordinal) >= 0
+        );
+        Assert.DoesNotContain(f.Results, r => r.ProbeKind == "Acl" || r.ProbeKind == "FinalAcl");
+    }
+
+    [Fact]
+    public void SuspendedLibraryStillBlocksPlanning()
+    {
+        var f = new Fixture();
+        f.SeedTemplate();
+        f.Service.Rows[f.LibraryId]["asx_approved"] = false;
+        AssertPlanAndClaimBlocked(f);
+    }
+
+    [Fact]
+    public void SuspendedSiteStillBlocksPlanning()
+    {
+        var f = new Fixture();
+        f.SeedTemplate();
+        f.Service.Rows[f.SiteId]["asx_approved"] = false;
+        AssertPlanAndClaimBlocked(f);
+    }
+
+    private static void AssertPlanAndClaimBlocked(Fixture f)
+    {
+        var queued = f.Service.Transaction(() =>
+            f.Coordinator.Execute(
+                new WorkerRequest
+                {
+                    Command = "Queue",
+                    TemplateId = f.TemplateId,
+                    RecordId = f.RecordId,
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            )
+        );
+        Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() =>
+                f.Coordinator.Execute(
+                    new WorkerRequest { Command = "Plan", Key = queued.Key },
+                    true
+                )
+            )
+        );
+        Assert.Equal(
+            "Pending",
+            f.Store.Require<OutboxDocument>("asx_outbox", queued.Key).Value.Status
+        );
+        Assert.DoesNotContain(
+            f.Service.Rows.Values,
+            r => r.LogicalName == "asx_operation" && r.Id != f.OperationRowId
+        );
+        // A queued folder job is held, not blocked, while the destination is suspended.
+        Assert.Equal("RetryWait", f.Claim().Status);
+        var held = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key).Value;
+        Assert.Equal("RetryWait", held.Status);
+        Assert.Contains("suspended", held.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("Acl", "Parent")]
+    [InlineData("FinalAcl", "FinalParent")]
+    public void PersistedAclProbeFromAnEarlierVersionAdvancesWithoutReadingPermissions(
+        string legacy,
+        string next
+    )
+    {
+        var f = new Fixture();
+        // An earlier version issued Acl right after the library read, and FinalAcl right after
+        // the folder read; persist the operation in that state.
+        var work = f.Observe(f.Claim(), f.LibraryBody());
+        if (legacy == "FinalAcl")
+            work = f.Observe(f.Observe(work, f.ParentBody()), Rows(f.Item(Guid.NewGuid(), null)));
+        var stored = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key);
+        stored.Value.ProbeKind = legacy;
+        stored.Value.ProbeId = Guid.NewGuid();
+        if (legacy == "FinalAcl")
+            stored.Value.Status = "NeedsFinalPolicy";
+        f.Store.Save(stored);
+        work = new WorkerResult
+        {
+            Status = "Read",
+            Key = work.Key,
+            Token = work.Token,
+            ProbeId = stored.Value.ProbeId,
+            ProbeKind = legacy,
+        };
+        work = f.Observe(work, "{}");
+        Assert.Equal("Read", work.Status);
+        Assert.Equal(next, work.ProbeKind);
+        work = f.Observe(work, f.ParentBody());
+        if (legacy == "Acl")
+            Assert.Equal("Folder", work.ProbeKind);
+        else
+        {
+            Assert.Equal("Verified", work.Status);
+            Assert.Equal("Applied", f.Call("Complete", work).Status);
+        }
+    }
+
+    public const string PlanningFailedNotice =
+        "Planning failed. Check that the site and library are approved, then use Retry in Blocked records.";
+
+    [Fact]
+    public void FailOutboxBlocksOnlyPendingRows()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        var key = f.BlockRecord();
+        var blocked = f.Store.Require<OutboxDocument>("asx_outbox", key).Value;
+        Assert.Equal("Blocked", blocked.Status);
+        Assert.Equal(new[] { PlanningFailedNotice }, blocked.Notices);
+        Assert.Equal(
+            "Blocked",
+            f.Execute(new WorkerRequest { Command = "FailOutbox", Key = key }).Status
+        );
+        var planned = f.PlanRecord();
+        Assert.Equal("Planned", planned.Status);
+        var after = f.Execute(new WorkerRequest { Command = "FailOutbox", Key = planned.Key });
+        Assert.Equal("Planned", after.Status);
+        var row = f.Store.Require<OutboxDocument>("asx_outbox", planned.Key).Value;
+        Assert.Equal("Planned", row.Status);
+        Assert.Empty(row.Notices);
+    }
+
+    [Fact]
+    public void OutboxRowsIndexTheirRecordAndTable()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        var key = f.BlockRecord();
+        var row = f.Service.Rows[f.Store.Require<OutboxDocument>("asx_outbox", key).Row.Id];
+        Assert.Equal(f.RecordId.ToString("D"), row.GetAttributeValue<string>("asx_recordid"));
+        Assert.Equal("account", row.GetAttributeValue<string>("asx_table"));
+        Assert.Contains(f.Service.Updates, u => u.Target.Contains("asx_recordid"));
+        f.Store.Create(
+            "asx_outbox",
+            new OutboxDocument { Key = "team-event:index", SecurityTeamId = Guid.NewGuid() }
+        );
+        var team = f.Service.Rows[
+            f.Store.Require<OutboxDocument>("asx_outbox", "team-event:index").Row.Id
+        ];
+        Assert.Null(team.GetAttributeValue<string>("asx_recordid"));
+        Assert.Null(team.GetAttributeValue<string>("asx_table"));
+    }
+
+    [Fact]
+    public void RetryOutboxReturnsABlockedRowToPendingAndClearsItsNotices()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        var key = f.BlockRecord();
+        var retried = f.Execute(new WorkerRequest { Command = "RetryOutbox", Key = key });
+        Assert.Equal("Pending", retried.Status);
+        Assert.Equal(key, retried.Key);
+        var row = f.Store.Require<OutboxDocument>("asx_outbox", key).Value;
+        Assert.Equal("Pending", row.Status);
+        Assert.Empty(row.Notices);
+        Assert.Equal(new[] { key }, f.Store.Pending("asx_outbox"));
+        var planned = f.Execute(new WorkerRequest { Command = "Plan", Key = key });
+        Assert.Equal("Planned", planned.Status);
+        Assert.Single(planned.Keys);
+    }
+
+    [Fact]
+    public void BlockedOutboxRowSavedBy0103RetriesAndPlans()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        var key = f.BlockRecord();
+        // 0.1.0.3 outbox rows had no wait fields; record plans had no notices.
+        Assert.True(
+            LegacyPayload.Strip(f.Service, "asx_outbox", "NextAttemptUtc", "Attempts", "Notices")
+                > 0
+        );
+        Assert.Equal(
+            "Pending",
+            f.Execute(new WorkerRequest { Command = "RetryOutbox", Key = key }).Status
+        );
+        var planned = f.Execute(new WorkerRequest { Command = "Plan", Key = key });
+        Assert.Equal("Planned", planned.Status);
+        Assert.Single(planned.Keys);
+        LegacyPayload.Strip(f.Service, "asx_outbox", "Notices");
+        Assert.Equal(
+            "Planned",
+            f.Execute(new WorkerRequest { Command = "Plan", Key = key }).Status
+        );
+    }
+
+    [Fact]
+    public void BlockedFolderJobSavedBy0103RetriesAndCreatesItsFolder()
+    {
+        var f = new Fixture();
+        var stopped = f.Store.Require<OperationDocument>("asx_operation", f.Operation.Key);
+        stopped.Value.Status = "Blocked";
+        stopped.Value.ErrorCode = "ObservationMismatch";
+        f.Store.Save(stopped);
+        // 0.1.0.3 folder jobs had no entry path, read-back or name-conflict markers.
+        Assert.True(
+            LegacyPayload.Strip(f.Service, "asx_operation", "EntryPath", "Reprobe", "NameConflict")
+                > 0
+        );
+        Assert.Equal(
+            "Pending",
+            f.Execute(new WorkerRequest { Command = "Retry", Key = f.Operation.Key }).Status
+        );
+        var work = f.Call("PrepareCreate", f.Observe(f.Preflight(f.Claim()), "{}"));
+        Assert.Equal("Create", work.Status);
+        work = f.Call("CreateResponse", work, CreateBody(), 200);
+        var verified = f.ObserveAndFinalize(work, f.Item(Guid.NewGuid(), null));
+        Assert.Equal("Applied", f.Call("Complete", verified).Status);
+    }
+
+    [Fact]
+    public void RetryOutboxLeavesAnyOtherStatusUnchanged()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        var planned = f.PlanRecord();
+        var before = f.Store.Require<OutboxDocument>("asx_outbox", planned.Key).Row.RowVersion;
+        var result = f.Execute(new WorkerRequest { Command = "RetryOutbox", Key = planned.Key });
+        Assert.Equal("Planned", result.Status);
+        var row = f.Store.Require<OutboxDocument>("asx_outbox", planned.Key);
+        Assert.Equal("Planned", row.Value.Status);
+        Assert.Equal(before, row.Row.RowVersion);
+        Assert.Equal(planned.Keys, row.Value.Operations);
+    }
+
+    [Fact]
+    public void RetryOutboxRefusesAnUnknownKey()
+    {
+        var f = new Fixture(seedBinding: false);
+        Assert.Throws<EvaluationBlockedException>(() =>
+            f.Execute(new WorkerRequest { Command = "RetryOutbox", Key = "request:unknown" })
+        );
+        Assert.Throws<EvaluationBlockedException>(() =>
+            f.Execute(new WorkerRequest { Command = "RetryOutbox", Key = "" })
+        );
+        Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_outbox");
+    }
+
+    [Fact]
+    public void RetryOutboxRunsOnlyWithTheCallersOwnPermissions()
+    {
+        var f = new Fixture(seedBinding: false);
+        f.SeedTemplate();
+        RuntimeSeed.Seed(f.Service, Guid.NewGuid(), "account");
+        var key = f.BlockRecord();
+        Guid operatorId = Guid.NewGuid(),
+            other = Guid.NewGuid();
+        var asked = new List<Guid?>();
+        // Dataverse refuses asx_ManageWork without prvCreateasx_operatorcommand, and every write
+        // runs as the caller. A caller without operator privileges cannot change the row.
+        Func<Guid?, IOrganizationService> factory = id =>
+        {
+            asked.Add(id);
+            return id == operatorId ? f.Service : new DenyWrites(f.Service);
+        };
+        Assert.ThrowsAny<Exception>(() => ManageWork(f, factory, other, "RetryOutbox", key));
+        Assert.Equal("Blocked", f.Store.Require<OutboxDocument>("asx_outbox", key).Value.Status);
+        var result = ManageWork(f, factory, operatorId, "RetryOutbox", key);
+        Assert.Equal("Pending", result.Status);
+        Assert.Equal("Pending", f.Store.Require<OutboxDocument>("asx_outbox", key).Value.Status);
+        Assert.Equal(new Guid?[] { other, operatorId }, asked.ToArray());
+    }
+
+    private static WorkerResult ManageWork(
+        Fixture f,
+        Func<Guid?, IOrganizationService> factory,
+        Guid caller,
+        string command,
+        string key
+    )
+    {
+        var context = GuardTests.ContextProxy.Create(
+            new Dictionary<string, object>
+            {
+                ["Stage"] = 30,
+                ["Mode"] = 0,
+                ["IsInTransaction"] = true,
+                ["UserId"] = caller,
+                ["CorrelationId"] = Guid.NewGuid(),
+                ["MessageName"] = "asx_ManageWork",
+                ["InputParameters"] = new ParameterCollection
+                {
+                    ["Request"] = JsonWire.Write(
+                        new WorkerRequest { Command = command, Key = key }
+                    ),
+                },
+                ["OutputParameters"] = new ParameterCollection(),
+                ["SharedVariables"] = new ParameterCollection(),
+            }
+        );
+        return f.Service.Transaction(() =>
+        {
+            new Ascentix.Documents.Plugins.ManageWorkApi().Execute(
+                new ApiProvider(context, factory)
+            );
+            return JsonWire.Read<WorkerResult>((string)context.OutputParameters["Result"]);
+        });
+    }
+
+    private sealed class ApiProvider : IServiceProvider, IOrganizationServiceFactory
+    {
+        private readonly IPluginExecutionContext context;
+        private readonly Func<Guid?, IOrganizationService> factory;
+
+        public ApiProvider(
+            IPluginExecutionContext context,
+            Func<Guid?, IOrganizationService> factory
+        )
+        {
+            this.context = context;
+            this.factory = factory;
+        }
+
+        public object GetService(Type type) =>
+            type == typeof(IPluginExecutionContext) ? context : this;
+
+        public IOrganizationService CreateOrganizationService(Guid? userId) => factory(userId);
+    }
+
+    private sealed class DenyWrites : IOrganizationService
+    {
+        private readonly IOrganizationService inner;
+
+        public DenyWrites(IOrganizationService inner)
+        {
+            this.inner = inner;
+        }
+
+        private static Exception Denied() =>
+            new InvalidOperationException("Principal user is missing the operator privilege.");
+
+        public Guid Create(Entity entity) => throw Denied();
+
+        public Entity Retrieve(string name, Guid id, ColumnSet columns) =>
+            inner.Retrieve(name, id, columns);
+
+        public void Update(Entity entity) => throw Denied();
+
+        public void Delete(string name, Guid id) => throw Denied();
+
+        public OrganizationResponse Execute(OrganizationRequest request) =>
+            request is CreateRequest || request is UpdateRequest || request is DeleteRequest
+                ? throw Denied()
+                : inner.Execute(request);
+
+        public void Associate(
+            string name,
+            Guid id,
+            Relationship relationship,
+            EntityReferenceCollection entities
+        ) => throw Denied();
+
+        public void Disassociate(
+            string name,
+            Guid id,
+            Relationship relationship,
+            EntityReferenceCollection entities
+        ) => throw Denied();
+
+        public EntityCollection RetrieveMultiple(QueryBase query) => inner.RetrieveMultiple(query);
     }
 
     internal sealed class Fixture
     {
         public MemoryService Service { get; } = new MemoryService();
         public DocumentStore Store => new DocumentStore(Service);
-        public WorkerCoordinator Coordinator => new WorkerCoordinator(Service, () => Now);
+        public WorkerCoordinator Coordinator =>
+            new WorkerCoordinator(Service, () => Now, AllowedTables, RecordUpdates);
+
+        /// <summary>The enabled tables the worker API passes in; null means no scope check.</summary>
+        public string[]? AllowedTables;
+
+        /// <summary>The record-update setting the worker API passes in; null reads the profile.</summary>
+        public bool? RecordUpdates;
+
+        /// <summary>The operation Claim and Call drive; null means the seeded one.</summary>
+        public string? OperationKey;
         public DateTime Now = new DateTime(2026, 9, 8, 8, 0, 0, DateTimeKind.Utc);
         public Guid TemplateId { get; } = Guid.NewGuid();
         public Guid RevisionId { get; } = Guid.NewGuid();
@@ -938,6 +2903,9 @@ public sealed class DurableWorkerTests
         public Guid EntryId { get; } = Guid.NewGuid();
         public Guid NativeParent { get; } = Guid.NewGuid();
         public Guid NativeSite { get; } = Guid.NewGuid();
+        public Guid SiteId { get; } = Guid.NewGuid();
+        public List<WorkerResult> Results { get; } = new List<WorkerResult>();
+        public Guid OperationRowId => DocumentStore.StableId("asx_operation:" + Operation.Key);
         public string EntryUrl => "https://example.sharepoint.com/sites/proto/General";
         public FolderStep Binding { get; }
         public OperationDocument Operation { get; }
@@ -971,7 +2939,7 @@ public sealed class DurableWorkerTests
 
         public Fixture(bool seedBinding = true)
         {
-            Guid site = Guid.NewGuid(),
+            Guid site = SiteId,
                 policy = Guid.NewGuid();
             Service.Seed(
                 new Entity("asx_site", site)
@@ -996,7 +2964,6 @@ public sealed class DurableWorkerTests
                     ["asx_policyrevision"] = policy.ToString(),
                     ["asx_approved"] = true,
                     ["asx_policyapplied"] = true,
-                    ["asx_aclhash"] = SharePointObservations.AclHash(Acl),
                 }
             );
             Service.Seed(
@@ -1033,7 +3000,6 @@ public sealed class DurableWorkerTests
                 Key = Binding.Key + ":revision:" + RevisionId.ToString("N"),
                 Folders = new[] { Binding },
                 RevisionId = RevisionId,
-                PolicyRevision = policy,
             };
             Service.Seed(
                 new Entity("asx_template", TemplateId)
@@ -1103,21 +3069,82 @@ public sealed class DurableWorkerTests
             Service.Seed(new Entity("account", RecordId) { ["name"] = "Example" });
         }
 
+        /// <summary>
+        /// Starts a new library policy generation the way a team-membership refresh does:
+        /// the library stays approved while its policy is marked as not yet applied.
+        /// </summary>
+        public void StartPolicyUpdate()
+        {
+            Service.Rows[LibraryId]["asx_policyrevision"] = Guid.NewGuid().ToString();
+            Service.Rows[LibraryId]["asx_policyapplied"] = false;
+        }
+
+        public WorkerResult Execute(WorkerRequest request) =>
+            Service.Transaction(() => Coordinator.Execute(request, true));
+
+        /// <summary>
+        /// Queues the record while its library is suspended, lets planning fail and records the
+        /// failure the way the dispatch flow does, then lifts the suspension.
+        /// </summary>
+        public string BlockRecord()
+        {
+            Service.Rows[LibraryId]["asx_approved"] = false;
+            var queued = Execute(
+                new WorkerRequest
+                {
+                    Command = "Queue",
+                    TemplateId = TemplateId,
+                    RecordId = RecordId,
+                    RequestId = Guid.NewGuid(),
+                }
+            );
+            Assert.Throws<EvaluationBlockedException>(() =>
+                Execute(new WorkerRequest { Command = "Plan", Key = queued.Key })
+            );
+            Assert.Equal(
+                "Blocked",
+                Execute(new WorkerRequest { Command = "FailOutbox", Key = queued.Key }).Status
+            );
+            Service.Rows[LibraryId]["asx_approved"] = true;
+            return queued.Key;
+        }
+
+        public WorkerResult PlanRecord()
+        {
+            var queued = Service.Transaction(() =>
+                Coordinator.Execute(
+                    new WorkerRequest
+                    {
+                        Command = "Queue",
+                        TemplateId = TemplateId,
+                        RecordId = RecordId,
+                        RequestId = Guid.NewGuid(),
+                    },
+                    true
+                )
+            );
+            return Service.Transaction(() =>
+                Coordinator.Execute(new WorkerRequest { Command = "Plan", Key = queued.Key }, true)
+            );
+        }
+
         public WorkerResult Claim(string runId = "run-1", Guid token = default)
         {
             run = runId;
-            return Service.Transaction(() =>
+            var result = Service.Transaction(() =>
                 Coordinator.Execute(
                     new WorkerRequest
                     {
                         Command = "Claim",
-                        Key = Operation.Key,
+                        Key = OperationKey ?? Operation.Key,
                         RunId = runId,
                         Token = token,
                     },
                     true
                 )
             );
+            Results.Add(result);
+            return result;
         }
 
         public WorkerResult Call(
@@ -1125,13 +3152,14 @@ public sealed class DurableWorkerTests
             WorkerResult previous,
             string? body = null,
             int status = 0
-        ) =>
-            Service.Transaction(() =>
+        )
+        {
+            var result = Service.Transaction(() =>
                 Coordinator.Execute(
                     new WorkerRequest
                     {
                         Command = command,
-                        Key = Operation.Key,
+                        Key = OperationKey ?? Operation.Key,
                         RunId = run,
                         Token = previous.Token,
                         ProbeId = previous.ProbeId,
@@ -1142,6 +3170,9 @@ public sealed class DurableWorkerTests
                     true
                 )
             );
+            Results.Add(result);
+            return result;
+        }
 
         public WorkerResult Observe(WorkerResult read, string body) =>
             Call("Observe", read, body, read.ProbeKind == "Folder" && body == "{}" ? 404 : 200);
@@ -1177,8 +3208,6 @@ public sealed class DurableWorkerTests
         {
             Assert.Equal("Library", read.ProbeKind);
             read = Observe(read, LibraryBody());
-            Assert.Equal("Acl", read.ProbeKind);
-            read = Observe(read, AclBody());
             Assert.Equal("Parent", read.ProbeKind);
             read = Observe(read, ParentBody());
             Assert.Equal("Folder", read.ProbeKind);
@@ -1193,14 +3222,11 @@ public sealed class DurableWorkerTests
                 Name = "Example",
                 Path = "/sites/proto/General/Example",
                 Type = 1,
-                UniquePermissions = false,
             };
 
         public WorkerResult ObserveAndFinalize(WorkerResult read, ItemObservation item)
         {
             read = Observe(read, Rows(item));
-            Assert.Equal("FinalAcl", read.ProbeKind);
-            read = Observe(read, AclBody());
             Assert.Equal("FinalParent", read.ProbeKind);
             read = Observe(read, ParentBody());
             Assert.Equal("Verified", read.Status);
@@ -1214,6 +3240,46 @@ public sealed class DurableWorkerTests
         public List<UpdateRequest> Updates { get; } = new List<UpdateRequest>();
         public string? FailUpdateTable;
         public Func<QueryExpression, EntityCollection?>? QueryHook;
+
+        /// <summary>Answers FetchXML (aggregate counts and joins the in-memory query cannot run).</summary>
+        public Func<FetchExpression, EntityCollection>? FetchHook;
+
+        /// <summary>Primary name column by table; tables not listed use "name".</summary>
+        public Dictionary<string, string> PrimaryNames { get; } = new Dictionary<string, string>();
+
+        /// <summary>Display name by table; tables not listed show their logical name.</summary>
+        public Dictionary<string, string> DisplayNames { get; } = new Dictionary<string, string>();
+
+        /// <summary>
+        /// The platform's daily row-count snapshot (RetrieveTotalRecordCount) by table; tables
+        /// not listed report their in-memory row count.
+        /// </summary>
+        public Dictionary<string, long> SnapshotCounts { get; } = new Dictionary<string, long>();
+
+        /// <summary>
+        /// Lookup columns by "table.column", with the tables each one targets, separated by
+        /// commas ("account,contact" for a customer lookup).
+        /// </summary>
+        public Dictionary<string, string> Lookups { get; } = new Dictionary<string, string>();
+
+        /// <summary>
+        /// Columns deleted from their table, by "table.column": RetrieveAttribute faults for them
+        /// and RetrieveMetadataChanges leaves them out.
+        /// </summary>
+        public HashSet<string> MissingColumns { get; } = new HashSet<string>();
+
+        /// <summary>
+        /// Tables the caller holds no Read privilege on: querying them faults, as Dataverse does,
+        /// and RetrieveUserPrivilegeByPrivilegeId answers no privilege for their Read privilege.
+        /// </summary>
+        public HashSet<string> CallerCannotRead { get; } = new HashSet<string>();
+
+        /// <summary>The caller WhoAmI names.</summary>
+        public Guid CallerId { get; } = Guid.NewGuid();
+
+        /// <summary>A table's Read privilege, as its metadata names it.</summary>
+        public static Guid ReadPrivilegeId(string table) => StepService.ReadPrivilegeId(table);
+
         private long version = 1;
 
         private static Entity Copy(Entity row, ColumnSet? columns = null)
@@ -1229,16 +3295,69 @@ public sealed class DurableWorkerTests
         {
             var copy = Copy(row);
             copy.RowVersion = (++version).ToString();
+            // A seeded location the platform made has its site collection, unless the test
+            // seeds it missing (an explicit null).
+            if (
+                copy.LogicalName == "sharepointdocumentlocation"
+                && !copy.Contains("sitecollectionid")
+            )
+                SiteCollection(copy);
             Rows[copy.Id] = copy;
         }
 
+        /// <summary>
+        /// SharePoint sites the platform has not validated yet: a location placed directly under
+        /// one gets no site collection, as in Dataverse.
+        /// </summary>
+        public HashSet<Guid> UnvalidatedSites { get; } = new HashSet<Guid>();
+
+        /// <summary>
+        /// Computes a location's site collection as Dataverse does when it is created or its
+        /// parent is set: the site's from a site parent once the site is validated, otherwise
+        /// the parent location's, which may be missing.
+        /// </summary>
+        private void SiteCollection(Entity row)
+        {
+            var parent = row.GetAttributeValue<EntityReference>("parentsiteorlocation");
+            object? value = null;
+            if (parent?.LogicalName == "sharepointsite")
+                value = UnvalidatedSites.Contains(parent.Id) ? null : (object)parent.Id;
+            else if (parent != null && Rows.TryGetValue(parent.Id, out var above))
+                value = above.GetAttributeValue<object>("sitecollectionid");
+            row["sitecollectionid"] = value;
+        }
+
+        /// <summary>The platform computes a location's site collection; writing it is invalid.</summary>
+        private static void RefuseSiteCollection(Entity row)
+        {
+            if (row.LogicalName == "sharepointdocumentlocation" && row.Contains("sitecollectionid"))
+                throw new InvalidOperationException(
+                    "sitecollectionid is not valid for create or update."
+                );
+        }
+
+        private int depth;
+        private bool doomed;
+
+        private const string NoTransaction =
+            "There is no active transaction. A service call failed inside it and the plug-in carried on.";
+
+        /// <summary>
+        /// Runs the action as one Dataverse transaction: a failure rolls every write back. As in
+        /// Dataverse, a service call that fails inside it ends the transaction even when the
+        /// caller catches the fault: every later call, and the commit, fail.
+        /// </summary>
         public T Transaction<T>(Func<T> action)
         {
             var snapshot = Rows.ToDictionary(p => p.Key, p => Copy(p.Value));
             var oldVersion = version;
+            depth++;
             try
             {
-                return action();
+                var result = action();
+                if (doomed)
+                    throw new InvalidOperationException(NoTransaction);
+                return result;
             }
             catch
             {
@@ -1246,9 +3365,116 @@ public sealed class DurableWorkerTests
                 version = oldVersion;
                 throw;
             }
+            finally
+            {
+                if (--depth == 0)
+                    doomed = false;
+            }
         }
 
-        public Entity Retrieve(string name, Guid id, ColumnSet columns)
+        /// <summary>Tables deleted from the organization: metadata lookups find nothing, and other calls fault.</summary>
+        public HashSet<string> MissingTables { get; } = new HashSet<string>();
+
+        /// <summary>A fault a wrapping service raises for this one (a refused privilege): it dooms the transaction.</summary>
+        public Exception Refuse(Exception fault)
+        {
+            if (depth > 0)
+                doomed = true;
+            return fault;
+        }
+
+        private static Exception Missing(string table) =>
+            new System.ServiceModel.FaultException<OrganizationServiceFault>(
+                new OrganizationServiceFault
+                {
+                    ErrorCode = unchecked((int)0x80040217),
+                    Message = "Could not find an entity with name " + table + ".",
+                }
+            );
+
+        private EntityMetadata Metadata(string table)
+        {
+            var metadata = new EntityMetadata { LogicalName = table };
+            typeof(EntityMetadata)
+                .GetProperty("PrimaryIdAttribute")!
+                .SetValue(metadata, table + "id", null);
+            typeof(EntityMetadata)
+                .GetProperty("PrimaryNameAttribute")!
+                .SetValue(
+                    metadata,
+                    PrimaryNames.TryGetValue(table, out var primary) ? primary : "name",
+                    null
+                );
+            metadata.DisplayName = new Label(
+                new LocalizedLabel(
+                    DisplayNames.TryGetValue(table, out var label) ? label : table,
+                    1033
+                ),
+                new LocalizedLabel[0]
+            );
+            typeof(EntityMetadata)
+                .GetProperty("Privileges")!
+                .SetValue(metadata, new[] { StepService.ReadPrivilege(table) }, null);
+            return metadata;
+        }
+
+        /// <summary>The column's metadata: a lookup when Lookups lists it, else text.</summary>
+        private AttributeMetadata Attribute(string table, string column)
+        {
+            AttributeMetadata metadata = Lookups.TryGetValue(table + "." + column, out var targets)
+                ? new LookupAttributeMetadata
+                {
+                    LogicalName = column,
+                    IsSecured = false,
+                    Targets = targets.Split(','),
+                }
+                : new StringAttributeMetadata { LogicalName = column, IsSecured = false };
+            typeof(AttributeMetadata).GetProperty("IsValidForRead")!.SetValue(metadata, true, null);
+            return metadata;
+        }
+
+        /// <summary>One service call: refused once the transaction is doomed, and dooms it when it fails.</summary>
+        private T Call<T>(Func<T> call)
+        {
+            if (doomed)
+                throw new InvalidOperationException(NoTransaction);
+            try
+            {
+                return call();
+            }
+            catch
+            {
+                if (depth > 0)
+                    doomed = true;
+                throw;
+            }
+        }
+
+        public Entity Retrieve(string name, Guid id, ColumnSet columns) =>
+            Call(() => RetrieveRow(name, id, columns));
+
+        public Guid Create(Entity row) => Call(() => CreateRow(row));
+
+        /// <summary>Every request Execute was asked to run, in order.</summary>
+        public List<OrganizationRequest> Executed { get; } = new List<OrganizationRequest>();
+
+        public OrganizationResponse Execute(OrganizationRequest request) =>
+            Call(() =>
+            {
+                Executed.Add(request);
+                return ExecuteRequest(request);
+            });
+
+        public EntityCollection RetrieveMultiple(QueryBase raw) => Call(() => Query(raw));
+
+        public void Delete(string name, Guid id) =>
+            Call(() =>
+            {
+                DeleteRow(name, id);
+                return 0;
+            });
+
+        private Entity RetrieveRow(string name, Guid id, ColumnSet columns)
         {
             var row = Rows[id];
             if (row.LogicalName != name)
@@ -1256,7 +3482,7 @@ public sealed class DurableWorkerTests
             return Copy(row, columns);
         }
 
-        public Guid Create(Entity row)
+        private Guid CreateRow(Entity row)
         {
             if (row.Id == Guid.Empty)
                 row.Id = Guid.NewGuid();
@@ -1282,16 +3508,20 @@ public sealed class DurableWorkerTests
                 )
             )
                 throw new InvalidOperationException("Unique key conflict.");
+            RefuseSiteCollection(row);
             var copy = Copy(row);
             if (!copy.Contains("createdon"))
                 copy["createdon"] = new DateTime(2026, 9, 8).AddMilliseconds(version);
             if (copy.LogicalName == "sharepointdocumentlocation")
+            {
                 copy["statecode"] = new OptionSetValue(0);
+                SiteCollection(copy);
+            }
             Seed(copy);
             return copy.Id;
         }
 
-        public OrganizationResponse Execute(OrganizationRequest request)
+        private OrganizationResponse ExecuteRequest(OrganizationRequest request)
         {
             if (request is DeleteRequest delete)
             {
@@ -1322,42 +3552,141 @@ public sealed class DurableWorkerTests
                     || row.RowVersion != update.Target.RowVersion
                 )
                     throw new InvalidOperationException("Version conflict.");
+                RefuseSiteCollection(update.Target);
                 var copy = Copy(row);
                 foreach (var value in update.Target.Attributes)
                     copy[value.Key] = value.Value;
+                // Setting the parent, even to the same one, recomputes the site collection.
+                if (
+                    copy.LogicalName == "sharepointdocumentlocation"
+                    && update.Target.Contains("parentsiteorlocation")
+                )
+                    SiteCollection(copy);
                 Seed(copy);
                 return new UpdateResponse();
             }
             if (request is RetrieveEntityRequest entityRequest)
             {
-                var metadata = new EntityMetadata { LogicalName = entityRequest.LogicalName };
-                typeof(EntityMetadata)
-                    .GetProperty("PrimaryIdAttribute")!
-                    .SetValue(metadata, entityRequest.LogicalName + "id", null);
+                if (MissingTables.Contains(entityRequest.LogicalName))
+                    throw Missing(entityRequest.LogicalName);
                 var response = new RetrieveEntityResponse();
-                response.Results["EntityMetadata"] = metadata;
+                response.Results["EntityMetadata"] = Metadata(entityRequest.LogicalName);
+                return response;
+            }
+            if (request is RetrieveMetadataChangesRequest changes)
+            {
+                // Answers the one query shape Documents sends: a table by its logical name.
+                var condition = changes.Query.Criteria.Conditions.Single();
+                if (
+                    condition.PropertyName != "LogicalName"
+                    || condition.ConditionOperator != MetadataConditionOperator.Equals
+                )
+                    throw new NotSupportedException("Only a LogicalName lookup is supported.");
+                string table = (string)condition.Value;
+                var found = new EntityMetadataCollection();
+                if (!MissingTables.Contains(table))
+                {
+                    var metadata = Metadata(table);
+                    // An attribute query by LogicalName: the column, or nothing once deleted.
+                    var column =
+                        changes
+                            .Query.AttributeQuery?.Criteria.Conditions.Single(c =>
+                                c.PropertyName == "LogicalName"
+                            )
+                            .Value as string;
+                    if (column != null)
+                        typeof(EntityMetadata)
+                            .GetProperty("Attributes")!
+                            .SetValue(
+                                metadata,
+                                MissingColumns.Contains(table + "." + column)
+                                    ? new AttributeMetadata[0]
+                                    : new[] { Attribute(table, column) },
+                                null
+                            );
+                    found.Add(metadata);
+                }
+                var response = new RetrieveMetadataChangesResponse();
+                response.Results["EntityMetadata"] = found;
+                return response;
+            }
+            if (request is Microsoft.Crm.Sdk.Messages.RetrieveTotalRecordCountRequest totals)
+            {
+                var counts = new EntityRecordCountCollection();
+                foreach (var table in totals.EntityNames)
+                {
+                    if (MissingTables.Contains(table))
+                        throw Missing(table);
+                    counts[table] = SnapshotCounts.TryGetValue(table, out var snapshot)
+                        ? snapshot
+                        : Rows.Values.Count(r => r.LogicalName == table);
+                }
+                var response = new Microsoft.Crm.Sdk.Messages.RetrieveTotalRecordCountResponse();
+                response.Results["EntityRecordCountCollection"] = counts;
                 return response;
             }
             if (request is RetrieveAttributeRequest attribute)
             {
-                AttributeMetadata metadata = new StringAttributeMetadata
-                {
-                    LogicalName = attribute.LogicalName,
-                    IsSecured = false,
-                };
-                typeof(AttributeMetadata)
-                    .GetProperty("IsValidForRead")!
-                    .SetValue(metadata, true, null);
+                if (
+                    MissingColumns.Contains(
+                        attribute.EntityLogicalName + "." + attribute.LogicalName
+                    )
+                )
+                    throw new System.ServiceModel.FaultException<OrganizationServiceFault>(
+                        new OrganizationServiceFault
+                        {
+                            Message = "Could not find an attribute " + attribute.LogicalName + ".",
+                        }
+                    );
                 var response = new RetrieveAttributeResponse();
-                response.Results["AttributeMetadata"] = metadata;
+                response.Results["AttributeMetadata"] = Attribute(
+                    attribute.EntityLogicalName,
+                    attribute.LogicalName
+                );
+                return response;
+            }
+            if (request is Microsoft.Crm.Sdk.Messages.WhoAmIRequest)
+            {
+                var response = new Microsoft.Crm.Sdk.Messages.WhoAmIResponse();
+                response.Results["UserId"] = CallerId;
+                return response;
+            }
+            if (
+                request is Microsoft.Crm.Sdk.Messages.RetrieveUserPrivilegeByPrivilegeIdRequest held
+            )
+            {
+                var response =
+                    new Microsoft.Crm.Sdk.Messages.RetrieveUserPrivilegeByPrivilegeIdResponse();
+                response.Results["RolePrivileges"] = CallerCannotRead.Any(t =>
+                    ReadPrivilegeId(t) == held.PrivilegeId
+                )
+                    ? new Microsoft.Crm.Sdk.Messages.RolePrivilege[0]
+                    : new[]
+                    {
+                        new Microsoft.Crm.Sdk.Messages.RolePrivilege(
+                            (int)Microsoft.Crm.Sdk.Messages.PrivilegeDepth.Global,
+                            held.PrivilegeId,
+                            Guid.Empty
+                        ),
+                    };
                 return response;
             }
             throw new NotSupportedException(request.RequestName);
         }
 
-        public EntityCollection RetrieveMultiple(QueryBase raw)
+        private EntityCollection Query(QueryBase raw)
         {
+            if (raw is FetchExpression fetch)
+                return FetchHook?.Invoke(fetch)
+                    ?? throw new NotSupportedException("Set FetchHook to answer FetchXML.");
             var query = (QueryExpression)raw;
+            if (CallerCannotRead.Contains(query.EntityName))
+                throw new System.ServiceModel.FaultException<OrganizationServiceFault>(
+                    new OrganizationServiceFault
+                    {
+                        Message = "Principal user is missing prvRead" + query.EntityName + ".",
+                    }
+                );
             var intercepted = QueryHook?.Invoke(query);
             if (intercepted != null)
                 return intercepted;
@@ -1376,11 +3705,23 @@ public sealed class DurableWorkerTests
                     return actual == null;
                 if (condition.Operator == ConditionOperator.NotNull)
                     return actual != null;
+                if (condition.Operator == ConditionOperator.In)
+                    return condition.Values.Any(v =>
+                        Equals(actual, v is EntityReference r ? r.Id : v)
+                    );
                 object expected = condition.Values[0];
                 if (condition.Operator == ConditionOperator.Equal)
                     return Equals(actual, expected);
+                if (condition.Operator == ConditionOperator.BeginsWith)
+                    return actual is string text
+                        && text.StartsWith((string)expected, StringComparison.Ordinal);
                 if (condition.Operator == ConditionOperator.LessEqual)
                     return actual is IComparable comparable && comparable.CompareTo(expected) <= 0;
+                // NotEqual excludes rows with no value, as SQL does.
+                if (condition.Operator == ConditionOperator.NotEqual)
+                    return actual != null && !Equals(actual, expected);
+                if (condition.Operator == ConditionOperator.GreaterEqual)
+                    return actual is IComparable later && later.CompareTo(expected) >= 0;
                 throw new NotSupportedException(condition.Operator.ToString());
             }
             bool Matches(Entity row, FilterExpression filter)
@@ -1416,12 +3757,26 @@ public sealed class DurableWorkerTests
                 values = sorted;
             if (query.TopCount.HasValue)
                 values = values.Take(query.TopCount.Value);
+            if (query.PageInfo != null && query.PageInfo.Count > 0)
+            {
+                var all = values.ToList();
+                int skip = (Math.Max(1, query.PageInfo.PageNumber) - 1) * query.PageInfo.Count;
+                var rows = all.Skip(skip).Take(query.PageInfo.Count).ToList();
+                var page = new EntityCollection(rows.Select(r => Copy(r, query.ColumnSet)).ToList())
+                {
+                    MoreRecords = skip + rows.Count < all.Count,
+                };
+                page.PagingCookie = page.MoreRecords
+                    ? "page-" + (query.PageInfo.PageNumber + 1)
+                    : null;
+                return page;
+            }
             return new EntityCollection(values.Select(r => Copy(r, query.ColumnSet)).ToList());
         }
 
         public void Update(Entity row) => throw new NotSupportedException("Use UpdateRequest CAS.");
 
-        public void Delete(string name, Guid id)
+        private void DeleteRow(string name, Guid id)
         {
             if (Rows[id].LogicalName != name)
                 throw new InvalidOperationException("Wrong delete table.");

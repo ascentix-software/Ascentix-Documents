@@ -4,6 +4,7 @@ using System.Linq;
 using System.Runtime.Serialization;
 using Ascentix.Documents.Conditions;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Metadata;
 using Microsoft.Xrm.Sdk.Query;
 
 namespace Ascentix.Documents.Dataverse;
@@ -22,6 +23,10 @@ public sealed class LoadedDraft
 
     [DataMember]
     public string Status { get; set; } = "";
+
+    /// <summary>The revision's version number (asx_version), for the version chip.</summary>
+    [DataMember]
+    public int Version { get; set; }
 }
 
 public sealed class DraftReader
@@ -43,7 +48,7 @@ public sealed class DraftReader
         var revision = service.Retrieve(
             "asx_revision",
             revisionId,
-            new ColumnSet("asx_templateid", "asx_status")
+            new ColumnSet("asx_templateid", "asx_status", "asx_version")
         );
         var templateRef =
             revision.GetAttributeValue<EntityReference>("asx_templateid")
@@ -58,6 +63,9 @@ public sealed class DraftReader
             .Children("asx_source", revisionId, "asx_payload")
             .Select(row => JsonWire.Read<SourceDto>(TemplateStore.Text(row, "asx_payload")))
             .ToArray();
+        var tables = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var source in sources)
+            tables[source.Alias] = source.Table;
         var destinations = store.Children(
             "asx_destination",
             revisionId,
@@ -88,20 +96,25 @@ public sealed class DraftReader
             StringComparer.Ordinal
         );
         var used = new HashSet<string>();
-        GroupDto ReadGroup(string key, int depth)
+        GroupDto ReadGroup(string key)
         {
-            if (depth > 10 || !used.Add(key) || !indexed.TryGetValue(key, out var row))
+            if (!used.Add(key) || !indexed.TryGetValue(key, out var row))
                 throw new EvaluationBlockedException("Invalid/shared condition group ownership.");
             return new GroupDto
             {
                 All = row.GetAttributeValue<bool>("asx_all"),
                 Conditions = conditions
                     .Where(c => TemplateStore.Text(c, "asx_groupkey") == key)
-                    .Select(c => JsonWire.Read<ConditionDto>(TemplateStore.Text(c, "asx_payload")))
+                    .Select(c =>
+                        Label(
+                            JsonWire.Read<ConditionDto>(TemplateStore.Text(c, "asx_payload")),
+                            tables
+                        )
+                    )
                     .ToArray(),
                 Groups = groups
                     .Where(g => g.GetAttributeValue<string>("asx_parentkey") == key)
-                    .Select(g => ReadGroup(TemplateStore.Text(g, "asx_key"), depth + 1))
+                    .Select(g => ReadGroup(TemplateStore.Text(g, "asx_key")))
                     .ToArray(),
             };
         }
@@ -131,7 +144,7 @@ public sealed class DraftReader
                                 Key = TemplateStore.Text(f, "asx_key"),
                                 Parent = f.GetAttributeValue<string>("asx_parentkey"),
                                 Name = TemplateStore.Text(f, "asx_expression"),
-                                Condition = group == null ? null : ReadGroup(group, 0),
+                                Condition = group == null ? null : ReadGroup(group),
                             };
                         })
                         .ToArray(),
@@ -159,6 +172,88 @@ public sealed class DraftReader
             RevisionId = revisionId.ToString("D"),
             RowVersion = revision.RowVersion,
             Status = TemplateStore.Text(revision, "asx_status"),
+            Version = revision.GetAttributeValue<int>("asx_version"),
         };
     }
+
+    private Guid? caller;
+
+    // Metadata and privileges read once per reader: a draft may compare many conditions with
+    // the same lookup column, and each answer is the same for all of them.
+    private readonly Dictionary<string, string[]> targets = new Dictionary<string, string[]>(
+        StringComparer.Ordinal
+    );
+    private readonly Dictionary<string, EntityMetadata?> readable = new Dictionary<
+        string,
+        EntityMetadata?
+    >(StringComparer.Ordinal);
+
+    // The record a lookup condition compares with, by name, read as the caller from each target
+    // of the lookup in turn; null when it is not found or not readable (spec 6.4). LoadDraft runs
+    // in a transaction that a faulting call would end even when caught, so every read here is
+    // one that answers instead of faulting: metadata through RetrieveMetadataChanges (a deleted
+    // table or column is simply absent), and a table is queried only when the caller holds its
+    // Read privilege (a query without it faults).
+    private ConditionDto Label(ConditionDto condition, IReadOnlyDictionary<string, string> tables)
+    {
+        condition.LiteralLabel = null;
+        condition.LiteralTable = null;
+        if (
+            condition.LiteralKind != "Lookup"
+            || !Guid.TryParse(condition.Literal, out var id)
+            || !tables.TryGetValue(condition.Source, out var table)
+        )
+            return condition;
+        foreach (var target in Targets(table, condition.Column))
+        {
+            var metadata = Readable(target);
+            if (metadata == null)
+                continue;
+            var query = new QueryExpression(target)
+            {
+                ColumnSet = new ColumnSet(metadata.PrimaryNameAttribute),
+                TopCount = 1,
+            };
+            query.Criteria.AddCondition(metadata.PrimaryIdAttribute, ConditionOperator.Equal, id);
+            var found = service.RetrieveMultiple(query).Entities.FirstOrDefault();
+            if (found == null)
+                continue;
+            condition.LiteralLabel = found.GetAttributeValue<string>(metadata.PrimaryNameAttribute);
+            condition.LiteralTable = target;
+            break;
+        }
+        return condition;
+    }
+
+    // The tables a lookup column targets.
+    private string[] Targets(string table, string column)
+    {
+        string key = table + "." + column;
+        if (!targets.TryGetValue(key, out var found))
+            targets[key] = found = TableInfo.LookupTargets(service, table, column);
+        return found;
+    }
+
+    // The table's metadata when the caller can query it for a name, else null.
+    private EntityMetadata? Readable(string table)
+    {
+        if (!readable.TryGetValue(table, out var metadata))
+        {
+            metadata = TableInfo.Find(service, table);
+            if (
+                metadata?.PrimaryIdAttribute == null
+                || metadata.PrimaryNameAttribute == null
+                || !TableInfo.CanRead(service, metadata, Caller())
+            )
+                metadata = null;
+            readable[table] = metadata;
+        }
+        return metadata;
+    }
+
+    private Guid Caller() =>
+        caller ??= (
+            (Microsoft.Crm.Sdk.Messages.WhoAmIResponse)
+                service.Execute(new Microsoft.Crm.Sdk.Messages.WhoAmIRequest())
+        ).UserId;
 }

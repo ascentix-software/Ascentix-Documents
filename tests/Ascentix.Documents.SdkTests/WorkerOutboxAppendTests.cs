@@ -164,7 +164,10 @@ public sealed class WorkerOutboxAppendTests
 
         public EntityCollection RetrieveMultiple(QueryBase query)
         {
-            Assert.Equal("asx_runtime", Assert.IsType<QueryExpression>(query).EntityName);
+            var entity = Assert.IsType<QueryExpression>(query).EntityName;
+            if (entity == "asx_runtimetable")
+                return new EntityCollection();
+            Assert.Equal("asx_runtime", entity);
             RuntimeReads++;
             return new EntityCollection(
                 new[]

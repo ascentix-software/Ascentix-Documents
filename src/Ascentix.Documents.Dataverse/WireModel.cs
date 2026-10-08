@@ -14,9 +14,14 @@ namespace Ascentix.Documents.Dataverse;
 
 public static class JsonWire
 {
+    // Stored documents come from asx_payload columns of at most 500,000 characters (MaxLength in
+    // the solution's Entity.xml files). Such a document holds fewer than 500,000 values, so the
+    // item and array quotas follow the length and never refuse a document the length admits.
+    private const int MaxLength = 500000;
+
     public static T Read<T>(string json)
     {
-        if (string.IsNullOrWhiteSpace(json) || json.Length > 500000)
+        if (string.IsNullOrWhiteSpace(json) || json.Length > MaxLength)
             throw new EvaluationBlockedException("JSON input missing or too large.");
         using (
             var reader = JsonReaderWriterFactory.CreateJsonReader(
@@ -24,8 +29,8 @@ public static class JsonWire
                 new XmlDictionaryReaderQuotas
                 {
                     MaxDepth = 32,
-                    MaxStringContentLength = 500000,
-                    MaxArrayLength = 20000,
+                    MaxStringContentLength = MaxLength,
+                    MaxArrayLength = MaxLength,
                     MaxBytesPerRead = 4096,
                     MaxNameTableCharCount = 20000,
                 }
@@ -34,7 +39,7 @@ public static class JsonWire
             return (T)
                 new DataContractJsonSerializer(
                     typeof(T),
-                    new DataContractJsonSerializerSettings { MaxItemsInObjectGraph = 20000 }
+                    new DataContractJsonSerializerSettings { MaxItemsInObjectGraph = MaxLength }
                 ).ReadObject(reader)!;
     }
 
@@ -46,6 +51,18 @@ public static class JsonWire
             return Encoding.UTF8.GetString(stream.ToArray());
         }
     }
+}
+
+/// <summary>The result of publishing a template revision.</summary>
+[DataContract]
+public sealed class PublishResult
+{
+    [DataMember]
+    public string Status { get; set; } = "";
+
+    /// <summary>Information for the author; a notice never means the publish failed.</summary>
+    [DataMember]
+    public string[] Notices { get; set; } = Array.Empty<string>();
 }
 
 [DataContract]
@@ -123,6 +140,14 @@ public sealed class ConditionDto
     [DataMember]
     public string? RightColumn { get; set; }
 
+    /// <summary>Output only (LoadDraft): the name of the record a lookup condition compares with.</summary>
+    [DataMember]
+    public string? LiteralLabel { get; set; }
+
+    /// <summary>Output only (LoadDraft): the table of that record.</summary>
+    [DataMember]
+    public string? LiteralTable { get; set; }
+
     public Condition ToModel()
     {
         Value? value = null;
@@ -197,8 +222,13 @@ public sealed class ConditionDto
 [DataContract]
 public sealed class PreviewRequest
 {
+    /// <summary>The saved revision to preview; send it or Draft, not both.</summary>
     [DataMember]
     public string RevisionId { get; set; } = "";
+
+    /// <summary>The editor's unsaved draft to preview; send it or RevisionId, not both.</summary>
+    [DataMember]
+    public DraftDto? Draft { get; set; }
 
     [DataMember]
     public string RecordId { get; set; } = "";
@@ -213,9 +243,14 @@ public sealed class PlanDto
     [DataMember]
     public IntentDto[] Folders { get; set; } = Array.Empty<IntentDto>();
 
-    public static PlanDto From(IReadOnlyList<FolderIntent> intents) =>
+    /// <summary>Adjusted folder names and folders waiting for a value.</summary>
+    [DataMember]
+    public string[] Notices { get; set; } = Array.Empty<string>();
+
+    public static PlanDto From(FolderPlan intents) =>
         new PlanDto
         {
+            Notices = intents.Notices.ToArray(),
             Folders = intents
                 .Select(i => new IntentDto
                 {

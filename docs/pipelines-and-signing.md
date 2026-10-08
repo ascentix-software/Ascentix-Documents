@@ -28,4 +28,4 @@ Official signing requires separately configured maintainer infrastructure. Use t
 
 Compare downloaded artifacts with the release's `SHA256SUMS`, for example using PowerShell `Get-FileHash -Algorithm SHA256`. The release manifest also records the source snapshot and assembly identity.
 
-Checksums detect differences from the published files. A .NET strong name identifies the assembly; it does not authenticate the release publisher. This preview does not provide a signed release attestation. Authentication certificates used by Dataverse and SharePoint are separate from assembly signing.
+Checksums detect differences from the published files. A .NET strong name identifies the assembly; it does not authenticate the release publisher. This beta does not provide a signed release attestation. Authentication certificates used by Dataverse and SharePoint are separate from assembly signing.

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Ascentix.Documents.Conditions;
 using Ascentix.Documents.Dataverse;
@@ -72,9 +73,45 @@ public sealed class CatalogApprovalTests
         );
         Assert.True(f.Service.Rows[result.CatalogId].GetAttributeValue<bool>("asx_approved"));
         Assert.False(f.Service.Rows[result.CatalogId].GetAttributeValue<bool>("asx_policyapplied"));
+        // The library ACL is neither read nor recorded: approval never gates on entries
+        // Documents does not own.
+        Assert.False(f.Service.Rows[result.CatalogId].Contains("asx_aclhash"));
+        Assert.DoesNotContain(f.Reads, r => r.Contains("roleassignments"));
+    }
+
+    [Fact]
+    public void ApprovalProceedsWhileAnotherRunWritesOnTheSite()
+    {
+        var f = new Fixture();
+        var probe = f.Admin.Execute(
+            new CatalogRequest
+            {
+                Command = "ProbeSite",
+                NativeSiteId = f.NativeSite,
+                RequestId = Guid.NewGuid(),
+            },
+            true
+        );
+        probe = f.Capture(probe.Key);
+        var store = new DocumentStore(f.Service);
+        var writer = WorkCoordination.Operation(f.Service, probe.Key);
+        AdminStopTests.HoldWriter(store, writer, f.Now);
+        var approved = f.Service.Transaction(() =>
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "Approve",
+                    Key = probe.Key,
+                    RowVersion = probe.RowVersion,
+                    Name = "Site",
+                },
+                true
+            )
+        );
+        Assert.True(f.Service.Rows[approved.CatalogId].GetAttributeValue<bool>("asx_approved"));
         Assert.Equal(
-            64,
-            f.Service.Rows[result.CatalogId].GetAttributeValue<string>("asx_aclhash").Length
+            "other/run",
+            store.Require<DispatcherDocument>("asx_claim", writer).Value.RunId
         );
     }
 
@@ -171,15 +208,7 @@ public sealed class CatalogApprovalTests
     public void RuntimeTransportGateRejectsUnapprovedSiteAndMutationMethods()
     {
         var f = new Fixture();
-        f.Service.Seed(
-            new Entity("asx_runtime", Guid.NewGuid())
-            {
-                ["asx_name"] = "Default",
-                ["asx_workeruserid"] = Guid.NewGuid().ToString(),
-                ["asx_allowedtables"] = "[\"account\"]",
-                ["asx_sharepointhosts"] = "[\"example.sharepoint.com\"]",
-            }
-        );
+        RuntimeSeed.Seed(f.Service, Guid.NewGuid(), "account");
         var profile = RuntimeProfile.Read(f.Service);
         var intent = new WorkerResult
         {
@@ -256,14 +285,59 @@ public sealed class CatalogApprovalTests
         Assert.NotNull(f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_readrole"));
     }
 
+    [Fact]
+    public void ApprovingALibraryRepairsItsDocumentLocationsMissingSiteCollection()
+    {
+        var f = new Fixture();
+        // Made before the site finished validation, so Dataverse left the site collection empty.
+        f.Service.Rows[f.NativeParent]["sitecollectionid"] = null;
+        var site = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddSite",
+                    Key = null!,
+                    NativeSiteId = f.NativeSite,
+                    Name = "Site",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        var library = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = site.CatalogId,
+                    ListId = f.List,
+                    NativeParentId = f.NativeParent,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Equal("Approved", library.Status);
+        Assert.Equal(
+            f.NativeSite,
+            f.Service.Rows[f.NativeParent].GetAttributeValue<object>("sitecollectionid")
+        );
+        var repair = Assert.Single(
+            f.Service.Updates,
+            u => u.Target.LogicalName == "sharepointdocumentlocation"
+        );
+        Assert.Equal(ConcurrencyBehavior.IfRowVersionMatches, repair.ConcurrencyBehavior);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void NestedNativeEntryRequiresInheritedIntermediateAncestors(bool unique)
+    public void NestedNativeEntryIsApprovedWhateverItsFolderPermissions(bool unique)
     {
         var f = new Fixture();
         f.Nested = true;
-        f.UniqueAncestor = unique;
+        f.UniqueFolders = unique;
         var root = Guid.NewGuid();
         f.Service.Seed(
             new Entity("sharepointdocumentlocation", root)
@@ -313,29 +387,21 @@ public sealed class CatalogApprovalTests
                 true
             ).Key
         );
-        if (unique)
-        {
-            Assert.Equal("Blocked", probe.Status);
-            Assert.Throws<EvaluationBlockedException>(() =>
-                f.Admin.Execute(
-                    new CatalogRequest
-                    {
-                        Command = "Approve",
-                        Key = probe.Key,
-                        RowVersion = probe.RowVersion,
-                        Name = "Library",
-                    },
-                    true
-                )
-            );
-        }
-        else
-        {
-            Assert.Equal("Captured", probe.Status);
-            Assert.Equal(f.NestedEntry, probe.Observation!.EntryId);
-            Assert.EndsWith("/General/Archive/Entry", probe.Observation.EntryUrl);
-            Assert.Equal(4, f.AncestorReads);
-        }
+        Assert.Equal("Captured", probe.Status);
+        Assert.Equal(f.NestedEntry, probe.Observation!.EntryId);
+        Assert.EndsWith("/General/Archive/Entry", probe.Observation.EntryUrl);
+        Assert.Equal(4, f.AncestorReads);
+        var library = f.Admin.Execute(
+            new CatalogRequest
+            {
+                Command = "Approve",
+                Key = probe.Key,
+                RowVersion = probe.RowVersion,
+                Name = "Library",
+            },
+            true
+        );
+        Assert.True(f.Service.Rows[library.CatalogId].GetAttributeValue<bool>("asx_approved"));
     }
 
     [Fact]
@@ -413,7 +479,7 @@ public sealed class CatalogApprovalTests
     }
 
     [Fact]
-    public void ThrottledCatalogReadsWaitUntilRetryAfterAndStopAfterFiveRetries()
+    public void ThrottledCatalogReadsWaitUntilRetryAfterWithNoAttemptCap()
     {
         var f = new Fixture();
         var queued = f.Admin.Execute(
@@ -427,7 +493,7 @@ public sealed class CatalogApprovalTests
             },
             true
         );
-        for (int i = 0; i < 6; i++)
+        for (int i = 0; i < 8; i++)
         {
             var work = f.Worker.Execute(
                 new WorkerRequest
@@ -453,7 +519,13 @@ public sealed class CatalogApprovalTests
                 },
                 true
             );
-            Assert.Equal(i == 5 ? "Blocked" : "RetryWait", result.Status);
+            Assert.Equal("RetryWait", result.Status);
+            Assert.Contains(
+                "attempt " + (i + 1) + ".",
+                new DocumentStore(f.Service)
+                    .Require<CatalogProbe>("asx_operation", queued.Key)
+                    .Value.ErrorCode
+            );
             Assert.Equal(
                 result.Status,
                 f.Worker.Execute(
@@ -468,6 +540,99 @@ public sealed class CatalogApprovalTests
             );
             f.Now = f.Now.AddHours(1);
         }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(408)]
+    public void CatalogReadTimeoutWaitsAndReleasesTheWriter(int status)
+    {
+        var f = new Fixture();
+        var queued = f.Admin.Execute(
+            new CatalogRequest
+            {
+                Command = "AddSite",
+                Key = null!,
+                NativeSiteId = f.NativeSite,
+                Name = "Site",
+                RequestId = Guid.NewGuid(),
+            },
+            true
+        );
+        var work = f.Worker.Execute(
+            new WorkerRequest
+            {
+                Command = "Claim",
+                Key = queued.Key,
+                RunId = "run",
+            },
+            true
+        );
+        var result = f.Worker.Execute(
+            new WorkerRequest
+            {
+                Command = "Observe",
+                Key = queued.Key,
+                RunId = "run",
+                Token = work.Token,
+                ProbeId = work.ProbeId,
+                ProbeKind = work.ProbeKind,
+                HttpStatus = status,
+            },
+            true
+        );
+        Assert.Equal("RetryWait", result.Status);
+        Assert.Null(
+            new DocumentStore(f.Service)
+                .Require<DispatcherDocument>(
+                    "asx_claim",
+                    WorkCoordination.Operation(f.Service, queued.Key)
+                )
+                .Value.RunId
+        );
+    }
+
+    [Theory]
+    [InlineData("Retry", "Pending")]
+    [InlineData("Cancel", "Cancelled")]
+    public void ProbeRetryAndCancelWorkOnceTheClaimExpires(string command, string status)
+    {
+        var f = new Fixture();
+        var queued = f.Admin.Execute(
+            new CatalogRequest
+            {
+                Command = "AddSite",
+                Key = null!,
+                NativeSiteId = f.NativeSite,
+                Name = "Site",
+                RequestId = Guid.NewGuid(),
+            },
+            true
+        );
+        var work = f.Worker.Execute(
+            new WorkerRequest
+            {
+                Command = "Claim",
+                Key = queued.Key,
+                RunId = "run",
+            },
+            true
+        );
+        Assert.Equal("Read", work.Status);
+        var manage = new WorkerRequest { Command = command, Key = queued.Key };
+        Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() => f.Worker.Execute(manage, true))
+        );
+        f.Now = f.Now.AddMinutes(6);
+        Assert.Equal(status, f.Service.Transaction(() => f.Worker.Execute(manage, true)).Status);
+        Assert.Null(
+            new DocumentStore(f.Service)
+                .Require<DispatcherDocument>(
+                    "asx_claim",
+                    WorkCoordination.Operation(f.Service, queued.Key)
+                )
+                .Value.RunId
+        );
     }
 
     private static string Envelope<T>(T value) =>
@@ -732,6 +897,893 @@ public sealed class CatalogApprovalTests
         );
     }
 
+    private const string InheritanceWarning =
+        "This library inherits permissions from the site. When you approve it, Documents stops the inheritance, keeps a copy of the current site permissions, and then manages team access on it.";
+
+    [Fact]
+    public void InheritingLibraryIsApprovedOnlyWithTheAdminsAcknowledgement()
+    {
+        var f = new Fixture();
+        f.Unique = false;
+        var site = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddSite",
+                    NativeSiteId = f.NativeSite,
+                    Name = "Site",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        var probe = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "ProbeLibrary",
+                    SiteId = site.CatalogId,
+                    ListId = f.List,
+                    NativeParentId = f.NativeParent,
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Equal("Captured", probe.Status);
+        Assert.True(probe.Observation!.Inherits, "The probe records that the library inherits");
+        var refused = Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() =>
+                f.Admin.Execute(
+                    new CatalogRequest
+                    {
+                        Command = "Approve",
+                        Key = probe.Key,
+                        RowVersion = probe.RowVersion,
+                        Name = "General",
+                    },
+                    true
+                )
+            )
+        );
+        Assert.StartsWith(InheritanceWarning, refused.Message);
+        Assert.DoesNotContain(f.Service.Rows.Values, r => r.LogicalName == "asx_library");
+        var approved = f.Admin.Execute(
+            new CatalogRequest
+            {
+                Command = "Approve",
+                Key = probe.Key,
+                RowVersion = probe.RowVersion,
+                Name = "General",
+                BreakInheritance = true,
+            },
+            true
+        );
+        Assert.True(f.Service.Rows[approved.CatalogId].GetAttributeValue<bool>("asx_approved"));
+        var policy = new DocumentStore(f.Service)
+            .Require<PolicyDocument>("asx_policy", "policy:" + approved.CatalogId.ToString("N"))
+            .Value;
+        Assert.True(policy.BreakInheritance, "Approval records the admin's consent");
+        Assert.Equal("Missing", policy.Status);
+        Assert.Equal(System.Guid.Empty, policy.Generation);
+    }
+
+    [Fact]
+    public void AddingAnInheritingLibraryCarriesTheAcknowledgementIntoAutomaticApproval()
+    {
+        var f = new Fixture();
+        f.Unique = false;
+        var site = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddSite",
+                    NativeSiteId = f.NativeSite,
+                    Name = "Site",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        var discovery = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "DiscoverLibraries",
+                    SiteId = site.CatalogId,
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Contains("HasUniqueRoleAssignments", f.Reads.Last());
+        Assert.False(discovery.Observation!.Libraries.Single().Unique);
+        var blocked = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = site.CatalogId,
+                    ListId = f.List,
+                    NativeParentId = f.NativeParent,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key,
+            blocked: true
+        );
+        Assert.Equal("Blocked", blocked.Status);
+        Assert.StartsWith(InheritanceWarning, blocked.Issue);
+        Assert.True(blocked.Observation!.Inherits);
+        var added = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = site.CatalogId,
+                    ListId = f.List,
+                    NativeParentId = f.NativeParent,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                    BreakInheritance = true,
+                },
+                true
+            ).Key
+        );
+        Assert.Equal("Approved", added.Status);
+        Assert.True(
+            new DocumentStore(f.Service)
+                .Require<PolicyDocument>("asx_policy", "policy:" + added.CatalogId.ToString("N"))
+                .Value.BreakInheritance
+        );
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReapprovingASuspendedLibraryProceedsUnlessItsAccessRunHasAWriteOutstanding(
+        bool outstanding
+    )
+    {
+        var f = new Fixture();
+        var added = Added(f);
+        Assert.Equal("Approved", added.Status);
+        var store = new DocumentStore(f.Service);
+        // An access run is queued for the library and was held while it was suspended.
+        string run = "policywork:" + Guid.NewGuid().ToString("N");
+        store.Create(
+            "asx_operation",
+            new SecurityOperation
+            {
+                Key = run,
+                LibraryId = added.CatalogId,
+                Status = outstanding ? "ExternalUnknown" : "RetryWait",
+                ExternalSubmitted = outstanding,
+            }
+        );
+        string policyKey = "policy:" + added.CatalogId.ToString("N");
+        var policy = store.Find<PolicyDocument>("asx_policy", policyKey);
+        if (policy == null)
+            store.Create(
+                "asx_policy",
+                new PolicyDocument
+                {
+                    Key = policyKey,
+                    Status = "Queued",
+                    LibraryId = added.CatalogId,
+                    OperationKey = run,
+                }
+            );
+        else
+        {
+            policy.Value.OperationKey = run;
+            store.Save(policy);
+        }
+        f.Service.Transaction(() =>
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "SuspendLibrary",
+                    CatalogId = added.CatalogId,
+                    CatalogRowVersion = f.Service.Rows[added.CatalogId].RowVersion,
+                },
+                true
+            )
+        );
+        var library = f.Service.Rows[added.CatalogId];
+        var probe = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "ProbeLibrary",
+                    SiteId = library.GetAttributeValue<EntityReference>("asx_siteid").Id,
+                    ListId = f.List,
+                    NativeParentId = library
+                        .GetAttributeValue<EntityReference>("asx_nativeparentid")
+                        .Id,
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        CatalogResult Approve() =>
+            f.Service.Transaction(() =>
+                f.Admin.Execute(
+                    new CatalogRequest
+                    {
+                        Command = "Approve",
+                        Key = probe.Key,
+                        RowVersion = probe.RowVersion,
+                        CatalogRowVersion = f.Service.Rows[added.CatalogId].RowVersion,
+                        Name = "General",
+                    },
+                    true
+                )
+            );
+        if (outstanding)
+        {
+            var refused = Assert.Throws<EvaluationBlockedException>(() => Approve());
+            Assert.Contains("write to SharePoint whose result is not known yet", refused.Message);
+            Assert.False(f.Service.Rows[added.CatalogId].GetAttributeValue<bool>("asx_approved"));
+            return;
+        }
+        Assert.Equal("Approved", Approve().Status);
+        Assert.True(f.Service.Rows[added.CatalogId].GetAttributeValue<bool>("asx_approved"));
+        // The held access run is still queued and resumes by itself; nothing was cancelled.
+        Assert.Equal(
+            run,
+            store.Require<PolicyDocument>("asx_policy", policyKey).Value.OperationKey
+        );
+        Assert.Equal(
+            "RetryWait",
+            store.Require<SecurityOperation>("asx_operation", run).Value.Status
+        );
+    }
+
+    private static CatalogResult Added(Fixture f)
+    {
+        var site = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddSite",
+                    NativeSiteId = f.NativeSite,
+                    Name = "Site",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        f.Service.Rows.Remove(f.NativeParent);
+        return f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = site.CatalogId,
+                    ListId = f.List,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+    }
+
+    private static CatalogResult Repoint(
+        Fixture f,
+        string command,
+        Guid id,
+        bool blocked = false
+    ) =>
+        f.Capture(
+            f.Service.Transaction(() =>
+                f.Admin.Execute(
+                    new CatalogRequest
+                    {
+                        Command = command,
+                        CatalogId = Runtime(f, id),
+                        RequestId = Guid.NewGuid(),
+                    },
+                    true
+                )
+            ).Key,
+            blocked
+        );
+
+    /// <summary>Seeds the runtime profile (allowed hosts) once.</summary>
+    private static Guid Runtime(Fixture f, Guid id)
+    {
+        if (!f.Service.Rows.Values.Any(r => r.LogicalName == "asx_runtime"))
+            RuntimeSeed.Seed(f.Service, Guid.NewGuid());
+        return id;
+    }
+
+    [Fact]
+    public void RepointNamesAHostOrSiteRecordDocumentsCannotCall()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var siteId = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_siteid")
+            .Id;
+        Runtime(f, siteId);
+        CatalogRequest Request() =>
+            new CatalogRequest
+            {
+                Command = "RepointSite",
+                CatalogId = siteId,
+                RequestId = Guid.NewGuid(),
+            };
+        // The site moved to another tenant host that the Runtime panel does not allow.
+        f.Service.Rows[f.NativeSite]["absoluteurl"] = "https://contoso.sharepoint.com/sites/proto";
+        var host = Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() => f.Admin.Execute(Request(), true))
+        );
+        Assert.Equal(
+            "The host contoso.sharepoint.com is not one of the SharePoint hosts allowed in the Runtime panel. Add it there, then re-point again.",
+            host.Message
+        );
+        // A failed transaction restores copies of the rows, so the row is read again here.
+        f.Service.Rows.Values.Single(r => r.LogicalName == "asx_runtime")["asx_sharepointhosts"] =
+            "[\"example.sharepoint.com\",\"contoso.sharepoint.com\"]";
+        // The site record's text differs from the address Documents calls.
+        f.Service.Rows[f.NativeSite]["absoluteurl"] =
+            "https://contoso.sharepoint.com/sites/New Site";
+        var record = Assert.Throws<EvaluationBlockedException>(() =>
+            f.Service.Transaction(() => f.Admin.Execute(Request(), true))
+        );
+        Assert.Equal(
+            "No active SharePoint site record in Dataverse has the address https://contoso.sharepoint.com/sites/New%20Site. Set the site's SharePoint site record in Dataverse to exactly that address, then re-point again.",
+            record.Message
+        );
+        Assert.DoesNotContain(
+            f.Service.Rows.Values,
+            r => r.GetAttributeValue<string>("asx_workkind") == "Repoint"
+        );
+        f.Service.Rows[f.NativeSite]["absoluteurl"] = "https://contoso.sharepoint.com/sites/proto";
+        Assert.Equal(
+            "Pending",
+            f.Service.Transaction(() => f.Admin.Execute(Request(), true)).Status
+        );
+    }
+
+    private static Entity Location(Fixture f, Guid library) =>
+        f.Service.Rows[
+            f.Service.Rows[library].GetAttributeValue<EntityReference>("asx_nativeparentid").Id
+        ];
+
+    [Fact]
+    public void RepointFollowsARenamedLibraryByItsListId()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var before = f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_entryurl");
+        Assert.Equal(
+            "General",
+            Location(f, library.CatalogId).GetAttributeValue<string>("relativeurl")
+        );
+        f.LibraryName = "Shared Documents";
+        f.Reads.Clear();
+        var result = Repoint(f, "RepointLibrary", library.CatalogId);
+        Assert.Equal("Approved", result.Status);
+        Assert.Contains(f.Reads, r => r.Contains("lists(guid'" + f.List));
+        string after = f.Url + "/Shared Documents";
+        Assert.Equal(
+            after,
+            f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_entryurl")
+        );
+        Assert.Equal(
+            "Shared Documents",
+            Location(f, library.CatalogId).GetAttributeValue<string>("relativeurl")
+        );
+        Assert.Contains(before + " → " + after, result.Observation!.Changes);
+        Assert.Equal(
+            f.List.ToString("D"),
+            f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_listid")
+        );
+        Assert.All(f.Reads, r => Assert.DoesNotContain("roleassignments", r));
+    }
+
+    [Fact]
+    public void RepointThatCannotFollowTheLocationChainWritesNothing()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        // The library's document location now hangs under another site record.
+        var other = Guid.NewGuid();
+        f.Service.Seed(
+            new Entity("sharepointsite", other)
+            {
+                ["absoluteurl"] = "https://example.sharepoint.com/sites/other",
+                ["statecode"] = new OptionSetValue(0),
+            }
+        );
+        var location = Location(f, library.CatalogId);
+        location["parentsiteorlocation"] = new EntityReference("sharepointsite", other);
+        var libraryVersion = f.Service.Rows[library.CatalogId].RowVersion;
+        var locationVersion = location.RowVersion;
+        f.LibraryName = "Shared Documents";
+        var result = Repoint(f, "RepointLibrary", library.CatalogId, blocked: true);
+        Assert.Equal("Blocked", result.Status);
+        Assert.Equal("Native site differs from approval.", result.Issue);
+        Assert.Equal(libraryVersion, f.Service.Rows[library.CatalogId].RowVersion);
+        Assert.Equal(
+            f.Url + "/General",
+            f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_entryurl")
+        );
+        Assert.Equal(locationVersion, Location(f, library.CatalogId).RowVersion);
+        Assert.Equal(
+            "General",
+            Location(f, library.CatalogId).GetAttributeValue<string>("relativeurl")
+        );
+    }
+
+    [Fact]
+    public void RepointOfALibraryThatNoLongerExistsSaysSoAndChangesNothing()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var row = f.Service.Rows[library.CatalogId].RowVersion;
+        f.ListGone = true;
+        var result = Repoint(f, "RepointLibrary", library.CatalogId);
+        Assert.Equal("Blocked", result.Status);
+        Assert.Equal(
+            "This library no longer exists on the site. Remove it, or register the new library.",
+            result.Issue
+        );
+        Assert.Equal(row, f.Service.Rows[library.CatalogId].RowVersion);
+    }
+
+    [Fact]
+    public void RepointFollowsARenamedEntryFolderByItsUniqueId()
+    {
+        var f = new Fixture();
+        f.Nested = true;
+        var root = Guid.NewGuid();
+        f.Service.Seed(
+            new Entity("sharepointdocumentlocation", root)
+            {
+                ["relativeurl"] = "General",
+                ["statecode"] = new OptionSetValue(0),
+                ["servicetype"] = new OptionSetValue(0),
+                ["parentsiteorlocation"] = new EntityReference("sharepointsite", f.NativeSite),
+            }
+        );
+        f.Service.Rows[f.NativeParent]["relativeurl"] = "Archive/Entry";
+        f.Service.Rows[f.NativeParent]["parentsiteorlocation"] = new EntityReference(
+            "sharepointdocumentlocation",
+            root
+        );
+        var site = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddSite",
+                    NativeSiteId = f.NativeSite,
+                    Name = "Site",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        var library = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = site.CatalogId,
+                    ListId = f.List,
+                    NativeParentId = f.NativeParent,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Equal("Approved", library.Status);
+        f.EntryPath = "/sites/proto/General/Archive/Renamed";
+        var result = Repoint(f, "RepointLibrary", library.CatalogId);
+        Assert.Equal("Approved", result.Status);
+        Assert.Equal(
+            f.Url + "/General/Archive/Renamed",
+            f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_entryurl")
+        );
+        Assert.Equal(
+            "Archive/Renamed",
+            f.Service.Rows[f.NativeParent].GetAttributeValue<string>("relativeurl")
+        );
+        Assert.Equal("General", f.Service.Rows[root].GetAttributeValue<string>("relativeurl"));
+        // A deleted entry folder is reported and never recreated.
+        f.EntryGone = true;
+        var gone = Repoint(f, "RepointLibrary", library.CatalogId);
+        Assert.Equal("Approved", gone.Status);
+        Assert.Contains(
+            gone.Observation!.Changes,
+            c => c.Contains("no longer exists") && c.Contains("did not recreate")
+        );
+        Assert.Equal(
+            f.Url + "/General/Archive/Renamed",
+            f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_entryurl")
+        );
+    }
+
+    [Fact]
+    public void RepointFollowsAMovedSiteAndItsLibrariesByWebId()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var siteId = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_siteid")
+            .Id;
+        // Re-pointing a library first is refused while its site's address changed.
+        f.Url = "https://example.sharepoint.com/sites/renamed";
+        f.Service.Rows[f.NativeSite]["absoluteurl"] = f.Url;
+        var early = Assert.Throws<EvaluationBlockedException>(() =>
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "RepointLibrary",
+                    CatalogId = library.CatalogId,
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            )
+        );
+        Assert.Equal("The site's address changed. Re-point the site first.", early.Message);
+        var result = Repoint(f, "RepointSite", siteId);
+        Assert.Equal("Approved", result.Status);
+        var site = f.Service.Rows[siteId];
+        Assert.Equal(f.Url, site.GetAttributeValue<string>("asx_url"));
+        Assert.Equal(
+            SiteIdentity.Key(f.Url, f.Collection, f.Web),
+            site.GetAttributeValue<string>("asx_identity")
+        );
+        Assert.Equal(f.Web.ToString("D"), site.GetAttributeValue<string>("asx_webid"));
+        Assert.Equal(
+            f.Url + "/General",
+            f.Service.Rows[library.CatalogId].GetAttributeValue<string>("asx_entryurl")
+        );
+        Assert.Contains(
+            "https://example.sharepoint.com/sites/proto → " + f.Url,
+            result.Observation!.Changes
+        );
+        // The library's location chain ends at the site record, so it resolves to the new address.
+        new NativeLocations(f.Service).ValidateParent(
+            Location(f, library.CatalogId).Id,
+            f.Url + "/General",
+            f.NativeSite
+        );
+        // A site reporting another address asks the admin to update its Dataverse record.
+        f.Service.Rows[f.NativeSite]["absoluteurl"] = "https://example.sharepoint.com/sites/stale";
+        var stale = Repoint(f, "RepointSite", siteId);
+        Assert.Equal("Blocked", stale.Status);
+        Assert.Contains("SharePoint reports this site at " + f.Url, stale.Issue);
+        Assert.Equal(f.Url, f.Service.Rows[siteId].GetAttributeValue<string>("asx_url"));
+    }
+
+    private static CatalogResult Remove(Fixture f, string command, Guid id) =>
+        f.Service.Transaction(() =>
+            f.Admin.Execute(new CatalogRequest { Command = command, CatalogId = id }, true)
+        );
+
+    /// <summary>Seeds a template revision whose destination uses the library.</summary>
+    private static Guid UseIn(Fixture f, Guid library, string template, string status, bool current)
+    {
+        var templateId = DocumentStore.StableId("template:" + template);
+        var revision = Guid.NewGuid();
+        if (!f.Service.Rows.ContainsKey(templateId))
+            f.Service.Seed(new Entity("asx_template", templateId) { ["asx_name"] = template });
+        if (current)
+            f.Service.Rows[templateId]["asx_publishedrevisionid"] = new EntityReference(
+                "asx_revision",
+                revision
+            );
+        f.Service.Seed(
+            new Entity("asx_revision", revision)
+            {
+                ["asx_templateid"] = new EntityReference("asx_template", templateId),
+                ["asx_status"] = status,
+            }
+        );
+        f.Service.Seed(
+            new Entity("asx_destination", Guid.NewGuid())
+            {
+                ["asx_revisionid"] = new EntityReference("asx_revision", revision),
+                ["asx_key"] = "general",
+                ["asx_libraryid"] = new EntityReference("asx_library", library),
+            }
+        );
+        return revision;
+    }
+
+    [Fact]
+    public void RemoveIsRefusedWhileADraftOrPublishedTemplateUsesTheLibrary()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        UseIn(f, library.CatalogId, "Accounts", "Published", current: true);
+        UseIn(f, library.CatalogId, "Contracts", "Draft", current: false);
+        var version = f.Service.Rows[library.CatalogId].RowVersion;
+        var refused = Assert.Throws<EvaluationBlockedException>(() =>
+            Remove(f, "RemoveLibrary", library.CatalogId)
+        );
+        Assert.Equal(
+            "Used by template 'Accounts' (published). Used by template 'Contracts' (draft). Change the templates first.",
+            refused.Message
+        );
+        Assert.Equal(version, f.Service.Rows[library.CatalogId].RowVersion);
+    }
+
+    [Fact]
+    public void RemoveReadsEveryDestinationRowAndEveryLibraryHoweverMany()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        // 5,200 rows of an older revision come first; the one that uses the library now is
+        // last, past the first 5,000 rows.
+        var older = UseIn(f, library.CatalogId, "Archive", "Published", current: false);
+        for (int i = 0; i < 5199; i++)
+            f.Service.Seed(
+                new Entity("asx_destination", Guid.NewGuid())
+                {
+                    ["asx_revisionid"] = new EntityReference("asx_revision", older),
+                    ["asx_key"] = "s" + i,
+                    ["asx_libraryid"] = new EntityReference("asx_library", library.CatalogId),
+                }
+            );
+        UseIn(f, library.CatalogId, "Accounts", "Published", current: true);
+        var refused = Assert.Throws<EvaluationBlockedException>(() =>
+            Remove(f, "RemoveLibrary", library.CatalogId)
+        );
+        Assert.Equal(
+            "Used by template 'Accounts' (published). Change the template first.",
+            refused.Message
+        );
+        // A site with more than 5,000 removed libraries is still removed (kept for history).
+        var siteId = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_siteid")
+            .Id;
+        f.Service.Rows[library.CatalogId]["statecode"] = new OptionSetValue(1);
+        for (int i = 0; i < 5001; i++)
+            f.Service.Seed(
+                new Entity("asx_library", Guid.NewGuid())
+                {
+                    ["asx_name"] = "Old " + i,
+                    ["asx_siteid"] = new EntityReference("asx_site", siteId),
+                    ["statecode"] = new OptionSetValue(1),
+                }
+            );
+        Assert.Equal("Removed", Remove(f, "RemoveSite", siteId).Status);
+    }
+
+    [Fact]
+    public void LibraryUsedOnlyByAnOlderRevisionIsKeptRemovedForHistory()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        UseIn(f, library.CatalogId, "Accounts", "Published", current: false);
+        var operations = f.Service.Rows.Values.Count(r => r.LogicalName == "asx_operation");
+        var result = Remove(f, "RemoveLibrary", library.CatalogId);
+        Assert.Equal("Removed", result.Status);
+        Assert.Contains(
+            result.Notices,
+            n => n.StartsWith("Nothing was deleted or changed in SharePoint")
+        );
+        var row = f.Service.Rows[library.CatalogId];
+        Assert.False(row.GetAttributeValue<bool>("asx_approved"));
+        Assert.Equal(1, row.GetAttributeValue<OptionSetValue>("statecode").Value);
+        Assert.True(new WorkerCatalog(f.Service).Removed(library.CatalogId));
+        // Removal reads and writes only Dataverse: no SharePoint work is queued.
+        Assert.Equal(
+            operations,
+            f.Service.Rows.Values.Count(r => r.LogicalName == "asx_operation")
+        );
+        // The site still has the removed library, so it is kept Removed too.
+        var siteId = row.GetAttributeValue<EntityReference>("asx_siteid").Id;
+        Assert.Equal("Removed", Remove(f, "RemoveSite", siteId).Status);
+        Assert.Equal(
+            1,
+            f.Service.Rows[siteId].GetAttributeValue<OptionSetValue>("statecode").Value
+        );
+        // Adding the library again makes it active.
+        var again = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddSite",
+                    NativeSiteId = f.NativeSite,
+                    Name = "Site",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Equal(siteId, again.CatalogId);
+        Assert.Equal(
+            0,
+            f.Service.Rows[siteId].GetAttributeValue<OptionSetValue>("statecode").Value
+        );
+        Assert.True(f.Service.Rows[siteId].GetAttributeValue<bool>("asx_approved"));
+    }
+
+    [Fact]
+    public void LibraryAddedAgainHasItsAccessRefreshedAgain()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var store = new DocumentStore(f.Service);
+        var team = Guid.NewGuid();
+        string policyKey = "policy:" + library.CatalogId.ToString("N"),
+            referenceKey =
+                "policyteam:" + library.CatalogId.ToString("N") + ":" + team.ToString("N");
+        var entries = new[]
+        {
+            new PolicyEntry { TeamId = team, Access = "Read" },
+        };
+        store.Create(
+            "asx_policy",
+            new PolicyDocument
+            {
+                Key = policyKey,
+                Status = "Applied",
+                LibraryId = library.CatalogId,
+                Generation = Guid.NewGuid(),
+                Approved = entries,
+                Applied = entries,
+                ManagedTeams = new[] { team },
+                NextReviewUtc = f.Now.AddDays(1),
+            }
+        );
+        store.Create(
+            "asx_policyentry",
+            new PolicyTeamReference
+            {
+                Key = referenceKey,
+                TeamId = team,
+                PolicyKey = policyKey,
+                Status = "Active",
+            }
+        );
+        Assert.Equal("Removed", Remove(f, "RemoveLibrary", library.CatalogId).Status);
+        PolicyTeamReference Reference() =>
+            store.Require<PolicyTeamReference>("asx_policyentry", referenceKey).Value;
+        Assert.Equal("Inactive", Reference().Status);
+        var siteId = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_siteid")
+            .Id;
+        var again = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = siteId,
+                    ListId = f.List,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Equal(library.CatalogId, again.CatalogId);
+        // Its team's events reach it again, and the scheduled refresh reviews it at once, so a
+        // team deleted while it was out of Documents loses its access now.
+        Assert.Equal("Active", Reference().Status);
+        Assert.True(
+            store.Require<PolicyDocument>("asx_policy", policyKey).Value.NextReviewUtc <= f.Now
+        );
+    }
+
+    [Fact]
+    public void LibraryDeletedByRemoveIsAddedAgainAndReusesItsDocumentLocation()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var siteId = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_siteid")
+            .Id;
+        var location = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_nativeparentid")
+            .Id;
+        Assert.Equal("Deleted", Remove(f, "RemoveLibrary", library.CatalogId).Status);
+        Assert.False(f.Service.Rows.ContainsKey(library.CatalogId));
+        int locations = f.Service.Rows.Values.Count(r =>
+            r.LogicalName == "sharepointdocumentlocation"
+        );
+        // Adding it again creates the catalog row again, on the same document location.
+        var again = f.Capture(
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "AddLibrary",
+                    SiteId = siteId,
+                    ListId = f.List,
+                    Name = "General",
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            ).Key
+        );
+        Assert.Equal("Approved", again.Status);
+        var row = f.Service.Rows[again.CatalogId];
+        // A new row: active (the test service leaves statecode unset on create).
+        Assert.NotEqual(1, row.GetAttributeValue<OptionSetValue>("statecode")?.Value);
+        Assert.True(row.GetAttributeValue<bool>("asx_approved"));
+        Assert.Equal(f.List.ToString("D"), row.GetAttributeValue<string>("asx_listid"));
+        Assert.Equal(location, row.GetAttributeValue<EntityReference>("asx_nativeparentid").Id);
+        Assert.Equal(
+            locations,
+            f.Service.Rows.Values.Count(r => r.LogicalName == "sharepointdocumentlocation")
+        );
+    }
+
+    [Fact]
+    public void UnreferencedLibraryAndThenItsSiteAreDeleted()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var siteId = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_siteid")
+            .Id;
+        var refused = Assert.Throws<EvaluationBlockedException>(() =>
+            Remove(f, "RemoveSite", siteId)
+        );
+        Assert.Equal("Remove the site's libraries first: General.", refused.Message);
+        var location = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_nativeparentid")
+            .Id;
+        Assert.Equal("Deleted", Remove(f, "RemoveLibrary", library.CatalogId).Status);
+        Assert.False(f.Service.Rows.ContainsKey(library.CatalogId));
+        // The library's Dataverse document location is navigation others may use; it stays.
+        Assert.True(f.Service.Rows.ContainsKey(location));
+        Assert.Equal("Deleted", Remove(f, "RemoveSite", siteId).Status);
+        Assert.False(f.Service.Rows.ContainsKey(siteId));
+    }
+
+    [Fact]
+    public void LibraryWithRecordFoldersIsKeptRemoved()
+    {
+        var f = new Fixture();
+        var library = Added(f);
+        var location = f
+            .Service.Rows[library.CatalogId]
+            .GetAttributeValue<EntityReference>("asx_nativeparentid")
+            .Id;
+        f.Service.Seed(
+            new Entity("sharepointdocumentlocation", Guid.NewGuid())
+            {
+                ["relativeurl"] = "Example",
+                ["description"] = "AscentixDocuments:abc",
+                ["parentsiteorlocation"] = new EntityReference(
+                    "sharepointdocumentlocation",
+                    location
+                ),
+            }
+        );
+        Assert.Equal("Removed", Remove(f, "RemoveLibrary", library.CatalogId).Status);
+        Assert.True(f.Service.Rows.ContainsKey(library.CatalogId));
+        Assert.Throws<EvaluationBlockedException>(() =>
+            f.Admin.Execute(
+                new CatalogRequest
+                {
+                    Command = "RepointLibrary",
+                    CatalogId = library.CatalogId,
+                    RequestId = Guid.NewGuid(),
+                },
+                true
+            )
+        );
+    }
+
     [Fact]
     public void SiteIdentityIncludesHostnameAndRejectsIncompleteIdentity()
     {
@@ -752,8 +1804,22 @@ public sealed class CatalogApprovalTests
         public DateTime Now = new DateTime(2026, 9, 8, 12, 0, 0, DateTimeKind.Utc);
         public string Url = "https://example.sharepoint.com/sites/proto";
         public bool Nested,
-            UniqueAncestor;
+            UniqueFolders;
+
+        /// <summary>Whether the library has its own permissions or inherits the site's.</summary>
+        public bool Unique = true;
+
+        /// <summary>The library's URL segment in SharePoint; Re-point follows a rename.</summary>
+        public string LibraryName = "General";
+
+        /// <summary>The library or the nested entry folder no longer exists.</summary>
+        public bool ListGone,
+            EntryGone;
+
+        /// <summary>Where SharePoint reports the nested entry folder (by its unique ID).</summary>
+        public string EntryPath = "/sites/proto/General/Archive/Entry";
         public int AncestorReads;
+        public List<string> Reads = new List<string>();
         public Guid NestedEntry = Guid.NewGuid();
         public Guid Collection = Guid.NewGuid();
         public Guid NativeSite = Guid.NewGuid(),
@@ -784,7 +1850,12 @@ public sealed class CatalogApprovalTests
             );
         }
 
-        public CatalogResult Capture(string key)
+        /// <summary>
+        /// Drives the probe as the flow does. Completion must succeed unless <paramref name="blocked"/>:
+        /// a refused automatic approval, or a re-point whose step failed, rolled back and was
+        /// reported with Fail by the flow's failure branch.
+        /// </summary>
+        public CatalogResult Capture(string key, bool blocked = false)
         {
             var work = Worker.Execute(
                 new WorkerRequest
@@ -799,21 +1870,52 @@ public sealed class CatalogApprovalTests
             {
                 if (work.Status == "Verified")
                 {
-                    work = Worker.Execute(
-                        new WorkerRequest
-                        {
-                            Command = "Complete",
-                            Key = key,
-                            RunId = "probe/run",
-                            Token = work.Token,
-                        },
-                        true
-                    );
-                    Assert.Contains(work.Status, new[] { "Captured", "Approved", "Discovered" });
-                    return Admin.Execute(
+                    var token = work.Token;
+                    try
+                    {
+                        work = Service.Transaction(() =>
+                            Worker.Execute(
+                                new WorkerRequest
+                                {
+                                    Command = "Complete",
+                                    Key = key,
+                                    RunId = "probe/run",
+                                    Token = token,
+                                },
+                                true
+                            )
+                        );
+                    }
+                    catch (EvaluationBlockedException error)
+                    {
+                        work = Service.Transaction(() =>
+                            Worker.Execute(
+                                new WorkerRequest
+                                {
+                                    Command = "Fail",
+                                    Key = key,
+                                    RunId = "probe/run",
+                                    Token = token,
+                                    StatusCode = 400,
+                                    ErrorCode = "0x80040265",
+                                    Error = error.Message,
+                                },
+                                true
+                            )
+                        );
+                    }
+                    var inspected = Admin.Execute(
                         new CatalogRequest { Command = "Inspect", Key = key },
                         true
                     );
+                    if (blocked)
+                        Assert.Equal("Blocked", work.Status);
+                    else
+                        Assert.True(
+                            new[] { "Captured", "Approved", "Discovered" }.Contains(work.Status),
+                            work.Status + ": " + inspected.Issue
+                        );
+                    return inspected;
                 }
                 if (work.Status == "Blocked")
                     return Admin.Execute(
@@ -822,8 +1924,10 @@ public sealed class CatalogApprovalTests
                     );
                 Assert.Equal("Read", work.Status);
                 Assert.Equal("GET", work.Http!.Method);
+                Reads.Add(work.Http.RelativeUri);
                 Assert.DoesNotContain("AsxdWorkKey", work.Http.RelativeUri);
                 string body;
+                int status = 200;
                 switch (work.ProbeKind)
                 {
                     case "CatalogLibraries":
@@ -837,6 +1941,7 @@ public sealed class CatalogApprovalTests
                                         Id = List,
                                         Title = "General",
                                         BaseTemplate = 101,
+                                        Unique = Unique,
                                     },
                                 },
                                 Next = work.Http.RelativeUri.Contains("skiptoken")
@@ -855,17 +1960,37 @@ public sealed class CatalogApprovalTests
                         break;
                     case "CatalogLibrary":
                     case "CatalogFinal":
+                    case "RepointLibrary":
+                        if (work.ProbeKind == "RepointLibrary" && ListGone)
+                        {
+                            status = 404;
+                            body =
+                                "{\"error\":{\"code\":\"-1\",\"message\":{\"value\":\"List does not exist.\"}}}";
+                            break;
+                        }
                         body = Envelope(
                             new CatalogLibraryObservation
                             {
                                 Id = List,
-                                Unique = true,
+                                Unique = Unique,
                                 Root = new FolderObservation
                                 {
                                     Id = Entry,
-                                    Path = new Uri(Url).AbsolutePath + "/General",
+                                    Path = new Uri(Url).AbsolutePath + "/" + LibraryName,
                                 },
                             }
+                        );
+                        break;
+                    case "RepointEntry":
+                        Assert.Contains(NestedEntry.ToString("D"), work.Http.RelativeUri);
+                        if (EntryGone)
+                        {
+                            status = 404;
+                            body = "{}";
+                            break;
+                        }
+                        body = Envelope(
+                            new FolderObservation { Id = NestedEntry, Path = EntryPath }
                         );
                         break;
                     case "CatalogEntry":
@@ -877,6 +2002,11 @@ public sealed class CatalogApprovalTests
                             StringComparison.Ordinal
                         );
                         AncestorReads++;
+                        // The entry's path is a query-string alias, never in the URL path.
+                        Assert.StartsWith(
+                            "_api/web/GetFolderByServerRelativePath(decodedUrl=@p)?@p='",
+                            work.Http.RelativeUri
+                        );
                         body = Envelope(
                             new FolderObservation
                             {
@@ -884,12 +2014,10 @@ public sealed class CatalogApprovalTests
                                 Path = entry
                                     ? "/sites/proto/General/Archive/Entry"
                                     : "/sites/proto/General/Archive",
-                                Item = new ParentListItem
-                                {
-                                    UniquePermissions = !entry && UniqueAncestor,
-                                },
                             }
                         );
+                        if (UniqueFolders)
+                            body = DurableWorkerTests.WithUniquePermissions(body);
                         break;
                     case "CatalogRoles":
                         body = Envelope(
@@ -921,11 +2049,6 @@ public sealed class CatalogApprovalTests
                             }
                         );
                         break;
-                    case "CatalogAcl":
-                        body = Envelope(
-                            new ODataRows<AclAssignment> { Rows = Array.Empty<AclAssignment>() }
-                        );
-                        break;
                     default:
                         throw new Exception(work.ProbeKind);
                 }
@@ -938,7 +2061,7 @@ public sealed class CatalogApprovalTests
                         Token = work.Token,
                         ProbeId = work.ProbeId,
                         ProbeKind = work.ProbeKind,
-                        HttpStatus = 200,
+                        HttpStatus = status,
                         ResponseBody = body,
                     },
                     true

@@ -1,7 +1,9 @@
 name: documents-webresources-$(Date:yyyyMMdd)-$(Rev:r)
+# Pushes to main build here; other branches build through their pull request, so a commit
+# on a branch with an open PR runs once.
 trigger:
   branches:
-    include: ['*']
+    include: ['main']
   paths:
     include: ['client/*', 'scripts/build-webresources.ps1', 'tests/web/*', 'pipelines/webresources-ci.yml']
 pr:

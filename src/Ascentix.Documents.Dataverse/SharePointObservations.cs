@@ -1,7 +1,6 @@
 using System;
 using System.Linq;
 using System.Runtime.Serialization;
-using System.Text.RegularExpressions;
 using Ascentix.Documents.Conditions;
 
 namespace Ascentix.Documents.Dataverse;
@@ -41,16 +40,6 @@ public sealed class FolderObservation
 
     [DataMember(Name = "ServerRelativeUrl")]
     public string Path { get; set; } = "";
-
-    [DataMember(Name = "ListItemAllFields")]
-    public ParentListItem? Item { get; set; }
-}
-
-[DataContract]
-public sealed class ParentListItem
-{
-    [DataMember(Name = "HasUniqueRoleAssignments")]
-    public bool? UniquePermissions { get; set; }
 }
 
 [DataContract]
@@ -86,9 +75,33 @@ public sealed class ItemObservation
 
     [DataMember(Name = "FSObjType")]
     public int? Type { get; set; }
+}
 
-    [DataMember(Name = "HasUniqueRoleAssignments")]
-    public bool? UniquePermissions { get; set; }
+[DataContract]
+public sealed class SharePointErrorBody
+{
+    [DataMember(Name = "error")]
+    public SharePointError? Verbose { get; set; }
+
+    [DataMember(Name = "odata.error")]
+    public SharePointError? Light { get; set; }
+}
+
+[DataContract]
+public sealed class SharePointError
+{
+    [DataMember(Name = "code")]
+    public string? Code { get; set; }
+
+    [DataMember(Name = "message")]
+    public SharePointErrorMessage? Message { get; set; }
+}
+
+[DataContract]
+public sealed class SharePointErrorMessage
+{
+    [DataMember(Name = "value")]
+    public string? Value { get; set; }
 }
 
 [DataContract]
@@ -116,6 +129,10 @@ public sealed class AclRole
 {
     [DataMember(Name = "Id")]
     public int Id { get; set; }
+
+    /// <summary>SharePoint's RoleTypeKind; 1 is Limited Access, which SharePoint manages itself.</summary>
+    [DataMember(Name = "RoleTypeKind")]
+    public int Type { get; set; }
 
     [DataMember(Name = "BasePermissions")]
     public PermissionMask Permissions { get; set; } = null!;
@@ -150,9 +167,33 @@ public sealed class FieldValidation
 
 public static class SharePointObservations
 {
+    /// <summary>The notice for a request the HTTP connector refused for the length of its URL.</summary>
+    public const string UrlTooLongNotice =
+        "The HTTP connector refused the request because its URL is too long (maxUrlLength). SharePoint did not receive it.";
+
+    /// <summary>
+    /// Whether the HTTP connector itself refused the request for the length of its URL. It
+    /// answers 401 with "The length of the URL for this request exceeds the configured
+    /// maxUrlLength value." (or the query-string equivalent): a refusal of the request's shape,
+    /// not of its sign-in or of what SharePoint holds, so it is never read as either.
+    /// </summary>
+    public static bool UrlTooLong(WorkerRequest request) =>
+        request.HttpStatus >= 400
+        && request.HttpStatus < 500
+        && request.ResponseBody != null
+        && (
+            request.ResponseBody.IndexOf("maxUrlLength", StringComparison.OrdinalIgnoreCase) >= 0
+            || request.ResponseBody.IndexOf(
+                "maxQueryStringLength",
+                StringComparison.OrdinalIgnoreCase
+            ) >= 0
+        );
+
     public static T Body<T>(WorkerRequest request)
         where T : class
     {
+        if (UrlTooLong(request))
+            throw new EvaluationBlockedException(UrlTooLongNotice);
         if (request.HttpStatus != 200 || request.ResponseBody == null)
             throw new EvaluationBlockedException(
                 "Independent read requires a complete HTTP 200 response."
@@ -161,64 +202,41 @@ public static class SharePointObservations
             ?? throw new EvaluationBlockedException("Missing OData body.");
     }
 
-    public static string AclHash(ODataRows<AclAssignment> assignments)
+    /// <summary>
+    /// Reads SharePoint's error message from a rejected write, for an admin notice.
+    /// </summary>
+    /// <param name="request">The worker response carrying SharePoint's status and body.</param>
+    /// <returns>SharePoint's message, or the HTTP status when the body has none.</returns>
+    public static string ErrorMessage(WorkerRequest request)
     {
-        if (
-            assignments == null
-            || assignments.Next != null
-            || assignments.Rows == null
-            || assignments.Rows.Length > 1000
-            || assignments.Rows.Select(a => a.Member?.Id).Distinct().Count()
-                != assignments.Rows.Length
-        )
-            throw new EvaluationBlockedException("Incomplete or duplicate ACL snapshot.");
-        var canonical = assignments
-            .Rows.SelectMany(assignment =>
-            {
-                if (
-                    assignment.Member == null
-                    || assignment.Member.Id <= 0
-                    || assignment.Member.Type <= 0
-                    || assignment.Roles == null
-                    || assignment.Roles.Next != null
-                    || assignment.Roles.Rows == null
-                    || assignment.Roles.Rows.Length == 0
-                    || assignment.Roles.Rows.Length > 100
-                    || assignment.Roles.Rows.Select(r => r.Id).Distinct().Count()
-                        != assignment.Roles.Rows.Length
-                )
-                    throw new EvaluationBlockedException("Incomplete principal/role bindings.");
-                return assignment.Roles.Rows.Select(role =>
-                {
-                    if (
-                        role.Id <= 0
-                        || role.Permissions == null
-                        || !Regex.IsMatch(role.Permissions.High ?? "", "^[0-9]{1,20}$")
-                        || !Regex.IsMatch(role.Permissions.Low ?? "", "^[0-9]{1,20}$")
-                    )
-                        throw new EvaluationBlockedException("Role permission mask missing.");
-                    return assignment.Member.Id
-                        + ":"
-                        + assignment.Member.Type
-                        + ":"
-                        + role.Id
-                        + ":"
-                        + role.Permissions.High
-                        + ":"
-                        + role.Permissions.Low;
-                });
-            })
-            .OrderBy(v => v, StringComparer.Ordinal);
-        var joined = "acl-v1|" + string.Join("|", canonical);
-        // Hashes the complete serialized ACL as UTF-8 bytes.
-        using (var sha = System.Security.Cryptography.SHA256.Create())
-            return BitConverter
-                .ToString(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(joined)))
-                .Replace("-", "")
-                .ToLowerInvariant();
+        string? message = null;
+        try
+        {
+            var body = JsonWire.Read<SharePointErrorBody>(request.ResponseBody ?? "");
+            message = (body.Verbose ?? body.Light)?.Message?.Value;
+        }
+        catch (Exception error)
+            when (error is EvaluationBlockedException || error is SerializationException)
+        {
+            // Not the verbose or light OData error shape; the status code is reported instead.
+        }
+        message = new string((message ?? "").Where(c => !char.IsControl(c)).ToArray()).Trim();
+        if (message.Length > 400)
+            message = message.Substring(0, 400) + "...";
+        return message.Length == 0 ? "HTTP " + request.HttpStatus + "." : message;
     }
 
-    public static ItemObservation? Find(WorkerRequest request, string expectedPath)
+    /// <summary>Reads the folder at the expected path, or null when SharePoint has none.</summary>
+    /// <param name="request">The folder read's response.</param>
+    /// <param name="expectedPath">The folder's full server-relative path.</param>
+    /// <param name="atLibraryRoot">
+    /// False when the folder is known to be below the library root, where "Forms" is allowed.
+    /// </param>
+    public static ItemObservation? Find(
+        WorkerRequest request,
+        string expectedPath,
+        bool atLibraryRoot = true
+    )
     {
         if (request.HttpStatus == 404)
             return null;
@@ -239,14 +257,11 @@ public static class SharePointObservations
             item.Id == Guid.Empty
             || item.ItemId <= 0
             || item.Type != 1
-            || item.UniquePermissions != false
             || !string.Equals(item.Path, expectedPath, StringComparison.OrdinalIgnoreCase)
             || !item.Path.EndsWith("/" + item.Name, StringComparison.Ordinal)
         )
-            throw new EvaluationBlockedException(
-                "Physical path/type/inherited-policy observation differs."
-            );
-        Domain.FolderNames.Validate(item.Name);
+            throw new EvaluationBlockedException("Physical path/type observation differs.");
+        Domain.FolderNames.Validate(item.Name, atLibraryRoot);
         return item;
     }
 

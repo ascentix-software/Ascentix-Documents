@@ -40,8 +40,13 @@ public sealed class TransportTests
         var target = Target();
         var request = SharePointRequests.FindFolder(target, target.EntryPath, "O'Brien # 100%");
         Assert.DoesNotContain("/items?", request.RelativeUri);
+        // The path is a parameter alias in the query string, so it never lengthens the URL path.
+        Assert.StartsWith(
+            "_api/web/GetFolderByServerRelativePath(decodedUrl=@p)?@p='",
+            request.RelativeUri
+        );
         Assert.Contains(
-            "GetFolderByServerRelativePath(decodedUrl='/sites/proto/General/O''Brien # 100%')?$select=Exists,UniqueId,ServerRelativeUrl",
+            "@p='/sites/proto/General/O''Brien # 100%'&$select=Exists,UniqueId,ServerRelativeUrl",
             Uri.UnescapeDataString(request.RelativeUri)
         );
     }
@@ -62,6 +67,26 @@ public sealed class TransportTests
         request.ResponseBody = "{\"d\":{\"Exists\":true,\"ListItemAllFields\":null}}";
         Assert.Throws<EvaluationBlockedException>(() =>
             SharePointObservations.Find(request, "/sites/proto/General/Example")
+        );
+    }
+
+    [Fact]
+    public void FormsIsAllowedBelowTheApprovedEntry()
+    {
+        var target = Target();
+        string nested = target.EntryPath + "/Acme";
+        SharePointRequests.CreateFolder(target, nested, "Forms");
+        SharePointRequests.FindFolder(target, nested, "Forms");
+        SharePointRequests.CreateFolder(target, nested + "/Forms", "Contracts");
+        // The entry may be the library root, so a folder directly under it is still refused.
+        Assert.Throws<EvaluationBlockedException>(() =>
+            SharePointRequests.CreateFolder(target, target.EntryPath, "Forms")
+        );
+        Assert.Throws<EvaluationBlockedException>(() =>
+            SharePointRequests.FindFolder(target, target.EntryPath, "Forms")
+        );
+        Assert.Throws<EvaluationBlockedException>(() =>
+            SharePointRequests.CreateFolder(target, target.EntryPath + "/Forms", "Contracts")
         );
     }
 

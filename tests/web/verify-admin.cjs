@@ -1,11 +1,12 @@
 // Static source contract only: no browser, rendering, HTTP or connected UI execution.
 const fs = require('fs'),
   path = require('path'),
+  assert = require('assert/strict'),
   root = path.resolve(__dirname, '../..');
-const html = fs.readFileSync(path.join(root, 'client/admin/index.html'), 'utf8');
-const js = ['admin.js', 'sites-access.js']
-  .map((name) => fs.readFileSync(path.join(root, 'client/admin', name), 'utf8'))
-  .join('\n');
+const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
+const html = read('client/admin/index.html');
+const scripts = ['shell.js', 'admin.js', 'sites-access.js', 'operations.js'];
+const js = scripts.map((name) => read('client/admin/' + name)).join('\n');
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
 if (new Set(ids).size !== ids.length) throw new Error('Duplicate admin element ID');
 for (const match of js.matchAll(/\$\(['"]([^'"]+)['"]\)/g))
@@ -18,8 +19,146 @@ for (const match of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
   )
     throw new Error('Nonlocal or missing admin resource: ' + match[1]);
 }
+assert.doesNotMatch(html, /id="status"/, 'The global banner is removed');
+assert.doesNotMatch(html, /<footer/, 'The footer is removed');
+assert.equal((html.match(/<main\b/g) || []).length, 1, 'Exactly one main');
+const css = read('client/admin/admin.css');
+const h1s = [...html.matchAll(/<h1\b[^>]*\bid="([^"]+)"/g)].map((m) => m[1]);
+assert.deepEqual(h1s, [
+  'overview-title',
+  'editor-title',
+  'ad-site-title',
+  'monitor-title',
+  'settings-title',
+]);
+assert.equal((html.match(/<h1\b/g) || []).length, h1s.length, 'Every h1 has an id');
+const tabIds = [...html.matchAll(/<button[^>]*\brole="tab"[^>]*>/g)].map(
+  (m) => /\bid="([^"]+)"/.exec(m[0])[1],
+);
+assert.deepEqual(
+  tabIds,
+  ['step-tab-1', 'step-tab-2', 'step-tab-3'],
+  'Only the editor steps are tabs',
+);
+for (const n of [1, 2, 3])
+  assert.match(html, new RegExp('id="step-' + n + '"[^>]*role="tabpanel"'));
+assert.doesNotMatch(html, /class="[^"]*\bshell\b|automationChip|monitorBadge|tabPrompt/);
+assert.doesNotMatch(css, /#access\b/, 'Sites & access uses the shared controls');
+assert.doesNotMatch(html + js, /\bad-primary\b/, 'One primary button class');
+const FEEDBACK = [
+  'fb-templates',
+  'fb-schedule',
+  'fb-rerun',
+  'fb-access',
+  'fb-access-add',
+  'fb-access-library',
+  'fb-monitor',
+  'fb-check',
+  'fb-advanced',
+  'fb-settings',
+  'fb-settings-save',
+  'fb-editor',
+];
+assert.deepEqual(
+  [...html.matchAll(/\bid="(fb-[^"]+)"/g)].map((m) => m[1]).sort(),
+  [...FEEDBACK].sort(),
+  'One feedback line per page header, plus panel and footer lines',
+);
+assert.doesNotMatch(js, /\.id\s*=\s*'fb-/, 'Feedback lines are page markup, not made by script');
+assert.doesNotMatch(html, /aria-pressed/);
+assert.doesNotMatch(
+  js,
+  /\binnerHTML\b|outerHTML\s*=|insertAdjacentHTML|document\.write|openConfirmDialog|openAlertDialog|window\.confirm|\balert\(/,
+  'textContent only and no browser or platform dialogs',
+);
+for (const match of html.matchAll(/aria-(?:describedby|labelledby)="([^"]+)"/g))
+  for (const id of match[1].split(/\s+/)) assert(ids.includes(id), 'Broken ARIA reference: ' + id);
+const build = /const BUILD = '([^']+)'/.exec(read('client/admin/shell.js'))[1];
+for (const match of html.matchAll(/\?v=([\w]+)/g))
+  assert.equal(match[1], build, 'Cache-buster differs');
+for (const file of ['AppModuleSiteMap.xml', 'AppModuleSiteMap_managed.xml']) {
+  const map = read('solution/AscentixDocuments/src/AppModuleSiteMaps/asx_DocumentsAdmin/' + file);
+  const subs = [
+    ...map.matchAll(/<SubArea Id="([^"]+)" Title="([^"]+)" Url="[^"]*data=([a-z]+)-([\w]+)"/g),
+  ];
+  assert.deepEqual(
+    subs.map((s) => [s[1], s[2], s[3], s[4]]),
+    [
+      ['asx_studio', 'Folder templates', 'templates', build],
+      ['asx_policyadmin', 'Sites &amp; access', 'access', build],
+      ['asx_operationsadmin', 'Monitor', 'monitor', build],
+      ['asx_runtimeadmin', 'Settings', 'settings', build],
+    ],
+    file,
+  );
+}
+for (const removed of [
+  'recoveryPanel',
+  'recoveryRun',
+  'recoveryToken',
+  'recoveryEvidence',
+  'recoveryResponse',
+  'recoverOperation',
+  'asx_RecoverWorker',
+  'Open recovery',
+])
+  if (html.includes(removed) || js.includes(removed))
+    throw new Error('Evidence recovery is removed: ' + removed);
+const planning = read('src/Ascentix.Documents.Domain/Planning.cs');
+const bounds = /public static class Bounds\s*\{([\s\S]*?)\n\}/.exec(planning)[1];
+const shellBounds = /const BOUNDS = \{([\s\S]*?)\};/.exec(read('client/admin/shell.js'))?.[1];
+assert(shellBounds, 'AsxdUi.BOUNDS is missing from shell.js');
+for (const [, name, value] of bounds.matchAll(/public const int (\w+) = (\d+);/g)) {
+  const key = name[0].toLowerCase() + name.slice(1);
+  const client = new RegExp('\\b' + key + ':\\s*(\\d+)').exec(shellBounds);
+  assert(client, 'AsxdUi.BOUNDS lacks ' + key);
+  assert.equal(client[1], value, 'AsxdUi.BOUNDS.' + key + ' differs from Bounds.' + name);
+}
+// Helper-text budget (spec 4.3, 4.4, decision D9): exactly these elements have class "help".
+const KEPT = [
+  'help-automation-settings',
+  'help-stop-tracking',
+  'help-include-root',
+  'help-destinations',
+];
+const helpInHtml = [...html.matchAll(/<p class="help" id="([^"]+)"/g)].map((m) => m[1]);
+const helpInJs = [...js.matchAll(/\bhelp\(\s*'([^']+)'/g)].map((m) => m[1]);
+assert.deepEqual(
+  [...helpInHtml, ...helpInJs].sort(),
+  [...KEPT].sort(),
+  'Only the kept texts are help',
+);
+assert.doesNotMatch(html + js, /class(Name)?\s*=\s*["']hint|'hint'/, 'No hint class remains');
+assert.doesNotMatch(
+  html + js,
+  /contenteditable|Drag folders/i,
+  'Plain name input; no drag and drop in this release',
+);
+// Help text is written in index.html only: no script makes a help element.
+assert.doesNotMatch(
+  js,
+  /el\([^)]*,\s*'help'\)|className\s*=\s*'help'|classList\.add\('help'\)/,
+  'help elements come only from index.html',
+);
+for (const [, text] of html.matchAll(/placeholder="([^"]*)"/g))
+  assert(text.split(/\s+/).length <= 4, 'Placeholder longer than 4 words: ' + text);
+assert.doesNotMatch(
+  html,
+  /<(input|select|textarea|button)[^>]*\stitle=/,
+  'No title tooltips on controls',
+);
+// The page's own title (document.title) names the browser tab; any other .title is a tooltip.
+assert.doesNotMatch(js, /(?!document|doc)\w+\.title\s*=/, 'No title tooltips set from script');
+for (const removed of [
+  'recoveryRun',
+  'recoveryToken',
+  'recoveryEvidence',
+  'recoveryResponse',
+  'asx_RecoverWorker',
+])
+  assert(!html.includes(removed) && !js.includes(removed), removed);
 console.log(
   'PASS admin static contract: ' +
     ids.length +
-    ' unique IDs and local resources. Visual/connected QA NOT RUN.',
+    ' unique IDs, one h1 per page, no tab bar or banner, shared controls, the feedback budget, sitemap and build, the helper-text budget. Visual/connected QA NOT RUN.',
 );
