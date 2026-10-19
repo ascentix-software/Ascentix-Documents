@@ -1126,6 +1126,66 @@ async function boot({
     assert.equal(t.last('asx_CreateDraft'), undefined, 'Nothing was saved');
   }
   {
+    // Rename: the header's Rename opens the name box; Enter saves the name alone, no draft.
+    const t = await boot();
+    await t.open();
+    const rename = t.$('editor-rename');
+    assert.equal(rename.hidden, false);
+    assert.equal(rename.getAttribute('aria-label'), 'Rename Account onboarding');
+    await t.press(rename);
+    const box = t.$('templateName');
+    assert.equal(box.hidden, false);
+    assert.equal(box.value, 'Account onboarding');
+    assert.equal(t.$('editor-name').hidden, true);
+    assert.equal(t.document.activeElement, box);
+    box.value = 'Client onboarding (EU)';
+    box.key('Enter');
+    await t.document.settle();
+    assert.equal(
+      JSON.stringify(t.sent.filter(([k]) => k === 'update').at(-1)),
+      JSON.stringify(['update', 'asx_template', { asx_name: 'Client onboarding (EU)' }]),
+    );
+    assert.equal(t.$('editor-name').textContent, 'Client onboarding (EU)');
+    assert.equal(t.$('editor-name').hidden, false);
+    assert.equal(box.hidden, true);
+    assert.equal(t.document.activeElement, rename);
+    assert.equal(rename.getAttribute('aria-label'), 'Rename Client onboarding (EU)');
+    assert.equal(t.$('fb-editor').textContent, 'Template renamed to Client onboarding (EU).');
+    assert.ok(t.row('Client onboarding (EU)'), 'The list shows the new name');
+    await t.flush();
+    assert.equal(t.last('asx_CreateDraft'), undefined, 'A rename makes no draft');
+  }
+  {
+    // Escape, or the same name, keeps the name and writes nothing.
+    const t = await boot();
+    await t.open();
+    await t.press(t.$('editor-rename'));
+    t.$('templateName').value = 'Something else';
+    t.$('templateName').key('Escape');
+    await t.document.settle();
+    await t.press(t.$('editor-rename'));
+    t.$('templateName').key('Enter');
+    await t.document.settle();
+    assert.equal(t.sent.filter(([k]) => k === 'update').length, 0);
+    assert.equal(t.$('editor-name').textContent, 'Account onboarding');
+    assert.equal(t.$('templateName').hidden, true);
+  }
+  {
+    // A refused rename says why and keeps the box open with what was typed.
+    const t = await boot({
+      update: () => new Error('Enter a template name of 200 characters or fewer.'),
+    });
+    await t.open();
+    await t.press(t.$('editor-rename'));
+    t.$('templateName').value = 'Too long';
+    t.$('templateName').key('Enter');
+    await t.document.settle();
+    assert.equal(t.$('fb-editor').textContent, 'Enter a template name of 200 characters or fewer.');
+    assert.equal(t.$('templateName').hidden, false);
+    assert.equal(t.$('templateName').value, 'Too long');
+    assert.equal(t.$('editor-name').textContent, 'Account onboarding');
+  }
+  {
     // ＋ New: with more than one table it asks which; the choice opens a new template's editor.
     const t = await boot({ enabled: ['account', 'contact'] });
     await t.press(t.$('new-template'));

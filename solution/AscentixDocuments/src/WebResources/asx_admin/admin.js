@@ -17,6 +17,9 @@
     saved: null,
     // The template open in the editor (null for a new one until its first save).
     template: null,
+    // The saved template's name box is open for a rename, and whether that rename is saving.
+    renaming: false,
+    renameSaving: false,
     templates: [],
     // Every template's revisions: the list's states and the overview's Versions read them.
     revisions: [],
@@ -178,21 +181,28 @@
     if (locked) name.setAttribute('aria-disabled', 'true');
     else name.removeAttribute('aria-disabled');
   }
-  // The header's first row: the table, the name (typed in for a new template), the version the
-  // draft becomes, which version stays live, and the save status.
+  // The header's first row: the table, the name (typed in for a new template, or while renaming
+  // a saved one), the version the draft becomes, which version stays live, and the save status.
   function renderHeader() {
     if (!state.root) return;
     $('editor-table').textContent = tableName(state.root.LogicalName) + ' ›';
     const name = $('templateName');
     const naming = !state.template;
+    const renaming = !naming && state.renaming;
     // A new template's name becomes the heading once it is saved; focus stays on the heading.
-    if (!naming && !name.hidden && document.activeElement === name) $('editor-title').focus();
-    name.hidden = !naming;
+    if (!naming && !renaming && !name.hidden && document.activeElement === name)
+      $('editor-title').focus();
+    name.hidden = !naming && !renaming;
     name.disabled = state.busy;
     lockName();
+    $('editor-name').hidden = renaming;
     $('editor-name').textContent = naming
       ? ''
       : state.template.asx_name || tableName(state.root.LogicalName);
+    const rename = $('editor-rename');
+    rename.hidden = naming || renaming;
+    rename.disabled = state.busy;
+    if (!naming) rename.setAttribute('aria-label', 'Rename ' + $('editor-name').textContent);
     const base = state.editBase,
       pill = $('editor-pill');
     if (state.readOnly && base) {
@@ -3753,6 +3763,7 @@
     resetSession();
     Object.assign(state, {
       root,
+      renaming: false,
       editBase: null,
       saved: null,
       unsaved: false,
@@ -4020,7 +4031,57 @@
   // The pause before saving a new template counts from leaving its name box.
   $('templateName').addEventListener('blur', () => {
     if (!state.template && state.unsaved) scheduleSave();
+    else if (state.renaming) rename();
   });
+
+  // Renaming a saved template writes its name at once. The name is not part of any version, so
+  // no draft is made and the live version keeps running under the new name. Enter or leaving the
+  // box saves; Escape, an empty box or the same name keeps the name as it was.
+  $('editor-rename').onclick = () => {
+    state.renaming = true;
+    $('templateName').value = state.template.asx_name || '';
+    renderHeader();
+    $('templateName').focus();
+  };
+  $('templateName').addEventListener('keydown', (event) => {
+    if (!state.renaming) return undefined;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      return endRename();
+    }
+    if (event.key !== 'Enter') return undefined;
+    event.preventDefault();
+    return rename();
+  });
+  function endRename() {
+    state.renaming = false;
+    renderHeader();
+    $('editor-rename').focus();
+  }
+  async function rename() {
+    if (state.renameSaving) return;
+    const id = state.template.asx_templateid;
+    const name = $('templateName').value.trim();
+    if (!name || name === state.template.asx_name) {
+      endRename();
+      return;
+    }
+    state.renameSaving = true;
+    try {
+      await xrm.WebApi.updateRecord('asx_template', id, { asx_name: name });
+    } catch (error) {
+      // The box stays open with the name typed, to correct or Escape.
+      ui.feedback('editor', error.message || String(error), 'error');
+      return;
+    } finally {
+      state.renameSaving = false;
+    }
+    for (const t of [state.template, state.overview?.template, ...state.templates])
+      if (t && same(t.asx_templateid, id)) t.asx_name = name;
+    renderList();
+    endRename();
+    ui.feedback('editor', 'Template renamed to ' + name + '.');
+  }
 
   // Saves the draft. The version follows CreateDraftApi: a Draft is saved in place, anything
   // else starts the next version; a new template starts at v1. It never redraws the editor, so
