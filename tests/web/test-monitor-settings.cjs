@@ -499,11 +499,11 @@ async function boot({
     assert.equal(m.$('lookup-panel').hidden, false);
   }
   {
-    // The setup checklist still replaces the content while setup is incomplete.
+    // The setup checklist sits above the problems while setup is incomplete, never in their place.
     const m = await boot({ runtime: { WorkerId: '00000000-0000-0000-0000-000000000000' } });
     assert.equal(m.$('setup-checklist').hidden, false);
-    for (const id of ['runs-strip', 'monitor-filters', 'rerun-selected-row', 'problem-table-card'])
-      assert.equal(m.$(id).hidden, true, id);
+    for (const id of ['monitor-filters', 'problem-table-card'])
+      assert.equal(m.$(id).hidden, false, id);
   }
   {
     // The 60-second watch does not redraw the table under an open confirmation or menu.
@@ -1267,14 +1267,18 @@ async function boot({
     );
   }
   {
-    // Setup incomplete: a checklist replaces the table, each open step linking to its page.
+    // Setup incomplete: the checklist links each open step to its page, and a job that setup
+    // queued (a site probe) that is blocked is still listed below it.
     const m = await boot({
       runtime: { WorkerId: '00000000-0000-0000-0000-000000000000', Enabled: false },
+      summary: { BlockedJobs: 1 },
+      lists: { BlockedJobs: [row({ Actions: ['Retry', 'Cancel'] })] },
     });
     const checklist = m.$('setup-checklist');
     assert.equal(checklist.hidden, false);
     assert.match(checklist.visibleText, /Choose who runs automation \(Settings\)/);
-    assert.equal(m.$('problem-table-card').hidden, true);
+    assert.equal(m.$('problem-table-card').hidden, false);
+    assert.equal(m.$('monitor-filters').hidden, false);
   }
   {
     // A paused automation with setup otherwise done is a normal state: the problems stay in view
