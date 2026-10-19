@@ -156,6 +156,19 @@ public sealed class RuntimeAdministrationTests
     }
 
     [Fact]
+    public void ARowWithoutAWorkerLoadsAndSaves()
+    {
+        // A row created by hand before Settings could create one has no worker yet.
+        var e = new Env("account");
+        e.Org.S.Memory.Rows.Values.Single(r => r.LogicalName == "asx_runtime")
+            .Attributes.Remove("asx_workeruserid");
+        var got = e.Get();
+        Assert.Equal(Guid.Empty, got.WorkerId);
+        got.WorkerId = e.Org.Worker;
+        Assert.Equal(e.Org.Worker, e.Save(got).WorkerId);
+    }
+
+    [Fact]
     public void SaveOnAFreshInstallWithoutAWorkerCreatesNothing()
     {
         var e = Env.Fresh();

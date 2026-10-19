@@ -397,7 +397,7 @@ public static class RuntimeAdministration
         bool present = current.Tables.Contains(table, StringComparer.Ordinal);
         if (present == add)
             return Get(service, old);
-        var worker = Guid.TryParse(TemplateStore.Text(old, "asx_workeruserid"), out var id)
+        var worker = Guid.TryParse(old.GetAttributeValue<string>("asx_workeruserid"), out var id)
             ? id
             : Guid.Empty;
         string[] tables;
@@ -502,7 +502,7 @@ public static class RuntimeAdministration
 
     private static RuntimeRequest Get(IOrganizationService service, Entity old)
     {
-        var worker = Guid.TryParse(TemplateStore.Text(old, "asx_workeruserid"), out var id)
+        var worker = Guid.TryParse(old.GetAttributeValue<string>("asx_workeruserid"), out var id)
             ? id
             : Guid.Empty;
         var tables = RuntimeTables.Effective(service, old);
