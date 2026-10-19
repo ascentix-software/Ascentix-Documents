@@ -1,4 +1,4 @@
-# Public beta — 0.1.0.4
+# Public beta — 0.1.0.5
 
 Ascentix Documents provisions SharePoint folders from Dataverse records and manages library access through Dataverse teams. Source is available under Apache 2.0.
 
@@ -9,6 +9,14 @@ Ascentix Documents provisions SharePoint folders from Dataverse records and mana
 - Team-based Read and Contribute library policies with membership reconciliation.
 - Work inspection in Monitor, with retry, cancellation, and re-runs.
 - A fix for registered-team deletion failing during the worker's retirement update.
+
+## What is new in 0.1.0.5
+
+- Settings opens on a new installation and creates the automation settings on the first **Save settings**. If Settings can't load, it shows the reason.
+- Monitor lists blocked jobs, such as a site check or a library setup, while setup is still incomplete. The setup checklist sits above the list.
+- A template can be renamed from the editor header (**Rename**). The new name applies at once, with no new version.
+
+To upgrade from 0.1.0.4, import 0.1.0.5 managed as an upgrade. There are no schema or setup changes.
 
 ## What is new in 0.1.0.4
 
@@ -39,7 +47,7 @@ To upgrade from 0.1.0.3, follow the [upgrade notes](upgrade-0.1.0.4.md). The upg
 
 ## Installation
 
-Use `AscentixDocuments_0.1.0.4_managed.zip` for evaluation. The unmanaged solution and source archive are provided for development. Follow the [installation guide](customer-installation.md) to configure application identities, connections, worker roles, runtime, and tables.
+Use `AscentixDocuments_0.1.0.5_managed.zip` for evaluation. The unmanaged solution and source archive are provided for development. Follow the [installation guide](customer-installation.md) to configure application identities, connections, worker roles, runtime, and tables.
 
 Official packages use a stable assembly signing identity. Local builds use a development key and cannot replace an officially signed assembly in place. The release manifest and SHA-256 checksums identify the supplied artifacts; checksums are not a signed release attestation.
 

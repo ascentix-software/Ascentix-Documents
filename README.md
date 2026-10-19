@@ -2,7 +2,7 @@
 
 Ascentix Documents provisions SharePoint folder structures from Dataverse records and manages library access through Dataverse teams. Define folder templates, publish them, and let the worker apply the resulting folder and access changes. It runs independently of Ascentix Rules Engine.
 
-**Version 0.1.0.4 is a public beta.** Read the [release notes](docs/public-beta.md) for features and known limitations. The managed solution is the intended evaluation download. Source is licensed under [Apache 2.0](LICENSE).
+**Version 0.1.0.5 is a public beta.** Read the [release notes](docs/public-beta.md) for features and known limitations. The managed solution is the intended evaluation download. Source is licensed under [Apache 2.0](LICENSE).
 
 ## What it does
 
@@ -12,6 +12,12 @@ Ascentix Documents provisions SharePoint folder structures from Dataverse record
 - Applies library Read and Contribute policies for registered Dataverse teams and reconciles membership changes.
 - Provides work inspection in Monitor, with retry, cancellation, and re-runs.
 - Retains document folders when their business record is deleted and marks the record for decommission review.
+
+## New in 0.1.0.5
+
+- Settings opens on a new installation and creates the automation settings on the first **Save settings**. If Settings can't load, it shows the reason.
+- Monitor lists blocked jobs, such as a site check or a library setup, while setup is still incomplete. The setup checklist sits above the list.
+- A template can be renamed from the editor header (**Rename**). The new name applies at once, with no new version.
 
 ## New in 0.1.0.4
 
@@ -27,7 +33,7 @@ Ascentix Documents provisions SharePoint folder structures from Dataverse record
 - SharePoint hosts in every Microsoft cloud, including GCC High, DoD and 21Vianet.
 - Update folders when records change is not in this release. An environment that had it on no longer captures record updates; Repair all removes the leftover Update steps.
 
-Upgrading from 0.1.0.3? Read the [upgrade notes](docs/upgrade-0.1.0.4.md).
+Upgrading from 0.1.0.4? Import 0.1.0.5 managed as an upgrade; there are no schema or setup changes. Upgrading from 0.1.0.3? Read the [0.1.0.4 upgrade notes](docs/upgrade-0.1.0.4.md) first.
 
 ## Evaluate
 
