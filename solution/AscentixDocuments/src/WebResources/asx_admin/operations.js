@@ -1554,6 +1554,10 @@
 
   function showSettings(runtime) {
     $('settings-missing').hidden = !!runtime || !ui.can(ADMIN);
+    if (!runtime)
+      $('settings-missing').textContent =
+        'Automation settings could not be loaded' +
+        (ui.runtimeError() ? ': ' + ui.runtimeError() : '.');
     for (const id of ['automation-card', 'automation-settings', 'tables-card', 'danger-zone'])
       $(id).hidden = !runtime;
     if (!runtime) {

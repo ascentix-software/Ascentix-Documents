@@ -16,6 +16,10 @@ public sealed class RuntimeProfile
     public string[] SharePointHosts { get; private set; } = Array.Empty<string>();
     public string[] Tables { get; private set; } = Array.Empty<string>();
 
+    /// <summary>Shown wherever Documents needs the automation settings before they were saved.</summary>
+    public const string NotSavedMessage =
+        "Automation settings are not saved yet. In Settings, select the worker (Run as), enter the SharePoint host names and click Save settings.";
+
     public static RuntimeProfile Read(IOrganizationService service) => Load(service, true);
 
     /// <summary>
@@ -26,24 +30,15 @@ public sealed class RuntimeProfile
 
     private static RuntimeProfile Load(IOrganizationService service, bool hosts)
     {
-        var query = new QueryExpression("asx_runtime")
-        {
-            ColumnSet = new ColumnSet(
+        var row =
+            Row(
+                service,
                 "asx_workeruserid",
                 "asx_enabled",
                 "asx_processrecordupdates",
                 "asx_allowedtables",
                 "asx_sharepointhosts"
-            ),
-            TopCount = 2,
-        };
-        query.Criteria.AddCondition("asx_name", ConditionOperator.Equal, "Default");
-        var rows = service.RetrieveMultiple(query);
-        if (rows.MoreRecords || rows.Entities.Count != 1)
-            throw new EvaluationBlockedException(
-                "An explicit approved runtime profile is required."
-            );
-        var row = rows.Entities[0];
+            ) ?? throw new EvaluationBlockedException(NotSavedMessage);
         var siteHosts = Array.Empty<string>();
         if (hosts)
         {
@@ -77,20 +72,33 @@ public sealed class RuntimeProfile
     /// <summary>The SharePoint hosts the Runtime panel allows, without the rest of the profile.</summary>
     public static string[] ReadHosts(IOrganizationService service)
     {
+        var row =
+            Row(service, "asx_sharepointhosts")
+            ?? throw new EvaluationBlockedException(NotSavedMessage);
+        return JsonWire.Read<string[]>(row.GetAttributeValue<string>("asx_sharepointhosts"))
+            ?? Array.Empty<string>();
+    }
+
+    /// <summary>
+    /// The Default runtime row, or null on a fresh install, where Save settings creates it.
+    /// </summary>
+    /// <param name="service">The caller's organization service.</param>
+    /// <param name="columns">The columns to read.</param>
+    /// <returns>The row, or null when none exists yet.</returns>
+    internal static Entity? Row(IOrganizationService service, params string[] columns)
+    {
         var query = new QueryExpression("asx_runtime")
         {
-            ColumnSet = new ColumnSet("asx_sharepointhosts"),
+            ColumnSet = new ColumnSet(columns),
             TopCount = 2,
         };
         query.Criteria.AddCondition("asx_name", ConditionOperator.Equal, "Default");
         var rows = service.RetrieveMultiple(query);
-        if (rows.MoreRecords || rows.Entities.Count != 1)
+        if (rows.MoreRecords || rows.Entities.Count > 1)
             throw new EvaluationBlockedException(
-                "An explicit approved runtime profile is required."
+                "Exactly one installed runtime profile is required."
             );
-        return JsonWire.Read<string[]>(
-                rows.Entities[0].GetAttributeValue<string>("asx_sharepointhosts")
-            ) ?? Array.Empty<string>();
+        return rows.Entities.FirstOrDefault();
     }
 
     /// <summary>

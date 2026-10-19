@@ -1708,6 +1708,11 @@ async function boot({
         b.Command === 'Get' ? new Error('Principal user is missing prvReadasx_runtime.') : null,
     });
     assert.equal(refused.$('settings-missing').hidden, false);
+    // The server's own reason, not a guess at it.
+    assert.equal(
+      refused.$('settings-missing').textContent,
+      'Automation settings could not be loaded: Principal user is missing prvReadasx_runtime.',
+    );
     assert.equal(refused.$('automation-settings').hasAttribute('aria-busy'), false);
   }
   // Settings as cards -------------------------------------------------------------------------

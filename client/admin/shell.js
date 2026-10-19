@@ -41,7 +41,14 @@
   const missing = new Set();
   // Open confirmations made by ask(), each with the function that answers it with its keep value.
   const confirmations = new Map();
-  const state = { tab: null, link: null, runtime: null, dirty: null, confirms: 0 };
+  const state = {
+    tab: null,
+    link: null,
+    runtime: null,
+    runtimeError: '',
+    dirty: null,
+    confirms: 0,
+  };
 
   // sessionStorage can be missing or throw (blocked site data, sandboxed frames). Every access
   // is guarded; a failure reads as "nothing stored", so it never redirects.
@@ -525,8 +532,10 @@
   async function loadRuntime() {
     try {
       state.runtime = await api('asx_RuntimeAdmin', { Command: 'Get' });
-    } catch {
+      state.runtimeError = '';
+    } catch (error) {
       state.runtime = null;
+      state.runtimeError = error?.message || '';
     }
     return state.runtime;
   }
@@ -972,6 +981,8 @@
     can,
     needs,
     runtime: () => state.runtime,
+    // Why the runtime Get was refused, as the server said it; empty when it was not.
+    runtimeError: () => state.runtimeError,
     // Resolves once the load's runtime Get is back (null when refused), after the onRuntime
     // listeners have heard it: for a page that must tell "not back yet" from "refused".
     runtimeReady: () => Promise.resolve(state.runtimePromise).then(() => state.runtime),

@@ -57,10 +57,10 @@ public static class RuntimeAdministration
     {
         if (!transaction)
             throw new EvaluationBlockedException("Runtime configuration requires a transaction.");
-        var old = Profile(service);
+        var stored = Stored(service);
         if (request.Command == "Get")
         {
-            var current = Get(service, old);
+            var current = stored == null ? Empty() : Get(service, stored);
             current.CanChange = AdministratorCheck.IsSystemAdministrator(service, caller);
             return current;
         }
@@ -77,6 +77,7 @@ public static class RuntimeAdministration
             throw new EvaluationBlockedException(
                 "Registering events requires System Administrator."
             );
+        var old = stored ?? FirstSave(service, request);
         // Every command below is run by a System Administrator, so every result can change.
         var changed = Change(service, old, request);
         changed.CanChange = true;
@@ -445,26 +446,58 @@ public static class RuntimeAdministration
         return Get(service, Profile(service));
     }
 
-    private static Entity Profile(IOrganizationService service)
-    {
-        var query = new QueryExpression("asx_runtime")
+    private static Entity? Stored(IOrganizationService service) =>
+        RuntimeProfile.Row(
+            service,
+            "asx_workeruserid",
+            "asx_enabled",
+            "asx_processrecordupdates",
+            "asx_allowedtables",
+            "asx_sharepointhosts"
+        );
+
+    private static Entity Profile(IOrganizationService service) =>
+        Stored(service) ?? throw new EvaluationBlockedException(RuntimeProfile.NotSavedMessage);
+
+    /// <summary>
+    /// A fresh install has no Default row; the page shows empty settings until the first Save.
+    /// </summary>
+    private static RuntimeRequest Empty() =>
+        new RuntimeRequest
         {
-            ColumnSet = new ColumnSet(
-                "asx_workeruserid",
-                "asx_enabled",
-                "asx_processrecordupdates",
-                "asx_allowedtables",
-                "asx_sharepointhosts"
-            ),
-            TopCount = 2,
+            Command = "Get",
+            Migrated = true,
+            Registration = new RegistrationSummary(),
         };
-        query.Criteria.AddCondition("asx_name", ConditionOperator.Equal, "Default");
-        var rows = service.RetrieveMultiple(query);
-        if (rows.MoreRecords || rows.Entities.Count != 1)
-            throw new EvaluationBlockedException(
-                "Exactly one installed runtime profile is required."
-            );
-        return rows.Entities[0];
+
+    /// <summary>
+    /// The first Save on a fresh install creates the Default row, paused, once the worker and
+    /// hosts it will hold are valid; Save then fills it in as usual. Any other command waits for
+    /// that first Save. The alternate key on asx_name refuses a second row from a concurrent Save.
+    /// </summary>
+    /// <param name="service">The administrator's organization service.</param>
+    /// <param name="request">The administrator's request.</param>
+    /// <returns>The created row, with its row version.</returns>
+    private static Entity FirstSave(IOrganizationService service, RuntimeRequest request)
+    {
+        if (request.Command != "Save")
+            throw new EvaluationBlockedException(RuntimeProfile.NotSavedMessage);
+        RuntimeProfile.ValidateHosts(request.SharePointHosts);
+        ValidateWorker(service, request.WorkerId);
+        service.Create(
+            new Entity("asx_runtime")
+            {
+                ["asx_name"] = "Default",
+                ["asx_enabled"] = false,
+                ["asx_processrecordupdates"] = false,
+                ["asx_allowedtables"] = "[]",
+                ["asx_sharepointhosts"] = "[]",
+            }
+        );
+        var created = Profile(service);
+        // The page had no row version to send; the row it saves is the one just created.
+        request.RowVersion = created.RowVersion;
+        return created;
     }
 
     private static RuntimeRequest Get(IOrganizationService service, Entity old)
