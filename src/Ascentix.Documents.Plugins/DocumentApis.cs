@@ -221,6 +221,17 @@ public sealed class RevisionGuard : IPlugin
         {
             if (entity != null)
                 TemplateLifecycle.Validate(entity, existing);
+            // A rename writes the name alone, at any time: it is not part of any version.
+            if (
+                entity?.Contains("asx_name") == true
+                && (
+                    string.IsNullOrWhiteSpace(entity.GetAttributeValue<string>("asx_name"))
+                    || entity.GetAttributeValue<string>("asx_name").Trim().Length > 200
+                )
+            )
+                throw new InvalidPluginExecutionException(
+                    "Enter a template name of 200 characters or fewer."
+                );
             if (entity?.Contains("asx_publishedrevisionid") == true && !publish)
                 throw new InvalidPluginExecutionException("Published pointer is API-owned.");
             if (

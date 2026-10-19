@@ -144,6 +144,42 @@ public sealed class GuardTests
     }
 
     [Fact]
+    public void PublishedTemplateCanBeRenamed()
+    {
+        var setup = new Setup(
+            "asx_template",
+            "Update",
+            new Entity("asx_template") { ["asx_name"] = "Customer folders (EU)" }
+        );
+        setup.Service.Existing["asx_publishedrevisionid"] = new EntityReference(
+            "asx_revision",
+            Guid.NewGuid()
+        );
+        new RevisionGuard().Execute(setup);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(201)]
+    public void TemplateNameMustBeOneTo200Characters(object? name)
+    {
+        var setup = new Setup(
+            "asx_template",
+            "Update",
+            new Entity("asx_template")
+            {
+                ["asx_name"] = name is int length ? new string('n', length) : name,
+            }
+        );
+        var error = Assert.Throws<InvalidPluginExecutionException>(() =>
+            new RevisionGuard().Execute(setup)
+        );
+        Assert.Equal("Enter a template name of 200 characters or fewer.", error.Message);
+    }
+
+    [Fact]
     public void DirectPublishedPointerIsRejected()
     {
         var setup = new Setup(
