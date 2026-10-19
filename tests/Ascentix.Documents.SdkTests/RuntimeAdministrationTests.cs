@@ -19,12 +19,24 @@ public sealed class RuntimeAdministrationTests
         internal Env(params string[] tables)
             : this(tables, Array.Empty<string>()) { }
 
-        internal Env(string[] tables, string[] orgTables)
+        /// <summary>A fresh install: the worker exists, but no Default runtime row yet.</summary>
+        internal static Env Fresh() => new Env(Array.Empty<string>(), Array.Empty<string>(), false);
+
+        internal Env(string[] tables, string[] orgTables, bool seedRuntime = true)
         {
             Org = new EventRegistrationTests.Org(
                 new[] { "account", "contact", "lead" }.Concat(orgTables).ToArray()
             );
-            Runtime = RuntimeSeed.Seed(Org.S.Memory, Org.Worker, tables);
+            if (seedRuntime)
+                Runtime = RuntimeSeed.Seed(Org.S.Memory, Org.Worker, tables);
+            else
+                Org.S.Memory.Seed(
+                    new Entity("systemuser", Org.Worker)
+                    {
+                        ["isdisabled"] = false,
+                        ["applicationid"] = Guid.NewGuid(),
+                    }
+                );
             var role = Guid.NewGuid();
             Org.S.Memory.Seed(
                 new Entity("role", role)
@@ -106,6 +118,82 @@ public sealed class RuntimeAdministrationTests
             )
                 Org.S.Memory.Rows.Remove(row.Id);
         }
+    }
+
+    private static Entity[] RuntimeRows(Env e) =>
+        e.Org.S.Memory.Rows.Values.Where(r => r.LogicalName == "asx_runtime").ToArray();
+
+    [Fact]
+    public void GetOnAFreshInstallReturnsAnEmptyProfile()
+    {
+        var e = Env.Fresh();
+        var got = e.Get();
+        Assert.Equal("", got.RowVersion);
+        Assert.Equal(Guid.Empty, got.WorkerId);
+        Assert.False(got.Enabled);
+        Assert.Empty(got.SharePointHosts);
+        Assert.Empty(got.Tables);
+        Assert.True(got.CanChange);
+        Assert.Empty(RuntimeRows(e));
+    }
+
+    [Fact]
+    public void SaveOnAFreshInstallCreatesTheDefaultRow()
+    {
+        var e = Env.Fresh();
+        var draft = e.Get();
+        draft.WorkerId = e.Org.Worker;
+        draft.SharePointHosts = new[] { "example.sharepoint.com" };
+        var saved = e.Save(draft);
+        var row = Assert.Single(RuntimeRows(e));
+        Assert.Equal("Default", row.GetAttributeValue<string>("asx_name"));
+        Assert.Equal(e.Org.Worker.ToString("D"), row.GetAttributeValue<string>("asx_workeruserid"));
+        Assert.False(row.GetAttributeValue<bool>("asx_enabled"));
+        Assert.Equal(e.Org.Worker, saved.WorkerId);
+        Assert.Equal(new[] { "example.sharepoint.com" }, saved.SharePointHosts);
+        Assert.NotEqual("", saved.RowVersion);
+        Assert.Equal(e.Org.Worker, RuntimeProfile.Read(e.Org.S).WorkerId);
+    }
+
+    [Fact]
+    public void ARowWithoutAWorkerLoadsAndSaves()
+    {
+        // A row created by hand before Settings could create one has no worker yet.
+        var e = new Env("account");
+        e.Org.S.Memory.Rows.Values.Single(r => r.LogicalName == "asx_runtime")
+            .Attributes.Remove("asx_workeruserid");
+        var got = e.Get();
+        Assert.Equal(Guid.Empty, got.WorkerId);
+        got.WorkerId = e.Org.Worker;
+        Assert.Equal(e.Org.Worker, e.Save(got).WorkerId);
+    }
+
+    [Fact]
+    public void SaveOnAFreshInstallWithoutAWorkerCreatesNothing()
+    {
+        var e = Env.Fresh();
+        var draft = e.Get();
+        draft.SharePointHosts = new[] { "example.sharepoint.com" };
+        var ex = Assert.Throws<EvaluationBlockedException>(() => e.Save(draft));
+        Assert.Equal("Select the worker application user.", ex.Message);
+        Assert.Empty(RuntimeRows(e));
+    }
+
+    [Fact]
+    public void OtherCommandsOnAFreshInstallAskForSaveSettingsFirst()
+    {
+        var e = Env.Fresh();
+        var ex = Assert.Throws<EvaluationBlockedException>(() => e.Change("AddTable", "account"));
+        Assert.Equal(RuntimeProfile.NotSavedMessage, ex.Message);
+        Assert.Empty(RuntimeRows(e));
+    }
+
+    [Fact]
+    public void ProfileReadsOnAFreshInstallSayWhatToDo()
+    {
+        var e = Env.Fresh();
+        var ex = Assert.Throws<EvaluationBlockedException>(() => RuntimeProfile.Read(e.Org.S));
+        Assert.Equal(RuntimeProfile.NotSavedMessage, ex.Message);
     }
 
     [Fact]

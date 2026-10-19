@@ -128,7 +128,6 @@
     order: 'desc',
     limit: PAGE,
     selected: new Set(),
-    setupOpen: false,
     tables: [],
     templates: null,
     hasLibrary: null,
@@ -250,15 +249,11 @@
       ],
       ['Turn automation on', null, !!runtime?.Enabled],
     ];
-    // A paused automation is a normal state, shown by the header pill: only the first three
-    // steps hold the problem lists back.
+    // The checklist sits above the problem lists while setup is incomplete, never in their place:
+    // setup itself queues jobs (site probes, library setup) that can need attention. A paused
+    // automation is a normal state, shown by the header pill, so only the first three steps count.
     const open = !!runtime && steps.slice(0, 3).some((s) => !s[2]);
-    monitor.setupOpen = open;
     $('setup-checklist').hidden = !open;
-    for (const id of ['monitor-filters', 'monitor-errors', 'problem-table-card'])
-      $(id).hidden = open;
-    $('runs-strip').hidden = open || !activeRuns().length;
-    $('rerun-selected-row').hidden = open || monitor.filter !== 'NotCaptured';
     if (!open) return;
     // Redrawn on every count and runtime change: focus keys bring focus back to its step.
     ui.withFocus(() =>
@@ -525,7 +520,7 @@
                 ),
               ]),
     );
-    $('rerun-selected-row').hidden = monitor.setupOpen || !select;
+    $('rerun-selected-row').hidden = !select;
     updateSelected();
     renderMore();
   }
@@ -568,7 +563,7 @@
     );
   function renderStrip() {
     const runs = activeRuns();
-    $('runs-strip').hidden = monitor.setupOpen || !runs.length;
+    $('runs-strip').hidden = !runs.length;
     $('runs-strip').replaceChildren(...runs.map(runCard));
   }
   function runCard(row) {
@@ -1554,6 +1549,10 @@
 
   function showSettings(runtime) {
     $('settings-missing').hidden = !!runtime || !ui.can(ADMIN);
+    if (!runtime)
+      $('settings-missing').textContent =
+        'Automation settings could not be loaded' +
+        (ui.runtimeError() ? ': ' + ui.runtimeError() : '.');
     for (const id of ['automation-card', 'automation-settings', 'tables-card', 'danger-zone'])
       $(id).hidden = !runtime;
     if (!runtime) {
