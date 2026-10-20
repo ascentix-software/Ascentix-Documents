@@ -1,4 +1,4 @@
-# Public beta — 0.1.0.5
+# Public beta: 0.1.0.5
 
 Ascentix Documents provisions SharePoint folders from Dataverse records and manages library access through Dataverse teams. Source is available under Apache 2.0.
 
@@ -12,11 +12,11 @@ Ascentix Documents provisions SharePoint folders from Dataverse records and mana
 
 ## What is new in 0.1.0.5
 
-- Settings opens on a new installation and creates the automation settings on the first **Save settings**. If Settings can't load, it shows the reason.
-- Monitor lists blocked jobs, such as a site check or a library setup, while setup is still incomplete. The setup checklist sits above the list.
-- A template can be renamed from the editor header (**Rename**). The new name applies at once, with no new version.
+- Settings works on a new installation, and shows the reason when it can't load.
+- Monitor lists blocked jobs while setup is incomplete.
+- Templates can be renamed from the editor header.
 
-To upgrade from 0.1.0.4, import 0.1.0.5 managed as an upgrade. There are no schema or setup changes.
+Upgrading from 0.1.0.4 needs no extra steps.
 
 ## What is new in 0.1.0.4
 
